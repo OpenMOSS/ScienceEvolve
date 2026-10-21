@@ -1,5 +1,7 @@
 # 任务专属 MCP 服务
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](project-mcp.md) | **简体中文**
+
 本文配置及 stdio → HTTP 接入方式用于 main 引擎。运行时显式指定独立 dataDir，Git 工作区和恢复规则见 [main CLI](main-cli-zh.md) 与 [迁移说明](main-runtime-migration-zh.md)。
 
 Main 在 `workflow.json` 的 `mcpDefinitions` 中创建和修改服务，用 `agents.<name>.mcpServers` 分配，再提交 `apply_workflow`。普通 Agent 不能提交，Main 需要 `orchestration.allowMainReconfiguration: true`；关闭时仍可运行模板预先定义的服务。
@@ -110,6 +112,6 @@ SDK 托管桥支持 `tools/list`、`tools/call`、资源列表/模板/读取、�
 
 定义名称使用 1–64 位小写字母、数字、`-`、`_`，首字符为字母或数字。最多 32 个任务服务；每个最多 100 个文本文件、单文件最多 500,000 字符，`mcpDefinitions` JSON 总大小不超过 1 MiB。每个 Agent 的远程与任务 MCP 合计最多 32 项；运行中提交的完整 workflow 快照仍受 2 MiB 上限约束。
 
-Main 提案中省略 `mcpDefinitions` 保留已有值，提供时整表替换。删除单个源文件从 `files` 移除；删除服务前须同时解除所有 Agent 对它的引用。成功提交的 `workflow.reconfigured` 事件包含 `changedMcps` 和受影响的 `changedAgents`。
+Main 提案中省略 `mcpDefinitions` 保留已有值，提供时整表替换。删除单个源文件从 `files` 移除；删除服务前须同时解除所有 Agent 对它的引用。**当前 Main 重配置还受已接受定义不可变规则约束：** 同名改写、替换和删除会被拒绝；调整内容需新增定义名称并更新引用，见 [Main 自修改](../skills/scienceevolve-sdk/references/workflow.md#main-自修改)。成功提交的 `workflow.reconfigured` 事件包含 `changedMcps` 和受影响的 `changedAgents`。
 
 自动化测试使用真实 Node MCP 子进程、标准 MCP 客户端和模拟模型决策，覆盖调用、修改、恢复、失败回滚、取消与异常进程退出。它不代表四种真实模型或跨平台环境均已验收。

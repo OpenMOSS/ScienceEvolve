@@ -1,5 +1,7 @@
 # 共享文件和图片输入
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](project-inputs.md) | **简体中文**
+
 `start.inputs` 让所有 Agent 在首次运行前获得同一份参考材料。文件以原始字节复制，图片不在 SDK 中自动转成文本；是否能解读图片取决于 Harness 和模型能力。
 
 已有 example 的 workflow.json 不需要改写。下面两个 JSON 字段都是可选的输入材料便捷配置，

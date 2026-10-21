@@ -1,5 +1,7 @@
 # 通用循环组
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](workflow-loops.md) | **简体中文**
+
 `orchestration.loops` 定义普通 Agent 的循环组和每批循环次数，由 SDK 调度器执行。每批完成后转交 Main；Main 判断任务未结束时，直接将任务交回组入口，开始下一批。项目结束仍由原来的 `termination` 和控制工具判定，批次完成不是项目完成。
 
 ```json

@@ -1,5 +1,7 @@
 # SII / Inspire 异步实验
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](sii-experiments.md) | **简体中文**
+
 默认 SDK 不启用 SII，普通 `compute` Agent 不需要 Inspire CLI 或平台账号。
 需要平台实验时，由部署方显式配置 `sii`；此配置属于宿主，不写入可移植 workflow。
 

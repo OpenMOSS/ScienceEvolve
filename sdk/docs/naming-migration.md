@@ -1,5 +1,9 @@
 # ScienceEvolve naming and migration boundaries
 
+[← Back to SDK README](../README.md) · **English** | [简体中文](naming-migration-zh.md)
+
+> Historical naming-refactor record. Legacy was preserved at that point but has since been removed. The dated 404 observations below are historical, not a statement of current repository availability. Use the current [CLI guide](main-cli.md) and [runtime notes](main-sync-20261016.md).
+
 This release changes project-owned names throughout the SDK, CLI, authored Skills
 and generated runtime. It preserves the main and legacy engines and their functional
 contracts. Naming conversion is a breaking configuration change, not an automatic

@@ -1,5 +1,7 @@
 # 部署、CLI 与 Node SDK（默认 main）
 
+[← 返回 SDK README](../../../README_zh-CN.md) · [English](usage-en.md) | **简体中文**
+
 需要 Node >=24。Codex/Claude Code/DSH 按需安装；Pi 随包提供。
 每个 main dataDir 都是显式指定的绝对路径，不能复用 legacy/Web/其他 runtimeRevision 的数据。
 运行中同一目录只能有一个宿主。密钥不进入 workflow、需求或输出。

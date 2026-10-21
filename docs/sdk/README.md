@@ -1,5 +1,7 @@
 # ScienceEvolve SDK 文档
 
+[← 返回 README](../../README_zh-CN.md) · [English](README_en.md) | **简体中文**
+
 日常使用从[首页快速开始](../../README_zh-CN.md#quick-start)进入。此目录汇总开发入口与按日期保存的实现、测试记录。
 
 当前使用文档见 [CLI 与部署](../../sdk/docs/main-cli-zh.md)、[Workflow 参考](../../sdk/skills/scienceevolve-sdk/references/workflow.md)和 [API 参考](../../sdk/skills/scienceevolve-sdk/references/usage.md)。

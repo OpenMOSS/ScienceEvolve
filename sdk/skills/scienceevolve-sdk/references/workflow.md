@@ -1,5 +1,7 @@
 # workflow.json 合同与设计规则
 
+[← 返回 SDK README](../../../README_zh-CN.md) · [English](workflow-en.md) | **简体中文**
+
 ## 顶层与 Agent
 
 普通启动配置使用 `agents`、`orchestration`、`git`，可选 `skillDefinitions`、`mcpDefinitions`、`inputs` 和 `inputDescription`。输入材料的相对路径按 workflow 文件目录解析，CLI/API 的显式材料参数覆盖同名默认字段。`schemaVersion: 2` 可用于预设封装；不需要自行添加版本字段。未知字段会被拒绝。标题、自然语言需求、workspace、dataDir、harness 可执行路径不属于 workflow 字段。

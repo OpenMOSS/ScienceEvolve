@@ -1,5 +1,7 @@
 # 安装、配置与 SII Proxy
 
+[← 返回 README](../../../../../README_zh-CN.md) · [English](install-and-config-en.md) | **简体中文**
+
 安装、更新、账号配置、项目初始化和本机 SII proxy setup 都看这一份。平台任务运行看 notebook / compute workloads / resources 等业务手册；这里不维护命令清单，命令表面以 CLI help 为准。
 
 ## 1. 安装

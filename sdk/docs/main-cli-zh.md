@@ -1,5 +1,7 @@
 # SDK CLI 与部署
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](main-cli.md) | **简体中文**
+
 `scievolve` 默认使用 main 内核；`--engine main` 是显式别名，
 `@scienceevolve/sdk` 与 `@scienceevolve/sdk/main` 使用同一实现。
 源码仓库提供 23 个 workflow：16 个 Git-off 共享目录流程、7 个 Git-on 协作流程。

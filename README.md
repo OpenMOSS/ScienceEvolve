@@ -12,6 +12,7 @@
 <a href="#sdk"><img src="docs/readme/badges/sdk-en.svg" alt="📦 SDK / CLI · TypeScript · API" height="26"></a>
 <a href="#quick-start"><img src="docs/readme/badges/quick-start-en.svg" alt="🚀 Quick start · Install · connect · run" height="26"></a>
 <a href="#features"><img src="docs/readme/badges/features-en.svg" alt="✨ Features · Collaborate · iterate" height="26"></a>
+<a href="#scientific-skills"><img src="docs/readme/badges/skills-en.svg" alt="🧠 Scientific Skills · 875 Skills · 12 areas" height="26"></a>
 <a href="#dual-loops"><img src="docs/readme/badges/dual-loops-en.svg" alt="🔄 Dual loops · Task · process" height="26"></a>
 <a href="#tutorial"><img src="docs/readme/badges/tutorial-en.svg" alt="📖 SDK tutorial · Projects · workflows" height="26"></a>
 <a href="#examples"><img src="docs/readme/badges/examples-en.svg" alt="🧪 Examples · 23 workflows" height="26"></a>
@@ -27,7 +28,7 @@ ScienceEvolve is the autonomous version of the research framework presented in [
 
 **🧩 Two ways to use ScienceEvolve** — shared workflow semantics, with an interface for your way of working.
 
-[![ScienceEvolve SDK / CLI](docs/readme/badges/sdk-cli.svg)](#quick-start) — **This repository.** Run workflows from TypeScript or the command line and embed research in your own services. See the [SDK examples](example/README.md) and [Web / SDK comparison](sdk/docs/main-sdk-parity-zh.md) (Chinese).
+[![ScienceEvolve SDK / CLI](docs/readme/badges/sdk-cli.svg)](#quick-start) — **This repository.** Run workflows from TypeScript or the command line and embed research in your own services. See the [SDK examples](example/README_en.md) and [Web / SDK comparison](sdk/docs/main-sdk-parity.md).
 
 [![ScienceEvolve Web / Server](docs/readme/badges/web-server.svg)](https://github.com/OpenMOSS/ScienceEvolve-server) — **Web / Server entry.** Compose Agents visually, connect model gateways, manage research projects, and inspect traces and delivered files.
 
@@ -63,7 +64,7 @@ The **task loop** runs a method, collects real feedback, improves the method, an
 
 </div>
 
-[Main / Worker and orchestration](sdk/skills/scienceevolve-sdk/references/workflow.md) · [Dynamic reconfiguration scope](sdk/skills/scienceevolve-sdk/references/workflow.md#main-自修改) (Chinese)
+[Main / Worker and orchestration](sdk/skills/scienceevolve-sdk/references/workflow-en.md) · [Dynamic reconfiguration scope](sdk/skills/scienceevolve-sdk/references/workflow-en.md#main-reconfiguration)
 
 <a id="features"></a>
 
@@ -71,7 +72,7 @@ The **task loop** runs a method, collects real feedback, improves the method, an
 
 ### Let Main evolve the workflow
 
-Authorized Main can add or remove Agents, change responsibilities and paths, switch Harnesses, and submit an updated workflow. SDK Runtime validates before applying the proposal so the team can adapt to the task. [Editable scope](sdk/skills/scienceevolve-sdk/references/workflow.md#main-自修改).
+Authorized Main can add or remove Agents, change responsibilities and paths, switch Harnesses, and submit an updated workflow. SDK Runtime validates before applying the proposal so the team can adapt to the task. [Editable scope](sdk/skills/scienceevolve-sdk/references/workflow-en.md#main-reconfiguration).
 
 <div align="center">
 
@@ -81,7 +82,7 @@ Authorized Main can add or remove Agents, change responsibilities and paths, swi
 
 ### Set Loop rounds and the exit Agent
 
-Main starts a finite-element mesh convergence experiment. Coder → Executor → Review runs for three complete rounds, then exits to the selected Writer Agent, which delivers the error analysis report (errors.md). Both the number of rounds and exit Agent are configurable. [Configure SDK Loops](sdk/docs/workflow-loops-zh.md) (Chinese).
+Main starts a finite-element mesh convergence experiment. Coder → Executor → Review runs for three complete rounds, then exits to the selected Writer Agent, which delivers the error analysis report (errors.md). Both the number of rounds and exit Agent are configurable. [Configure SDK Loops](sdk/docs/workflow-loops.md).
 
 <div align="center">
 
@@ -91,7 +92,7 @@ Main starts a finite-element mesh convergence experiment. Coder → Executor →
 
 ### Revert and retry from experiment evidence
 
-With Git collaboration enabled, Idea proposes a larger simulation time step. Execution implements and merges it, but evaluation regresses. The authorized Review Agent uses `git_revert` on its current task branch to restore the accepted code and rerun the benchmark. The revert is a new commit; the failed change remains in history. [Configure Git credentials and workflows](sdk/docs/main-cli-zh.md#github-认证与-git-协作) (Chinese).
+With Git collaboration enabled, Idea proposes a larger simulation time step. Execution implements and merges it, but evaluation regresses. The authorized Review Agent uses `git_revert` on its current task branch to restore the accepted code and rerun the benchmark. The revert is a new commit; the failed change remains in history. [Configure Git credentials and workflows](sdk/docs/main-cli.md#github-authentication-and-git-collaboration).
 
 <div align="center">
 
@@ -101,7 +102,7 @@ With Git collaboration enabled, Idea proposes a larger simulation time step. Exe
 
 ### Review and integrate parallel contributions
 
-With Git collaboration enabled, Agents work in isolated worktrees. Collaboration groups organize parallel exploration, with review and PR integration at each level. [Configure a GitHub account](sdk/docs/main-cli-zh.md#github-认证与-git-协作).
+With Git collaboration enabled, Agents work in isolated worktrees. Collaboration groups organize parallel exploration, with review and PR integration at each level. [Configure a GitHub account](sdk/docs/main-cli.md#github-authentication-and-git-collaboration).
 
 <div align="center">
 
@@ -121,13 +122,66 @@ System Runtime retains project state, completed progress, and execution traces. 
 
 ### Keep adjusting in natural language
 
-Describe new goals and changes through task input. Main, when authorized to reconfigure, can update Agents, Loops, and collaboration groups through the [SDK workflow update mechanism](sdk/skills/scienceevolve-sdk/references/workflow.md#main-自修改). Use `run.addInput()` for follow-up requirements and `run.respond()` to answer task questions.
+Describe new goals and changes through task input. Main, when authorized to reconfigure, can update Agents, Loops, and collaboration groups through the [SDK workflow update mechanism](sdk/skills/scienceevolve-sdk/references/workflow-en.md#main-reconfiguration). Use `run.addInput()` for follow-up requirements and `run.respond()` to answer task questions.
 
 <div align="center">
 
 <img src="docs/readme/06-switch-tools-change-the-flow.svg" alt="In a turbulence closure-model comparison, the user switches Harnesses, adds Verifier, and adds parallel theory and data checks" width="96%">
 
 </div>
+
+<a id="scientific-skills"></a>
+
+## Scientific Skills: research methods for your Agents
+
+**875 Skills · 12 research areas · Distilled from 70,000+ published papers.**
+
+ScienceEvolve includes a scientific method library for hypothesis generation, research design, experimental validation, evidence analysis, and iteration. Give each Agent the methods relevant to its task alongside its role, model, and tools.
+
+Each Skill describes **when to use it, required inputs, research steps, expected outputs, validation gates, claim boundaries, and failure handling**. The workflow organizes the team; Skills guide how each member approaches a scientific problem.
+
+| Research area | Skills |
+| :--- | :--- |
+| [Antibody and immune recognition](.agents/skills/README.md#antibody-and-immune-recognition) | 111 |
+| [Aqueous battery interfaces](.agents/skills/README.md#aqueous-battery-interfaces) | 92 |
+| [Asymmetric catalysis](.agents/skills/README.md#asymmetric-catalysis) | 38 |
+| [Chromatin and epigenomic regulation](.agents/skills/README.md#chromatin-and-epigenomic-regulation) | 39 |
+| [Quantum materials and condensed matter](.agents/skills/README.md#quantum-materials-and-condensed-matter) | 232 |
+| [Fiber composites and battery materials](.agents/skills/README.md#fiber-composites-and-battery-materials) | 121 |
+| [Galaxy, cosmology, and simulations](.agents/skills/README.md#galaxy-cosmology-and-simulations) | 57 |
+| [Magnetic confinement fusion](.agents/skills/README.md#magnetic-confinement-fusion) | 28 |
+| [Neuromorphic computing and Ising optimization](.agents/skills/README.md#neuromorphic-computing-and-ising-optimization) | 41 |
+| [Organometallic catalysis and DFT](.agents/skills/README.md#organometallic-catalysis-and-dft) | 25 |
+| [Polymer composites and vitrimers](.agents/skills/README.md#polymer-composites-and-vitrimers) | 60 |
+| [Urban hazard resilience](.agents/skills/README.md#urban-hazard-resilience) | 31 |
+| **Total** | **875** |
+
+<details>
+<summary><strong>Inside a Skill: asymmetric catalysis research design</strong></summary>
+
+The [chiral catalyst research-design Skill](.agents/skills/sci-catalysis-asymmetric-catalysis-chiral-catalyst-rese-1571cd89/SKILL.md) guides an Agent through:
+
+> Frame the problem → generate competing hypotheses → design minimal validation → analyze evidence → iterate or pivot.
+
+It asks for the target transformation, existing evidence, candidate mechanisms, and available analytical methods. Each stage defines a decision gate: when the evidence cannot distinguish hypotheses, revisit the validation design; when the observations conflict with the mechanism, revise the hypothesis. Outputs include a research plan, controls, decision criteria, and bounded conclusions.
+
+</details>
+
+**Use in the SDK:** select a Skill from the catalog and set its `builtin:` ID in an existing Agent’s `skills` or `autoSkills`. For example, add this to the target Agent configuration:
+
+```json
+{
+  "skills": [
+    "builtin:sci-catalysis-asymmetric-catalysis-chiral-catalyst-rese-1571cd89"
+  ]
+}
+```
+
+The SDK build bundles all 875 method Skills in `assets/skills`; no separate download is needed. Fixed Skills load on each invocation; automatic selection depends on the chosen Harness.
+
+When Main is authorized to reconfigure the workflow, it can adjust Skill selections as the research progresses. Actual data, tools, and experimental environments are configured for the task.
+
+[Browse all 875 scientific Skills](.agents/skills/README.md)
 
 <a id="quick-start"></a>
 
@@ -169,7 +223,7 @@ scievolve gateway add --data-dir /absolute/scienceevolve-data --name research --
 scievolve gateway test GATEWAY_ID --data-dir /absolute/scienceevolve-data --model YOUR_MODEL --harness pi --reasoning-option high
 ```
 
-Use the gateway ID returned by `gateway add` as `GATEWAY_ID`. Continue when the connection test passes. For other protocols, reasoning parameters, per-Agent models, or Codex native login, see the [model configuration guide](sdk/docs/main-cli-zh.md#部署与启动) (Chinese).
+Use the gateway ID returned by `gateway add` as `GATEWAY_ID`. Continue when the connection test passes. For other protocols, reasoning parameters, per-Agent models, or Codex native login, see the [model configuration guide](sdk/docs/main-cli.md#deployment-and-startup).
 
 ### 3. Run a Workflow
 
@@ -186,9 +240,9 @@ The CLI streams events and prints the run ID and final status. When the status i
 
 ## SDK tutorial: from a first task to your own workflow
 
-**① Finish your first task.** Follow the quick start above, then inspect the delivered code and run its tests. Add files or images with `--inputs`, and use `run input` / `run respond` for follow-up requirements and answers. See [inputs](sdk/docs/project-inputs-zh.md), [workspaces](sdk/examples/workspace-examples.md), and [pause and recovery](sdk/docs/main-cli-zh.md#停止恢复与结果) (Chinese).
+**① Finish your first task.** Follow the quick start above, then inspect the delivered code and run its tests. Add files or images with `--inputs`, and use `run input` / `run respond` for follow-up requirements and answers. See [inputs](sdk/docs/project-inputs.md), [workspaces](sdk/examples/workspace-examples-en.md), and [pause and recovery](sdk/docs/main-cli.md#stop-recovery-and-results).
 
-**② Compose your own workflow.** Copy a workflow and edit its Agent roles, routes, completion criteria, and Loops. Use Git-on collaboration groups for isolated parallel work, and enable `orchestration.allowMainReconfiguration` when Main should evolve the process. The [authoring Skill](sdk/skills/scienceevolve-sdk/SKILL.md), [workflow reference](sdk/skills/scienceevolve-sdk/references/workflow.md), and [Loop guide](sdk/docs/workflow-loops-zh.md) explain these settings. Validate the configuration before starting it.
+**② Compose your own workflow.** Copy a workflow and edit its Agent roles, routes, completion criteria, and Loops. Use Git-on collaboration groups for isolated parallel work, and enable `orchestration.allowMainReconfiguration` when Main should evolve the process. The [authoring Skill](sdk/skills/scienceevolve-sdk/README_en.md), [workflow reference](sdk/skills/scienceevolve-sdk/references/workflow-en.md), and [Loop guide](sdk/docs/workflow-loops.md) explain these settings. Validate the configuration before starting it.
 
 ### Embed it in Node.js
 
@@ -221,7 +275,7 @@ try {
 }
 ```
 
-`wait()` also returns when a run is paused or interrupted; check `status` before accepting its result. For integration in another Node project, install the SDK there as a dependency. See the [package guide](sdk/README.md) and [API / lifecycle reference](sdk/skills/scienceevolve-sdk/references/usage.md#esm-api) (Chinese).
+`wait()` also returns when a run is paused or interrupted; check `status` before accepting its result. For integration in another Node project, install the SDK there as a dependency. See the [package guide](sdk/README.md) and [API / lifecycle reference](sdk/skills/scienceevolve-sdk/references/usage-en.md#esm-api).
 
 <a id="examples"></a>
 <a id="research-papers-and-method-examples"></a>
@@ -232,7 +286,7 @@ try {
 
 We implement or adapt workflow structures from published papers and open-source projects as ScienceEvolve configurations, including Agent roles, routing, and feedback loops. Credit belongs to the original authors; the table links the **original work, official project, and our implementation**.
 
-Choose from **23 workflows, including three introductory workflows**. Select a configuration and requirement from [example/](example/README.md), prepare its data, tools, and budget, and start it through the CLI or Node API.
+Choose from **23 workflows, including three introductory workflows**. Select a configuration and requirement from [example/](example/README_en.md), prepare its data, tools, and budget, and start it through the CLI or Node API.
 
 ### Start with three introductory workflows
 
@@ -280,7 +334,7 @@ These Web canvas screenshots from main illustrate the software and AHE workflow 
 
 </details>
 
-[Complete example index and startup instructions](example/README.md) · [Shared method sources](example/SOURCES.json)
+[Complete example index and startup instructions](example/README_en.md) · [Shared method sources](example/SOURCES.json)
 
 ## Built-in Skill sources and acknowledgements
 
@@ -306,21 +360,21 @@ The CCFA and Nature copies do not record import commits; their repository attrib
 
 ## Configure what you need
 
-Detailed guides below are in Chinese unless indicated otherwise.
+Detailed guides are available in English and Chinese. Use the language links at the top of each guide.
 
 <table>
 <thead>
 <tr><th align="left">Your task</th><th align="left">Guide</th></tr>
 </thead>
 <tbody>
-<tr><td align="left">Install, connect models, and set reasoning options</td><td align="left"><a href="sdk/docs/main-cli-zh.md#部署与启动">CLI and gateways</a> · <a href="sdk/README.md">Package guide</a></td></tr>
-<tr><td align="left">Change Harnesses or use native login</td><td align="left"><a href="sdk/docs/main-cli-zh.md#部署-json">Deployment</a> · <a href="sdk/docs/main-cli-zh.md#codex-原生-oauth-登录">Codex login</a> · <a href="sdk/docs/hermes-zh.md">Hermes</a></td></tr>
-<tr><td align="left">Define Agents, routes, Loops, and reconfiguration</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow.md">Workflow reference</a> · <a href="sdk/docs/workflow-loops-zh.md">Loops</a> · <a href="sdk/skills/scienceevolve-sdk/SKILL.md">Authoring Skill</a></td></tr>
-<tr><td align="left">Connect GitHub and run parallel collaboration</td><td align="left"><a href="sdk/docs/main-cli-zh.md#github-认证与-git-协作">GitHub authentication</a> · <a href="sdk/examples/main-runtime/workflow.json">Git-on v3 example</a></td></tr>
-<tr><td align="left">Provide inputs, choose workspaces, and deliver files</td><td align="left"><a href="sdk/docs/project-inputs-zh.md">Shared inputs</a> · <a href="sdk/examples/workspace-examples.md">Workspaces</a></td></tr>
-<tr><td align="left">Add Skills, MCP tools, or experiment platforms</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow.md#skills-与-mcp">Skills</a> · <a href="sdk/docs/project-mcp-zh.md">MCP</a> · <a href="sdk/docs/sii-experiments-zh.md">Inspire / SII</a></td></tr>
-<tr><td align="left">Integrate Node APIs, subscribe to events, and recover</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/usage.md#esm-api">API reference</a> · <a href="sdk/docs/main-cli-zh.md#停止恢复与结果">Pause and recovery</a></td></tr>
-<tr><td align="left">Develop the SDK, run tests, or upgrade a deployment</td><td align="left"><a href="docs/sdk/README.md#开发与测试">Development and tests</a> · <a href="sdk/docs/naming-migration.md">Naming migration</a> · <a href="sdk/docs/main-runtime-migration-zh.md">Runtime migration</a> · <a href="sdk/docs/main-sync-20261016-zh.md">Runtime updates</a></td></tr>
+<tr><td align="left">Install, connect models, and set reasoning options</td><td align="left"><a href="sdk/docs/main-cli.md#deployment-and-startup">CLI and gateways</a> · <a href="sdk/README.md">Package guide</a></td></tr>
+<tr><td align="left">Change Harnesses or use native login</td><td align="left"><a href="sdk/docs/main-cli.md#deployment-json">Deployment</a> · <a href="sdk/docs/main-cli.md#codex-native-oauth-login">Codex login</a> · <a href="sdk/docs/hermes.md">Hermes</a></td></tr>
+<tr><td align="left">Define Agents, routes, Loops, and reconfiguration</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow-en.md">Workflow reference</a> · <a href="sdk/docs/workflow-loops.md">Loops</a> · <a href="sdk/skills/scienceevolve-sdk/README_en.md">Authoring Skill</a></td></tr>
+<tr><td align="left">Connect GitHub and run parallel collaboration</td><td align="left"><a href="sdk/docs/main-cli.md#github-authentication-and-git-collaboration">GitHub authentication</a> · <a href="sdk/examples/main-runtime/workflow.json">Git-on v3 example</a></td></tr>
+<tr><td align="left">Provide inputs, choose workspaces, and deliver files</td><td align="left"><a href="sdk/docs/project-inputs.md">Shared inputs</a> · <a href="sdk/examples/workspace-examples-en.md">Workspaces</a></td></tr>
+<tr><td align="left">Add Skills, MCP tools, or experiment platforms</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow-en.md#skills-and-mcp">Skills</a> · <a href="sdk/docs/project-mcp.md">MCP</a> · <a href="sdk/docs/sii-experiments.md">Inspire / SII</a></td></tr>
+<tr><td align="left">Integrate Node APIs, subscribe to events, and recover</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/usage-en.md#esm-api">API reference</a> · <a href="sdk/docs/main-cli.md#stop-recovery-and-results">Pause and recovery</a></td></tr>
+<tr><td align="left">Develop the SDK, run tests, or upgrade a deployment</td><td align="left"><a href="docs/sdk/README_en.md#development-and-tests">Development and tests</a> · <a href="sdk/docs/naming-migration.md">Naming migration</a> · <a href="sdk/docs/main-runtime-migration.md">Runtime migration</a> · <a href="sdk/docs/main-sync-20261016.md">Runtime updates</a></td></tr>
 </tbody>
 </table>
 
@@ -333,9 +387,9 @@ Detailed guides below are in Chinese unless indicated otherwise.
 <tr><th align="left">Document</th><th align="left">Link</th></tr>
 </thead>
 <tbody>
-<tr><td align="left">Research workflows</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow.md">Main / Worker roles and reconfiguration</a> · <a href="sdk/docs/workflow-loops-zh.md">Loop settings</a></td></tr>
-<tr><td align="left">SDK integration</td><td align="left"><a href="sdk/README.md">Package guide</a> · <a href="sdk/skills/scienceevolve-sdk/references/usage.md#esm-api">Node API and lifecycle</a></td></tr>
-<tr><td align="left">Workflow examples and sources</td><td align="left"><a href="example/README.md">23 workflows and startup instructions</a> · <a href="example/SOURCES.json">Method sources</a></td></tr>
-<tr><td align="left">Inspire / SII</td><td align="left"><a href=".agents/skills/inspire/references/setup/install-and-config.md">CLI installation</a> · <a href="sdk/docs/sii-experiments-zh.md">SDK configuration</a></td></tr>
+<tr><td align="left">Research workflows</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow-en.md">Main / Worker roles and reconfiguration</a> · <a href="sdk/docs/workflow-loops.md">Loop settings</a></td></tr>
+<tr><td align="left">SDK integration</td><td align="left"><a href="sdk/README.md">Package guide</a> · <a href="sdk/skills/scienceevolve-sdk/references/usage-en.md#esm-api">Node API and lifecycle</a></td></tr>
+<tr><td align="left">Workflow examples and sources</td><td align="left"><a href="example/README_en.md">23 workflows and startup instructions</a> · <a href="example/SOURCES.json">Method sources</a></td></tr>
+<tr><td align="left">Inspire / SII</td><td align="left"><a href=".agents/skills/inspire/references/setup/install-and-config-en.md">CLI installation</a> · <a href="sdk/docs/sii-experiments.md">SDK configuration</a></td></tr>
 </tbody>
 </table>

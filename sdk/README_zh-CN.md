@@ -2,6 +2,8 @@
 
 [English](./README.md) | **简体中文**
 
+[← 返回仓库 README](../README_zh-CN.md)
+
 通过 Node.js 或命令行运行多 Agent 科研工作流，支持评审循环、Git 协作、流程演化、状态持久化与中断恢复。
 
 [源码仓库首页](https://github.com/OpenMOSS/ScienceEvolve/blob/main/README_zh-CN.md)提供快速开始、功能图、23 个源码工作流和上游致谢。
@@ -24,6 +26,14 @@ npm install -g /absolute/scienceevolve-sdk-0.1.1.tgz
 ```
 
 pi 随包提供；Codex、Claude Code、DSH 和 [Hermes](docs/hermes-zh.md) 按需安装。[配置编写 Skill](skills/scienceevolve-sdk/SKILL.md) 连同参考文档和模板随包交付，复制到编程 Agent 使用的 Skills 目录后新建会话即可使用。安装后的路径为 `node_modules/@scienceevolve/sdk/skills/scienceevolve-sdk`。
+
+## 科研方法技能库
+
+SDK 内置 **875 个科研方法 Skill，覆盖 12 个研究领域**，从 7 万余篇已发表论文中提炼，涵盖假设生成、研究设计、验证、证据分析与迭代。
+
+在工作流中，将所需技能的 `builtin:` ID 配置到目标 Agent 的 `skills` 或 `autoSkills`。构建时会将技能及完整目录一并打包到 `assets/skills`，沿用现有运行时加载与 Harness 能力校验。
+
+[科研方法技能库介绍](https://github.com/OpenMOSS/ScienceEvolve/blob/main/README_zh-CN.md#scientific-skills) · [完整技能目录](https://github.com/OpenMOSS/ScienceEvolve/blob/main/.agents/skills/README_zh-CN.md)
 
 ## 配置与启动
 
@@ -75,7 +85,7 @@ try {
 | 连接 GitHub 与并行协作 | [认证](docs/main-cli-zh.md#github-认证与-git-协作) · [Git-on v3 workflow](examples/main-runtime/workflow.json) |
 | 选择工作目录与输入文件 | [工作目录示例](examples/workspace-examples.md) · [共享材料](docs/project-inputs-zh.md) |
 | 接入 Skills、工具与实验平台 | [Skills](skills/scienceevolve-sdk/references/workflow.md#skills-与-mcp) · [MCP](docs/project-mcp-zh.md) · [Inspire / SII](docs/sii-experiments-zh.md) |
-| 升级现有部署 | [命名迁移](docs/naming-migration.md) · [运行时迁移](docs/main-runtime-migration-zh.md) |
+| 升级现有部署 | [命名迁移](docs/naming-migration-zh.md) · [运行时迁移](docs/main-runtime-migration-zh.md) |
 
 API 与 CLI 统一使用 main 内核，`@scienceevolve/sdk/main` / `--engine main` 保留为显式别名。legacy 引擎及其包入口已移除；已有旧运行数据需使用旧版本处理。
 

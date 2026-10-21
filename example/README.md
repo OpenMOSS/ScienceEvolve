@@ -1,5 +1,7 @@
 # Workflow 示例
 
+[← 返回 README](../README_zh-CN.md) · [English](README_en.md) | **简体中文**
+
 共 23 个示例，每个项目从 workflow.json 和 requirement.txt 启动。填写需求中的 Task、数据、工具和预算，按 [main CLI](../sdk/docs/main-cli-zh.md) 配置网关与模型推理选项。
 
 | 项目 | 编排 | 配置 | 需求 |

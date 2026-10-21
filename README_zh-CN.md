@@ -12,6 +12,7 @@
 <a href="#sdk"><img src="docs/readme/badges/sdk-zh.svg" alt="📦 SDK / CLI · TypeScript · API" height="26"></a>
 <a href="#quick-start"><img src="docs/readme/badges/quick-start-zh.svg" alt="🚀 快速开始 · 安装 · 连接 · 运行" height="26"></a>
 <a href="#features"><img src="docs/readme/badges/features-zh.svg" alt="✨ 功能场景 · 协作 · 迭代" height="26"></a>
+<a href="#scientific-skills"><img src="docs/readme/badges/skills-zh.svg" alt="🧠 科研技能 · 875 Skills · 12 个领域" height="26"></a>
 <a href="#dual-loops"><img src="docs/readme/badges/dual-loops-zh.svg" alt="🔄 双循环 · 任务 · 流程" height="26"></a>
 <a href="#tutorial"><img src="docs/readme/badges/tutorial-zh.svg" alt="📖 SDK 实操 · 项目 · 编排" height="26"></a>
 <a href="#examples"><img src="docs/readme/badges/examples-zh.svg" alt="🧪 工作流示例 · 23 个流程" height="26"></a>
@@ -51,7 +52,7 @@ ScienceEvolve 是论文 [Rethinking Scientific Discovery in the Agentic Era](htt
 
 <div align="center">
 
-![Task、Research Workflow 与 Evolver 之间的双循环：执行反馈改进任务，研究结果推动流程更新](docs/images/dual-loop.png)
+![外部进化：工作流外的 Evolver 根据最终研究结果生成新版 workflow.json，校验后应用更新](docs/images/dual-loop.png)
 
 </div>
 
@@ -59,7 +60,7 @@ ScienceEvolve 是论文 [Rethinking Scientific Discovery in the Agentic Era](htt
 
 <div align="center">
 
-![Evolver 位于研究工作流内部，利用任务与研究反馈修改 workflow.json，也可调整自身可编辑配置](docs/images/self-evolving-workflow.png)
+![内部自进化：工作流内的 Evolver 生成包含自身可编辑配置的新版 workflow.json，校验后应用更新](docs/images/self-evolving-workflow.png)
 
 </div>
 
@@ -128,6 +129,59 @@ System Runtime 保存项目状态、已完成进度和执行轨迹。可恢复�
 <img src="docs/readme/06-switch-tools-change-the-flow-zh.svg" alt="湍流模型比较中，用户更换 Harness、增加 Verifier，并加入理论与数据并行检查协作组" width="96%">
 
 </div>
+
+<a id="scientific-skills"></a>
+
+## 科研方法技能库：让 Agent 带着领域方法做研究
+
+**875 个 Skill · 12 个研究领域 · 从 7 万余篇已发表论文中提炼。**
+
+ScienceEvolve 内置一套科研方法技能库，覆盖假设生成、研究设计、实验验证、证据分析与迭代。为 Agent 配置职责、模型和工具的同时，也可以选择与课题相关的领域方法。
+
+每个 Skill 都包含**适用场景、所需输入、研究步骤、预期输出、验证条件、结论边界和失败处理**。工作流组织团队协作，Skill 则帮助每个成员具体开展科学研究。
+
+| 研究领域 | 技能数 |
+| :--- | :--- |
+| [抗体与免疫识别](.agents/skills/README_zh-CN.md#antibody-and-immune-recognition) | 111 |
+| [水系电池界面](.agents/skills/README_zh-CN.md#aqueous-battery-interfaces) | 92 |
+| [不对称催化](.agents/skills/README_zh-CN.md#asymmetric-catalysis) | 38 |
+| [染色质与表观基因组调控](.agents/skills/README_zh-CN.md#chromatin-and-epigenomic-regulation) | 39 |
+| [量子材料与凝聚态](.agents/skills/README_zh-CN.md#quantum-materials-and-condensed-matter) | 232 |
+| [纤维复合材料与电池材料](.agents/skills/README_zh-CN.md#fiber-composites-and-battery-materials) | 121 |
+| [星系、宇宙学与模拟](.agents/skills/README_zh-CN.md#galaxy-cosmology-and-simulations) | 57 |
+| [磁约束聚变](.agents/skills/README_zh-CN.md#magnetic-confinement-fusion) | 28 |
+| [神经形态计算与伊辛优化](.agents/skills/README_zh-CN.md#neuromorphic-computing-and-ising-optimization) | 41 |
+| [有机金属催化与 DFT](.agents/skills/README_zh-CN.md#organometallic-catalysis-and-dft) | 25 |
+| [聚合物复合材料与类玻璃高分子](.agents/skills/README_zh-CN.md#polymer-composites-and-vitrimers) | 60 |
+| [城市灾害韧性](.agents/skills/README_zh-CN.md#urban-hazard-resilience) | 31 |
+| **合计** | **875** |
+
+<details>
+<summary><strong>展开查看一个 Skill：不对称催化研究设计</strong></summary>
+
+[手性催化剂研究设计 Skill](.agents/skills/sci-catalysis-asymmetric-catalysis-chiral-catalyst-rese-1571cd89/SKILL.md) 引导 Agent 完成：
+
+> 定义研究问题 → 提出竞争假设 → 设计最小验证 → 分析证据 → 迭代或调整方向。
+
+它要求提供目标转化、已有证据、候选机制与可用分析手段，并在各阶段设置判断条件：证据无法区分假设时，重新设计验证；观测与机制不符时，修正假设。输出包括研究计划、对照、判定标准及有证据支持的结论边界。
+
+</details>
+
+**SDK 使用：** 在技能目录中选择所需 Skill，将其 `builtin:` ID 填入已有 Agent 的 `skills` 或 `autoSkills`。例如，在目标 Agent 配置中加入：
+
+```json
+{
+  "skills": [
+    "builtin:sci-catalysis-asymmetric-catalysis-chiral-catalyst-rese-1571cd89"
+  ]
+}
+```
+
+SDK 构建时将全部 875 个科研方法技能打包到 `assets/skills`，无需另行下载。固定技能在每次调用时加载；自动选择取决于所选 Harness 的支持。
+
+Main 获得工作流动态调整权限后，也可以随研究进展调整 Skill 配置。具体数据、工具与实际实验环境仍按课题配置。
+
+[浏览全部 875 个科研方法 Skill](.agents/skills/README_zh-CN.md)
 
 <a id="quick-start"></a>
 
@@ -318,7 +372,7 @@ CCFA 与 Nature 的内置副本未记录导入时的提交版本；上游仓库�
 <tr><td align="left">提供输入文件、选择工作目录、交付结果</td><td align="left"><a href="sdk/docs/project-inputs-zh.md">共享材料</a> · <a href="sdk/examples/workspace-examples.md">工作目录</a></td></tr>
 <tr><td align="left">接入 Skills、MCP 或实验平台</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow.md#skills-与-mcp">Skills</a> · <a href="sdk/docs/project-mcp-zh.md">MCP</a> · <a href="sdk/docs/sii-experiments-zh.md">Inspire / SII</a></td></tr>
 <tr><td align="left">集成 Node API、订阅事件与恢复任务</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/usage.md#esm-api">API 参考</a> · <a href="sdk/docs/main-cli-zh.md#停止恢复与结果">暂停与恢复</a></td></tr>
-<tr><td align="left">开发 SDK、运行测试、升级现有部署</td><td align="left"><a href="docs/sdk/README.md#开发与测试">开发与测试</a> · <a href="sdk/docs/naming-migration.md">命名迁移</a> · <a href="sdk/docs/main-runtime-migration-zh.md">运行时迁移</a> · <a href="sdk/docs/main-sync-20261016-zh.md">内核同步</a></td></tr>
+<tr><td align="left">开发 SDK、运行测试、升级现有部署</td><td align="left"><a href="docs/sdk/README.md#开发与测试">开发与测试</a> · <a href="sdk/docs/naming-migration-zh.md">命名迁移</a> · <a href="sdk/docs/main-runtime-migration-zh.md">运行时迁移</a> · <a href="sdk/docs/main-sync-20261016-zh.md">内核同步</a></td></tr>
 </tbody>
 </table>
 

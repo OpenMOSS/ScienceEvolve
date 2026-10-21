@@ -1,5 +1,7 @@
 # main 内核迁移：独立 SDK 宿主
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](main-runtime-migration.md) | **简体中文**
+
 > 历史记录：legacy 引擎及其 API/CLI 入口已移除。下文保留旧版本设计与验收事实；当前用法见 [CLI/API 手册](main-cli-zh.md)。
 
 当前默认内核基线：main `48e82cedd993d67f2379c36fade8973db63c74e8`。
@@ -99,7 +101,7 @@ OAuth 通知只接纳精确字段；工作流证据通过独立只读目录引�
 Windows 的安装包默认入口已完成普通 OAuth 及 Git-on scoped Evolver 的有界真实验收：
 prompt 修改、执行/审计、成员和最终 PR、集成导出、宿主实际测试及重开不重跑。
 结果和排障记录见 [本轮报告](main-oauth-git-evolver-default-test-report-20261005.md)。
-当前 Git-off example 使用 main，须显式指定独立 dataDir、Gateway 绑定和已有 workspace，见[统一示例部署](../../example/README.md)。调用方旧配置需更新，旧状态不自动迁移。跨平台和四 Harness 真实矩阵尚未验收。
+当前 Git-off example 使用 main，须显式指定独立 dataDir、Gateway 绑定和已有 workspace，见[统一示例部署](https://github.com/OpenMOSS/ScienceEvolve/blob/main/example/README.md)。调用方旧配置需更新，旧状态不自动迁移。跨平台和四 Harness 真实矩阵尚未验收。
 
 ## 显式 main API 使用方法
 

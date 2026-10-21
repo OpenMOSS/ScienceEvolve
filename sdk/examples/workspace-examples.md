@@ -1,5 +1,7 @@
 # 已有项目、重配置与并行 Git 示例
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](workspace-examples-en.md) | **简体中文**
+
 下面演示已有项目执行、工作流重配置和并行 Git 协作。使用当前 main 引擎，需要 Node.js 24+ 和已配置的模型网关。
 
 | 配置 | 场景 | 工作目录 |

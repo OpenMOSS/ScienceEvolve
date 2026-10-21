@@ -1,5 +1,7 @@
 # Hermes Harness
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](hermes.md) | **简体中文**
+
 默认 main 引擎支持 NousResearch/hermes-agent，标识为 `hermes`，与 Codex、Pi、DSH 使用同一注册表和运行接口。默认 Harness 为 Codex。
 
 ## 安装与配置

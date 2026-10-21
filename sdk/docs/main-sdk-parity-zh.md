@@ -1,8 +1,10 @@
 # main / SDK 功能一致性与宿主边界
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](main-sdk-parity.md) | **简体中文**
+
 > 历史记录：legacy 引擎及其 API/CLI 入口已移除。下文保留旧版本设计与验收事实；当前用法见 [CLI/API 手册](main-cli-zh.md)。
 
-当前宿主说明更新日期：2026-10-16。默认 SDK 与 CLI 使用固定 main 内核，旧 `/legacy` 引擎独立保留。当前来源为 `6bf6a7bb5b200e92511aa4010b7d5fc3711ed79b`，正式项目状态、Workflow 自动恢复、按需上下文和 Git 查询、撤销、交付机制已同步。宿主扩展和实际验证范围见 [2026-10-16 同步记录](main-sync-20261016-zh.md)；下方 2026-09-26 的 legacy 对齐表仅作历史记录。
+当前宿主说明更新日期：2026-10-16。默认 SDK 与 CLI 使用固定 main 内核；旧 `/legacy` 引擎已移除，下文旧接口仅作历史记录。当前来源为 `6bf6a7bb5b200e92511aa4010b7d5fc3711ed79b`，正式项目状态、Workflow 自动恢复、按需上下文和 Git 查询、撤销、交付机制已同步。宿主扩展和实际验证范围见 [2026-10-16 同步记录](main-sync-20261016-zh.md)；下方 2026-09-26 的 legacy 对齐表仅作历史记录。
 
 ## 当前默认 main 的宿主边界
 

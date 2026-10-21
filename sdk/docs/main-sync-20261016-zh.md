@@ -1,5 +1,7 @@
 # SDK 与 main 同步（2026-10-16）
 
+[← 返回 SDK README](../README_zh-CN.md) · [English](main-sync-20261016.md) | **简体中文**
+
 > 本文为当时版本的验收记录；当前版本已移除 legacy 引擎及相关测试。
 
 默认 SDK、`@scienceevolve/sdk/main` 和 CLI 的 main 内核从 `48e82ce` 同步到
