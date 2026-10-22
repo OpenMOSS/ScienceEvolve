@@ -21,7 +21,7 @@
     "harness-runtime/adapters/pi-mcp-extension.ts",
     "sleep-mcp.ts"
   ],
-  "sharedFixesSha256": "88fd6040ab108871f0cb8f7063bd36d8bbe76d738b5677687b7c72f5041fd5e8",
+  "sharedFixesSha256": "c15701ce8a13b2ce4f64e1743f84945359ce3ed43b77319e240dce6b128eae30",
   "brandingVersion": "scienceevolve-v1",
   "brandingSha256": "a8a98aff64705d1bec8f0071fc38608c0692f9e8a4d2230c9832fb530a038725",
   "runtimePins": {
@@ -105,7 +105,7 @@
       "configSha256": "ff4bd6f94e96b4da543ea245f3ae3d9db4545a43976619d497afb93a128281b8"
     }
   },
-  "runtimeRevision": "6bf6a7bb5b200e92511aa4010b7d5fc3711ed79b+a5562794b8de03db",
+  "runtimeRevision": "6bf6a7bb5b200e92511aa4010b7d5fc3711ed79b+576cb248b25549c9",
   "files": [
     {
       "source": "server/src/acceptance-controller.ts",
@@ -1600,9 +1600,11 @@
       "source": "server/src/skill-catalog.ts",
       "target": "src/core/skill-catalog.ts",
       "sourceSha256": "317171bedfbac4423bc381c07f76de93afe34d1d900681d3a86c476a74dd1a41",
-      "sharedFixes": [],
+      "sharedFixes": [
+        "shared-categorized-builtin-skill-discovery"
+      ],
       "brandingEdits": [],
-      "sha256": "317171bedfbac4423bc381c07f76de93afe34d1d900681d3a86c476a74dd1a41"
+      "sha256": "46daf11c293afc968428a93f21090960c67f11d14a6083caa1a7d979aa5a9b17"
     },
     {
       "source": "server/src/sleep-mcp.ts",

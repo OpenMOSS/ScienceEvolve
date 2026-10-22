@@ -98,3 +98,14 @@ it("copies manifest-declared native helpers and schemas without Git", async () =
   }
   await expect(fs.access(path.join(root, "sdk/dist/core/runtime.ts"))).rejects.toThrow();
 });
+
+it("preserves categorized general/scientific Skills in source-archive packaging", async () => {
+  const { output, write, run } = await fixture();
+  await write(".agents/skills/general/role/SKILL.md", "role instructions");
+  await write(".agents/skills/scientific/physics/method/SKILL.md", "method instructions");
+  await write(".agents/skills/scientific/physics/README.md", "method catalog");
+  await run();
+  expect(await fs.readFile(path.join(output, "general/role/SKILL.md"), "utf8")).toBe("role instructions");
+  expect(await fs.readFile(path.join(output, "scientific/physics/method/SKILL.md"), "utf8")).toBe("method instructions");
+  expect(await fs.readFile(path.join(output, "scientific/physics/README.md"), "utf8")).toBe("method catalog");
+});

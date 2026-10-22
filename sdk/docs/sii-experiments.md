@@ -22,7 +22,7 @@ try {
 }
 ```
 
-Node API paths must be absolute. CLI runtime-config accepts the same sii object; relative inspireBin, workspaceRoot, configPath, and knowledgeRoot resolve from its file directory. knowledgeRoot defaults to packaged assets/skills/inspire independently of custom skillRoots. Set it explicitly to override.
+Node API paths must be absolute. CLI runtime-config accepts the same sii object; relative inspireBin, workspaceRoot, configPath, and knowledgeRoot resolve from its file directory. knowledgeRoot defaults to packaged assets/skills/general/inspire independently of custom skillRoots. Set it explicitly to override.
 
 Install the native Inspire executable and complete CLI account login/configuration first. The SDK uses the CLI's existing account context; it stores no separate platform-password catalog and does not install, log in, or allocate resources automatically. Enabling the service creates no experiment. Agent operations still require user authorization. The asynchronous service invokes the specified CLI directly, without the old shell wrapper.
 

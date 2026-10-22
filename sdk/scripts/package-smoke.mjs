@@ -34,7 +34,7 @@ for (const moduleName of ["context-limit", "model-context", "gateway-tool-choice
     throw new Error(`Missing synced runtime module: ${moduleName}`);
   }
 }
-if (!metadata.files.some(({ path: file }) => file === "assets/skills/awesome-ai-research-writing-director/SKILL.md")) throw new Error("Missing builtin skill");
+if (!metadata.files.some(({ path: file }) => file === "assets/skills/general/awesome-ai-research-writing-director/SKILL.md")) throw new Error("Missing builtin skill");
 if (!metadata.files.some(({ path: file }) => file === "docs/config-field-audit.md")) throw new Error("Missing config field audit");
 if (!metadata.files.some(({ path: file }) => file === "docs/workflow-loops-zh.md")) throw new Error("Missing workflow loop documentation");
 if (!metadata.files.some(({ path: file }) => file === "docs/sdk-design-explained-zh.md")) throw new Error("Missing Chinese SDK design guide");
@@ -48,7 +48,7 @@ for (const file of ["dist/main-runtime.js", "dist/main-runtime.d.ts", "dist/core
   "dist/main-source-workspace.js", "dist/main-source-workspace.d.ts", "docs/main-source-workspace-test-report-20261005.md",
   "dist/main-project-inputs.js", "dist/main-project-inputs.d.ts", "docs/project-inputs-zh.md",
   "dist/core/sii-experiments.js", "dist/core/sii-experiments.d.ts", "docs/sii-experiments-zh.md",
-  "assets/skills/inspire/SKILL.md", "assets/skills/inspire/references/notebook.md",
+  "assets/skills/general/inspire/SKILL.md", "assets/skills/general/inspire/references/notebook.md",
   "dist/main-harness-gateway.js", "dist/main-harness-gateway.d.ts",
   "dist/main-native-profiles.js",
   "dist/core/control-mcp.js", "dist/core/resident-control-proxy.js", "dist/core/sleep-mcp.js",

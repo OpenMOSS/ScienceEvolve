@@ -41,23 +41,15 @@ export class SkillCatalog {
     const seenPaths = new Set<string>();
     for (let rootIndex = 0; rootIndex < this.roots.length; rootIndex += 1) {
       const root = this.roots[rootIndex]!;
-      let entries: import("node:fs").Dirent[];
-      try {
-        entries = await fs.readdir(root, { withFileTypes: true });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-        const skillPath = path.join(root, entry.name, "SKILL.md");
+      for await (const skillPath of discoverSkillFiles(root, rootIndex === 0)) {
+        const directoryName = path.basename(path.dirname(skillPath));
         try {
           const realPath = await fs.realpath(skillPath);
           if (seenPaths.has(realPath)) continue;
           const raw = await fs.readFile(realPath, "utf8");
           const metadata = parseFrontmatter(raw);
           const source = rootIndex === 0 ? "builtin" : "external";
-          const identityName = metadata.name || entry.name;
+          const identityName = metadata.name || directoryName;
           const name = metadata["scienceevolve-title"] || identityName;
           descriptors.push({
             id:
@@ -129,7 +121,7 @@ export class SkillCatalog {
     const selection = input.trim();
     if (!selection) throw new Error("Skill 输入不能为空");
     const catalog = await this.list(true);
-    const catalogSkill = findCatalogSkill(catalog, selection);
+    const catalogSkill = findCatalogSkill(catalog, selection, this.roots[0]);
     if (catalogSkill) return catalogSkill;
     return resolveSkillPath(selection);
   }
@@ -146,7 +138,7 @@ export class SkillCatalog {
         paths.push(projectSkills[selection]);
         continue;
       }
-      const catalogSkill = findCatalogSkill(catalog, selection);
+      const catalogSkill = findCatalogSkill(catalog, selection, this.roots[0]);
       const skill = catalogSkill ?? (await resolveSkillPath(selection));
       paths.push(skill.path);
     }
@@ -159,7 +151,7 @@ export class SkillCatalog {
   ): string[] {
     const paths: string[] = [];
     for (const selection of selected) {
-      const exact = findCatalogSkill(catalog, selection);
+      const exact = findCatalogSkill(catalog, selection, this.roots[0]);
       if (!exact) {
         throw new Error(`Unknown or ambiguous skill: ${selection}`);
       }
@@ -169,14 +161,54 @@ export class SkillCatalog {
   }
 }
 
+/** Categories are recursive only in the trusted builtin root. A Skill is a
+ * leaf: never scan its references/assets as additional installed Skills.
+ * Directory symlinks may expose a Skill, as before, but are never traversed. */
+async function* discoverSkillFiles(root: string, recursive: boolean): AsyncGenerator<string> {
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.name.startsWith(".")) continue;
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const directory = path.join(root, entry.name);
+    const skillPath = path.join(directory, "SKILL.md");
+    try {
+      if ((await fs.stat(skillPath)).isFile()) {
+        yield skillPath;
+        continue;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (recursive && entry.isDirectory()) yield* discoverSkillFiles(directory, true);
+  }
+}
+
 function findCatalogSkill(
   catalog: SkillDescriptor[],
-  selection: string
+  selection: string,
+  builtinRoot?: string
 ): SkillDescriptor | undefined {
   const exact = catalog.find(
     (skill) => skill.id === selection || skill.path === selection
   );
   if (exact) return exact;
+  // Preserve explicit paths saved before builtin Skills were categorized.
+  // IDs and names stay authoritative; only the old builtin leaf path is aliased.
+  if (builtinRoot && (path.isAbsolute(selection) || selection.startsWith("."))) {
+    const selectedPath = path.resolve(selection);
+    const legacy = catalog.find((skill) => {
+      if (skill.source !== "builtin") return false;
+      const directory = path.join(builtinRoot, path.basename(path.dirname(skill.path)));
+      return selectedPath === directory || selectedPath === path.join(directory, "SKILL.md");
+    });
+    if (legacy) return legacy;
+  }
   const named = catalog.filter((skill) => skill.name === selection);
   if (named.length === 1) return named[0];
   if (named.length > 1) {

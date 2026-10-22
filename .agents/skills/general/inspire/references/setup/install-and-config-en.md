@@ -1,6 +1,6 @@
 # Installation, configuration, and SII Proxy
 
-[← Back to README](../../../../../README.md) · **English** | [简体中文](install-and-config.md)
+[← Back to README](../../../../../../README.md) · **English** | [简体中文](install-and-config.md)
 
 This bundled guide covers installation, updates, accounts, project initialization, and local SII proxy setup. Consult the workload-specific manuals for notebooks, compute workloads, and resources. The installed CLI's help is authoritative for available commands.
 

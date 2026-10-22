@@ -29,7 +29,7 @@ The SDK bundles pi; install Codex, Claude Code, DSH, or [Hermes](docs/hermes.md)
 
 ## Scientific Skills
 
-The SDK includes **875 scientific method Skills across 12 research areas**, distilled from 70,000+ published papers. They cover hypothesis generation, research design, validation, evidence analysis, and iteration.
+The SDK organizes **21 general/platform Skills and 875 scientific method Skills across 12 research areas** under `general/` and `scientific/`, distilled from 70,000+ published papers. They cover hypothesis generation, research design, validation, evidence analysis, and iteration.
 
 Add the relevant `builtin:` Skill IDs to an Agent’s `skills` or `autoSkills` in its workflow configuration. The build includes the Skills and full catalog under `assets/skills`; loading uses the existing runtime and Harness capability checks.
 

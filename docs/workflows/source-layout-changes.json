@@ -131,6 +131,2566 @@
       "from": "research/todo-seven/ai-scientist-v2/workflow.draft.json",
       "to": "example/ai-scientist-v2/workflow.json",
       "reason": "Canonical example location or shared tooling/history relocation"
+    },
+    {
+      "from": ".agents/skills/awesome-ai-research-writing-director/SKILL.md",
+      "to": ".agents/skills/general/awesome-ai-research-writing-director/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/SKILL.md",
+      "to": ".agents/skills/general/ccf-common/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/agents/openai.yaml",
+      "to": ".agents/skills/general/ccf-common/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/artifact-contracts.md",
+      "to": ".agents/skills/general/ccf-common/references/artifact-contracts.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/ccf-a-venue-map.md",
+      "to": ".agents/skills/general/ccf-common/references/ccf-a-venue-map.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/ccfa-yaml-contract.md",
+      "to": ".agents/skills/general/ccf-common/references/ccfa-yaml-contract.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/handoff-modes.md",
+      "to": ".agents/skills/general/ccf-common/references/handoff-modes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/privacy-and-evidence.md",
+      "to": ".agents/skills/general/ccf-common/references/privacy-and-evidence.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/review-output-standards.md",
+      "to": ".agents/skills/general/ccf-common/references/review-output-standards.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/routing.md",
+      "to": ".agents/skills/general/ccf-common/references/routing.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/skill-trigger-registry.yaml",
+      "to": ".agents/skills/general/ccf-common/references/skill-trigger-registry.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/source-registry.yaml",
+      "to": ".agents/skills/general/ccf-common/references/source-registry.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/references/task-modes.md",
+      "to": ".agents/skills/general/ccf-common/references/task-modes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/scripts/check_markdown_links.py",
+      "to": ".agents/skills/general/ccf-common/scripts/check_markdown_links.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/scripts/check_path_privacy.py",
+      "to": ".agents/skills/general/ccf-common/scripts/check_path_privacy.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/scripts/check_sources.py",
+      "to": ".agents/skills/general/ccf-common/scripts/check_sources.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-common/scripts/check_v04.py",
+      "to": ".agents/skills/general/ccf-common/scripts/check_v04.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-experiment-designer/SKILL.md",
+      "to": ".agents/skills/general/ccf-experiment-designer/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-experiment-designer/agents/openai.yaml",
+      "to": ".agents/skills/general/ccf-experiment-designer/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-experiment-designer/references/evidence-design.md",
+      "to": ".agents/skills/general/ccf-experiment-designer/references/evidence-design.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-experiment-designer/references/result-templates.md",
+      "to": ".agents/skills/general/ccf-experiment-designer/references/result-templates.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-optimizer/SKILL.md",
+      "to": ".agents/skills/general/ccf-idea-optimizer/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-optimizer/agents/openai.yaml",
+      "to": ".agents/skills/general/ccf-idea-optimizer/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-optimizer/references/experiment-design.md",
+      "to": ".agents/skills/general/ccf-idea-optimizer/references/experiment-design.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-optimizer/references/frontier-ideation.md",
+      "to": ".agents/skills/general/ccf-idea-optimizer/references/frontier-ideation.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-optimizer/references/idea-intake.md",
+      "to": ".agents/skills/general/ccf-idea-optimizer/references/idea-intake.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-optimizer/references/problem-method-blueprint.md",
+      "to": ".agents/skills/general/ccf-idea-optimizer/references/problem-method-blueprint.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-optimizer/references/research-taste.md",
+      "to": ".agents/skills/general/ccf-idea-optimizer/references/research-taste.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-optimizer/references/source-notes.md",
+      "to": ".agents/skills/general/ccf-idea-optimizer/references/source-notes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-optimizer/references/venue-idea-adapters.md",
+      "to": ".agents/skills/general/ccf-idea-optimizer/references/venue-idea-adapters.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-reviewer/SKILL.md",
+      "to": ".agents/skills/general/ccf-idea-reviewer/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-reviewer/agents/openai.yaml",
+      "to": ".agents/skills/general/ccf-idea-reviewer/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-reviewer/references/calibration.md",
+      "to": ".agents/skills/general/ccf-idea-reviewer/references/calibration.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-reviewer/references/expert-panel.md",
+      "to": ".agents/skills/general/ccf-idea-reviewer/references/expert-panel.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-reviewer/references/rubric.md",
+      "to": ".agents/skills/general/ccf-idea-reviewer/references/rubric.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-reviewer/references/source-notes.md",
+      "to": ".agents/skills/general/ccf-idea-reviewer/references/source-notes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-idea-reviewer/references/strict-idea-review.md",
+      "to": ".agents/skills/general/ccf-idea-reviewer/references/strict-idea-review.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-literature-monitor/SKILL.md",
+      "to": ".agents/skills/general/ccf-literature-monitor/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-literature-monitor/agents/openai.yaml",
+      "to": ".agents/skills/general/ccf-literature-monitor/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-literature-monitor/references/monitoring-workflow.md",
+      "to": ".agents/skills/general/ccf-literature-monitor/references/monitoring-workflow.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-literature-monitor/references/report-template.md",
+      "to": ".agents/skills/general/ccf-literature-monitor/references/report-template.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-literature-searcher/SKILL.md",
+      "to": ".agents/skills/general/ccf-literature-searcher/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-literature-searcher/agents/openai.yaml",
+      "to": ".agents/skills/general/ccf-literature-searcher/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-literature-searcher/references/report-template.md",
+      "to": ".agents/skills/general/ccf-literature-searcher/references/report-template.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-literature-searcher/references/search-and-scoring.md",
+      "to": ".agents/skills/general/ccf-literature-searcher/references/search-and-scoring.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/SKILL.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/agents/openai.yaml",
+      "to": ".agents/skills/general/ccf-paper-reviewer/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/calibration-and-rank.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/calibration-and-rank.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/desk-checks.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/desk-checks.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/fixed-output-format.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/fixed-output-format.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/prose-quality-guardrails.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/prose-quality-guardrails.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/review-workflow.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/review-workflow.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/reviewer-panel.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/reviewer-panel.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/source-notes.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/source-notes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/universal-review-rubric.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/universal-review-rubric.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/venue-review-styles.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/venue-review-styles.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/writing-review/latex-format-audit.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/writing-review/latex-format-audit.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/writing-review/paragraph-review-protocol.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/writing-review/paragraph-review-protocol.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/writing-review/review-checklists.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/writing-review/review-checklists.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/writing-review/revision-actions.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/writing-review/revision-actions.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/writing-review/source-notes.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/writing-review/source-notes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-reviewer/references/writing-review/writing-review-rubric.md",
+      "to": ".agents/skills/general/ccf-paper-reviewer/references/writing-review/writing-review-rubric.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-to-exemplar/SKILL.md",
+      "to": ".agents/skills/general/ccf-paper-to-exemplar/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-to-exemplar/scripts/convert.py",
+      "to": ".agents/skills/general/ccf-paper-to-exemplar/scripts/convert.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/SKILL.md",
+      "to": ".agents/skills/general/ccf-paper-writer/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/agents/openai.yaml",
+      "to": ".agents/skills/general/ccf-paper-writer/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/ccf-a-venue-map.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/ccf-a-venue-map.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/citation-workflow.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/citation-workflow.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/compression-rules.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/compression-rules.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/custom-format/default-user-format.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/custom-format/default-user-format.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/custom-format/evaluation/self-test-default-custom-format.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/custom-format/evaluation/self-test-default-custom-format.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplar-style-analysis.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplar-style-analysis.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/aaai-2024-gxvaes.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/aaai-2024-gxvaes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/aaai-2025-every-bit-helps.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/aaai-2025-every-bit-helps.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/acl-2024-mission-impossible.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/acl-2024-mission-impossible.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/acl-2025-minilongbench.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/acl-2025-minilongbench.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/acmmm-2024-speaker-to-dubber.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/acmmm-2024-speaker-to-dubber.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/acmmm-2025-aff3dfunc.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/acmmm-2025-aff3dfunc.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/chi-2024-constrained-highlighting.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/chi-2024-constrained-highlighting.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/cvpr-2023-best-papers.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/cvpr-2023-best-papers.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/cvpr-2024-best-papers.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/cvpr-2024-best-papers.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/cvpr-2025-vggt-best-paper.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/cvpr-2025-vggt-best-paper.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/eccv-2022-partial-distance-correlation.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/eccv-2022-partial-distance-correlation.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/eccv-2024-minimalist-vision.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/eccv-2024-minimalist-vision.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/iccv-2023-passive-ultra-wideband.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/iccv-2023-passive-ultra-wideband.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/iccv-2025-brickgpt.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/iccv-2025-brickgpt.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/iclr-2024-outstanding-papers.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/iclr-2024-outstanding-papers.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/iclr-2025-outstanding-papers.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/iclr-2025-outstanding-papers.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/iclr-2026-outstanding-papers.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/iclr-2026-outstanding-papers.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/icml-2024-videopoet.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/icml-2024-videopoet.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/icml-2025-collabllm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/icml-2025-collabllm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/llava-4d.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/llava-4d.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/neurips-2024-var.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/neurips-2024-var.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/neurips-2025-1000-layer-ssl-rl.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/neurips-2025-1000-layer-ssl-rl.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/popl-2024-megalibm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/popl-2024-megalibm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/sigcomm-2024-l25gc-plus.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/sigcomm-2024-l25gc-plus.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/sigmod-2024-polardb-mp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/sigmod-2024-polardb-mp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/stoc-2024-theory-best-paper.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/stoc-2024-theory-best-paper.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/transformer-writing-style.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/transformer-writing-style.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/usenix-security-2024-inspectre-gadget.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/usenix-security-2024-inspectre-gadget.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/cards/vggt.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/cards/vggt.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/evaluation/self-test-dynamic-scene-memory.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/evaluation/self-test-dynamic-scene-memory.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/index.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/index.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/1706.03762.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/1706.03762.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/2212.09748.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/2212.09748.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/2305.10474.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/2305.10474.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/acl-2024-mission-impossible.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/acl-2024-mission-impossible.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/acl-2025-minilongbench.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/acl-2025-minilongbench.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/acmmm-2024-speaker-to-dubber.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/acmmm-2024-speaker-to-dubber.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/acmmm-2025-aff3dfunc.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/acmmm-2025-aff3dfunc.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/cvpr-2023-planning-oriented-ad.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/cvpr-2023-planning-oriented-ad.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/cvpr-2023-visual-programming.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/cvpr-2023-visual-programming.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/cvpr-2024-generative-image-dynamics.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/cvpr-2024-generative-image-dynamics.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/cvpr-2024-rich-human-feedback.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/cvpr-2024-rich-human-feedback.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/cvpr-2025-vggt.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/cvpr-2025-vggt.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/eccv-2022-partial-distance-correlation.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/eccv-2022-partial-distance-correlation.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/eccv-2024-minimalist-vision.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/eccv-2024-minimalist-vision.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iccv-2023-passive-ultra-wideband.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iccv-2023-passive-ultra-wideband.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iccv-2025-brickgpt.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iccv-2025-brickgpt.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2024-generalization-diffusion.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2024-generalization-diffusion.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2024-learning-interactive-sim.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2024-learning-interactive-sim.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2024-never-train-from-scratch.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2024-never-train-from-scratch.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2024-protein-discovery.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2024-protein-discovery.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2024-vision-transformers-registers.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2024-vision-transformers-registers.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2025-alphaedit.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2025-alphaedit.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2025-learning-dynamics-llm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2025-learning-dynamics-llm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2025-safety-alignment.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2025-safety-alignment.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2026-llms-lost-multi-turn.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2026-llms-lost-multi-turn.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/iclr-2026-transformers-succinct.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/iclr-2026-transformers-succinct.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/icml-2024-videopoet.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/icml-2024-videopoet.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/icml-2025-collabllm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/icml-2025-collabllm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/llava-4d.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/llava-4d.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/neurips-2017-transformer.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/neurips-2017-transformer.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/neurips-2024-var.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/neurips-2024-var.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/exemplars/papers/neurips-2025-1000-layer-ssl-rl.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/exemplars/papers/neurips-2025-1000-layer-ssl-rl.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/expert-review-loop.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/expert-review-loop.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/length-budget-policy.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/length-budget-policy.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/output-style-policy.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/output-style-policy.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/prose-quality-guardrails.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/prose-quality-guardrails.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/research-writing-patterns.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/research-writing-patterns.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/score-lifting-loop.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/score-lifting-loop.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/section-modules.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/section-modules.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/source-notes.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/source-notes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/storyline-blueprint.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/storyline-blueprint.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/table-style-guide.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/table-style-guide.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-adapters.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-adapters.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/aaai.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/aaai.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/acl.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/acl.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/acmmm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/acmmm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ase.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ase.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/asplos.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/asplos.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/bibm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/bibm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/cade.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/cade.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/cav.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/cav.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ccc.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ccc.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ccs.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ccs.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ches.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ches.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/chi.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/chi.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/cikm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/cikm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/cluster.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/cluster.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/coling.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/coling.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/concur.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/concur.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/conext.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/conext.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/crypto.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/crypto.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/cscw.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/cscw.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/cvpr.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/cvpr.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/dac.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/dac.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/dasfaa.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/dasfaa.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/date.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/date.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/eccv.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/eccv.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ecml-pkdd.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ecml-pkdd.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ecoop.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ecoop.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/emnlp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/emnlp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/esa.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/esa.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/eurocrypt.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/eurocrypt.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/eurosys.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/eurosys.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/fast.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/fast.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/fm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/fm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/focs.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/focs.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/fse.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/fse.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/hotnets.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/hotnets.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/hotstorage.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/hotstorage.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/hpca.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/hpca.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icalp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icalp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icassp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icassp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/iccad.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/iccad.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/iccd.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/iccd.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/iccv.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/iccv.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icdcs.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icdcs.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icde.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icde.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icdm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icdm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icfp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icfp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/iclr.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/iclr.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icme.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icme.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icml.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icml.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icpp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icpp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icpr.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icpr.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icra.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icra.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ics.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ics.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/icse.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/icse.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ieee-sp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ieee-sp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ijcai.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ijcai.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/imc.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/imc.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/index.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/index.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/infocom.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/infocom.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ipdps.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ipdps.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/isca.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/isca.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/iscas.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/iscas.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ismb.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ismb.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/issta.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/issta.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/lics.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/lics.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/miccai.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/miccai.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/micro.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/micro.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/mobicom.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/mobicom.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/mobisys.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/mobisys.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/msst.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/msst.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/naacl.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/naacl.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ndss.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ndss.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/neurips.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/neurips.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/nsdi.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/nsdi.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/oopsla.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/oopsla.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/osdi.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/osdi.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/percom.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/percom.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/pkc.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/pkc.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/pldi.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/pldi.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/pods.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/pods.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/popl.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/popl.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ppopp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ppopp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/raid.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/raid.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/recomb.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/recomb.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/rtas.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/rtas.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/rtss.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/rtss.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/sas.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/sas.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/sc.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/sc.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/sensys.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/sensys.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/sigcomm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/sigcomm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/siggraph.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/siggraph.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/sigir.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/sigir.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/sigkdd.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/sigkdd.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/sigmetrics.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/sigmetrics.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/sigmod.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/sigmod.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/socc.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/socc.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/socg.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/socg.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/sosp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/sosp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/stoc.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/stoc.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/tcc.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/tcc.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/ubicomp.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/ubicomp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/uist.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/uist.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/usenix-security.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/usenix-security.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/vee.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/vee.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/vldb.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/vldb.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/vmcai.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/vmcai.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/vr.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/vr.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/wine.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/wine.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/wsdm.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/wsdm.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/venue-guides/www.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/venue-guides/www.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/references/writing-checklists.md",
+      "to": ".agents/skills/general/ccf-paper-writer/references/writing-checklists.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-paper-writer/scripts/convert_pdf_to_card.py",
+      "to": ".agents/skills/general/ccf-paper-writer/scripts/convert_pdf_to_card.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-visual-composer/SKILL.md",
+      "to": ".agents/skills/general/ccf-visual-composer/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-visual-composer/agents/openai.yaml",
+      "to": ".agents/skills/general/ccf-visual-composer/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-visual-composer/references/figure-table-layout.md",
+      "to": ".agents/skills/general/ccf-visual-composer/references/figure-table-layout.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-visual-composer/references/palette-and-accessibility.md",
+      "to": ".agents/skills/general/ccf-visual-composer/references/palette-and-accessibility.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-visual-composer/references/plot-inspiration-map.md",
+      "to": ".agents/skills/general/ccf-visual-composer/references/plot-inspiration-map.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-visual-composer/references/python-plot-recipes.md",
+      "to": ".agents/skills/general/ccf-visual-composer/references/python-plot-recipes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-visual-composer/references/render-qa.md",
+      "to": ".agents/skills/general/ccf-visual-composer/references/render-qa.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-visual-composer/references/visual-contract.md",
+      "to": ".agents/skills/general/ccf-visual-composer/references/visual-contract.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/ccf-visual-composer/resources/python/ccfa_plot_recipes.py",
+      "to": ".agents/skills/general/ccf-visual-composer/resources/python/ccfa_plot_recipes.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/experiment-runner/SKILL.md",
+      "to": ".agents/skills/general/experiment-runner/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/iclr-reviewer/SKILL.md",
+      "to": ".agents/skills/general/iclr-reviewer/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/idea-agent/SKILL.md",
+      "to": ".agents/skills/general/idea-agent/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/SKILL.md",
+      "to": ".agents/skills/general/inspire/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/agents/openai.yaml",
+      "to": ".agents/skills/general/inspire/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/compute-workloads.md",
+      "to": ".agents/skills/general/inspire/references/compute-workloads.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/dev/browser-api.md",
+      "to": ".agents/skills/general/inspire/references/dev/browser-api.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/image-management.md",
+      "to": ".agents/skills/general/inspire/references/image-management.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/model.md",
+      "to": ".agents/skills/general/inspire/references/model.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/network-and-sources.md",
+      "to": ".agents/skills/general/inspire/references/network-and-sources.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/notebook.md",
+      "to": ".agents/skills/general/inspire/references/notebook.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/paths.md",
+      "to": ".agents/skills/general/inspire/references/paths.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/resources-and-paths.md",
+      "to": ".agents/skills/general/inspire/references/resources-and-paths.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/setup/install-and-config.md",
+      "to": ".agents/skills/general/inspire/references/setup/install-and-config.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/inspire/references/workflows.md",
+      "to": ".agents/skills/general/inspire/references/workflows.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/latex-writer/SKILL.md",
+      "to": ".agents/skills/general/latex-writer/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/.gitignore",
+      "to": ".agents/skills/general/nature-figure/.gitignore",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/README.md",
+      "to": ".agents/skills/general/nature-figure/README.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/README_EN.md",
+      "to": ".agents/skills/general/nature-figure/README_EN.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/SKILL.md",
+      "to": ".agents/skills/general/nature-figure/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-01-bar-charts.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-01-bar-charts.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-02-line-trends.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-02-line-trends.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-03-heatmaps.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-03-heatmaps.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-04-scatter-bubble.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-04-scatter-bubble.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-05-radar-polar.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-05-radar-polar.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-06-distributions.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-06-distributions.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-07-forest-interval.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-07-forest-interval.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-08-area-stacked.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-08-area-stacked.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-09-image-plates.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-09-image-plates.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/chart-atlas/atlas-10-network-matrix.png",
+      "to": ".agents/skills/general/nature-figure/assets/chart-atlas/atlas-10-network-matrix.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/assets/Dispersion_motivation.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/assets/Dispersion_motivation.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/assets/Dispersion_observation.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/assets/Dispersion_observation.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/assets/Dispersion_observation_distillation.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/assets/Dispersion_observation_distillation.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/assets/ImmunoStruct_contrastive.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/assets/ImmunoStruct_contrastive.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/assets/ImmunoStruct_results_CEDAR.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/assets/ImmunoStruct_results_CEDAR.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/assets/ImmunoStruct_results_IEDB.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/assets/ImmunoStruct_results_IEDB.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/assets/ImmunoStruct_schematic.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/assets/ImmunoStruct_schematic.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/assets/RNAGenScape_schematic.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/assets/RNAGenScape_schematic.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_CellSpliceNet/figures/ablation.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_CellSpliceNet/figures/ablation.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_CellSpliceNet/figures/comparison.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_CellSpliceNet/figures/comparison.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_CellSpliceNet/figures/comparison_human.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_CellSpliceNet/figures/comparison_human.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_CellSpliceNet/figures/comparison_worm.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_CellSpliceNet/figures/comparison_worm.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_CellSpliceNet/plot_ablation.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_CellSpliceNet/plot_ablation.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_CellSpliceNet/plot_comparison.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_CellSpliceNet/plot_comparison.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_CellSpliceNet/plot_comparison_cross_species.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_CellSpliceNet/plot_comparison_cross_species.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/diffusion_swiss_roll.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/diffusion_swiss_roll.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/figures/diffusion_swiss_roll.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/figures/diffusion_swiss_roll.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/figures/fig2_comparison_GeneRegulatory.pdf",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/figures/fig2_comparison_GeneRegulatory.pdf",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/figures/fig2_comparison_GeneRegulatory.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/figures/fig2_comparison_GeneRegulatory.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/figures/fig2_comparison_Trajectory.pdf",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/figures/fig2_comparison_Trajectory.pdf",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/figures/fig2_comparison_Trajectory.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/figures/fig2_comparison_Trajectory.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/figures/figX_comparison_Ablation.pdf",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/figures/figX_comparison_Ablation.pdf",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/figures/figX_comparison_Ablation.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/figures/figX_comparison_Ablation.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/plot_comparison_Ablation.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/plot_comparison_Ablation.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/plot_comparison_GeneRegulatory.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/plot_comparison_GeneRegulatory.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Cflows/plot_comparison_Trajectory.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Cflows/plot_comparison_Trajectory.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Dispersion/figures/idea.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Dispersion/figures/idea.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Dispersion/figures/illustration.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Dispersion/figures/illustration.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Dispersion/plot_idea.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Dispersion/plot_idea.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_Dispersion/plot_illustration.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_Dispersion/plot_illustration.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_FPGM/figures/freq_prior.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_FPGM/figures/freq_prior.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_FPGM/plot_freq_prior.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_FPGM/plot_freq_prior.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ImmunoStruct/figures/bars_ablation_Cancer.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ImmunoStruct/figures/bars_ablation_Cancer.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ImmunoStruct/figures/bars_ablation_IEDB.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ImmunoStruct/figures/bars_ablation_IEDB.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ImmunoStruct/figures/bars_comparison_Cancer.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ImmunoStruct/figures/bars_comparison_Cancer.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ImmunoStruct/figures/bars_comparison_IEDB.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ImmunoStruct/figures/bars_comparison_IEDB.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ImmunoStruct/plot_bars.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ImmunoStruct/plot_bars.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ImmunoStruct/raw_data.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ImmunoStruct/raw_data.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/manifold.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/manifold.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/manifold_holes.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/manifold_holes.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/results_comparison_optimization.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/results_comparison_optimization.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/results_comparison_speed.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/results_comparison_speed.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/results_sweep.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_RNAGenScape/figures/results_sweep.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_RNAGenScape/plot_comparison.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_RNAGenScape/plot_comparison.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_RNAGenScape/plot_hole_manifold.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_RNAGenScape/plot_hole_manifold.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_RNAGenScape/plot_manifold.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_RNAGenScape/plot_manifold.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_RNAGenScape/plot_sweep.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_RNAGenScape/plot_sweep.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_VIGIL/figures/ablation_curves.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_VIGIL/figures/ablation_curves.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_VIGIL/figures/comparison_posttraining.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_VIGIL/figures/comparison_posttraining.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_VIGIL/figures/comparison_radar.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_VIGIL/figures/comparison_radar.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_VIGIL/figures/concept.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_VIGIL/figures/concept.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_VIGIL/plot_ablation.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_VIGIL/plot_ablation.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_VIGIL/plot_comparison_radar.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_VIGIL/plot_comparison_radar.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_VIGIL/plot_concept.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_VIGIL/plot_concept.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_VIGIL/plot_posttraining.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_VIGIL/plot_posttraining.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/figures/brute_force.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/figures/brute_force.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/figures/correctness_by_category.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/figures/correctness_by_category.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/figures/correctness_by_subcategory.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/figures/correctness_by_subcategory.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/figures/rewriting.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/figures/rewriting.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/figures/selfcorrection_math.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/figures/selfcorrection_math.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/plot_brute_force.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/plot_brute_force.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/plot_correctness_by_category.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/plot_correctness_by_category.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/plot_correctness_by_subcategory.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/plot_correctness_by_subcategory.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/plot_rewriting.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/plot_rewriting.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_brainteaser/plot_selfcorrection_math.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_brainteaser/plot_selfcorrection_math.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ophthal_review/figures/composition_heatmap.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ophthal_review/figures/composition_heatmap.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ophthal_review/figures/trend_by_month.png",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ophthal_review/figures/trend_by_month.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ophthal_review/plot_composition.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ophthal_review/plot_composition.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/figures4papers/figure_ophthal_review/plot_trend.py",
+      "to": ".agents/skills/general/nature-figure/assets/figures4papers/figure_ophthal_review/plot_trend.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/gallery/fig1-material-mechanism-rich.png",
+      "to": ".agents/skills/general/nature-figure/assets/gallery/fig1-material-mechanism-rich.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/gallery/fig2-spatial-imaging-rich.png",
+      "to": ".agents/skills/general/nature-figure/assets/gallery/fig2-spatial-imaging-rich.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/gallery/fig3-in-vivo-efficacy-rich.png",
+      "to": ".agents/skills/general/nature-figure/assets/gallery/fig3-in-vivo-efficacy-rich.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/gallery/fig4-single-cell-systems-rich.png",
+      "to": ".agents/skills/general/nature-figure/assets/gallery/fig4-single-cell-systems-rich.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/assets/gallery/fig5-validation-perturbation-rich.png",
+      "to": ".agents/skills/general/nature-figure/assets/gallery/fig5-validation-perturbation-rich.png",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/evals/evals.json",
+      "to": ".agents/skills/general/nature-figure/evals/evals.json",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/manifest.yaml",
+      "to": ".agents/skills/general/nature-figure/manifest.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/api.md",
+      "to": ".agents/skills/general/nature-figure/references/api.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/asset-adaptation.md",
+      "to": ".agents/skills/general/nature-figure/references/asset-adaptation.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/backend-selection.md",
+      "to": ".agents/skills/general/nature-figure/references/backend-selection.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/chart-types.md",
+      "to": ".agents/skills/general/nature-figure/references/chart-types.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/common-patterns.md",
+      "to": ".agents/skills/general/nature-figure/references/common-patterns.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/demos.md",
+      "to": ".agents/skills/general/nature-figure/references/demos.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/design-theory.md",
+      "to": ".agents/skills/general/nature-figure/references/design-theory.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/figure-contract.md",
+      "to": ".agents/skills/general/nature-figure/references/figure-contract.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/figure-legend-conventions.md",
+      "to": ".agents/skills/general/nature-figure/references/figure-legend-conventions.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/nature-2026-observations.md",
+      "to": ".agents/skills/general/nature-figure/references/nature-2026-observations.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/openrouter-image-generation.md",
+      "to": ".agents/skills/general/nature-figure/references/openrouter-image-generation.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/qa-contract.md",
+      "to": ".agents/skills/general/nature-figure/references/qa-contract.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/r-template-index.md",
+      "to": ".agents/skills/general/nature-figure/references/r-template-index.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/r-workflow.md",
+      "to": ".agents/skills/general/nature-figure/references/r-workflow.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/template-catalog.md",
+      "to": ".agents/skills/general/nature-figure/references/template-catalog.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/references/tutorials.md",
+      "to": ".agents/skills/general/nature-figure/references/tutorials.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/scripts/generate_openrouter_schematic.py",
+      "to": ".agents/skills/general/nature-figure/scripts/generate_openrouter_schematic.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/scripts/nature_figure_backend.py",
+      "to": ".agents/skills/general/nature-figure/scripts/nature_figure_backend.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/scripts/plot_templates.py",
+      "to": ".agents/skills/general/nature-figure/scripts/plot_templates.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/scripts/validate_figure.py",
+      "to": ".agents/skills/general/nature-figure/scripts/validate_figure.py",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/static/core/contract.md",
+      "to": ".agents/skills/general/nature-figure/static/core/contract.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/static/core/stance.md",
+      "to": ".agents/skills/general/nature-figure/static/core/stance.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/static/fragments/backend/python.md",
+      "to": ".agents/skills/general/nature-figure/static/fragments/backend/python.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-figure/static/fragments/backend/r.md",
+      "to": ".agents/skills/general/nature-figure/static/fragments/backend/r.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/README.md",
+      "to": ".agents/skills/general/nature-polishing/README.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/README_EN.md",
+      "to": ".agents/skills/general/nature-polishing/README_EN.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/SKILL.md",
+      "to": ".agents/skills/general/nature-polishing/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/manifest.yaml",
+      "to": ".agents/skills/general/nature-polishing/manifest.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/references/latex-layout.md",
+      "to": ".agents/skills/general/nature-polishing/references/latex-layout.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/references/nat-comms-2025-diction.md",
+      "to": ".agents/skills/general/nature-polishing/references/nat-comms-2025-diction.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/references/phrasebank-playbook.md",
+      "to": ".agents/skills/general/nature-polishing/references/phrasebank-playbook.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/references/published-article-patterns.md",
+      "to": ".agents/skills/general/nature-polishing/references/published-article-patterns.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/references/section-moves.md",
+      "to": ".agents/skills/general/nature-polishing/references/section-moves.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/references/style-guardrails.md",
+      "to": ".agents/skills/general/nature-polishing/references/style-guardrails.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/references/writing-strategy.md",
+      "to": ".agents/skills/general/nature-polishing/references/writing-strategy.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/core/failure-modes.md",
+      "to": ".agents/skills/general/nature-polishing/static/core/failure-modes.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/core/output-format.md",
+      "to": ".agents/skills/general/nature-polishing/static/core/output-format.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/core/stance.md",
+      "to": ".agents/skills/general/nature-polishing/static/core/stance.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/journal/generic.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/journal/generic.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/journal/nat-comms.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/journal/nat-comms.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/journal/nature.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/journal/nature.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/language/en.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/language/en.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/language/zh-to-en.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/language/zh-to-en.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/paper_type/algorithmic.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/paper_type/algorithmic.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/paper_type/hypothesis.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/paper_type/hypothesis.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/paper_type/methods.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/paper_type/methods.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/paper_type/research.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/paper_type/research.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/paper_type/review.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/paper_type/review.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/section/abstract.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/section/abstract.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/section/conclusion.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/section/conclusion.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/section/discussion.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/section/discussion.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/section/intro.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/section/intro.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/section/methods.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/section/methods.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/section/results.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/section/results.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-polishing/static/fragments/section/title.md",
+      "to": ".agents/skills/general/nature-polishing/static/fragments/section/title.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-shared/README.md",
+      "to": ".agents/skills/general/nature-shared/README.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-shared/README_EN.md",
+      "to": ".agents/skills/general/nature-shared/README_EN.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-shared/SKILL.md",
+      "to": ".agents/skills/general/nature-shared/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-shared/core/ethics.md",
+      "to": ".agents/skills/general/nature-shared/core/ethics.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-shared/core/paper-type-taxonomy.md",
+      "to": ".agents/skills/general/nature-shared/core/paper-type-taxonomy.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-shared/core/reader-workflow.md",
+      "to": ".agents/skills/general/nature-shared/core/reader-workflow.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-shared/core/terminology-ledger.md",
+      "to": ".agents/skills/general/nature-shared/core/terminology-ledger.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-shared/journal-formats/nat-comms.md",
+      "to": ".agents/skills/general/nature-shared/journal-formats/nat-comms.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-shared/manifest.yaml",
+      "to": ".agents/skills/general/nature-shared/manifest.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/README.md",
+      "to": ".agents/skills/general/nature-writing/README.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/README_EN.md",
+      "to": ".agents/skills/general/nature-writing/README_EN.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/SKILL.md",
+      "to": ".agents/skills/general/nature-writing/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/agents/openai.yaml",
+      "to": ".agents/skills/general/nature-writing/agents/openai.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/manifest.yaml",
+      "to": ".agents/skills/general/nature-writing/manifest.yaml",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/abstract.md",
+      "to": ".agents/skills/general/nature-writing/references/abstract.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/article-architecture.md",
+      "to": ".agents/skills/general/nature-writing/references/article-architecture.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/chinese-author-workflow.md",
+      "to": ".agents/skills/general/nature-writing/references/chinese-author-workflow.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/conclusion.md",
+      "to": ".agents/skills/general/nature-writing/references/conclusion.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/abstract-examples.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/abstract-examples.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/abstract/template-a.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/abstract/template-a.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/abstract/template-b.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/abstract/template-b.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/abstract/template-c.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/abstract/template-c.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/index.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/index.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction-examples.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction-examples.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/novel-task-challenge-decomposition.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/novel-task-challenge-decomposition.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/pipeline-not-recommended-abstract-only.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/pipeline-not-recommended-abstract-only.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/pipeline-version-1-one-contribution-multi-advantages.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/pipeline-version-1-one-contribution-multi-advantages.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/pipeline-version-2-two-contributions.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/pipeline-version-2-two-contributions.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/pipeline-version-3-new-module-on-existing-pipeline.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/pipeline-version-3-new-module-on-existing-pipeline.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/pipeline-version-4-observation-driven.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/pipeline-version-4-observation-driven.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/technical-challenge-version-1-existing-task.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/technical-challenge-version-1-existing-task.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/technical-challenge-version-2-existing-task-insight-backed-by-traditional.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/technical-challenge-version-2-existing-task-insight-backed-by-traditional.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/technical-challenge-version-3-novel-task.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/technical-challenge-version-3-novel-task.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/version-1-task-then-application.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/version-1-task-then-application.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/version-2-application-first.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/version-2-application-first.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/version-3-general-to-specific-setting.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/version-3-general-to-specific-setting.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/introduction/version-4-open-with-challenge.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/introduction/version-4-open-with-challenge.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method-examples.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method-examples.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method/example-of-the-three-elements.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method/example-of-the-three-elements.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method/method-writing-common-issues-note.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method/method-writing-common-issues-note.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method/module-design-instant-ngp.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method/module-design-instant-ngp.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method/module-motivation-patterns.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method/module-motivation-patterns.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method/module-triad-neural-body.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method/module-triad-neural-body.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method/neural-body-annotated-figure-text.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method/neural-body-annotated-figure-text.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method/overview-template.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method/overview-template.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method/pre-writing-questions.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method/pre-writing-questions.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/examples/method/section-skeleton.md",
+      "to": ".agents/skills/general/nature-writing/references/examples/method/section-skeleton.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/experiments.md",
+      "to": ".agents/skills/general/nature-writing/references/experiments.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/introduction.md",
+      "to": ".agents/skills/general/nature-writing/references/introduction.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/method.md",
+      "to": ".agents/skills/general/nature-writing/references/method.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/nat-comms-2025-corpus.md",
+      "to": ".agents/skills/general/nature-writing/references/nat-comms-2025-corpus.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/nature-summary-paragraph.md",
+      "to": ".agents/skills/general/nature-writing/references/nature-summary-paragraph.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/paper-review.md",
+      "to": ".agents/skills/general/nature-writing/references/paper-review.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/paragraph-flow.md",
+      "to": ".agents/skills/general/nature-writing/references/paragraph-flow.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/related-work.md",
+      "to": ".agents/skills/general/nature-writing/references/related-work.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/references/submission-package.md",
+      "to": ".agents/skills/general/nature-writing/references/submission-package.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/core/output-format.md",
+      "to": ".agents/skills/general/nature-writing/static/core/output-format.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/core/stance.md",
+      "to": ".agents/skills/general/nature-writing/static/core/stance.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/core/workflow.md",
+      "to": ".agents/skills/general/nature-writing/static/core/workflow.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/journal/generic.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/journal/generic.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/journal/nat-comms.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/journal/nat-comms.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/journal/nature.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/journal/nature.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/language/en.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/language/en.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/language/zh-to-en.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/language/zh-to-en.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/paper_type/algorithmic.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/paper_type/algorithmic.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/paper_type/hypothesis.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/paper_type/hypothesis.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/paper_type/methods.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/paper_type/methods.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/paper_type/research.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/paper_type/research.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/paper_type/review.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/paper_type/review.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/section/abstract.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/section/abstract.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/section/conclusion.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/section/conclusion.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/section/discussion.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/section/discussion.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/section/experiments.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/section/experiments.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/section/intro.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/section/intro.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/section/method.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/section/method.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/section/related-work.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/section/related-work.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/section/title.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/section/title.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/task/manuscript.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/task/manuscript.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/static/fragments/task/submission-package.md",
+      "to": ".agents/skills/general/nature-writing/static/fragments/task/submission-package.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/templates/submission/declarations-and-reviewers.tex",
+      "to": ".agents/skills/general/nature-writing/templates/submission/declarations-and-reviewers.tex",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/templates/submission/highlights-and-summary.tex",
+      "to": ".agents/skills/general/nature-writing/templates/submission/highlights-and-summary.tex",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/templates/submission/initial-cover-letter.tex",
+      "to": ".agents/skills/general/nature-writing/templates/submission/initial-cover-letter.tex",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/nature-writing/templates/submission/title-page.tex",
+      "to": ".agents/skills/general/nature-writing/templates/submission/title-page.tex",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": ".agents/skills/research-director/SKILL.md",
+      "to": ".agents/skills/general/research-director/SKILL.md",
+      "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
     }
   ],
   "removals": [

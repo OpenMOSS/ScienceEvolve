@@ -1,3 +1,5 @@
+<a id="top"></a>
+
 <h1 align="center">ScienceEvolve</h1>
 
 <p align="center">
@@ -5,14 +7,14 @@
 </p>
 
 <p align="center">
-  <a href="./README.md">English</a> | <strong>简体中文</strong>
+  <a href="./README.md#top">English</a> | <strong>简体中文</strong>
 </p>
 
 <p align="center">
 <a href="#sdk"><img src="docs/readme/badges/sdk-zh.svg" alt="📦 SDK / CLI · TypeScript · API" height="26"></a>
 <a href="#quick-start"><img src="docs/readme/badges/quick-start-zh.svg" alt="🚀 快速开始 · 安装 · 连接 · 运行" height="26"></a>
 <a href="#features"><img src="docs/readme/badges/features-zh.svg" alt="✨ 功能场景 · 协作 · 迭代" height="26"></a>
-<a href="#scientific-skills"><img src="docs/readme/badges/skills-zh.svg" alt="🧠 科研技能 · 875 Skills · 12 个领域" height="26"></a>
+<a href="#skills-overview"><img src="docs/readme/badges/skills-zh.svg" alt="🧠 科研 Skills · 875 个方法 · 12 个领域" height="26"></a>
 <a href="#dual-loops"><img src="docs/readme/badges/dual-loops-zh.svg" alt="🔄 双循环 · 任务 · 流程" height="26"></a>
 <a href="#tutorial"><img src="docs/readme/badges/tutorial-zh.svg" alt="📖 SDK 实操 · 项目 · 编排" height="26"></a>
 <a href="#examples"><img src="docs/readme/badges/examples-zh.svg" alt="🧪 工作流示例 · 23 个流程" height="26"></a>
@@ -65,6 +67,40 @@ ScienceEvolve 是论文 [Rethinking Scientific Discovery in the Agentic Era](htt
 </div>
 
 [Main / Worker 与编排](sdk/skills/scienceevolve-sdk/references/workflow.md) · [动态重配置范围](sdk/skills/scienceevolve-sdk/references/workflow.md#main-自修改)
+
+<a id="skills-overview"></a>
+
+## 🧠 科研 Skills
+
+ScienceEvolve 将已发表研究中的方法提炼为**可复用的科研流程**。Agent 可以围绕当前课题明确研究问题、提出假设、设计验证、分析证据，再根据结果调整下一步，把领域方法融入自己的研究过程。
+
+**875 个科研方法，覆盖 12 个研究领域，从 7 万余篇已发表论文中提炼。**
+
+- **🧭 研究设计**：明确适用场景与所需输入，组织可检验的假设、变量、对照和研究步骤，约定预期产出。
+- **🔎 证据与验证**：设置验证条件和结论边界，区分已验证事实、推断与待检验假设，让结论与证据对应。
+- **🔄 反馈与迭代**：识别失败模式；当证据不足、观测与假设矛盾时，给出复验、修订研究方案或转向的判断条件。
+
+为团队中不同 Agent 选择与课题相关的 Skill，并提供研究目标、已有证据和可用资源，即可将这些方法用于研究规划与结果分析。**复用的是研究方法，具体结论仍需由当前课题的证据和验证支持。**
+
+<p>
+<a href=".agents/skills/scientific/immune-recognition/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-immune-zh.svg" alt="抗体与免疫识别 · 111" width="32%"></a>
+<a href=".agents/skills/scientific/aqueous-batteries/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-aqueous-zh.svg" alt="水系电池界面 · 92" width="32%"></a>
+<a href=".agents/skills/scientific/asymmetric-catalysis/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-catalysis-zh.svg" alt="不对称催化 · 38" width="32%"></a>
+<br>
+<a href=".agents/skills/scientific/chromatin-regulation/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-chromatin-zh.svg" alt="染色质与表观基因组调控 · 39" width="32%"></a>
+<a href=".agents/skills/scientific/quantum-materials/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-quantum-zh.svg" alt="量子材料与凝聚态 · 232" width="32%"></a>
+<a href=".agents/skills/scientific/fiber-composites/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-fiber-zh.svg" alt="纤维复合材料与电池材料 · 121" width="32%"></a>
+<br>
+<a href=".agents/skills/scientific/cosmology/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-cosmology-zh.svg" alt="星系、宇宙学与模拟 · 57" width="32%"></a>
+<a href=".agents/skills/scientific/fusion/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-fusion-zh.svg" alt="磁约束聚变 · 28" width="32%"></a>
+<a href=".agents/skills/scientific/neuromorphic-computing/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-neuro-zh.svg" alt="神经形态计算与伊辛优化 · 41" width="32%"></a>
+<br>
+<a href=".agents/skills/scientific/organometallic-catalysis/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-dft-zh.svg" alt="有机金属催化与 DFT · 25" width="32%"></a>
+<a href=".agents/skills/scientific/polymer-composites/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-polymer-zh.svg" alt="聚合物复合材料与类玻璃高分子 · 60" width="32%"></a>
+<a href=".agents/skills/scientific/urban-resilience/README_zh-CN.md#top"><img src="docs/readme/badges/skills-area-urban-zh.svg" alt="城市灾害韧性 · 31" width="32%"></a>
+</p>
+
+<sub>点击分类浏览技能 &nbsp; · &nbsp; <a href="#scientific-skills">技能使用与示例</a> &nbsp; · &nbsp; <a href=".agents/skills/README_zh-CN.md#top">全部 Skills</a></sub>
 
 <a id="features"></a>
 
@@ -132,34 +168,22 @@ System Runtime 保存项目状态、已完成进度和执行轨迹。可恢复�
 
 <a id="scientific-skills"></a>
 
-## 科研方法技能库：让 Agent 带着领域方法做研究
+## Skills 使用与示例
 
-**875 个 Skill · 12 个研究领域 · 从 7 万余篇已发表论文中提炼。**
+**875 个领域科研方法技能，覆盖 12 个领域；另提供 21 个研究与写作辅助技能。**
 
-ScienceEvolve 内置一套科研方法技能库，覆盖假设生成、研究设计、实验验证、证据分析与迭代。为 Agent 配置职责、模型和工具的同时，也可以选择与课题相关的领域方法。
+<a id="scientific-methods"></a>
 
-每个 Skill 都包含**适用场景、所需输入、研究步骤、预期输出、验证条件、结论边界和失败处理**。工作流组织团队协作，Skill 则帮助每个成员具体开展科学研究。
+### 领域科研方法 · 12 个领域 / 875 个技能
 
-| 研究领域 | 技能数 |
-| :--- | :--- |
-| [抗体与免疫识别](.agents/skills/README_zh-CN.md#antibody-and-immune-recognition) | 111 |
-| [水系电池界面](.agents/skills/README_zh-CN.md#aqueous-battery-interfaces) | 92 |
-| [不对称催化](.agents/skills/README_zh-CN.md#asymmetric-catalysis) | 38 |
-| [染色质与表观基因组调控](.agents/skills/README_zh-CN.md#chromatin-and-epigenomic-regulation) | 39 |
-| [量子材料与凝聚态](.agents/skills/README_zh-CN.md#quantum-materials-and-condensed-matter) | 232 |
-| [纤维复合材料与电池材料](.agents/skills/README_zh-CN.md#fiber-composites-and-battery-materials) | 121 |
-| [星系、宇宙学与模拟](.agents/skills/README_zh-CN.md#galaxy-cosmology-and-simulations) | 57 |
-| [磁约束聚变](.agents/skills/README_zh-CN.md#magnetic-confinement-fusion) | 28 |
-| [神经形态计算与伊辛优化](.agents/skills/README_zh-CN.md#neuromorphic-computing-and-ising-optimization) | 41 |
-| [有机金属催化与 DFT](.agents/skills/README_zh-CN.md#organometallic-catalysis-and-dft) | 25 |
-| [聚合物复合材料与类玻璃高分子](.agents/skills/README_zh-CN.md#polymer-composites-and-vitrimers) | 60 |
-| [城市灾害韧性](.agents/skills/README_zh-CN.md#urban-hazard-resilience) | 31 |
-| **合计** | **875** |
+覆盖假设生成、研究设计、实验验证、证据分析与迭代。可通过上面的分类卡片浏览各领域的方法。
+
+每个 Skill 包含适用场景、所需输入、研究步骤、预期输出、验证条件、结论边界与失败处理。目录层级用于浏览，已有 `builtin:<name>` 引用保持不变。
 
 <details>
 <summary><strong>展开查看一个 Skill：不对称催化研究设计</strong></summary>
 
-[手性催化剂研究设计 Skill](.agents/skills/sci-catalysis-asymmetric-catalysis-chiral-catalyst-rese-1571cd89/SKILL.md) 引导 Agent 完成：
+[手性催化剂研究设计 Skill](.agents/skills/scientific/asymmetric-catalysis/sci-catalysis-asymmetric-catalysis-chiral-catalyst-rese-1571cd89/SKILL.md) 引导 Agent 完成：
 
 > 定义研究问题 → 提出竞争假设 → 设计最小验证 → 分析证据 → 迭代或调整方向。
 
@@ -181,7 +205,19 @@ SDK 构建时将全部 875 个科研方法技能打包到 `assets/skills`，无�
 
 Main 获得工作流动态调整权限后，也可以随研究进展调整 Skill 配置。具体数据、工具与实际实验环境仍按课题配置。
 
-[浏览全部 875 个科研方法 Skill](.agents/skills/README_zh-CN.md)
+[浏览全部研究领域](.agents/skills/scientific/README_zh-CN.md#top)
+
+<a id="general-skills"></a>
+
+### 研究与写作辅助技能 · 21
+
+覆盖研究统筹、构思、文献调研、实验设计、论文写作、绘图与评审，并提供 Inspire 实验操作说明。
+
+- **团队角色 · 5**：研究统筹、构思、实验执行、写作与评审。
+- **科研、写作与评审 · 15**：CCFA、Nature 风格与综合写作方法。
+- **实验操作 · 1**：Inspire 操作与实验资源说明。
+
+[浏览研究与写作技能](.agents/skills/general/README_zh-CN.md#top)
 
 <a id="quick-start"></a>
 
@@ -388,6 +424,6 @@ CCFA 与 Nature 的内置副本未记录导入时的提交版本；上游仓库�
 <tr><td align="left">研究工作流</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow.md">Main / Worker 分工与动态重配置</a> · <a href="sdk/docs/workflow-loops-zh.md">Loop 配置</a></td></tr>
 <tr><td align="left">SDK 集成</td><td align="left"><a href="sdk/README_zh-CN.md">安装包指南</a> · <a href="sdk/skills/scienceevolve-sdk/references/usage.md#esm-api">Node API 与生命周期</a></td></tr>
 <tr><td align="left">Workflow 示例与来源</td><td align="left"><a href="example/README.md">23 个工作流与启动方式</a> · <a href="example/SOURCES.json">方法来源</a></td></tr>
-<tr><td align="left">Inspire / SII</td><td align="left"><a href=".agents/skills/inspire/references/setup/install-and-config.md">CLI 安装</a> · <a href="sdk/docs/sii-experiments-zh.md">SDK 配置</a></td></tr>
+<tr><td align="left">Inspire / SII</td><td align="left"><a href=".agents/skills/general/inspire/references/setup/install-and-config.md">CLI 安装</a> · <a href="sdk/docs/sii-experiments-zh.md">SDK 配置</a></td></tr>
 </tbody>
 </table>

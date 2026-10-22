@@ -26,7 +26,7 @@ try {
 Node API 中四个路径字段必须为绝对路径。CLI 的 `--runtime-config` JSON 接受同样的
 `sii` 对象，其中 `inspireBin`、`workspaceRoot`、`configPath`、`knowledgeRoot` 的相对路径
 均相对于配置文件所在目录解析。`knowledgeRoot` 默认使用 SDK 随包携带的
-`assets/skills/inspire`，与自定义 `skillRoots` 无关；如需替换，请显式设置该字段。
+`assets/skills/general/inspire`，与自定义 `skillRoots` 无关；如需替换，请显式设置该字段。
 
 部署方事先安装原生 Inspire 可执行文件，并使用 CLI 完成账号登录及配置。
 SDK 使用 CLI 本地已有账号上下文，不保存独立的平台账号/密码清单，不自动安装、登录

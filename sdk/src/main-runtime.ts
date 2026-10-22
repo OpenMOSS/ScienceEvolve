@@ -138,7 +138,7 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
         ...options.sii,
         noProxy: options.sii.noProxy ? [...options.sii.noProxy] : undefined,
         projectsRoot: storage.projectsDir(),
-        knowledgeRoot: options.sii.knowledgeRoot ?? path.join(builtinSkillRoot, "inspire"),
+        knowledgeRoot: options.sii.knowledgeRoot ?? path.join(builtinSkillRoot, "general", "inspire"),
         resolveProjectWorkspace: (id) => projectWorkspaces.resolve(id)
       });
     }
