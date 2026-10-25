@@ -64,6 +64,8 @@ workspace 由 CLI/API 指定，不放 workflow。Git-off 直接使用所选原�
 
 Skill 选择可以是有效的 `builtin:<name>`、本地 Skill 目录或 `project:<name>`。外部 `./`、`../` Skill 路径相对于启动 workflow 的目录；运行快照中的相对路径则相对于 workspace。使用 builtin 前检查安装包实际提供的名称，不编造标识。
 
+Agent4Sci 完整流程使用 `builtin:agent4sci-research`、`builtin:agent4sci-experiment`、`builtin:agent4sci-checklist`，在需要这些指引的角色上同时配置到 `skills`。技能之间的文本引用不会自动加入依赖；角色指令决定本轮执行阶段。只选择后续技能时，先提供前序阶段材料。checklist 按需执行，不会设置定时任务。详见[使用说明](../../../docs/agent4sci.md)与[示例配置](../../../examples/agent4sci/workflow.json)。
+
 可将任务专属 Skill 一起存入 workflow：
 
 ```json

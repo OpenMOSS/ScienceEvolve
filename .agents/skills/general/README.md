@@ -1,6 +1,6 @@
 <a id="top"></a>
 
-# General & platform Skills · 21
+# General & platform Skills · 24
 
 [← Skill library](../README.md#top) · **English** | [简体中文](README_zh-CN.md#top)
 
@@ -33,3 +33,13 @@
 ## Platforms and experiments
 
 - [inspire](inspire/SKILL.md) — `builtin:inspire`
+
+## Agent4Sci
+
+- [agent4sci-research](agent4sci-research/SKILL.md) — `builtin:agent4sci-research`
+- [agent4sci-experiment](agent4sci-experiment/SKILL.md) — `builtin:agent4sci-experiment`
+- [agent4sci-checklist](agent4sci-checklist/SKILL.md) — `builtin:agent4sci-checklist`
+
+Select all three skills for research → experiment → checklist. Includes literature-review assignments, a report validator and experiment guidance. Checklist runs on demand; no automatic reminders. Each skill includes pinned provenance, license and adaptation notes.
+
+[Configuration and adaptation / 配置与适配说明](https://github.com/OpenMOSS/ScienceEvolve/blob/main/sdk/docs/agent4sci.md)
