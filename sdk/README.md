@@ -29,11 +29,13 @@ The SDK bundles pi; install Codex, Claude Code, DSH, or [Hermes](docs/hermes.md)
 
 ## Scientific Skills
 
-The SDK organizes **21 general/platform Skills and 875 scientific method Skills across 12 research areas** under `general/` and `scientific/`, distilled from 70,000+ published papers. They cover hypothesis generation, research design, validation, evidence analysis, and iteration.
+The SDK organizes **24 general/platform Skills and 875 scientific method Skills across 12 research areas** under `general/` and `scientific/`, distilled from 70,000+ published papers. They cover hypothesis generation, research design, validation, evidence analysis, and iteration.
 
 Add the relevant `builtin:` Skill IDs to an Agent’s `skills` or `autoSkills` in its workflow configuration. The build includes the Skills and full catalog under `assets/skills`; loading uses the existing runtime and Harness capability checks.
 
 [Scientific Skills overview](https://github.com/OpenMOSS/ScienceEvolve#scientific-skills) · [Full catalog](https://github.com/OpenMOSS/ScienceEvolve/blob/main/.agents/skills/README.md)
+
+The three [Agent4Sci Skills](docs/agent4sci.md) provide research, experiment execution, and on-demand checklist guidance. Select all three fixed Skill IDs for the complete flow; see the [example workflow](examples/agent4sci/workflow.json). Support files and upstream license/provenance ship with each Skill. No automatic reminders are installed.
 
 ## Configure and start
 

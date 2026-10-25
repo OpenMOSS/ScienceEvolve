@@ -68,14 +68,14 @@ describe("categorized builtin Skills", () => {
     }
   });
 
-  it("discovers all 896 shipped Skills, including 875 methods and their unchanged builtin IDs", async () => {
+  it("discovers all 899 shipped Skills, including 875 methods and their unchanged builtin IDs", async () => {
     const builtin = fileURLToPath(new URL("../../.agents/skills/", import.meta.url));
     const catalog = new SkillCatalog([builtin]);
     const skills = await catalog.list();
-    expect(skills).toHaveLength(896);
-    expect(new Set(skills.map(s => s.id)).size).toBe(896);
+    expect(skills).toHaveLength(899);
+    expect(new Set(skills.map(s => s.id)).size).toBe(899);
     expect(skills.filter(s => s.id.startsWith("builtin:sci-"))).toHaveLength(875);
-    expect(skills.filter(s => s.path.includes(`${path.sep}general${path.sep}`))).toHaveLength(21);
+    expect(skills.filter(s => s.path.includes(`${path.sep}general${path.sep}`))).toHaveLength(24);
     const staged = await catalog.resolve(["builtin:inspire", "builtin:ccf-paper-writer", "builtin:sci-catalysis-asymmetric-catalysis-chiral-catalyst-rese-1571cd89"]);
     for (const p of staged) await expect(fs.readFile(p, "utf8")).resolves.toContain("name:");
   });

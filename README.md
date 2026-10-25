@@ -170,7 +170,7 @@ Describe new goals and changes through task input. Main, when authorized to reco
 
 ## Skill usage and examples
 
-**875 scientific method Skills across 12 areas, plus 21 supporting Skills for research and writing.**
+**875 scientific method Skills across 12 areas, plus 24 supporting Skills for research and writing.**
 
 <a id="scientific-methods"></a>
 
@@ -209,13 +209,14 @@ When Main is authorized to reconfigure the workflow, it can adjust Skill selecti
 
 <a id="general-skills"></a>
 
-### Supporting research & writing Skills · 21
+### Supporting research & writing Skills · 24
 
 Research direction, ideation, literature research, experiment design, writing, figures, and review, plus Inspire experiment guidance.
 
 - **Team roles · 5**: research direction, ideation, experiment execution, writing, and review.
 - **Research, writing, and review · 15**: CCFA, Nature-style, and integrated writing methods.
 - **Experiment operations · 1**: Inspire operations and experiment resources.
+- **Agent4Sci · 3**: literature-grounded research, experiment execution, and strategic checks. Select all three fixed Skills for the complete flow; checklist runs on demand. [Configuration and example](sdk/docs/agent4sci.md).
 
 [Browse research & writing Skills](.agents/skills/general/README.md#top)
 

@@ -1,0 +1,142 @@
+{
+  "git": {
+    "enabled": false
+  },
+  "agents": {
+    "main": {
+      "harness": "codex",
+      "model": "replace-with-your-model",
+      "permission": "compute",
+      "webSearch": false,
+      "skills": [
+        "builtin:agent4sci-research",
+        "builtin:agent4sci-experiment",
+        "builtin:agent4sci-checklist"
+      ],
+      "autoSkills": [],
+      "mcpServers": [],
+      "instructions": "Coordinate research, experiment and review roles using only exposed workflow tools. Confirm the literature artifacts, registered hypotheses, actual experiment results and corrective actions before completing. Do not execute experiments in a management-only turn."
+    },
+    "research": {
+      "harness": "codex",
+      "model": "replace-with-your-model",
+      "permission": "compute",
+      "webSearch": true,
+      "skills": [
+        "builtin:agent4sci-research",
+        "builtin:agent4sci-experiment",
+        "builtin:agent4sci-checklist"
+      ],
+      "autoSkills": [],
+      "mcpServers": [],
+      "instructions": "Use agent4sci-research. Complete the four literature-review categories using available delegation or sequential reviews; validate the delivered reports, then register experiments and hand off their paths. Do not wait for a future workflow role within this turn."
+    },
+    "execution": {
+      "harness": "codex",
+      "model": "replace-with-your-model",
+      "permission": "compute",
+      "webSearch": false,
+      "skills": [
+        "builtin:agent4sci-research",
+        "builtin:agent4sci-experiment",
+        "builtin:agent4sci-checklist"
+      ],
+      "autoSkills": [],
+      "mcpServers": [],
+      "instructions": "Use agent4sci-experiment after reading the completed research plan. Work within allocated resources and deadline; smoke-test implementations, record real logs and results, then hand off to review. Do not fabricate unavailable training evidence."
+    },
+    "review": {
+      "harness": "codex",
+      "model": "replace-with-your-model",
+      "permission": "compute",
+      "webSearch": false,
+      "skills": [
+        "builtin:agent4sci-research",
+        "builtin:agent4sci-experiment",
+        "builtin:agent4sci-checklist"
+      ],
+      "autoSkills": [],
+      "mcpServers": [],
+      "instructions": "Use agent4sci-checklist after reading the research plan and actual experiment evidence. Write the assessment and actionable corrections. Hand off to execution when more work is needed; offer completion only when the user acceptance criteria are supported."
+    }
+  },
+  "orchestration": {
+    "schemaVersion": 2,
+    "collaborations": [],
+    "agents": [
+      {
+        "name": "main",
+        "template": "main"
+      },
+      {
+        "name": "research",
+        "template": "general"
+      },
+      {
+        "name": "execution",
+        "template": "general"
+      },
+      {
+        "name": "review",
+        "template": "general"
+      }
+    ],
+    "input": {
+      "source": "input",
+      "target": "research"
+    },
+    "routes": {
+      "main": [
+        {
+          "kind": "weak",
+          "target": "research"
+        },
+        {
+          "kind": "weak",
+          "target": "execution"
+        },
+        {
+          "kind": "weak",
+          "target": "review"
+        }
+      ],
+      "research": [
+        {
+          "kind": "strong",
+          "target": "execution"
+        }
+      ],
+      "execution": [
+        {
+          "kind": "strong",
+          "target": "review"
+        }
+      ],
+      "review": [
+        {
+          "kind": "weak",
+          "target": "execution"
+        },
+        {
+          "kind": "weak",
+          "target": "research"
+        },
+        {
+          "kind": "weak",
+          "target": "finish"
+        }
+      ]
+    },
+    "decisionPlans": {
+      "review": "Return to research for missing scientific evidence, execution for implementable corrections, and finish only when the actual results meet the user criteria."
+    },
+    "allowMainReconfiguration": false,
+    "allowUserIntervention": true,
+    "termination": {
+      "agent": "review",
+      "condition": "Completed research artifacts and real experiments support the requested output; checklist corrective actions are resolved or explicitly reported as limitations.",
+      "decisionBy": "main",
+      "automatic": false
+    }
+  }
+}

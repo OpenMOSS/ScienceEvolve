@@ -29,11 +29,13 @@ pi 随包提供；Codex、Claude Code、DSH 和 [Hermes](docs/hermes-zh.md) 按�
 
 ## 科研方法技能库
 
-SDK 按 `general/` 与 `scientific/` 分类提供 **21 个通用与平台技能，以及覆盖 12 个研究领域的 875 个科研方法 Skill**，从 7 万余篇已发表论文中提炼，涵盖假设生成、研究设计、验证、证据分析与迭代。
+SDK 按 `general/` 与 `scientific/` 分类提供 **24 个通用与平台技能，以及覆盖 12 个研究领域的 875 个科研方法 Skill**，从 7 万余篇已发表论文中提炼，涵盖假设生成、研究设计、验证、证据分析与迭代。
 
 在工作流中，将所需技能的 `builtin:` ID 配置到目标 Agent 的 `skills` 或 `autoSkills`。构建时会将技能及完整目录一并打包到 `assets/skills`，沿用现有运行时加载与 Harness 能力校验。
 
 [科研方法技能库介绍](https://github.com/OpenMOSS/ScienceEvolve/blob/main/README_zh-CN.md#scientific-skills) · [完整技能目录](https://github.com/OpenMOSS/ScienceEvolve/blob/main/.agents/skills/README_zh-CN.md)
+
+新增三个 [Agent4Sci 技能](docs/agent4sci.md)：文献调研、实验执行与按需检查。完整流程同时选择三个固定 Skill ID，参考[工作流示例](examples/agent4sci/workflow.json)。配套文件、上游许可与来源随技能打包；不包含自动提醒。
 
 ## 配置与启动
 

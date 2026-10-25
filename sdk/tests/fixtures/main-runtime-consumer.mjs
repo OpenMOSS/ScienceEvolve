@@ -23,6 +23,20 @@ try {
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().length > 10);
   } finally { db.close(); }
   const packageRoot = path.resolve("node_modules/@scienceevolve/sdk");
+  const agent4sciIds = ["research", "experiment", "checklist"].map(name => `builtin:agent4sci-${name}`);
+  const agent4sciPaths = await runtime.skills.resolve(agent4sciIds);
+  const { stageInvocationSkills } = await import(new URL("./core/harness-runtime/skill-staging.js", import.meta.resolve("@scienceevolve/sdk/application/main-runtime")));
+  const skillWorkspace = path.join(root, "agent4sci-consumer-workspace"); await mkdir(skillWorkspace);
+  const stagedSkills = await stageInvocationSkills(agent4sciPaths, [], skillWorkspace, agent4sciPaths, "research");
+  for (const skillPath of stagedSkills.skillPaths) {
+    assert.ok((await readFile(skillPath, "utf8")).includes("name: agent4sci-"));
+    await access(path.join(path.dirname(skillPath), "LICENSE"));
+    await access(path.join(path.dirname(skillPath), "UPSTREAM.md"));
+  }
+  await access(path.join(path.dirname(stagedSkills.skillPaths[0]), "scripts/check_reviews.py"));
+  await access(path.join(path.dirname(stagedSkills.skillPaths[0]), "references/literature-review.md"));
+  await access(path.join(path.dirname(stagedSkills.skillPaths[1]), "best_practices.md"));
+  console.log("Installed Agent4Sci skills resolved and staged with support files");
   const manifest = JSON.parse(await readFile(path.join(packageRoot, "resources/main-runtime/manifest.json"), "utf8"));
   assert.equal(manifest.sourceCommit, MAIN_RUNTIME_SOURCE_COMMIT);
   assert.equal(manifest.runtimeRevision, MAIN_RUNTIME_REVISION);

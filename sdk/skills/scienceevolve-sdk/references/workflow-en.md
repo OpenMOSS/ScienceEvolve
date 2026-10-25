@@ -64,6 +64,8 @@ After three rounds, control passes to Main; unfinished work can route directly b
 
 Selections may use valid builtin:<name>, a local Skill directory, or project:<name>. External ./ and ../ paths resolve from the launching workflow directory; relative paths in runtime snapshots resolve from workspace. Check actual installed builtin names rather than inventing IDs.
 
+For Agent4Sci, select `builtin:agent4sci-research`, `builtin:agent4sci-experiment`, and `builtin:agent4sci-checklist` in `skills` on roles that need the complete flow. Text references between Skills do not install dependencies; role instructions determine the current phase. Standalone later phases require previous-stage artifacts. Checklist runs on demand and does not schedule a timer. See the [usage guide](../../../docs/agent4sci.md) and [example configuration](../../../examples/agent4sci/workflow.json).
+
 Embed a project Skill with:
 
 ```json
