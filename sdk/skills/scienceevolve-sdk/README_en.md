@@ -4,13 +4,13 @@
 
 This is the English reading companion to the packaged configuration-authoring Skill. Install the entire scienceevolve-sdk directory, including its canonical SKILL.md, references, and assets. This page does not introduce another runtime Skill.
 
-Deliver a valid workflow.json, UTF-8 requirement.txt, and complete startup command. Configuration-only requests do not authorize paid tasks. When execution is requested, verify actual run and delivery evidence. Use existing fields; do not invent steps, dependsOn, or maxSteps.
+Deliver a valid workflow.json, UTF-8 research_proposal.txt, and complete startup command. The proposal describes a concrete research question, hypothesis, data, and evaluation plan; put environment variables and runtime parameters in accompanying setup documentation. The Node API still receives the proposal text through its requirement field. Configuration-only requests do not authorize paid tasks. When execution is requested, verify actual run and delivery evidence. Use existing fields; do not invent steps, dependsOn, or maxSteps.
 
 ## Start directly from workflow.json
 
 ```sh
 scievolve workflow validate ./workflow.json
-scievolve start ./workflow.json ./requirement.txt \
+scievolve start ./workflow.json ./research_proposal.txt \
   --data-dir /absolute/path/to/new-main-data \
   --workspace /absolute/path/to/your-project \
   --gateway-bindings /absolute/path/to/bindings.json

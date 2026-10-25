@@ -168,31 +168,25 @@ const raven = makeWorkflow({ id: 'raven-host', env: 'SCIENCEEVOLVE_RAVEN', proto
   condition: '完整 Raven 默认 Host 只有所有动态 DAG/AND/instance/在线通知裁决/在途 replan/判定续跑/stint/记忆和领域能力均有实证，且正式交付，才可接受。当前模板不满足该条件；limited-batch 报告保持 methodAccepted=false，并由 Main 暂停/交接。'
 });
 
-const requirementTexts = {
-  "internagent-1-5": "使用 InternAgent 1.5 解决指定算法发现或经验科学 Task。\n提供 Task manifest、KG/检索/embedding、SPM/TEM/SKM、图增强 Monte Carlo 数值策略、评测执行器及累计预算。\n\n执行 Generation、Verification、Evolution 闭环，保留 FlowSearch 知识流、四种搜索运算符和记忆检索/更新。至少运行两轮，后续候选消费已返回的评分和跨轮记忆。\n\n交付代码、实验结果、知识与记忆记录、report.md、acceptance.json 和 evidence-index.json。",
-  "biomni-r0": "使用 Biomni-R0 流程训练和评估指定 policy。\n提供 Task manifest、training/reward recipe、基础权重、E1 环境、数据划分，以及 GPU trainer 和部署服务。\n\n设置输入输出目录、累计训练/时间/费用预算和 authorizationId。执行轨迹采集、奖励计算、训练、checkpoint 登记、部署和新旧 policy 复评；记录版本谱系和每轮指标。\n\n交付 checkpoint、部署回执、评测结果、report.md、acceptance.json 和 evidence-index.json。",
-  "chemical-coscientist": "研究问题、实验目标、设备/firmware/API、设备手册和累计实验预算：请填写。\n提供 Task manifest、代码编译与执行、测量服务和物理实验 authorizationId。\n\nPlanner 根据目标和测量结果按需调用搜索、文档、代码及实验角色，生成设备匹配的实验程序，提交作业并读取测量结果，迭代实验方案。\n\n交付实验代码、作业回执、原始测量、优化记录、report.md、acceptance.json 和 evidence-index.json。",
-  "raven": "使用 Raven Host 编排指定任务。填写 Task manifest、roster、instance、节点依赖、领域工具和预算，并选择 strict-host 或 limited-batch 模式。\n\nHost 分解任务、选择 specialist、记录 node/instance/epoch，依次执行委派、结果判定、续跑或重规划。limited-batch 使用两个预绑定 specialist 槽位。\n\n保存节点状态、依赖证据、playbook/stint 和跨图引用。交付任务结果、调用记录、report.md、acceptance.json 和 evidence-index.json。"
-};
-const requirement = (_method, env) => {
-  const id = ({SCIENCEEVOLVE_INTERNAGENT:'internagent-1-5',SCIENCEEVOLVE_BIOMNI_R0:'biomni-r0',SCIENCEEVOLVE_COSCIENTIST:'chemical-coscientist',SCIENCEEVOLVE_RAVEN:'raven'})[env];
-  return requirementTexts[id] + '\n\n环境变量：' + [env+'_BACKEND_TOKEN',env+'_BACKEND_URL',env+'_SCOPE_ID'].map(name=>'`'+name+'`').join('、') + '。无认证时 BACKEND_TOKEN 显式设为空字符串。\n';
-};
-const additions = [
-  ['internagent-1-5', intern, requirement('InternAgent 1.5', 'SCIENCEEVOLVE_INTERNAGENT', '选择算法发现或经验科学任务，提供 KG/检索/有效 embedding/SPM-TEM-SKM、图增强 Monte Carlo 数值策略与真实执行器。至少两轮；四算子可用性、跨轮记忆消费均需实际证据。批次调度与原动态 flow ready-set 的差别必须披露。')],
-  ['biomni-r0', biomni, requirement('Biomni-R0 训练方法', 'SCIENCEEVOLVE_BIOMNI_R0', '提供源已核验的 training/reward recipe、基础权重和 E1 task/environment/split、真实 GPU trainer/部署、authorizationId；不得以发布 R0 推理或任意缩小模型替代训练。原 recipe 未核对时停在 preflight。')],
-  ['chemical-coscientist', chemical, requirement('化学 Coscientist', 'SCIENCEEVOLVE_COSCIENTIST', '提供明确化学问题、实际设备/firmware/API、手册、编译/执行/真实测量服务、物理 authorizationId、实验目标及累计实验预算。没有设备时不启动完整湿实验；historical/simulation 单独标记，不算完整方法。')],
-  ['raven', raven, requirement('Raven Host', 'SCIENCEEVOLVE_RAVEN', '明确模式 strict-host 或 limited-batch；默认 strict-host，应因现有 SDK 动态 DAG/在线控制缺口阻断。limited-batch 只允许两个预绑定 specialist 槽位的子项验证，需要明确任务 roster/instance/依赖/工具/预算，不得写成完整 Raven 验收。')]
-];
+// Keep research topics in the canonical examples, separate from runtime configuration.
+const proposalRoot = path.resolve(here, '../../example');
+const additions = await Promise.all([
+  ['internagent-1-5', intern],
+  ['biomni-r0', biomni],
+  ['chemical-coscientist', chemical],
+  ['raven', raven]
+].map(async ([dir, workflow]) => [dir, workflow,
+  await fs.readFile(path.join(proposalRoot, dir, 'research_proposal.txt'), 'utf8')
+]));
 
 // Never overwrite an existing example. Use --output-root for isolated generation.
-for (const [dir] of additions) for (const name of ['workflow.json', 'requirement.txt']) {
+for (const [dir] of additions) for (const name of ['workflow.json', 'research_proposal.txt']) {
   try { await fs.access(path.join(root, dir, name)); throw new Error('Refuse to replace existing '+dir+'/'+name); }
   catch(error) { if(error.code !== 'ENOENT') throw error; }
 }
 for(const [dir,workflow,input] of additions) {
   await fs.mkdir(path.join(root,dir),{recursive:true});
   await fs.writeFile(path.join(root,dir,'workflow.json'),JSON.stringify(workflow,null,2)+'\n',{flag:'wx'});
-  await fs.writeFile(path.join(root,dir,'requirement.txt'),input,{flag:'wx'});
+  await fs.writeFile(path.join(root,dir,'research_proposal.txt'),input,{flag:'wx'});
 }
 console.log(JSON.stringify({created:additions.map(([dir])=>dir+'/workflow.json')}));

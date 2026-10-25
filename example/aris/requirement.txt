@@ -1,7 +1,0 @@
-研究方向、RESEARCH_BRIEF.md、参考论文或基础仓库、数据、评测入口、算力和总预算：请填写。
-
-作者与 reviewer 使用不同模型家族；默认作者 claude-opus-5 / claude-code，reviewer gpt-6-astra / codex。执行完整 research-pipeline：AUTO_PROCEED=true、CODE_REVIEW=true、REVIEWER_DIFFICULTY=medium、RESUMABLE=true。
-
-AUTO_WRITE=true 时配置 VENUE 和 LaTeX/PDF 资源；只做研究时设为 false。准备检索、实验及独立评审环境。投稿检查使用随附 Anti-Autoresearch eval gate、只读审计和裁决工具；配置原生 Codex 的 gpt-5.6-sol/xhigh 及 proof-checker 所需档位。
-
-交付研究记录、实验代码和结果；开启写作时交付论文与评审修订。

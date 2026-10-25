@@ -1,7 +1,0 @@
-使用 Raven Host 编排指定任务。填写 Task manifest、roster、instance、节点依赖、领域工具和预算，并选择 strict-host 或 limited-batch 模式。
-
-Host 分解任务、选择 specialist、记录 node/instance/epoch，依次执行委派、结果判定、续跑或重规划。limited-batch 使用两个预绑定 specialist 槽位。
-
-保存节点状态、依赖证据、playbook/stint 和跨图引用。交付任务结果、调用记录、report.md、acceptance.json 和 evidence-index.json。
-
-环境变量：`SCIENCEEVOLVE_RAVEN_BACKEND_TOKEN`、`SCIENCEEVOLVE_RAVEN_BACKEND_URL`、`SCIENCEEVOLVE_RAVEN_SCOPE_ID`。无认证时 BACKEND_TOKEN 显式设为空字符串。

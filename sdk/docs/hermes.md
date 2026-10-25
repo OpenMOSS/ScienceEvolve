@@ -26,7 +26,7 @@ Hermes uses SDK gateways/models, without reading personal Hermes profiles or OAu
 scievolve harnesses --data-dir D:/runs/hermes-data --runtime-config D:/research/runtime.json
 scievolve gateway test GATEWAY_ID --harness hermes --model YOUR_MODEL `
   --data-dir D:/runs/hermes-data --runtime-config D:/research/runtime.json
-scievolve start D:/research/workflow.json D:/research/requirement.txt `
+scievolve start D:/research/workflow.json D:/research/research_proposal.txt `
   --workspace D:/research/project --gateway GATEWAY_ID `
   --data-dir D:/runs/hermes-data --runtime-config D:/research/runtime.json
 ```

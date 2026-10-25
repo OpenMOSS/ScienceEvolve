@@ -1,6 +1,0 @@
-数学或算法 Task：请填写。
-提供 specification.py、固定 test inputs JSON、实现 create_sandbox 的 Sandbox 适配文件和 Python 环境。
-
-默认配置为 10 岛、每 prompt 4 个样本、温度参数 0.1/30000，每 14400 秒重置弱半岛。执行采样、评测、聚类、选择与岛重置，持续至用户停止或达到指定预算。
-
-交付最佳程序、完整候选库、评测日志和 RNG 状态。

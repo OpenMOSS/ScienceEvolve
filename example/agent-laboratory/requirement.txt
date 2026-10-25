@@ -1,5 +1,0 @@
-研究问题、数据、评测环境和预算：请填写。
-
-运行完整单实验室流程，agentRxiv=false，逐阶段设置 human_in_loop。默认 max_steps=100、mlesolver_max_steps=3、papersolver_max_steps=5、compile_pdf=true、review_override=true、review_total_steps=0。
-
-提供 Python、arXiv 检索、实验执行和 LaTeX 环境。完成规划、实验、论文、三位独立 reviewer 及反馈修订，交付论文、代码、实验结果和阶段记录。

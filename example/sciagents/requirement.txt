@@ -1,6 +1,0 @@
-研究目标、关键词和 mode（automated 或 fixed）：请填写，默认 automated；无关键词时使用随机节点分支。
-提供图谱及来源、embedding/tokenizer/model、GraphReasoning 环境、文献检索和 PDF 渲染工具。
-
-按模式执行图路径选择、ontology、七方面细化、批评、建模/合成方案和独立新颖性/可行性评估。
-
-交付图路径、来源、假设、评审和研究方案。

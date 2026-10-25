@@ -84,7 +84,7 @@ describe("main CLI transport with actual main Git-off kernel/SQLite, simulated A
   it("rejects malformed input flags before opening runtime data", async () => {
     const root = await directory(), file = path.join(root, "inputs.json"), create = vi.fn();
     const services = { api: { ...mainApi, createMainResearchSdk: create }, ...output() };
-    const args = ["start", "unread-workflow.json", "unread-requirement.txt"];
+    const args = ["start", "unread-workflow.json", "unread-research_proposal.txt"];
     await expect(runMainCli(args, options(root, { inputs: root, "inputs-file": file }), services)).rejects.toThrow(/mutually exclusive/);
     await expect(runMainCli(args, options(root, { inputs: " " }), services)).rejects.toThrow(/inputs/);
     await expect(runMainCli(args, options(root, { "input-description": "x".repeat(2001) }), services)).rejects.toThrow(/2000/);
@@ -136,7 +136,7 @@ describe("main CLI transport with actual main Git-off kernel/SQLite, simulated A
       expect(await fs.readFile(path.join(request.workspacePath, "input.txt"), "utf8")).toBe("original source");
       await fs.writeFile(path.join(request.workspacePath, "output.txt"), "actual kernel fixture");
     });
-    const workflowFile = path.join(root, "workflow.json"), requirement = path.join(root, "requirement.txt");
+    const workflowFile = path.join(root, "workflow.json"), requirement = path.join(root, "research_proposal.txt");
     await fs.writeFile(workflowFile, JSON.stringify(workflow())); await fs.writeFile(requirement, "Workspace fixture");
     process.env.SCIENCEEVOLVE_MAIN_CLI_TEST_KEY = "opaque-cli-workspace-fixture";
     const added = output();
@@ -185,7 +185,7 @@ describe("main CLI transport with actual main Git-off kernel/SQLite, simulated A
   });
   it("adds/binds a gateway, starts through the main engine, reopens snapshots and replays events", async () => {
     const root = await directory(); const dataDir = path.join(root, "data"); const api = actualKernelApi();
-    const workflowFile = path.join(root, "workflow.json"), requirement = path.join(root, "requirement.txt");
+    const workflowFile = path.join(root, "workflow.json"), requirement = path.join(root, "research_proposal.txt");
     await fs.writeFile(workflowFile, JSON.stringify(workflow())); await fs.writeFile(requirement, "Bounded CLI fixture");
     process.env.SCIENCEEVOLVE_MAIN_CLI_TEST_KEY = "opaque-cli-fixture-key";
     const added = output();

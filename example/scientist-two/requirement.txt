@@ -1,8 +1,0 @@
-使用 ScientistTwo 研究当前 workspace 中的问题。
-提供研究说明、人类 SOTA 论文/代码、全量结果和数据。在 task_setup 中冻结可改范围、benchmark、代表性 subset、数据划分、指标、统计方法、种子、重跑容差及作业限制；配置检索、全文、LaTeX、PDF 视觉检查和绘图工具。
-
-首轮 3 个候选，默认种子池 6 个，总实验最多 4 轮；后续每轮 1 个 evolved 与 1 个 unused seed，4 个 full Good 时提前停止。按 Skill 执行其余预算和分支。
-
-完成 subset/full 实验、想法进化、消融、PaperOrchestra 写作、ScholarPeer 评审/补实验、meta 改进和 CoE 检查。保持 benchmark、数据划分和 Task policy 固定。
-
-交付论文 tex/PDF、同版本最佳代码、重跑命令、原始实验结果、评审和完整性记录。

@@ -1,6 +1,0 @@
-研究目标、输入数据和待验证结论：请填写。
-提供 E1 解释器与环境、数据湖根目录、外部数据库和领域工具；涉及实验时配置对应 MCP/CLI/API。
-
-执行资源检索、持久 Python/R/Bash/CLI 操作和 ReAct 反馈。默认 self_critic=false、test_time_scale_round=0，可按任务调整。
-
-交付分析代码、工具执行记录、数据来源和研究结果。

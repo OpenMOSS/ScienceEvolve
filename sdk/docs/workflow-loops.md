@@ -61,7 +61,7 @@ Authorized dynamic reconfiguration can change maxIterations while preserving cou
 Write the goal and constraints in a natural-language requirement file and select an existing workspace:
 
 ```bash
-scievolve run start /absolute/path/workflow.json /absolute/path/requirement.txt \
+scievolve run start /absolute/path/workflow.json /absolute/path/research_proposal.txt \
   --workspace /absolute/path/task-project \
   --data-dir /absolute/path/run-data --gateway GATEWAY_ID
 ```

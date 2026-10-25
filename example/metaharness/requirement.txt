@@ -1,6 +1,0 @@
-Task 为指定版本 Meta-Harness 的 text_classification 目录，包含 benchmark、MemorySystem、数据和配置。
-填写 run_name，固定 Task 模型、数据集、种子、依赖和预算；默认搜索 20 轮，每轮 3 个候选。
-
-执行基线、候选评测和选择，保留逐数据集最优结果、Pareto 前沿及完整轨迹。是否执行 finalize/test：请填写，默认否；finalize 前冻结搜索结果。
-
-交付最佳 harness、评测结果、候选轨迹和配置。

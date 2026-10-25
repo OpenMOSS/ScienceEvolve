@@ -1,8 +1,0 @@
-使用 RRSI 优化当前 Task 的科研 harness。
-提供工程或科研任务、现有 harness、数据与评测工具。在 task_setup 中冻结 evolve/heldout/smoke 清单、Task policy、grader、token 计量、组件分类与约束，并按 Skill references/environment.md 配置评测接口。
-
-默认 eng profile：T=40、k=4、m=2，退火编辑预算 1..4，w=3、探索槽 1、repair_rounds=5；新 Task 以 delta=null 按 H0 校准。研究模型沿用 workflow，Task policy 全程固定。
-
-执行三镜头诊断、候选生成与修复、smoke、evolve 测量、各项 guards、选择、剪枝和逐编辑归因。完成 T 轮后冻结冠军，对各 heldout 集成对评测 H0/champion。
-
-交付最终 harness Git 版本、history、attribution、decisions、原始测量和 report.json。

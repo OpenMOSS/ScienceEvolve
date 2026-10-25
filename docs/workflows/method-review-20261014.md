@@ -1,3 +1,5 @@
+> 当前示例输入已更名为 `research_proposal.txt` 并补充具体研究课题，运行准备见 [example/RUNTIME.md](../../example/RUNTIME.md)。下文保留 2026-10-14 的方法核对记录与历史运行命令，关于旧输入模板内容的描述不代表当前课题文件。
+
 # 七项 TODO 的 workflow 设计与复现度报告
 
 > 历史证据说明：历史审计与实测记录保留当时的标识；当前使用方式以 ScienceEvolve 的 SDK/CLI 手册为准。
@@ -204,7 +206,7 @@ Generation、Verification、Evolution 构成外层研究闭环；知识流、图
 
 每个前缀设置 `_BACKEND_URL`、可选 `_BACKEND_TOKEN`、全新 `_SCOPE_ID`，通过 envFrom 注入；不把值/凭据写入 workflow。外部服务还需独立认证/权限和数据合同，传输层不能仅凭 actor 字符串授予权限。服务必须实现幂等、CAS、持久回执/预算和真实资源探测。没有配置时 MCP 返回 blocked。
 
-新 [InternAgent requirement](../../example/internagent-1-5/requirement.txt)、[Biomni requirement](../../example/biomni-r0/requirement.txt)、[Coscientist requirement](../../example/chemical-coscientist/requirement.txt)、[Raven requirement](../../example/raven/requirement.txt) 以及 [AI Scientist requirement](../../example/ai-scientist-v2/requirement.txt) 是输入模板，需填写真实 Task/预算/路径；原 Kosmos/AlphaEvolve requirement 保留。本次没有选择未经授权的科研任务或新实验规模。
+新 [InternAgent research proposal](../../example/internagent-1-5/research_proposal.txt)、[Biomni research proposal](../../example/biomni-r0/research_proposal.txt)、[Coscientist research proposal](../../example/chemical-coscientist/research_proposal.txt)、[Raven research proposal](../../example/raven/research_proposal.txt) 以及 [AI Scientist research proposal](../../example/ai-scientist-v2/research_proposal.txt) 是输入模板，需填写真实 Task/预算/路径；原 Kosmos/AlphaEvolve requirement 保留。本次没有选择未经授权的科研任务或新实验规模。
 
 在此 SDK checkout 根目录离线验证：
 

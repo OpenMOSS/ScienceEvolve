@@ -52,6 +52,6 @@ it('loads all seven consolidated Git-on method workflows and their embedded reso
     expect(workflow.orchestration.schemaVersion,method).toBe(3);
     expect(workflow.orchestration.allowMainReconfiguration,method).toBe(false);
     expect(Object.keys(workflow.mcpDefinitions??{}).length,method).toBeGreaterThan(0);
-    expect((await fs.readFile(path.join(examples,method,'requirement.txt'),'utf8')).trim().length).toBeGreaterThan(0);
+    expect((await fs.readFile(path.join(examples,method,'research_proposal.txt'),'utf8')).trim().length).toBeGreaterThan(0);
   }
 });

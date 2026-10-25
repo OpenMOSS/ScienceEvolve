@@ -24,7 +24,7 @@ scievolve gateway import --data-dir /absolute/new-main-data \
   --harness codex --model ACTUAL_MODEL --source env
 scievolve gateway test GATEWAY_ID --data-dir /absolute/new-main-data \
   --harness codex --model ACTUAL_MODEL --reasoning-option high
-scievolve start workflow.json requirement.txt --data-dir /absolute/new-main-data \
+scievolve start workflow.json research_proposal.txt --data-dir /absolute/new-main-data \
   --workspace /absolute/your-project \
   --gateway GATEWAY_ID
 ```
@@ -58,7 +58,7 @@ Native login needs no additional API key and extracts no OAuth token. Register a
 Affected roles must use codex without gatewayReasoningOption. Native routing is not automatically equivalent to a high-reasoning gateway setup. Explicitly choose a replacement policy and save a separate configuration before removing existing high/xhigh options. Native Git-off exec ignores user config/rules and explicitly selects official openai rather than custom relays.
 
 ```sh
-scievolve start workflow.native.json requirement.txt --data-dir /absolute/new-native-data \
+scievolve start workflow.native.json research_proposal.txt --data-dir /absolute/new-native-data \
   --runtime-config /absolute/deployment.json --native-codex-profile login
 ```
 

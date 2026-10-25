@@ -84,12 +84,22 @@ async function record(id, action) {
 try {
   // Run the actual generator in a private copy: it intentionally refuses existing destinations.
   await record('isolated-workflow-generator-environment-contracts', async () => {
-    const base = path.join(temporary, 'generator'), design = path.join(base, 'tools');
+    const base = path.join(temporary, 'generator'), design = path.join(base, 'scripts', 'example-workflows');
     await fs.mkdir(design, { recursive: true });
     for (const name of ['build-workflows.mjs', 'task-bridge.cjs', 'BACKEND-CONTRACT.md']) {
       const source = await read(`scripts/example-workflows/${name}`);
       await fs.writeFile(path.join(design, name), source);
       sourceInputs.push({ path: `scripts/example-workflows/${name}`, sha256: sha(source) });
+    }
+    const runtimeGuide = await read('example/RUNTIME.md');
+    sourceInputs.push({ path: 'example/RUNTIME.md', sha256: sha(runtimeGuide) });
+    assert.ok(runtimeGuide.includes('BACKEND_TOKEN` 显式设为空字符串'));
+    for (const method of ['internagent-1-5', 'biomni-r0', 'chemical-coscientist', 'raven']) {
+      const relative = `example/${method}/research_proposal.txt`;
+      const proposal = await read(relative);
+      await fs.mkdir(path.join(base, 'example', method), { recursive: true });
+      await fs.writeFile(path.join(base, relative), proposal);
+      sourceInputs.push({ path: relative, sha256: sha(proposal) });
     }
     const generatedRoot = path.join(base, 'generated');
     const run = spawnSync(process.execPath, [path.join(design, 'build-workflows.mjs'), '--output-root', generatedRoot], { cwd: base, encoding: 'utf8', timeout: 20_000 });
@@ -97,24 +107,23 @@ try {
     let definitions = 0;
     for (const method of ['internagent-1-5', 'biomni-r0', 'chemical-coscientist', 'raven']) {
       const generated = JSON.parse(await fs.readFile(path.join(generatedRoot, method, 'workflow.json'), 'utf8'));
-      const requirement = await fs.readFile(path.join(generatedRoot, method, 'requirement.txt'), 'utf8');
-      assert.ok(requirement.includes('无认证时 BACKEND_TOKEN 显式设为空字符串'));
+      const proposal = await fs.readFile(path.join(generatedRoot, method, 'research_proposal.txt'), 'utf8');
       for (const location of ['example']) {
         const actual = JSON.parse(await read(`${location}/${method}/workflow.json`));
-        assert.equal((await read(`${location}/${method}/requirement.txt`)).replaceAll('\r\n', '\n'), requirement.replaceAll('\r\n', '\n'));
+        assert.equal((await read(`${location}/${method}/research_proposal.txt`)).replaceAll('\r\n', '\n'), proposal.replaceAll('\r\n', '\n'));
         const actualBackend = actual.skillDefinitions['method-protocol'].files['references/backend.md'];
         const generatedBackend = generated.skillDefinitions['method-protocol'].files['references/backend.md'];
         assert.equal(actualBackend.replaceAll('\r\n', '\n'), generatedBackend.replaceAll('\r\n', '\n'));
         for (const [name, d] of Object.entries(actual.mcpDefinitions)) {
           assert.deepEqual(generated.mcpDefinitions[name].envFrom, d.envFrom);
-          for (const source of Object.values(d.envFrom)) assert.ok(requirement.includes(source), `${method}: missing operator key ${source}`);
+          for (const source of Object.values(d.envFrom)) assert.ok(runtimeGuide.includes(source), `${method}: missing operator key ${source}`);
           definitions++;
         }
       }
     }
       return { evidence: 'real-generator-execution-in-isolated-copy', definitionsCompared: definitions,
-        requirementFilesCompared: 4, embeddedBackendDocumentsCompared: 4,
-        generatedRequirementsDeclareAllOperatorKeys: true, blankTokenPresenceDocumented: true, writesOutsideFixture: false };
+        researchProposalFilesCompared: 4, embeddedBackendDocumentsCompared: 4,
+        runtimeGuideDeclaresAllOperatorKeys: true, blankTokenPresenceDocumented: true, writesOutsideFixture: false };
   });
   for (const engine of ['core']) {
     for (const p of [`sdk/dist/${engine}/project-mcp.js`, `sdk/dist/${engine}/project-mcp-host.js`]) {

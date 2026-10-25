@@ -9,7 +9,7 @@
     },
     {
       "from": "research/todo-seven/alphaevolve/requirement.txt",
-      "to": "example/alphaevolve/requirement.txt",
+      "to": "example/alphaevolve/research_proposal.txt",
       "reason": "Canonical example location or shared tooling/history relocation"
     },
     {
@@ -19,7 +19,7 @@
     },
     {
       "from": "research/todo-seven/kosmos/requirement.txt",
-      "to": "example/kosmos/requirement.txt",
+      "to": "example/kosmos/research_proposal.txt",
       "reason": "Canonical example location or shared tooling/history relocation"
     },
     {
@@ -84,7 +84,7 @@
     },
     {
       "from": "research/todo-seven/ai-scientist-v2/requirement.txt",
-      "to": "example/ai-scientist-v2/requirement.txt",
+      "to": "example/ai-scientist-v2/research_proposal.txt",
       "reason": "Canonical example location or shared tooling/history relocation"
     },
     {
@@ -94,7 +94,7 @@
     },
     {
       "from": "research/todo-seven/biomni-r0/requirement.txt",
-      "to": "example/biomni-r0/requirement.txt",
+      "to": "example/biomni-r0/research_proposal.txt",
       "reason": "Canonical example location or shared tooling/history relocation"
     },
     {
@@ -104,7 +104,7 @@
     },
     {
       "from": "research/todo-seven/chemical-coscientist/requirement.txt",
-      "to": "example/chemical-coscientist/requirement.txt",
+      "to": "example/chemical-coscientist/research_proposal.txt",
       "reason": "Canonical example location or shared tooling/history relocation"
     },
     {
@@ -114,7 +114,7 @@
     },
     {
       "from": "research/todo-seven/internagent-1-5/requirement.txt",
-      "to": "example/internagent-1-5/requirement.txt",
+      "to": "example/internagent-1-5/research_proposal.txt",
       "reason": "Canonical example location or shared tooling/history relocation"
     },
     {
@@ -124,7 +124,7 @@
     },
     {
       "from": "research/todo-seven/raven/requirement.txt",
-      "to": "example/raven/requirement.txt",
+      "to": "example/raven/research_proposal.txt",
       "reason": "Canonical example location or shared tooling/history relocation"
     },
     {
@@ -2691,6 +2691,126 @@
       "from": ".agents/skills/research-director/SKILL.md",
       "to": ".agents/skills/general/research-director/SKILL.md",
       "reason": "Built-in Skills and companion resources moved under general/; Skill identities and resource relationships are preserved."
+    },
+    {
+      "from": "example/01-ahe-evolve/requirement.txt",
+      "to": "example/01-ahe-evolve/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/02-software-development/requirement.txt",
+      "to": "example/02-software-development/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/agent-laboratory/requirement.txt",
+      "to": "example/agent-laboratory/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/agentrxiv/requirement.txt",
+      "to": "example/agentrxiv/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/ai-scientist-v2/requirement.txt",
+      "to": "example/ai-scientist-v2/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/alphaevolve/requirement.txt",
+      "to": "example/alphaevolve/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/aris/requirement.txt",
+      "to": "example/aris/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/autoresearch/requirement.txt",
+      "to": "example/autoresearch/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/biomni-r0/requirement.txt",
+      "to": "example/biomni-r0/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/biomni/requirement.txt",
+      "to": "example/biomni/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/chemical-coscientist/requirement.txt",
+      "to": "example/chemical-coscientist/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/co-scientist/requirement.txt",
+      "to": "example/co-scientist/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/drugevolve/requirement.txt",
+      "to": "example/drugevolve/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/dynamic-research-workflow/requirement.txt",
+      "to": "example/dynamic-research-workflow/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/funsearch/requirement.txt",
+      "to": "example/funsearch/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/internagent-1-5/requirement.txt",
+      "to": "example/internagent-1-5/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/kosmos/requirement.txt",
+      "to": "example/kosmos/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/metaharness/requirement.txt",
+      "to": "example/metaharness/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/raven/requirement.txt",
+      "to": "example/raven/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/robin/requirement.txt",
+      "to": "example/robin/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/rrsi/requirement.txt",
+      "to": "example/rrsi/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/sciagents/requirement.txt",
+      "to": "example/sciagents/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "example/scientist-two/requirement.txt",
+      "to": "example/scientist-two/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "sdk/examples/requirement.txt",
+      "to": "sdk/examples/research_proposal.txt",
+      "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
     }
   ],
   "removals": [

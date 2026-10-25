@@ -61,7 +61,7 @@ Main 继续时调用 `route_to_agent(target="revise")` 即可。无需更改 `ma
 将任务目标和约束写入自然语言需求文件，选择已有任务目录作为 workspace，使用 SDK 自带 CLI 读取配置：
 
 ```bash
-scievolve run start /absolute/path/workflow.json /absolute/path/requirement.txt \
+scievolve run start /absolute/path/workflow.json /absolute/path/research_proposal.txt \
   --workspace /absolute/path/task-project \
   --data-dir /absolute/path/run-data --gateway GATEWAY_ID
 ```

@@ -26,7 +26,7 @@ Hermes 使用 SDK 的网关和模型，不读取个人 Hermes profile 或 OAuth�
 scievolve harnesses --data-dir D:/runs/hermes-data --runtime-config D:/research/runtime.json
 scievolve gateway test GATEWAY_ID --harness hermes --model YOUR_MODEL `
   --data-dir D:/runs/hermes-data --runtime-config D:/research/runtime.json
-scievolve start D:/research/workflow.json D:/research/requirement.txt `
+scievolve start D:/research/workflow.json D:/research/research_proposal.txt `
   --workspace D:/research/project --gateway GATEWAY_ID `
   --data-dir D:/runs/hermes-data --runtime-config D:/research/runtime.json
 ```

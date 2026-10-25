@@ -1,6 +1,0 @@
-autoresearch checkout、源码版本、专用实验 workspace、运行 tag 和初始 master 提交：请填写。
-提供数据缓存、uv 依赖和单 GPU。
-
-运行基线，只修改 train.py，保持 prepare.py 和依赖固定。每个候选训练 300 秒，按 val_bpb 选择保留、丢弃或记录 crash，并执行对应 Git 操作。
-
-持续优化至用户停止或达到指定预算。交付最佳 train.py、Git 版本、原格式 results.tsv 和日志。

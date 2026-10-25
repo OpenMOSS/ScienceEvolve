@@ -41,7 +41,7 @@ Choose a dedicated absolute `dataDir`, then [add and test a model gateway](docs/
 
 ```sh
 scievolve workflow validate /absolute/workflow.json
-scievolve start /absolute/workflow.json /absolute/requirement.txt --data-dir /absolute/scienceevolve-data --workspace /absolute/task-project --gateway GATEWAY_ID
+scievolve start /absolute/workflow.json /absolute/research_proposal.txt --data-dir /absolute/scienceevolve-data --workspace /absolute/task-project --gateway GATEWAY_ID
 ```
 
 The task directory must exist, and both it and `dataDir` must use absolute paths. The two directories must be separate, and neither may contain the other. Git-off runs directly in the task directory; Git-on uses isolated worktrees and delivers the integrated result back. Press Ctrl+C to pause, wait for shutdown, then use the printed resume command. Keep one SDK host per data directory.
@@ -51,13 +51,14 @@ The task directory must exist, and both it and `dataDir` must use absolute paths
 Use a workflow with its model routes already tested in the same `dataDir`:
 
 ```js
+import { readFile } from 'node:fs/promises';
 import { createResearchSdk, loadWorkflowConfig } from '@scienceevolve/sdk';
 
 const sdk = await createResearchSdk({ dataDir: '/absolute/scienceevolve-data' });
 try {
   const run = await sdk.start({
     title: 'Research task',
-    requirement: 'Describe the task, inputs, and acceptance criteria.',
+    requirement: await readFile('/absolute/research_proposal.txt', 'utf8'),
     workflow: await loadWorkflowConfig('/absolute/workflow.json'),
     workspace: '/absolute/task-project',
     gatewayBindings: { defaultGatewayId: 'GATEWAY_ID' }

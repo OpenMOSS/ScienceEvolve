@@ -14,7 +14,7 @@
 将每个 Agent 的 model 改为真实 ID，或同时传 `--model` 和 `--harness`。不要填写 key、URL、旧 `gatewaySource`。在同一个独立 dataDir 中先 `gateway add/import` 和 `gateway test`，得到 GATEWAY_ID。需求文件请明确可修改范围、测试命令与完成标准。
 
 ```sh
-scievolve start /absolute/path/workflow.json /absolute/path/requirement.txt \
+scievolve start /absolute/path/workflow.json /absolute/path/research_proposal.txt \
   --workspace /absolute/path/existing-project \
   --data-dir /absolute/path/sdk-run-data \
   --gateway GATEWAY_ID --title '已有项目验收'

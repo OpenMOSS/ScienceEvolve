@@ -49,7 +49,7 @@ Use `--inputs ./materials` for one source, relative to launch cwd. Multiple sour
 ```
 
 ```sh
-scievolve start workflow.json requirement.txt --data-dir /absolute/new-data \
+scievolve start workflow.json research_proposal.txt --data-dir /absolute/new-data \
   --gateway GATEWAY_ID --workspace /absolute/project \
   --inputs-file ./inputs.json --input-description 'Raw records and reference figures'
 ```

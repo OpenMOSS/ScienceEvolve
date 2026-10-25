@@ -1,7 +1,0 @@
-优化 workspace 中 agent.py 的 answer(question, notes)，根据问题选择相关笔记；空笔记或无关笔记返回 unknown。
-
-只修改 agent.py，保持接口并使用 Python 标准库。以 python3 evaluate.py 输出的 score 评分，目标为 1，评测器和测试数据保持固定。
-
-先测基线，再按 workflow 的批次循环执行、评分、改进；分数严格提高时保留候选，否则恢复最佳版本。每批由 Main 决定继续或结束。
-
-交付最佳代码、基线和各轮评分、运行日志及改进说明。

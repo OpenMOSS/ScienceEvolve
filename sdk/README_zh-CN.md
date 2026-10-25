@@ -41,7 +41,7 @@ SDK 按 `general/` 与 `scientific/` 分类提供 **21 个通用与平台技能�
 
 ```sh
 scievolve workflow validate /absolute/workflow.json
-scievolve start /absolute/workflow.json /absolute/requirement.txt --data-dir /absolute/scienceevolve-data --workspace /absolute/task-project --gateway GATEWAY_ID
+scievolve start /absolute/workflow.json /absolute/research_proposal.txt --data-dir /absolute/scienceevolve-data --workspace /absolute/task-project --gateway GATEWAY_ID
 ```
 
 任务目录须已存在，且任务目录与 `dataDir` 均须使用绝对路径。两个目录分开且互不包含。Git-off 在任务目录中执行；Git-on 使用隔离 worktree，集成后回写结果。按 Ctrl+C 暂停，等待退出，再使用打印出的命令恢复。同一个数据目录同时由一个 SDK 宿主持有。
@@ -51,13 +51,14 @@ scievolve start /absolute/workflow.json /absolute/requirement.txt --data-dir /ab
 使用已在同一 `dataDir` 中通过模型路由测试的 workflow：
 
 ```js
+import { readFile } from 'node:fs/promises';
 import { createResearchSdk, loadWorkflowConfig } from '@scienceevolve/sdk';
 
 const sdk = await createResearchSdk({ dataDir: '/absolute/scienceevolve-data' });
 try {
   const run = await sdk.start({
     title: '科研任务',
-    requirement: '填写任务目标、输入和验收要求。',
+    requirement: await readFile('/absolute/research_proposal.txt', 'utf8'),
     workflow: await loadWorkflowConfig('/absolute/workflow.json'),
     workspace: '/absolute/task-project',
     gatewayBindings: { defaultGatewayId: 'GATEWAY_ID' }

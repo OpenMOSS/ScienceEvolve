@@ -5,13 +5,13 @@ description: 根据需求设计、编写和校验 ScienceEvolve workflow.json，
 
 # ScienceEvolve workflow 设计与运行
 
-交付可校验的 workflow.json、UTF-8 requirement.txt 和完整启动命令。只要求配置时不启动付费任务；要求执行时检查实际运行与交付证据。使用现有合同，不发明 steps、dependsOn、maxSteps 等字段。
+交付可校验的 workflow.json、UTF-8 research_proposal.txt 和完整启动命令。research_proposal.txt 写具体研究问题、假设、数据与评估方案；环境变量和运行参数写入配套运行说明。Node API 仍用 requirement 字段传入该文本。只要求配置时不启动付费任务；要求执行时检查实际运行与交付证据。使用现有合同，不发明 steps、dependsOn、maxSteps 等字段。
 
 ## 直接带 workflow.json 启动
 
 ```sh
 scievolve workflow validate ./workflow.json
-scievolve start ./workflow.json ./requirement.txt \
+scievolve start ./workflow.json ./research_proposal.txt \
   --data-dir /absolute/path/to/new-main-data \
   --workspace /absolute/path/to/your-project \
   --gateway-bindings /absolute/path/to/bindings.json

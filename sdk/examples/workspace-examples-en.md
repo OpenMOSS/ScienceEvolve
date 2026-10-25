@@ -14,7 +14,7 @@ These examples cover existing-project execution, workflow updates, and parallel 
 Set actual Agent models or pass --model and --harness together. Do not add keys, URLs, or old gatewaySource fields. First add/import and test the gateway in the same dedicated data directory. Requirements should state editable scope, test commands, and acceptance criteria.
 
 ```sh
-scievolve start /absolute/path/workflow.json /absolute/path/requirement.txt \
+scievolve start /absolute/path/workflow.json /absolute/path/research_proposal.txt \
   --workspace /absolute/path/existing-project \
   --data-dir /absolute/path/sdk-run-data \
   --gateway GATEWAY_ID --title 'Existing project acceptance'

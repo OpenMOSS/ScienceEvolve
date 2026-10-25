@@ -1,8 +1,0 @@
-使用 Biomni-R0 流程训练和评估指定 policy。
-提供 Task manifest、training/reward recipe、基础权重、E1 环境、数据划分，以及 GPU trainer 和部署服务。
-
-设置输入输出目录、累计训练/时间/费用预算和 authorizationId。执行轨迹采集、奖励计算、训练、checkpoint 登记、部署和新旧 policy 复评；记录版本谱系和每轮指标。
-
-交付 checkpoint、部署回执、评测结果、report.md、acceptance.json 和 evidence-index.json。
-
-环境变量：`SCIENCEEVOLVE_BIOMNI_R0_BACKEND_TOKEN`、`SCIENCEEVOLVE_BIOMNI_R0_BACKEND_URL`、`SCIENCEEVOLVE_BIOMNI_R0_SCOPE_ID`。无认证时 BACKEND_TOKEN 显式设为空字符串。

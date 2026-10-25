@@ -1,8 +1,0 @@
-研究问题、实验目标、设备/firmware/API、设备手册和累计实验预算：请填写。
-提供 Task manifest、代码编译与执行、测量服务和物理实验 authorizationId。
-
-Planner 根据目标和测量结果按需调用搜索、文档、代码及实验角色，生成设备匹配的实验程序，提交作业并读取测量结果，迭代实验方案。
-
-交付实验代码、作业回执、原始测量、优化记录、report.md、acceptance.json 和 evidence-index.json。
-
-环境变量：`SCIENCEEVOLVE_COSCIENTIST_BACKEND_TOKEN`、`SCIENCEEVOLVE_COSCIENTIST_BACKEND_URL`、`SCIENCEEVOLVE_COSCIENTIST_SCOPE_ID`。无认证时 BACKEND_TOKEN 显式设为空字符串。

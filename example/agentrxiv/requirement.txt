@@ -1,6 +1,0 @@
-研究目标、数据、实验室 ID、lab 数量和每个 lab 的 num_papers：请填写。
-提供 archive URL、共享 uploads 绝对路径和各实验室独立 workspace。
-
-按配置执行每篇论文的完整 Laboratory 流程，保留 solver、review 和 human 参数。检索共享预印本，读取全文并生成五句摘要，将证据用于当前研究；终稿发布后回读，再推进下一篇。
-
-交付论文、代码、实验记录、检索来源和 archive 发布回执。

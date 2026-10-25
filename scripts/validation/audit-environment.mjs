@@ -18,12 +18,12 @@ for (const [directory, topLevel] of [['example', false], ['sdk/examples', true]]
 }
 paths.push('sdk/skills/scienceevolve-sdk/assets/workflow.json');
 const injected = ['SCIENCEEVOLVE_MCP_SOURCE_DIR', 'SCIENCEEVOLVE_WORKSPACE', 'SCIENCEEVOLVE_PROJECT_ROOT'];
+const runtimeGuidePath = 'example/RUNTIME.md';
+const runtimeGuide = await fs.readFile(path.join(root, runtimeGuidePath), 'utf8');
 const issues = [], workflows = [], families = new Set();
 for (const relative of paths.sort()) {
   const bytes = await fs.readFile(path.join(root, relative)), document = JSON.parse(bytes);
   const row = { path: relative, sha256: sha(bytes), definitions: [] };
-  let requirement;
-  if (relative.startsWith('example/')) requirement = await fs.readFile(path.join(root, path.dirname(relative), 'requirement.txt'), 'utf8');
   for (const [name, definition] of Object.entries(document.mcpDefinitions ?? {})) {
     const envFrom = definition.envFrom ?? {}, consumers = [];
     families.add(JSON.stringify(Object.entries(envFrom).sort()));
@@ -37,7 +37,7 @@ for (const relative of paths.sort()) {
     }
     for (const [target, source] of Object.entries(envFrom)) {
       if (typeof source !== 'string' || !source.trim()) issues.push({ path: relative, definition: name, target, reason: 'Invalid operator variable name' });
-      if (requirement !== undefined && !requirement.includes(source)) issues.push({ path: relative, definition: name, source, reason: 'Operator variable absent from requirement' });
+      if (relative.startsWith('example/') && !runtimeGuide.includes(source)) issues.push({ path: relative, definition: name, source, reason: 'Operator variable absent from example/RUNTIME.md' });
     }
     row.definitions.push({ name, envFrom, consumers });
   }
@@ -54,6 +54,7 @@ for (const relative of ['sdk/src/core/project-mcp-host.ts']) {
 const report = { schemaVersion: 2, generatedAt: new Date().toISOString(),
   scope: 'Current canonical workflow environment producers, consumers, operator requirements and host guards',
   historicalNamingProof: 'Original naming occurrence and acceptance snapshots remain under docs/renaming.',
+  runtimeGuide: { path: runtimeGuidePath, sha256: sha(runtimeGuide) },
   workflows, hosts, workflowFilesEnumerated: paths.length,
   mcpDefinitions: workflows.reduce((n, row) => n + row.definitions.length, 0), distinctEnvFromFamilies: families.size,
   issues, success: issues.length === 0 };

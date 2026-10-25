@@ -33,7 +33,7 @@ scievolve gateway import --data-dir /absolute/new-main-data \
   --harness codex --model ACTUAL_MODEL --source env
 scievolve gateway test GATEWAY_ID --data-dir /absolute/new-main-data \
   --harness codex --model ACTUAL_MODEL --reasoning-option high
-scievolve start workflow.json requirement.txt --data-dir /absolute/new-main-data \
+scievolve start workflow.json research_proposal.txt --data-dir /absolute/new-main-data \
   --workspace /absolute/your-project \
   --gateway GATEWAY_ID
 ```
@@ -75,7 +75,7 @@ workflow 的这些角色必须是 codex，不能带 gatewayReasoningOption；不
 原生 Git-off exec 忽略用户 config/rules，显式使用官方 openai provider；不会沿用自定义中转。
 
 ```sh
-scievolve start workflow.native.json requirement.txt --data-dir /absolute/new-native-data \
+scievolve start workflow.native.json research_proposal.txt --data-dir /absolute/new-native-data \
   --runtime-config /absolute/deployment.json --native-codex-profile login
 ```
 

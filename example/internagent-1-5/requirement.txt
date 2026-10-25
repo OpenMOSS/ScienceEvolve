@@ -1,8 +1,0 @@
-使用 InternAgent 1.5 解决指定算法发现或经验科学 Task。
-提供 Task manifest、KG/检索/embedding、SPM/TEM/SKM、图增强 Monte Carlo 数值策略、评测执行器及累计预算。
-
-执行 Generation、Verification、Evolution 闭环，保留 FlowSearch 知识流、四种搜索运算符和记忆检索/更新。至少运行两轮，后续候选消费已返回的评分和跨轮记忆。
-
-交付代码、实验结果、知识与记忆记录、report.md、acceptance.json 和 evidence-index.json。
-
-环境变量：`SCIENCEEVOLVE_INTERNAGENT_BACKEND_TOKEN`、`SCIENCEEVOLVE_INTERNAGENT_BACKEND_URL`、`SCIENCEEVOLVE_INTERNAGENT_SCOPE_ID`。无认证时 BACKEND_TOKEN 显式设为空字符串。

@@ -11,7 +11,7 @@ for (const entry of await fs.readdir(path.join(root, 'example'), { withFileTypes
   const file = path.join(root, 'example', entry.name, 'workflow.json');
   try {
     const workflow = await loadMainWorkflowConfig(file);
-    if (!(await fs.readFile(path.join(path.dirname(file), 'requirement.txt'), 'utf8')).trim()) throw new Error('Empty task requirement');
+    if (!(await fs.readFile(path.join(path.dirname(file), 'research_proposal.txt'), 'utf8')).trim()) throw new Error('Empty research proposal');
     const cli = spawnSync(process.execPath, [path.join(root, 'sdk/cli/scienceevolve.mjs'), 'workflow', 'validate', file],
       { cwd: root, encoding: 'utf8', timeout: 30_000, windowsHide: true });
     const receipt = cli.status === 0 ? JSON.parse(cli.stdout.trim()) : null;

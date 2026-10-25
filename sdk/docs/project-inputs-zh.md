@@ -50,7 +50,7 @@ CLI 单个源使用 `--inputs ./materials`（相对启动目录）；多个源�
 ```
 
 ```sh
-scievolve start workflow.json requirement.txt --data-dir /absolute/new-data \
+scievolve start workflow.json research_proposal.txt --data-dir /absolute/new-data \
   --gateway GATEWAY_ID --workspace /absolute/project \
   --inputs-file ./inputs.json --input-description '原始记录与参考图'
 ```

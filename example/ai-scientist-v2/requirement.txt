@@ -1,7 +1,0 @@
-使用 AI Scientist v2 研究指定 Task。提供研究题目、数据清单、Iris/breast-cancer 输入、四阶段预算，以及 CPU、vision 和 ICML 论文编译服务。
-
-执行想法生成、四阶段 BFTS、实验与视觉反馈、三个 seed 聚合，再完成写作、反思、图文核对和独立评审。
-
-为本次任务准备独立科学状态和 Git 仓库。交付论文、同版本代码、实验图表、候选树、原始结果与评审记录。
-
-环境变量：`SCIENCEEVOLVE_AISCI_DEPENDENCY_ANCHOR`、`SCIENCEEVOLVE_AISCI_PUBLIC_PROXY_URI`、`SCIENCEEVOLVE_AISCI_SCIENCE_ROOT`。
