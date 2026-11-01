@@ -120,16 +120,7 @@ export abstract class AdapterBase {
   }
 }
 
-/** Launch JavaScript npm entrypoints through Node on Windows; never invoke cmd.exe shims. */
-export function harnessExecutableLaunch(
-  executable: string,
-  args: readonly string[]
-): { command: string; args: string[] } {
-  const extension = path.extname(executable).toLowerCase();
-  return process.platform === "win32" && [".js", ".mjs", ".cjs"].includes(extension)
-    ? { command: process.execPath, args: [executable, ...args] }
-    : { command: executable, args: [...args] };
-}
+export { harnessExecutableLaunch } from "../process-host.js";
 
 export async function prepareAdapterRuntime(
   context: HarnessAdapterContext,

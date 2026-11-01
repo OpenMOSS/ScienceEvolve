@@ -12,6 +12,9 @@ import type {
 } from "../types.js";
 import type {
   HarnessAdapterRequest,
+  HarnessAdapter,
+  LaunchPlan,
+  ResidentInactivityPolicy,
   HarnessId,
   InvocationInputs,
   InvocationSpec,
@@ -22,9 +25,10 @@ import type {
   FilesystemAuthority,
   PreparedFilesystemMcp
 } from "./filesystem-authority.js";
-import type { ResidentProcessBinding } from "./process-host.js";
+import type { ResidentProcessBinding, ResidentProcessLauncher } from "./process-host.js";
 import type {
-  BuiltinResidentProtocol,
+  ResidentProtocol,
+  ResidentProtocolCodec,
   ResidentRecoveryStrategy,
   ResidentTurnAuthorityBroker
 } from "./resident-native-driver.js";
@@ -182,7 +186,7 @@ export interface PrepareResidentScopeRequest {
 
 export interface ResidentAdapterLaunchEvidence {
   harnessId: string;
-  protocol: BuiltinResidentProtocol;
+  protocol: ResidentProtocol;
   recoveryStrategy: ResidentRecoveryStrategy;
   command: string;
   args: readonly string[];
@@ -1051,4 +1055,17 @@ function contractError(message: string, cause?: unknown): HarnessRuntimeError {
     {},
     { source: "process", cause: cause instanceof Error ? cause : undefined }
   );
+}
+
+/** Adapter-owned protocol preparation; common ProcessHost retains launch authority. */
+export interface ResidentAdapterLaunchRequest extends ResidentScopeOpenRequest {
+  adapter: HarnessAdapter;
+  executable: string;
+  processHost: ResidentProcessLauncher;
+  inactivityPolicy?: Partial<ResidentInactivityPolicy>;
+}
+export interface ResidentAdapterLaunchDefinition {
+  plan: LaunchPlan;
+  codec: ResidentProtocolCodec;
+  unstartedReservation?: true;
 }

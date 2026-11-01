@@ -146,12 +146,14 @@ export class TerminalPushCoordinatorRuntime {
       "You are awake in your retained session only to coordinate this original Agent's unresolved receipt. Read the actual facts and its existing handoff; do not redo its successful business work.",
       `Your current role is ${manager.role}. Incident=${incident.id}; original Agent=${incident.agentId}; execution=${incident.executionId}; operation=${incident.operationId}; level=${incident.level}.`,
       sources.record("receipt-incident", "Current receipt incident and original hierarchy", incident),
-      sources.fields("receipt-state", "Provider journals and original Agent facts", facts as unknown as Record<string, unknown>),
+      sources.fields("receipt-current-state", "Facts related to this exact unresolved execution/operation",
+        receiptContextFacts(facts as unknown as Record<string, unknown>, incident), "current"),
+      sources.record("receipt-state", "Complete project snapshot (only if related facts and formal state queries are insufficient)", facts, "current"),
       `Use coordinate_agent_receipt for this exact incident to request one read-only retry or, as Leader, escalate to your direct parent. ${turn.allowUserIntervention
         ? "Only global Main with this grant can use request_user."
         : "User intervention is disabled for this turn. Do not call request_user or ask the user for a decision; report the actual technical blocker if no authorized recovery remains."} You decide; the system only transports your accepted action after your own finish, actual output and native Stop.`,
       "Call finish_task with your own summary/memory, then return your actual handoff. Missing mechanisms cause a finite original-session wake, never a system-authored decision.",
-      ...(incident.userResponse ? [`The user answered your exact previous request. ${sources.record("receipt-user-response", "User response", incident.userResponse)} Your original receipt/automatic budget is unchanged.`] : []),
+      ...(incident.userResponse ? [`The user answered your exact previous request:\n${incident.userResponse.response}\n${sources.record("receipt-user-response", "User response receipt", incident.userResponse, "current")} Your original receipt/automatic budget is unchanged.`] : []),
       ...(previous ? [`${sources.record("receipt-previous-turn", "Preceding coordination facts and accepted memory", previous)}; memory is under runtime/${previous.invocationId}/terminal-push-coordination/Memory.md.`] : [])
     ].join("\n\n");
     const key = `receipt-coordinator:${turn.invocationId}`;
@@ -206,4 +208,24 @@ export class TerminalPushCoordinatorRuntime {
       o.unregister(key); await o.publish();
     }
   }
+}
+
+/** Relationships, not recency, select this supplement's current evidence. */
+export function receiptContextFacts(facts: Record<string, unknown>, incident: TerminalPushCoordinationIncident): Record<string, unknown> {
+  const ids = new Set([incident.id, incident.executionId, incident.operationId, incident.originalInvocationId, incident.unresolvedRequestId]);
+  const select = (value: unknown, depth = 0): unknown => {
+    if (!value || typeof value !== "object" || depth > 6) return undefined;
+    if (Array.isArray(value)) {
+      const selected = value.map(entry => select(entry, depth + 1)).filter(entry => entry !== undefined);
+      return selected.length ? selected : undefined;
+    }
+    if (Object.entries(value).some(([key, entry]) => (key === "id" || /(?:Id|ID)$/.test(key)) && typeof entry === "string" && ids.has(entry))) return value;
+    const selected = Object.entries(value).flatMap(([key, entry]) => { const result = select(entry, depth + 1); return result === undefined ? [] : [[key, result]]; });
+    return selected.length ? Object.fromEntries(selected) : undefined;
+  };
+  return Object.fromEntries(Object.entries(facts).flatMap(([key, value]) => {
+    if (key === "stateRevision" || key === "workflowRevision" || key === "projectId") return [[key, value]];
+    const selected = select(value);
+    return selected === undefined ? [] : [[key, selected]];
+  }));
 }

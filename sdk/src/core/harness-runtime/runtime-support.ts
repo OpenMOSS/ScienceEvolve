@@ -53,6 +53,11 @@ export interface HarnessHostOptions {
   inspireWorkspaceRoot?: string;
 }
 
+/** Configuration generation and process authorization share this workspace path. */
+export function natureFigureWorkspaceConfigPath(workspacePath: string): string {
+  return path.join(workspacePath, ".scienceevolve", "nature-figure.json");
+}
+
 export function serializeInvocationControlContext(
   control: ControlMcpRequest,
   identity: {

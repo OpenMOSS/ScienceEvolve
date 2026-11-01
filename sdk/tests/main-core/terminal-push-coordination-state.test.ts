@@ -334,6 +334,24 @@ describe("running-workflow receipt coordinator MCP transport", () => {
 });
 
 describe("historical terminal receipt coordination state", () => {
+  it("restores a historical scoped coordinator from its original root node when nested Agent arrivals have no node row", async () => {
+    const f = await fixture("closed", undefined, false, true);
+    const raw = new DatabaseSync(f.databasePath);
+    try {
+      raw.prepare("UPDATE scoped_arrivals SET node_run_id=NULL WHERE request_id='worker-arrival'").run();
+      raw.prepare("UPDATE node_runs SET activation_request_id='activate-G' WHERE node_run_id='old-node'").run();
+    } finally { raw.close(); }
+    expect(f.database.terminalPushOwnerNodeRunId(PROJECT, "old-execution")).toBe("old-node");
+    const turn = f.begin();
+    expect(f.database.projectState(PROJECT).runtimeActivities).toContainEqual(expect.objectContaining({
+      invocationId: turn.invocationId, scopeKind: "terminal-push-coordinator", nodeRunId: "old-node", leaseState: "current"
+    }));
+    f.reload();
+    expect(f.database.projectState(PROJECT).runtimeActivities).toContainEqual(expect.objectContaining({
+      invocationId: turn.invocationId, scopeKind: "terminal-push-coordinator", nodeRunId: "old-node", leaseState: "recovering"
+    }));
+  });
+
   it.each(["closed", "legacy"] as const)("keeps the current receipt Leader's exact %s group write scope and project-wide read access", async scope => {
     const f = await fixture(scope, undefined, false, true), turn = f.begin();
     const principal = { kind: "agent" as const, projectId: PROJECT, agentId: turn.agentId, invocationId: turn.invocationId };

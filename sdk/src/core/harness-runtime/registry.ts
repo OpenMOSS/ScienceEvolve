@@ -60,15 +60,6 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 /** The sole built-in metadata table. Other modules consume the Registry/Catalog. */
 export const BUILTIN_HARNESS_DESCRIPTORS: readonly HarnessDescriptor[] = [
   {
-    schemaVersion: 1, id: "hermes", label: "Hermes", adapterVersion: "1",
-    nativeProtocol: "chat-completions", purposes: ["workflow", "explainer", "probe"],
-    executableEnv: "SCIENCEEVOLVE_HERMES_BIN", defaultCommand: "hermes",
-    notes: "NousResearch Hermes native ACP session/event adapter",
-    explainerIsolation: "adapter-read-only-tools",
-    route: { webSearchMcp: true, requireMainControlTools: true },
-    capabilities: COMMON_CAPABILITIES
-  },
-  {
     schemaVersion: 1,
     id: "dsh",
     label: "dsh",
@@ -116,6 +107,7 @@ export const BUILTIN_HARNESS_DESCRIPTORS: readonly HarnessDescriptor[] = [
     explainerIsolation: "adapter-read-only-tools",
     route: {
       requireMainControlTools: true,
+      nativeProfileAuth: true,
     },
     capabilities: {
       ...COMMON_CAPABILITIES,
@@ -461,4 +453,10 @@ export function isRejectedHarnessExecutable(
 ): boolean {
   return descriptor.default === true &&
     /(?:^|[\\/])\.runtime[\\/]codex(?:-aigw)?[\\/]codex$/.test(value);
+}
+
+/** Trusted catalog capability, independent of product dispatch rules. */
+export function harnessSupportsNativeProfile(harnessId: HarnessId): boolean {
+  return harnessCatalogRegistry.has(harnessId) &&
+    harnessCatalogRegistry.descriptor(harnessId).route?.nativeProfileAuth === true;
 }

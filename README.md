@@ -411,7 +411,7 @@ Detailed guides are available in English and Chinese. Use the language links at 
 <tr><td align="left">Provide inputs, choose workspaces, and deliver files</td><td align="left"><a href="sdk/docs/project-inputs.md">Shared inputs</a> · <a href="sdk/examples/workspace-examples-en.md">Workspaces</a></td></tr>
 <tr><td align="left">Add Skills, MCP tools, or experiment platforms</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow-en.md#skills-and-mcp">Skills</a> · <a href="sdk/docs/project-mcp.md">MCP</a> · <a href="sdk/docs/sii-experiments.md">Inspire / SII</a></td></tr>
 <tr><td align="left">Integrate Node APIs, subscribe to events, and recover</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/usage-en.md#esm-api">API reference</a> · <a href="sdk/docs/main-cli.md#stop-recovery-and-results">Pause and recovery</a></td></tr>
-<tr><td align="left">Develop the SDK, run tests, or upgrade a deployment</td><td align="left"><a href="docs/sdk/README_en.md#development-and-tests">Development and tests</a> · <a href="sdk/docs/naming-migration.md">Naming migration</a> · <a href="sdk/docs/main-runtime-migration.md">Runtime migration</a> · <a href="sdk/docs/main-sync-20261016.md">Runtime updates</a></td></tr>
+<tr><td align="left">Develop the SDK, run tests, or upgrade a deployment</td><td align="left"><a href="docs/sdk/README_en.md#development-and-tests">Development and tests</a> · <a href="sdk/docs/naming-migration.md">Naming migration</a> · <a href="sdk/docs/main-runtime-migration.md">Runtime migration</a> · <a href="sdk/docs/main-sync-20261030.md">Runtime updates</a></td></tr>
 </tbody>
 </table>
 

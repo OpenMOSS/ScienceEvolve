@@ -1,3 +1,4 @@
+import { workflowMessagesText } from "./workflow-input.js";
 import { beginWorkflowRecovery, canAutomaticallyRecoverWorkflow, checkpointWorkflowRecovery, finishWorkflowRecovery, hasUserWorkflowPause } from "./workflow-recovery.js";
 import { deriveProjectRuntimeProjection } from "./project-runtime-projection.js";
 import { AgentContextSources } from "./agent-context-index.js";
@@ -421,6 +422,8 @@ export interface CollaborationResidentHandle {
 }
 
 export interface CollaborationResidentOpenInput {
+  /** Exact source-authored current messages for the first scoped task turn. */
+  initialTask?: string;
   request: AgentRunRequest;
   executionRuntimePath: string;
   /** Internal finite S report-repair grant; never provided by an Agent prompt/tool. */
@@ -672,7 +675,8 @@ implements CollaborationExecutionInputBuilder {
     // Allocate the mechanism before any business resource preparation. A
     // closed task must not rematerialize Skills or acquire their capabilities.
     const mechanismOnly = input.terminalPushObservation !== undefined || input.terminalPushCoordination !== undefined || input.worktreeClosing !== undefined;
-    const catalog = mechanismOnly ? [] : await this.skills.list(true);
+    const catalog = mechanismOnly ? [] : input.agentId === "main" && input.state.orchestration.allowMainReconfiguration
+      ? await this.skills.list() : await this.skills.forSelections([...config.skills, ...config.autoSkills]);
     const projectSkills = mechanismOnly ? {} : await materializeProjectSkills(input.projectPath, input.state.skillDefinitions);
     const skillPaths = mechanismOnly ? [] : await this.skills.resolveConfigured(catalog, config.skills, projectSkills);
     const autoSkillPaths = mechanismOnly ? [] : await this.skills.resolveConfigured(catalog, config.autoSkills, projectSkills);
@@ -770,13 +774,14 @@ implements CollaborationInvocationDispatcher {
     request.onOfficialHarnessEvent = async (event) => {
       await priorOfficial?.(event);
       this.publishLiveHarnessEvent(state.id, request.agent, event);
+      const canonical = event as unknown as HarnessEvent;
       await this.enqueue(state.id, async () => {
         await this.storage.appendEvent(state, {
           type: "agent.trace",
           agent: request.agent,
-          message: "Resident Harness event",
+          message: canonical.message ?? canonical.diagnostic?.message ?? canonical.tool?.name ?? "Resident Harness event",
           invocationId: request.invocationId,
-          data: { resident: true, event }
+          data: { resident: true, canonicalEvent: canonical }
         });
       });
     };
@@ -827,6 +832,9 @@ implements CollaborationInvocationDispatcher {
   }
 
   async finish(state: ProjectState, invocationId: string, status: "completed" | "incomplete"): Promise<void> {
+    // Official Harness callbacks have committed before invocation settlement.
+    // Retired resident sessions must not retain tools/output in live snapshots.
+    this.storage.hub.clearInvocation(state.id, invocationId);
     const key = `${state.id}:${invocationId}`;
     const tracker = this.#performance.get(key);
     if (!tracker) return;
@@ -1467,7 +1475,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.lastError = "Main authority is frozen pending process and state reconciliation";
       await this.saveState(state);
       // A retained technical freeze is retried automatically after backoff.
-      await this.withProjectLifecycle(state.id, () => this.resumeProjectLocked(state));
+      try {
+        await this.withProjectLifecycle(state.id, () => this.resumeProjectLocked(state));
+      } catch (error) {
+        if (!(error instanceof GitHubAuthorizationError)) throw error;
+        await this.recordProjectRecoveryFailure(state, error);
+      }
       return true;
     }
     if (projection.git.status !== "ready") {
@@ -1502,26 +1515,29 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       try {
         await this.refreshMainHeadFromRemote(state);
       } catch (error) {
-        // A provider/ref failure belongs to this retained project. Keep its
-        // unconfirmed base blocked without aborting every project's startup.
-        // A lost writer must still fail the service rather than be isolated.
-        this.assertWritable();
-        this.appendFailureAttempt(state, {
-          scope: "git", operation: "project.recovery.remote-ref", error,
-          retryable: true, metadata: { targetBranch: "main", remoteRefConfirmed: false,
-            phase: state.phase, projectStatus: state.status }
-        });
-        await this.publishProjection(state, database.projectState(state.id));
-        if (await this.cancellationIsDurable(state.id)) return true;
-        state.status = "retrying";
-        state.phase = "collaboration:recovering";
-        state.lastError = safeRuntimeError(error);
-        await this.saveState(state);
+        await this.recordProjectRecoveryFailure(state, error);
         return true;
       }
       this.scheduleProject(state);
     }
     return true;
+  }
+
+  private async recordProjectRecoveryFailure(state: ProjectState, error: unknown): Promise<void> {
+    // Provider failures belong to the retained project, including a frozen
+    // Main's recovery. A lost writer must still fail the service.
+    this.assertWritable();
+    this.appendFailureAttempt(state, {
+      scope: "git", operation: "project.recovery.remote-ref", error,
+      retryable: true, metadata: { targetBranch: "main", remoteRefConfirmed: false,
+        phase: state.phase, projectStatus: state.status }
+    });
+    await this.publishProjection(state, this.database().projectState(state.id));
+    if (await this.cancellationIsDurable(state.id)) return;
+    state.status = "retrying";
+    state.phase = "collaboration:recovering";
+    state.lastError = safeRuntimeError(error);
+    await this.saveState(state);
   }
 
   async createProject(state: ProjectState, input: ProjectGitInput): Promise<void> {
@@ -3686,14 +3702,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     this.restoreReceivedRootMainInputs(state);
     const pendingInputs = state.userInputs.filter((input) => input.status === "pending");
-    const initialAssignment = pendingInputs.length === 0
-      ? state.requirement
-      : [
-          state.requirement,
-          "",
-          "## Pending user requirements",
-          ...pendingInputs.map(projectUserInputText)
-        ].join("\n");
+    // Preserve this activation's task for recovery. Pending user inputs are
+    // delivered to Main below, rather than replayed as the original request.
+    const initialAssignment = state.phase === "collaboration:reopened"
+      ? pendingInputs.map(input => input.message).join("\n\n")
+      : state.requirement;
     const activationRequestId = state.cycle > 1
       ? `input-${state.id}-cycle-${state.cycle}`
       : `input-${state.id}`;
@@ -3917,7 +3930,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         const result = await this.submitNativeTurn(state, handle, { inputId: `terminal-observation:${observation.invocationId}`,
           invocationId: observation.invocationId, prompt: assignment });
         if (typeof result.handoff === "string" && result.handoff.trim()) {
-          const output = redactTrace(result.handoff).slice(0, 100_000);
+          const output = redactTrace(result.handoff);
           const handoffPath = await this.#storage.writeHandoff(state, observation.agentId, observation.invocationId, output);
           database.recordTerminalPushObservationResult({ ...observation, output, handoffPath });
           await this.publishProjection(state, database.projectState(state.id));
@@ -5677,7 +5690,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const businessAssignment = await this.businessAssignmentWithOwnManagement(
       state,
       node.agentId,
-      input.assignment,
+      workflowMessagesText([{ sender: input.sourceAgentId ?? (initialProjectInput ? "user" : input.activatedByAgentId), body: input.assignment }]),
       signal
     );
     const inboxPath = await this.#storage.writeInbox(
@@ -6570,10 +6583,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         }
         managementRound += 1;
         const invocationId = newId("inv");
+        const currentBatch = new Set(database.latestGroupAssignmentTaskIds(state.id, group.id));
         const result = await this.submitGroupLeader(state, currentGroup, leader, signal, {
           inputId: `input-${group.id}-post-delivery-${managementRound}`,
           invocationId,
-          prompt: "All currently assigned delivery tasks are terminal. Either assign another fenced batch or request final integration by a non-leader member."
+          prompt: workflowMessagesText(database.projectState(state.id).executions
+            .filter(execution => execution.groupRunId === group.id && currentBatch.has(execution.taskId) && execution.output !== undefined && execution.status === "succeeded")
+            .map(execution => ({ sender: execution.agentId, body: execution.output! })))
         });
         const action = result.controlActions
           ?.map((envelope) => envelope.action)
@@ -6683,7 +6699,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       const completion = await this.submitGroupLeader(state, currentGroup, leader, signal, {
         inputId: `input-${group.id}-complete`,
         invocationId: completionInvocationId,
-        prompt: `Final integration PR is merged. Decide group completion.\n\n${finalOutput}`
+        prompt: workflowMessagesText([{ sender: finalExecution.agentId, body: finalOutput }])
       });
       const completionAction = completion.controlActions
         ?.map((envelope) => envelope.action)
@@ -7505,108 +7521,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     phase: string
   ): string {
     const projection = this.database().projectState(state.id);
-    const nodeRun = projection.nodeRuns.find((item) => item.id === group.nodeRunId);
-    const groupTasks = projection.tasks
-      .filter((task) => task.groupRunId === group.id)
-      .sort((left, right) => left.queueOrdinal - right.queueOrdinal);
-    const current = groupTasks.find((task) => task.id === execution.taskId);
-    const tasks = groupAssignmentContextTasks(groupTasks, execution.taskId);
-    const omittedTaskCount = groupTasks.length - tasks.length;
-    const predecessor = execution.predecessorExecutionId
-      ? projection.executions.find((candidate) => candidate.id === execution.predecessorExecutionId)
-      : undefined;
-    const predecessorPull = predecessor
-      ? projection.pullRequests.find((pull) => pull.ownerExecutionId === predecessor.id)
-      : undefined;
-    const terminalStop = predecessor
-      ? this.database().latestExecutionTerminalPreparation(
-          state.id,
-          predecessor.id,
-          predecessor.ownershipEpoch
-        )
-      : undefined;
-    const predecessorCommit = predecessorPull?.headSha ?? (predecessor
-      ? projection.operations.filter((operation) =>
-          operation.ownerExecutionId === predecessor.id &&
-          operation.kind === "git.push" &&
-          operation.status === "finalized" &&
-          typeof operation.expectedHead === "string"
-        ).at(-1)?.expectedHead
-      : undefined) ?? (typeof terminalStop?.payload.checkpointCommit === "string"
-      ? terminalStop.payload.checkpointCommit
-      : undefined);
-    const taskLine = (task: typeof tasks[number]) => [
-      `- ${task.id}`,
-      `assignee=${task.assigneeAgentId ?? "unassigned"}`,
-      `status=${task.status}`,
-      `dependencies=${task.dependencyTaskIds.length > 0 ? task.dependencyTaskIds.join(",") : "none"}`,
-      `assignment=${boundedSharedText(task.assignment, 320)}`
-    ].join("; ");
-    const canonicalGroupDelivery = execution.purpose === "final-integration" && execution.executionBranch === group.groupBranch;
-    return [
-      "# Server-owned collaboration assignment",
-      "",
-      `Group run: ${group.id}`,
-      `Node run: ${group.nodeRunId}`,
-      `Input snapshot: ${boundedSharedText(nodeRun?.inputSnapshotRef ?? "unavailable", 240)}`,
-      `Group base: ${group.groupBranch}@${group.baseCommit}`,
-      `Leader: ${group.leaderAgentId}`,
-      `Acting coordinator: ${group.actingCoordinatorId ?? group.leaderAgentId}`,
-      `Coordinator epoch: ${group.coordinatorEpoch}`,
-      `Execution: ${execution.id}@${execution.ownershipEpoch}`,
-      `Phase: ${phase}`,
-      "",
-      "## Shared activation context",
-      "",
-      boundedSharedText(nodeRun?.optionalTask ?? "No upstream output was attached", 4_000),
-      "",
-      "## Your assignment",
-      "",
-      boundedSharedText(current?.assignment ?? assignment, 4_000),
-      "",
-      "## Delivery boundary",
-      "",
-      `- Work only inside your assigned execution worktree: ${execution.worktreePath}`,
-      canonicalGroupDelivery
-        ? "- Inspect and validate the members' existing merged group result. A canonical publication does not require an extra business commit."
-        : "- Use the injected Git tools (or native Git in yolo mode) to inspect status, explicitly stage only intended business files, and create your commit before returning.",
-      `- Explicitly call git_push and the GitHub PR tools for your branch ${execution.executionBranch} into ${this.database().executionPullBase(state.id, execution.id)}. Provider results return directly to you; inspect them and decide whether to retry, repair or report a blocker to your Leader.`,
-      "- Call finish_task for your own task. A natural return does not replace the formal completion receipt. Preserve existing PRs and business work when continuing the same task.",
-      canonicalGroupDelivery
-        ? "- git_push can return already_published for your exact group branch when its existing remote head matches the local head. Inspect that result, then explicitly use your PR tools for main; report a blocker through the existing handoff if verification fails."
-        : "- git_push returns not_committed if you have not created a business commit. Inspect the tool result and decide your next action; the system does not create a commit or PR for you. Runtime, Inbox, and recovery-memory files are not business deliverables.",
-      canonicalGroupDelivery
-        ? "- Publish this assigned group head through your PR tools and finish_task, preserving prior business work, then return your concise handoff."
-        : "- Make the requested file changes, verify them, publish any required artifact through the collaboration control tools, then return a concise handoff promptly.",
-      "",
-      ...(predecessor ? [
-        "## Retained predecessor provenance",
-        "",
-        `Execution: ${predecessor.id}@${predecessor.ownershipEpoch}`,
-        `Failure: ${boundedSharedText(predecessor.failureReason ?? "stop-confirmed continuation", 1_000)}`,
-        `Terminal transition reason: ${boundedSharedText(
-          typeof terminalStop?.payload.reason === "string"
-            ? terminalStop.payload.reason
-            : predecessor.failureReason ?? "not recorded",
-          1_000
-        )}`,
-        `Branch: ${predecessor.executionBranch}`,
-        `Worktree (retained read-only history): ${predecessor.worktreePath}`,
-        `Commit: ${predecessorCommit ?? "no confirmed checkpoint commit"}`,
-        `Pull request: ${predecessorPull
-          ? `#${predecessorPull.providerNumber} ${predecessorPull.status} ${predecessorPull.htmlUrl}`
-          : "none opened"}`,
-        "The predecessor checkout, commit, and PR are evidence only; continue in your new fenced worktree.",
-        ""
-      ] : []),
-      "## Shared group task state",
-      "",
-      ...(tasks.length > 0 ? tasks.map(taskLine) : ["- No persisted peer tasks"]),
-      ...(omittedTaskCount > 0
-        ? [`- ${omittedTaskCount} older terminal task(s) omitted from this bounded assignment context`]
-        : []),
-      ""
-    ].join("\n");
+    const current = projection.tasks.find(task => task.id === execution.taskId);
+    const messages = [{ sender: group.actingCoordinatorId ?? group.leaderAgentId,
+      body: current?.assignment ?? assignment }];
+    for (const dependencyId of current?.dependencyTaskIds ?? []) {
+      const owner = projection.tasks.find(task => task.id === dependencyId)?.currentExecutionId;
+      const dependency = projection.executions.find(item => item.id === owner && item.status === "succeeded");
+      if (dependency?.output !== undefined) messages.push({ sender: dependency.agentId, body: dependency.output });
+    }
+    return workflowMessagesText(messages);
   }
 
   private async claimWorkerLaneWithWait(
@@ -9892,21 +9815,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     assignment: string,
     signal?: AbortSignal
   ): Promise<string> {
-    const snapshot = await this.optionalManagementMemorySnapshot(state.id, signal);
-    const own = snapshot?.entries.find((entry) => entry.agentId === agentId);
-    if (!snapshot || !own) return assignment;
-    return [
-      assignment,
-      "",
-      "## Read-only own management memory",
-      "",
-      `Source: ${snapshot.branch}@${snapshot.commitSha}:${own.path}`,
-      `Identity: ${agentId}`,
-      "This snapshot is coordination context only; do not copy it into the business repository.",
-      "",
-      boundedSharedText(own.content, 4_000),
-      ""
-    ].join("\n");
+    // Memory remains in project records; it is no longer attached to a task.
+    return assignment;
   }
 
   private attachRuntimeCallbacks(
@@ -10555,7 +10465,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         this.database().appendEvent({ projectId: state.id, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
           agentId: execution.agentId, requestId, type: "execution.mechanism_repair.requested", payload: { missing: remaining, attempt } });
         const result = await this.submitResident(state, resident, signal, { inputId: requestId, invocationId: newId("inv"),
-          prompt: `Continue the same task in its retained session and directory. Missing formal mechanism actions: ${remaining.join(", ")}. Use your Git/GitHub tools and inspect their real results. Ordinary business git_push does not stage files or create a commit. When changes need committing, git_stage and git_commit are provided by the filesystem-authority MCP; if not visible, use the Harness's existing tool discovery within current permissions. Follow the applicable publication or closing tool description; an unchanged publication needs no empty commit. Control-action recording or persistence does not prove Git success. Existing facts: ${JSON.stringify({ ...this.standaloneGitFacts(state, execution), taskInstructions: this.database().projectState(state.id).tasks.find((task) => task.id === execution.taskId)?.assignment, ...(retainedPull ? { retainedPull } : {}) })}. If blocked, report the actual result for coordination. Preserve business work and the existing PR.` },
+          prompt: `Continue the same task in its retained session and directory. Missing formal mechanism actions: ${remaining.join(", ")}. Use your Git/GitHub tools and inspect their real results. A prior PR merge does not finish this active task. Verify the retained operation with current tool results before reporting the same blocker; a historical permission or transport error alone does not establish that the current turn is blocked. Ordinary business git_push does not stage files or create a commit. When changes need committing, git_stage and git_commit are provided by the filesystem-authority MCP; if not visible, use the Harness's existing tool discovery within current permissions. Follow the applicable publication or closing tool description; an unchanged publication needs no empty commit. Control-action recording or persistence does not prove Git success. Existing facts: ${JSON.stringify({ ...this.standaloneGitFacts(state, execution), taskInstructions: this.database().projectState(state.id).tasks.find((task) => task.id === execution.taskId)?.assignment, ...(retainedPull ? { retainedPull } : {}) })}. If blocked, report the actual result for coordination. Preserve business work and the existing PR.` },
           this.executionActivityAuthority(state.id, execution));
         await this.persistArtifactPublicationIntents(state, execution, result);
         routeDecision = this.persistStandaloneRouteDecision(state, execution, result) ?? routeDecision;
@@ -11182,27 +11092,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       ? state.userIntervention
       : undefined;
     const contextSources = new AgentContextSources();
-    let assignment = [
-      sourceIsMain
-        ? "Act as the system Main node. Record at most one orchestration decision when it is ready; recording it does not end the native Harness turn."
-        : `Choose a downstream route for ${sourceAgentId} when the decision is ready.`,
-      ...mainRouteTargetInstructions(sourceIsMain, candidates),
-      sourceIsMain
-        ? "You may select already-published merged artifacts for display. Git-on Main management files are not business artifacts and cannot be published."
-        : "Do not perform or approve business work; this is a routing-only turn.",
-      ...(pendingInputs.length > 0 ? [
-        "",
-        "Pending user requirements (authoritative):",
-        ...pendingInputs.map(input => input.text)
-      ] : []),
-      ...(answeredIntervention ? [
-        "",
-        `User response to ${answeredIntervention.id}:`,
-        boundedSharedText(answeredIntervention.response ?? "", 4_000)
-      ] : []),
-      "",
-      contextSources.record("main-route-source-output", "Source Agent handoff for this route", { agentId: sourceAgentId, nodeRunId: sourceNodeRunId, output })
-    ].join("\n");
+    contextSources.record("main-route-source-output", "Source Agent handoff for this route", { agentId: sourceAgentId, nodeRunId: sourceNodeRunId, output });
+    const reopenedUserInput = sourceIsMain && state.cycle > 1 &&
+      sourceNode?.inputSnapshotRef?.startsWith("project:") && pendingInputs.length > 0;
+    let assignment = workflowMessagesText([
+      ...(!reopenedUserInput ? [{ sender: sourceIsMain ? sourceNode?.sourceAgentId ?? (sourceNode?.inputSnapshotRef?.startsWith("project:") ? "user" : sourceAgentId) : sourceAgentId, body: output }] : []),
+      ...pendingInputs.map(input => ({ sender: "user", body: input.message })),
+      ...(answeredIntervention ? [{ sender: "user", body: answeredIntervention.response ?? "" }] : [])
+    ]);
     const latestAttempt = this.database().latestMainRouteAttempt(state.id, sourceNodeRunId);
     const priorAccepted = latestAttempt
       ? this.database().acceptedMainRouteActions({
@@ -11283,10 +11180,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     catch (error) {
       if (!(error instanceof TerminalPushObservationUnresolvedError)) throw error;
       const facts = this.database().authoritativeWorkflowFiles(state.id).currentState;
-      assignment += `\n\nOriginal Agent receipt coordination is required. ${error.message}. Use the context index to select the relevant original Agent record. Each operation in terminalPushObservations is an immutable reservation snapshot. terminalPushObservationOperations contains the current original S journals and their recorded provider proof at stateRevision; absent provider proof is not confirmed success. Review terminalPushObservationIssues and the actual Agent output before deciding. The system transports these facts and has no business decision or Git retry authority.\n${contextSources.fields("main-route-receipts", "Original Agent receipt records", { stateRevision: facts.stateRevision,
+      contextSources.fields("main-route-receipts", "Original Agent receipt records", { stateRevision: facts.stateRevision,
         terminalPushObservations: facts.terminalPushObservations ?? [],
         terminalPushObservationIssues: facts.terminalPushObservationIssues ?? [],
-        terminalPushObservationOperations: facts.terminalPushObservationOperations ?? [] })}`;
+        terminalPushObservationOperations: facts.terminalPushObservationOperations ?? [] });
+      assignment += `\n\n${workflowMessagesText([{ sender: "OpenFARS", body: error.message }])}`;
     }
     const priorAttempt = latestAttempt?.coordinatorEpoch ?? 0;
     const pendingProof = recoverySeed
@@ -11461,7 +11359,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       inputId: turnInputId,
       invocationId,
       prompt: [assignment,
-        ...managementToolInstructions(),
         ...(retainedAccepted.length ? [
           "Continue the original management task/session. Its formal decisions are retained and must not be replaced. Supply the missing finish_task for the current recovered authority.",
           `Retained accepted actions: ${JSON.stringify(retainedAccepted.map((fact) => fact.action))}.`
@@ -12785,7 +12682,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   }
 
   private loseWriterLease(error: unknown): void {
-    this.#leaseError ??= error instanceof Error ? error : new Error("Writer lease renewal failed");
+    if (this.#leaseError) return;
+    this.#leaseError = error instanceof Error ? error : new Error("Writer lease renewal failed");
+    const lease = this.#database?.writerLease();
+    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+    const sqliteCode = error && typeof error === "object" && "errcode" in error ? error.errcode : undefined;
+    console.error("Collaboration writer lease renewal failed; writer fenced", {
+      timestamp: new Date(this.#now?.() ?? Date.now()).toISOString(),
+      error: safeRuntimeError(this.#leaseError),
+      ...(typeof code === "string" ? { code: boundedSharedText(code, 200) } : {}),
+      ...(typeof sqliteCode === "number" ? { sqliteCode } : {}),
+      ...(lease ? { leaseEpoch: lease.epoch, leaseExpiresAt: new Date(lease.expiresAtMs).toISOString() } : {})
+    });
     for (const controller of this.#controllers.values()) controller.abort();
     // Stop exact resident handles, without further database mutations or an
     // automatic lease reacquisition that could defeat a replacement writer.
@@ -13713,7 +13621,7 @@ function classifyDurableFailure(
 }
 
 function projectUserInputText(input: ProjectUserInput): string {
-  return `Project user input ${input.id} (mode=${input.mode ?? "wait"}; createdAt=${input.createdAt}):\n${input.message}`;
+  return workflowMessagesText([{ sender: "user", body: input.message }]);
 }
 
 function boundedSharedText(value: string, limit: number): string {

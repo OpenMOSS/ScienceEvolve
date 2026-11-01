@@ -578,7 +578,7 @@ function agentGitTools(): RuntimeMcpToolDefinition[] {
     },
     {
       name: "github_merge_pr",
-      description: "Merge your exact pull request after checking its head and direct base, and synchronize its confirmed merged target. To recover an unfinished merge whose response was lost, reuse that original callId and the same arguments, including reason. This reconciles your original operation even if GitHub already merged, without another remote merge. Inspect actual results and decide the next action yourself.",
+      description: "Merge your exact pull request after checking its head and direct base, and synchronize its confirmed merged target. Merging a PR does not finish your active task: you may continue editing, then commit and push each new head and deliver it through its own matching PR. To recover an unfinished merge whose response was lost, reuse that original callId and the same arguments, including reason. This reconciles your original operation even if GitHub already merged, without another remote merge. Inspect actual results and decide the next action yourself.",
       inputSchema: { type: "object", additionalProperties: false, required: ["callId", "providerNumber"], properties: {
         callId: CALL_ID_SCHEMA, providerNumber: { type: "integer", minimum: 1 }, reason: { type: "string", maxLength: MAX_TEXT }
       } }

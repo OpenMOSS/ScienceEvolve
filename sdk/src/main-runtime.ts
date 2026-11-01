@@ -28,12 +28,14 @@ import { MainGitWorkspaceStore } from "./main-git-workspace.js";
 import { MainNativeCodexProfiles } from "./main-native-profiles.js";
 import { SiiExperimentService } from "./core/sii-experiments.js";
 import type { MainResearchSdkOptions } from "./main-options.js";
+import { createSdkHarnessRuntime } from "./host/harness-adapters.js";
 
-export const MAIN_RUNTIME_SOURCE_COMMIT = "6bf6a7bb5b200e92511aa4010b7d5fc3711ed79b";
 const sourceManifest = JSON.parse(await fs.readFile(new URL("../resources/main-runtime/manifest.json", import.meta.url), "utf8"));
-if (sourceManifest.sourceCommit !== MAIN_RUNTIME_SOURCE_COMMIT || typeof sourceManifest.runtimeRevision !== "string") {
+if (!/^[a-f0-9]{40}$/.test(sourceManifest.sourceCommit) || typeof sourceManifest.runtimeRevision !== "string") {
   throw new Error("Unsupported main-runtime source manifest");
 }
+/** Git base; MAIN_RUNTIME_REVISION also identifies the captured working-tree source. */
+export const MAIN_RUNTIME_SOURCE_COMMIT: string = sourceManifest.sourceCommit;
 /** Includes the exact core/schema bytes and declared shared fixes, not only the upstream base commit. */
 export const MAIN_RUNTIME_REVISION: string = sourceManifest.runtimeRevision;
 export const MAIN_RUNTIME_MARKER = ".scienceevolve-main-runtime.json";
@@ -145,7 +147,7 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
     const gatewayStore = new GatewayStore(root, options.gatewayOptions);
     if (options.initialGateway) await gatewayStore.seedBuiltin(options.initialGateway);
     const skills = new SkillCatalog(options.skillRoots ?? [builtinSkillRoot], options.userSkillRoot ?? path.join(root, "skills"));
-    const facade = options.internal ? undefined : new HarnessRuntimeFacade({
+    const facade = options.internal ? undefined : createSdkHarnessRuntime({
       ...options.runnerOptions,
       ...(siiExperiments ? { siiExperiments,
         // Async SII uses direct execFile in its service. Do not activate the

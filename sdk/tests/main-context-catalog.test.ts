@@ -14,7 +14,7 @@ it("publishes every tool catalog entry as a readable on-demand detail", async ()
       project: { agents: {}, orchestration: { allowMainReconfiguration: true } } } as unknown as AgentRunRequest;
     const prepared = await prepareWorkflowContext(request, { projectPath: root, workspacePath: root, runtimePath: root,
       inboxPath: path.join(root, "Inbox.md"), memoryPath: path.join(root, "Memory.md"), inboxSha256: "fixture" });
-    const indexPath = prepared.contextIndex!.indexPath, directory = path.dirname(indexPath);
+    const indexPath = prepared.contextIndex!.indexPath, directory = path.dirname(prepared.inboxPath);
     const json = async (file: string) => JSON.parse(await fs.readFile(file, "utf8"));
     const index = await json(indexPath);
     for (const [key, entries] of Object.entries(catalog).filter(([, value]) => value && typeof value === "object")) {

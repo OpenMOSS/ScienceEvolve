@@ -1,7 +1,7 @@
 import type { AgentHarness, AgentProtocol } from "./agent-runtime.js";
 import type { CancellationRequest } from "./cancellation.js";
 import type { WorkspaceCheckpoint } from "./workspace-checkpoint.js";
-import type { PublicHarnessDescriptor, SessionRef } from "./harness-runtime/contracts.js";
+import type { HarnessEvent, PublicHarnessDescriptor, SessionRef } from "./harness-runtime/contracts.js";
 import type {
   HarnessRuntimeErrorCode,
   HarnessRuntimeErrorSource
@@ -1703,6 +1703,8 @@ export interface ArtifactDirectoryPage {
 
 /** Canonical natural-language handoff read model; legacy result snapshots are UI compatibility only. */
 export interface HandoffRecord {
+  /** Verbatim Agent communication, separate from the archived Markdown envelope. */
+  body?: string;
   agent: AgentName;
   invocationId: string;
   markdown: string;
@@ -1792,6 +1794,9 @@ export interface HarnessRecoveryEvent {
 }
 
 export interface AgentRunRequest {
+  /** Exact Storage-authored optional sections, never inferred from task text. */
+  contextBackgrounds?: import("./context-injection-budget.js").ContextReplacement[];
+  additionalContextIndexes?: import("./agent-context-index.js").AgentContextIndex[];
   /** Server-owned detail records, published with complete read-only indexes. */
   contextSources?: import("./agent-context-index.js").AgentContextSource[];
   /** Current user requirements that require actual native-message reception. */
@@ -1893,8 +1898,9 @@ export interface AgentRunRequest {
   ) => Promise<void> | void;
   /** Provider-boundary request/delta lifecycle used for performance telemetry. */
   onModelStreamEvent?: (event: GatewayModelStreamEvent) => Promise<void> | void;
-  /** Facade-owned live display channel; never exposed to an Adapter. */
-  onLiveHarnessEvent?: (event: Record<string, unknown>) => Promise<void> | void;
+  /** Facade-owned validated canonical display channel; never exposed to an Adapter.
+   * The Record intersection retains compatibility with generic observation callbacks. */
+  onLiveHarnessEvent?: (event: HarnessEvent & Record<string, unknown>) => Promise<void> | void;
   /** Clears failed-attempt display state before same-Harness recovery. */
   onHarnessAttemptReset?: (attempt: number) => Promise<void> | void;
 }

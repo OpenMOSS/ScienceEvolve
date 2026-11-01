@@ -1,4 +1,5 @@
 import { proxyFailureError } from "./errors.js";
+import { redactTrace } from "../utils.js";
 import { createHash, randomUUID } from "node:crypto";
 import { EXPLAINER_MCP_NAME, isExplainerMcp } from "../internal/shared/explainer-tools.js";
 import { SiiExperimentService, canUseSiiExperiments, type SiiMcpBinding, type SiiFilesystemInput } from "../sii-experiments.js";
@@ -9,6 +10,9 @@ import os from "node:os";
 import path from "node:path";
 import { prepareWorkflowContext } from "../workflow-context.js";
 import { publishAgentContextIndex } from "../agent-context-index.js";
+import type { AgentContextSource, AgentContextIndex } from "../agent-context-index.js";
+import { ContextIndexOrganizer, type ContextOrganizer } from "../context-index-organizer.js";
+import { agentContextWindow, fitContextInjection, contextReplacements } from "../context-injection-budget.js";
 import { collaborationSessionKey } from "../internal/shared/collaboration-session-key.js";
 import type {
   AgentActivitySignal,
@@ -25,6 +29,7 @@ import { isTerminalPushObservationScope, terminalPushObservationActionAllowed } 
 import { isTerminalPushCoordinationScope, terminalPushCoordinationActionAllowed } from "../internal/terminal-push-coordination.js";
 import { assertWorktreeClosingControl, assertWorktreeClosingRequest, isWorktreeClosingScope, worktreeClosingActionAllowed } from "../internal/worktree-closing.js";
 import { HANDOFF_CHARACTER_LIMIT } from "../content-limits.js";
+import { MAIN_AGENT_ORCHESTRATION_FILE } from "../main-workflow-files.js";
 import { controlDecisionsConflict, isControlDecision } from "../orchestration-control-decisions.js";
 import type {
   AdapterSmokeProbeInput,
@@ -115,9 +120,9 @@ import { CodexAdapter } from "./adapters/codex-adapter.js";
 import { PiAdapter } from "./adapters/pi-adapter.js";
 import { ClaudeCodeAdapter } from "./adapters/claude-code-adapter.js";
 import { DshAdapter } from "./adapters/dsh-adapter.js";
-import { HermesAdapter } from "./adapters/hermes-adapter.js";
 import {
   agentEnvironment,
+  natureFigureWorkspaceConfigPath,
   prepareComputeRuntime,
   type HarnessHostOptions
 } from "./runtime-support.js";
@@ -267,6 +272,25 @@ function protocolRecoveryExhaustedError(
   );
 }
 
+function sessionRecoveryExhaustedError(error: unknown, harnessId: string): HarnessRuntimeError {
+  return new HarnessRuntimeError(
+    "SESSION_RESUME_FAILED",
+    "Unable to continue the original native Session after one recovery attempt; the task and Session were preserved",
+    { harnessId, recoveryAttempted: true, recoveryLimit: 1 },
+    { source: "adapter", retryable: false, cause: error }
+  );
+}
+
+function protocolCorrectionFeedback(error: unknown, secrets: Array<string | undefined>): string {
+  let feedback = error instanceof HarnessRuntimeError
+    ? String(error.details.protocolMessage ?? error.safeMessage)
+    : "Invalid JSON tool arguments";
+  for (const secret of secrets) {
+    if (secret) feedback = feedback.split(secret).join("[REDACTED]");
+  }
+  return redactTrace(feedback).slice(0, 1000);
+}
+
 function adapterVisibleRequest(
   request: AgentRunRequest,
   inputs: InvocationSpec["inputs"],
@@ -280,6 +304,8 @@ function adapterVisibleRequest(
   delete adapterSafeRequest.availableSkills;
   delete adapterSafeRequest.workflowContext;
   delete adapterSafeRequest.contextSources;
+  delete adapterSafeRequest.contextBackgrounds;
+  delete adapterSafeRequest.additionalContextIndexes;
   delete adapterSafeRequest.nativeInputNotices;
   delete adapterSafeRequest.onDurableSessionStarted;
   delete adapterSafeRequest.onControlResult;
@@ -481,7 +507,7 @@ function selectedNatureFigureConfig(
   if (request.permission !== "compute") return undefined;
   const selected = [...spec.policy.skillPaths, ...spec.policy.autoSkillPaths];
   return selected.some((skillPath) => path.basename(path.dirname(skillPath)) === "nature-figure")
-    ? path.join(spec.inputs.runtimePath, "nature-figure.json")
+    ? natureFigureWorkspaceConfigPath(spec.inputs.workspacePath)
     : undefined;
 }
 
@@ -685,7 +711,8 @@ function createCanonicalEventIngress(options: {
       ? error
       : new HarnessEventStreamError(
           options.descriptor.id,
-          "Unable to accept a canonical Harness event"
+          "Unable to accept a canonical Harness event",
+          { cause: error }
         );
     failure ??= normalized;
     return failure;
@@ -694,10 +721,11 @@ function createCanonicalEventIngress(options: {
   const publishEvent = async (event: HarnessEvent): Promise<void> => {
     try {
       await options.publish(event);
-    } catch {
+    } catch (error) {
       throw new HarnessEventStreamError(
         options.descriptor.id,
-        "Unable to publish a canonical Harness event"
+        "Unable to publish a canonical Harness event",
+        { cause: error }
       );
     }
   };
@@ -1156,7 +1184,7 @@ function validControlAction(action: Record<string, unknown>, tool: string): bool
       boundedControlString(action.context);
   }
   if (tool === "apply_workflow") {
-    return action.path === "workflow.json" &&
+    return action.path === MAIN_AGENT_ORCHESTRATION_FILE &&
       boundedControlString(action.rationale, true);
   }
   if (tool === "complete_project") return boundedControlString(action.rationale, true);
@@ -1246,13 +1274,9 @@ function validControlCollaborationScope(
     }
     if (tool === "request_user") return control.allowUserIntervention;
     if (tool === "apply_workflow") {
-      return (
-        control.allowAgentOrchestrationReconfiguration === true &&
-          action.path === "agent-orchestration.json"
-      ) || (
-        control.allowWorkflowReconfiguration === true &&
-          action.path === "workflow.json"
-      );
+      return (control.allowAgentOrchestrationReconfiguration === true ||
+        control.allowWorkflowReconfiguration === true) &&
+        action.path === MAIN_AGENT_ORCHESTRATION_FILE;
     }
     if (tool === "complete_project") return control.canComplete;
     if (["git_push", "git_get_operation", "git_reconcile_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr", "git_prepare_conflict", "git_log", "git_show", "git_diff", "git_revert"].includes(tool)) {
@@ -1398,6 +1422,19 @@ function validateAdapterResult(
 
 /** The only orchestration-facing execution entry point. It never falls back. */
 export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunner, CollaborationHarnessRunner {
+  readonly contextIndexes = new ContextIndexOrganizer();
+
+  configureContextOrganizer(organizer: ContextOrganizer): void { this.contextIndexes.configure(organizer); }
+
+  publishContextIndex(input: { projectId: string; projectPath: string; inboxPath: string; sources: readonly AgentContextSource[] }): Promise<AgentContextIndex | undefined> {
+    return publishAgentContextIndex(input.inboxPath, input.sources, { lookup: this.contextIndexes.lookup(input.projectId, input.projectPath) });
+  }
+
+  prepareAgentContext(request: AgentRunRequest, inputs: InvocationInputs): Promise<InvocationInputs> {
+    return prepareWorkflowContext(request, { ...inputs, ...(request.contextBackgrounds ? { contextBackgrounds: request.contextBackgrounds } : {}),
+      ...(request.additionalContextIndexes ? { additionalContextIndexes: request.additionalContextIndexes } : {}) },
+      undefined, { lookup: this.contextIndexes.lookup(request.project.id, inputs.projectPath) });
+  }
   private readonly registry: HarnessRegistry;
   private readonly processHost: CommonProcessHost;
   private readonly sessions = new SessionCoordinator();
@@ -1426,7 +1463,6 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     };
     const adapters = options.adapters ?? [
       new DshAdapter(adapterOptions),
-      new HermesAdapter(adapterOptions),
       new PiAdapter(adapterOptions),
       new CodexAdapter(adapterOptions),
       new ClaudeCodeAdapter(adapterOptions),
@@ -1543,7 +1579,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
           event as unknown as Record<string, unknown>
         );
         await request.onLiveHarnessEvent?.(
-          event as unknown as Record<string, unknown>
+          event as HarnessEvent & Record<string, unknown>
         );
       }
     });
@@ -1681,7 +1717,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     const stagedInputs = context.role === "leader"
       ? await validateLeaderResidentInputs(request, input.inputs)
       : await prepareInvocationInputs(request, this.options.resolveProjectWorkspace);
-    const inputs = await prepareWorkflowContext(request, stagedInputs);
+    const inputs = await this.prepareAgentContext(request, stagedInputs);
     await fs.mkdir(input.executionRuntimePath, { recursive: true, mode: 0o700 });
     await prepareComputeRuntime({
       permission: request.permission,
@@ -1732,10 +1768,9 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         { source: "runtime" }
       );
     }
-    const inlineInbox = adapter.requiresInlineInbox || context.role === "leader"
-      ? await fs.readFile(inputs.inboxPath, "utf8")
-      : undefined;
-    const prompt = compileWorkflowPrompt(request, inputs, policy, { inlineInbox });
+    const inlineInbox = await fs.readFile(inputs.inboxPath, "utf8");
+    const prompt = fitContextInjection(compileWorkflowPrompt(request, inputs, policy, { inlineInbox }),
+      agentContextWindow(config), [], policy.constraintPrompt).prompt;
 
     // Every resident execution needs a durable boundary even when the Agent's
     // ordinary one-shot preference is ephemeral.
@@ -1804,6 +1839,10 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       durableSession: true
     };
 
+    const contextReadRoots = (await Promise.all([
+      path.join(inputs.projectPath, "runtime", "project-context"), path.join(inputs.projectPath, "messages")
+    ].map(async directory => await fs.stat(directory).then(stat => stat.isDirectory() ? directory : undefined).catch(() => undefined))))
+      .filter((directory): directory is string => Boolean(directory));
     const filesystemAuthority = await compileFilesystemAuthority({
       ...(request.worktreeClosing ? { restrictedWorktreeClosing: { agentId: request.agent, scope: request.worktreeClosing } } : {}),
       ...(request.terminalPushObservation ? { terminalPushObservation: true } : {}),
@@ -1827,7 +1866,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         ? { projectWorktrees: input.filesystemAuthorityInput.projectWorktrees }
         : {}),
       protectedRoots: input.filesystemAuthorityInput.protectedRoots,
-      inputReadRoots: [path.dirname(inputs.inboxPath),
+      inputReadRoots: [inputs.projectPath, path.dirname(inputs.inboxPath), ...contextReadRoots,
         ...(inputs.workflowCurrentPath ? [path.dirname(path.dirname(inputs.workflowCurrentPath))] : []),
         ...(inputs.workflowReadDirectory ? [inputs.workflowReadDirectory] : []),
         ...(inputs.userInputsPath ? [inputs.userInputsPath] : [])]
@@ -2217,7 +2256,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         { harnessId }
       );
     }
-    let inputs = await prepareWorkflowContext(request, await prepareInvocationInputs(request, this.options.resolveProjectWorkspace));
+    let inputs = await this.prepareAgentContext(request, await prepareInvocationInputs(request, this.options.resolveProjectWorkspace));
     await prepareComputeRuntime({
       permission: request.permission,
       workspacePath: inputs.workspacePath,
@@ -2251,26 +2290,33 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     });
     await traceInvocationCapabilities(onTrace, adapter.descriptor, config, request, policy);
     assertInvocationPolicySupported(adapter.descriptor, policy);
-    const inlineInbox = adapter.requiresInlineInbox
-      ? await fs.readFile(inputs.inboxPath, "utf8")
-      : undefined;
+    let inlineInbox = await fs.readFile(inputs.inboxPath, "utf8");
     const sessionRequest = adapterVisibleRequest(request, inputs, adapter.descriptor);
     const preparedSession = await this.sessions
       .prepare(adapter, sessionRequest, inputs)
       .catch((error: unknown) => {
         throw normalizeHarnessRuntimeError(error, adapter.descriptor.id);
       });
-    const prompt = compileWorkflowPrompt(request, inputs, policy, {
+    inputs = { ...inputs, contextIndex: await this.contextIndexes.delivery(inputs.contextIndex, inputs.projectPath, request.agent, preparedSession.session) };
+    if (inputs.additionalContextIndexes?.length) {
+      const views: AgentContextIndex[] = [];
+      for (const index of inputs.additionalContextIndexes) {
+        const view = (await this.contextIndexes.delivery(index, inputs.projectPath, request.agent, preparedSession.session))!;
+        views.push(view);
+      }
+      inputs = { ...inputs, additionalContextIndexes: views };
+    }
+    const prompt = fitContextInjection(compileWorkflowPrompt(request, inputs, policy, {
       inlineInbox,
-      ...(preparedSession.resumed || preparedSession.replaced
+      ...(preparedSession.replaced
         ? {
             recoveryNote: sessionRecoveryNote(
               preparedSession.resumeFailure?.reason ??
-                "Continuing a durable Session from an earlier invocation."
+                "The previous native Session could not be resumed."
             )
           }
         : {})
-    });
+    }), agentContextWindow(config), [], policy.constraintPrompt).prompt;
     if (preparedSession.resumeFailure) {
       await onTrace("status", "Session resume failed; created a replacement in the same Harness", {
         diagnostic: true,
@@ -2297,6 +2343,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     let pendingWorkflowInput: { event: HarnessEvent; inputId: string } | undefined;
     let workflowInputId = "";
     let workflowSupplement = "";
+    const supplementaryIndexes: AgentContextIndex[] = [];
     const observeWorkflowSession = async (session: SessionRef): Promise<void> => {
       if (!session.durable || !adapterAcceptsNativeSession(adapter, session.nativeId)) return;
       observedWorkflowSession = structuredClone(session);
@@ -2311,7 +2358,15 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       const expectedSession = candidate?.durable && adapterAcceptsNativeSession(adapter, candidate.nativeId) ? structuredClone(candidate) : undefined;
       workflowInputId = `native-input:${randomUUID()}`;
       workflowSupplement = await request.onPrepareWorkflowAdjustmentInput!({ inputId: workflowInputId,
-        publishContext: async sources => (await publishAgentContextIndex(inputs.inboxPath, sources))?.preview ?? "",
+        publishContext: async sources => {
+          const index = await this.publishContextIndex({ projectId: request.project.id, projectPath: inputs.projectPath, inboxPath: inputs.inboxPath, sources });
+          if (index) {
+            supplementaryIndexes.push(index);
+            inputs.contextBackgrounds ??= [];
+            inputs.contextBackgrounds.push({ text: index.preview, alternatives: [index.compactPreview, index.minimalPreview] });
+          }
+          return index?.preview ?? "";
+        },
         ...(expectedSession ? { expectedSession } : {}) });
       if (typeof workflowSupplement !== "string") throw new HarnessRuntimeError("HARNESS_CONTRACT_VIOLATION", "Workflow input supplement must be text");
       signal.throwIfAborted();
@@ -2469,7 +2524,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
           canonicalEvent as unknown as Record<string, unknown>
         );
         await request.onLiveHarnessEvent?.(
-          canonicalEvent as unknown as Record<string, unknown>
+          canonicalEvent as HarnessEvent & Record<string, unknown>
         );
         if (canonicalEvent.kind === "assistant.delta") return;
         // Keep all canonical history attempt-local until the Adapter and
@@ -2560,105 +2615,87 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
           if (protocolFailure && protocolRecoveryAttempted) {
             throw protocolRecoveryExhaustedError(route.getFailure(), harnessId, error);
           }
+          if (resumeRecoveryAttempted && (turnInactivityFailure || isSessionResumeFailure(error))) {
+            throw sessionRecoveryExhaustedError(error, harnessId);
+          }
           if (!protocolFailure && !sessionResumeFailure && !contextFailure) throw error;
-          if (request.control) {
+          const retainSession = spec.session!.durable;
+          // Receipts belong to the invocation, not the process. A resumed
+          // Session must retain successful effects and the decision lock.
+          if (!retainSession && request.control) {
             await fs.rm(request.control.stagingPath, { force: true });
           }
           if (protocolFailure) protocolRecoveryAttempted = true;
           if (sessionResumeFailure) resumeRecoveryAttempted = true;
           if (contextFailure) contextRecoveryAttempted = true;
           await eventIngress.resetAttempt();
-          // The failed CLI had write access to its mirror. Rebuild it from the
-          // server-authoritative Inbox before replacement Session allocation,
-          // because createSession is allowed to inspect the staged inputs.
-          inputs = await prepareWorkflowContext(request, await prepareInvocationInputs(request, this.options.resolveProjectWorkspace));
-          const replacement = await this.sessions.replace(
-            adapter,
-            sessionRequest,
-            inputs,
-            spec.session!,
-            protocolFailure
-              ? "Gateway returned invalid JSON tool arguments; replacing the native Session"
-              : error instanceof Error ? error.message : "Native session resume failed"
-          ).catch((replacementError: unknown) => {
-            throw normalizeHarnessRuntimeError(replacementError, adapter.descriptor.id);
-          });
-          if (contextFailure) {
-            await onTrace("status", "Native compaction could not recover the context limit; starting one replacement Session from project files", {
-              diagnostic: true, diagnosticSource: "gateway", errorCode: error.code,
-              ...error.details, replacementGeneration: replacement.session.generation,
-              automaticRecovery: true, recoveryLimit: 1
-            });
-          } else if (protocolFailure) {
-            await onTrace("status", "Invalid tool arguments detected; retrying once with a same-Harness replacement Session", {
-              diagnostic: true,
-              diagnosticSource: "proxy",
-              errorCode: "PROTOCOL_TOOL_ARGUMENTS_INVALID",
-              harness: harnessId,
-              replacementGeneration: replacement.session.generation,
-              automaticRecovery: true,
-              recoveryLimit: 1
-            });
-          } else {
-            await onTrace(
-              "status",
-              turnInactivityFailure
-                ? "DSH turn inactivity deadline reached; retrying with a same-Harness replacement"
-                : "Native session resume failed; retrying once with a same-Harness replacement",
-              {
-                diagnostic: true,
-                diagnosticSource: "adapter",
-                errorCode: turnInactivityFailure ? "INVOCATION_TIMED_OUT" : "SESSION_RESUME_FAILED",
-                harness: harnessId,
-                replacementGeneration: replacement.session.generation
-              }
+          // Restore the server-authoritative Inbox after the failed process
+          // exits, before submitting another input to the original Session.
+          inputs = await this.prepareAgentContext(request, await prepareInvocationInputs(request, this.options.resolveProjectWorkspace));
+          const recovered = retainSession
+            ? this.sessions.resume(adapter, observedWorkflowSession ?? spec.session!)
+            : await this.sessions.replace(
+              adapter, sessionRequest, inputs, spec.session!,
+              error instanceof Error ? error.message : "Native invocation failed"
             );
-          }
-          const replacementReason = contextFailure
-            ? "the previous native Session exceeded the model context window after native compaction failed. This is the single context-limit recovery for the SAME invocation, not a new assignment."
+          const recoveryStrategy = retainSession ? "native-session-resume" : "ephemeral-session-replacement";
+          await onTrace("status", retainSession
+            ? protocolFailure
+              ? "Invalid tool arguments detected; retrying once in the original Session"
+              : "Native session recovery retrying the original Session"
+            : "Invalid tool arguments detected; retrying once with an ephemeral replacement Session", {
+            diagnostic: true,
+            diagnosticSource: protocolFailure || contextFailure ? "gateway" : "adapter",
+            errorCode: error instanceof HarnessRuntimeError ? error.code : "SESSION_RESUME_FAILED",
+            harness: harnessId,
+            sessionGeneration: recovered.session.generation,
+            recoveryStrategy,
+            automaticRecovery: true,
+            recoveryLimit: 1
+          });
+          const protocolFeedback = protocolFailure
+            ? protocolCorrectionFeedback(error, [config.gatewaySnapshot?.apiKey, route.token]) : "";
+          const recoveryReason = contextFailure
+            ? "the previous turn exceeded the model context window. This is the single context-limit recovery for the SAME invocation; continue the original task using native compaction and bounded file reads."
             : protocolFailure
-              ? "the previous native Session emitted invalid JSON tool arguments. Emit each new tool argument as one complete JSON object without trailing text."
+              ? `the previous native Session emitted invalid JSON tool arguments. Protocol validation feedback: ${protocolFeedback}. Correct the rejected arguments and emit each tool argument as one complete JSON object without trailing text.`
               : turnInactivityFailure
-                ? "the previous durable DSH turn exceeded its inactivity deadline and was replaced in the same Harness."
-                : error instanceof Error
-                  ? error.message
-                  : "the previous native Session could not be resumed.";
-          const replacementRecoveryNote = [
-            sessionRecoveryNote(replacementReason),
+                ? "the previous durable DSH turn exceeded its inactivity deadline. Continue the same task in the original Session."
+                : error instanceof Error ? error.message : "the previous native turn failed.";
+          const recoveryNote = [
+            retainSession ? "Continue the SAME task in the SAME native Session. Retain its conversation history and completed work." : undefined,
+            sessionRecoveryNote(recoveryReason),
             contextFailure
-              ? "Reconstruct current state from the Inbox, Memory.md, and referenced project files in bounded sections; preserve the canonical requirement, pending route decision, artifact catalog, and completed work."
+              ? "Read the Inbox, Memory.md, and referenced project files in bounded sections; preserve the canonical requirement, pending route decision, artifact catalog, and completed work."
               : undefined,
-            request.control
+            retainSession && request.control
               ? `Already staged control actions are recorded at ${request.control.stagingPath}; inspect that record and do not repeat them.`
               : undefined
           ].filter((item): item is string => Boolean(item)).join("\n");
           spec = {
             ...spec,
             inputs,
-            session: replacement.session,
-            durableSession: replacement.session.durable,
-            prompt: compileWorkflowPrompt(request, inputs, policy, {
-              inlineInbox,
-              recoveryNote: replacementRecoveryNote
-            })
+            session: recovered.session,
+            durableSession: recovered.session.durable,
+            prompt: compileWorkflowPrompt(request, inputs, policy, { inlineInbox, recoveryNote })
           };
-          observedWorkflowSession = undefined;
+          observedWorkflowSession = retainSession ? recovered.session : undefined;
           pendingWorkflowInput = undefined;
           workflowInputId = "";
           workflowSupplement = "";
-          const replacementLegacyIds = {
-            ...(adapterRequest.project.agentSessionIds ?? {})
-          };
-          delete replacementLegacyIds[request.agent];
+          const recoveredLegacyIds = { ...(adapterRequest.project.agentSessionIds ?? {}) };
+          const recoveredLegacyId = retainSession ? legacySessionId(recovered.session) : undefined;
+          if (recoveredLegacyId) recoveredLegacyIds[request.agent] = recoveredLegacyId;
+          else delete recoveredLegacyIds[request.agent];
           adapterRequest = freezeRuntimeValue({
             ...adapterRequest,
-            resumeThreadId: undefined,
+            resumeThreadId: recoveredLegacyId,
             project: {
               ...adapterRequest.project,
-              agentSessionIds: replacementLegacyIds,
+              agentSessionIds: recoveredLegacyIds,
               agentSessions: {
                 ...(adapterRequest.project.agentSessions ?? {}),
-                [request.agent]: replacement.session
+                [request.agent]: recovered.session
               },
               agentSessionMeta: {
                 ...(adapterRequest.project.agentSessionMeta ?? {}),
@@ -2667,26 +2704,25 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
                     contextSeq: 0,
                     resumeFailureCount: 0
                   }),
-                  generation: replacement.session.generation
+                  generation: recovered.session.generation
                 }
-              }
+              },
+              ...(retainSession && request.taskSessionId ? {
+                taskSessionRefs: { ...(adapterRequest.project.taskSessionRefs ?? {}), [request.taskSessionId]: recovered.session },
+                taskSessionIds: { ...(adapterRequest.project.taskSessionIds ?? {}), [request.taskSessionId]: recoveredLegacyId! }
+              } : {})
             },
             inboxPath: inputs.inboxPath,
             projectPath: inputs.projectPath,
             workspacePath: inputs.workspacePath,
             runtimePath: inputs.runtimePath
           });
-          // Some Adapters (notably Codex) allocate a pending placeholder and
-          // only learn the official identity after launch. Publish eager
-          // replacement identities only when the Adapter itself accepts them.
-          if (
-            adapterAcceptsNativeSession(adapter, replacement.session.nativeId)
-          ) {
-            await publishDurableSession(replacement.session);
+          if (adapterAcceptsNativeSession(adapter, recovered.session.nativeId)) {
+            await publishDurableSession(recovered.session);
           }
           route.resetFailure();
           // The failed attempt's process capability was finalized before this
-          // replacement. Give the replacement a fresh lease while retaining the
+          // continuation. Give the next process a fresh lease while retaining the
           // same Facade-owned recovery budget.
           invocationProcessHost = createInvocationProcessHost();
         }
@@ -2706,6 +2742,9 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         await emitCanonicalTrace(canonicalEvent, onTrace);
       }
       pendingCanonicalTraces = [];
+      await this.contextIndexes.acknowledge(inputs.contextIndex, inputs.projectPath, request.agent, finalSession).catch(() => undefined);
+      for (const index of inputs.additionalContextIndexes ?? []) await this.contextIndexes.acknowledge(index, inputs.projectPath, request.agent, finalSession).catch(() => undefined);
+      for (const index of supplementaryIndexes) await this.contextIndexes.acknowledge(index, inputs.projectPath, request.agent, finalSession).catch(() => undefined);
       return { ...result, threadId: finalSession.durable ? legacyId : undefined };
     } catch (error) {
       invocationFailed = true;
@@ -2731,6 +2770,16 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
   ): Promise<AgentRunResult> {
     let adapterFailed = false;
     try {
+      const selectedConfig = request.project.agents[request.agent]!;
+      const fitted = fitContextInjection(spec.prompt, agentContextWindow(selectedConfig), [], spec.policy.constraintPrompt);
+      spec = { ...spec, prompt: fitted.prompt };
+      route.setInjectionBudget?.(spec.prompt, spec.policy.constraintPrompt);
+      const prepareBudgetedInput = async (prompt: string): Promise<string> => {
+        const prepared = prepareNativeInput ? await prepareNativeInput(prompt) : prompt;
+        const final = fitContextInjection(prepared, agentContextWindow(selectedConfig), [], spec.policy.constraintPrompt);
+        route.setInjectionBudget?.(final.prompt, spec.policy.constraintPrompt);
+        return final.prompt;
+      };
       const recoveryView = Object.freeze(Object.defineProperties({}, {
         maxAttempts: { enumerable: true, get: () => recoveryBudget.maxAttempts },
         attemptsStarted: { enumerable: true, get: () => recoveryBudget.attemptsStarted }
@@ -2740,7 +2789,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         spec: freezeRuntimeValue(structuredClone(spec)),
         ...(onSessionStarted ? { onSessionStarted } : {}),
         ...(onNativeUserInput ? { onNativeUserInput } : {}),
-        ...(prepareNativeInput ? { prepareNativeInput } : {}),
+        prepareNativeInput: prepareBudgetedInput,
         signal,
         processHost,
         recoveryBudget: recoveryView,
@@ -2998,7 +3047,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     const facadeHostHome = process.env.HOME || os.homedir();
     this.assertExplainerAvailable(input.harnessId);
     const adapter = this.registry.adapter(input.harnessId, "explainer");
-    const inputs = await validateStagedInvocationInputs({
+    let inputs = await validateStagedInvocationInputs({
       projectId: input.projectId,
       invocationId: input.invocationId,
       projectPath: input.projectPath,
@@ -3063,6 +3112,18 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         throw normalizeHarnessRuntimeError(error, adapter.descriptor.id);
       });
     let session = preparedSession.session;
+    const contextIndex = await this.contextIndexes.delivery(input.contextIndex, inputs.projectPath, agent, session);
+    inputs = { ...inputs, ...(contextIndex ? { contextIndex } : {}),
+      ...(input.contextBackgrounds ? { contextBackgrounds: input.contextBackgrounds } : {}) };
+    let explainerPrompt = input.contextIndex && contextIndex
+      ? input.prompt.split(input.contextIndex.preview).join(contextIndex.preview) : input.prompt;
+    // The shared core already supplies the current question and index. Native
+    // adapters must not append the entire Inbox a second time. Compatibility
+    // callers can still supply quoted input through the staged Inbox once.
+    if (!input.evidenceInPrompt) {
+      const evidence = await fs.readFile(inputs.inboxPath, "utf8");
+      if (evidence && !explainerPrompt.includes(evidence)) explainerPrompt += `\n\n<quoted-project-evidence>\n${evidence}\n</quoted-project-evidence>`;
+    }
     if (preparedSession.resumeFailure) {
       await input.onTrace("status", "Explainer session resume failed; created a same-Harness replacement", {
         diagnostic: true,
@@ -3075,7 +3136,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     const policy = {
       permission: "workspace" as const,
       constraintPrompt: assistantServers.length
-        ? "Project Explainer: filesystem remains read-only; native shell, writes, Skills and Web Search are unavailable. Use only the injected Project Explainer tools for user-requested draft operations. Saving never starts research."
+        ? "Project Explainer: native filesystem, shell, writes, Skills and Web Search are unavailable. Use read_context for selected quoted index/detail files; resolve paths from its invocation root. Use other injected tools only within this turn's task and user-requested authority. Saving a draft never starts research."
         : "Read-only Project Explainer. Never modify files, use Skills, use MCP, use Web Search, or change workflow state.",
       skillPaths: [],
       autoSkillPaths: [],
@@ -3087,7 +3148,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       harnessId: input.harnessId,
       purpose: "explainer",
       model: input.model,
-      prompt: input.prompt,
+      prompt: fitContextInjection(explainerPrompt, agentContextWindow(config), contextReplacements(inputs), policy.constraintPrompt).prompt,
       inputs,
       policy,
       session,
@@ -3304,6 +3365,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
           { source: "adapter" }
         );
       }
+      await this.contextIndexes.acknowledge(inputs.contextIndex, inputs.projectPath, agent, invocation.finalSession).catch(() => undefined);
       return {
         answer: invocation.result.handoff,
         session: invocation.finalSession

@@ -379,7 +379,7 @@ export class ControlActionService {
           samePreparatoryEffect(item.action, action)
         );
         if (!equivalentPreparation && action.tool === "finish_task" && current.some((item) => item.action.tool === "finish_task")) {
-          throw new Error("task completion is already staged with different content");
+          throw new Error("task completion is already staged with different content; the first finish_task is already accepted. Preserve its summary and memory, complete any remaining authorized actions, then return your handoff. Do not resubmit finish_task with revised content.");
         }
         // Reject conflicting call identities/content before revalidation:
         // live finish_task may save Agent-authored memory there. A rejected

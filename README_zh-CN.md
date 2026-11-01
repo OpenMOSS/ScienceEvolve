@@ -409,7 +409,7 @@ CCFA 与 Nature 的内置副本未记录导入时的提交版本；上游仓库�
 <tr><td align="left">提供输入文件、选择工作目录、交付结果</td><td align="left"><a href="sdk/docs/project-inputs-zh.md">共享材料</a> · <a href="sdk/examples/workspace-examples.md">工作目录</a></td></tr>
 <tr><td align="left">接入 Skills、MCP 或实验平台</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow.md#skills-与-mcp">Skills</a> · <a href="sdk/docs/project-mcp-zh.md">MCP</a> · <a href="sdk/docs/sii-experiments-zh.md">Inspire / SII</a></td></tr>
 <tr><td align="left">集成 Node API、订阅事件与恢复任务</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/usage.md#esm-api">API 参考</a> · <a href="sdk/docs/main-cli-zh.md#停止恢复与结果">暂停与恢复</a></td></tr>
-<tr><td align="left">开发 SDK、运行测试、升级现有部署</td><td align="left"><a href="docs/sdk/README.md#开发与测试">开发与测试</a> · <a href="sdk/docs/naming-migration-zh.md">命名迁移</a> · <a href="sdk/docs/main-runtime-migration-zh.md">运行时迁移</a> · <a href="sdk/docs/main-sync-20261016-zh.md">内核同步</a></td></tr>
+<tr><td align="left">开发 SDK、运行测试、升级现有部署</td><td align="left"><a href="docs/sdk/README.md#开发与测试">开发与测试</a> · <a href="sdk/docs/naming-migration-zh.md">命名迁移</a> · <a href="sdk/docs/main-runtime-migration-zh.md">运行时迁移</a> · <a href="sdk/docs/main-sync-20261030-zh.md">内核同步</a></td></tr>
 </tbody>
 </table>
 

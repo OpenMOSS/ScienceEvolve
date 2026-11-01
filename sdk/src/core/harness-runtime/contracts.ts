@@ -11,7 +11,7 @@ import type {
 } from "../types.js";
 import type { InvocationProcessHost } from "./process-host.js";
 import type { OfficialEventMapper } from "./official-event-bridge.js";
-import type { BuiltinResidentProtocol, ResidentRecoveryStrategy } from "./resident-native-driver.js";
+import type { ResidentProtocol, ResidentRecoveryStrategy } from "./resident-native-driver.js";
 import type { NativeInputHistoryEvidence, NativeInputHistoryRequest } from "./native-input-history.js";
 
 /** Harness identifiers are catalog data, not a closed TypeScript union. */
@@ -61,6 +61,8 @@ export interface HarnessDescriptor {
     /** Expose the invocation Gateway's authenticated Web MCP to this Adapter. */
     webSearchMcp?: boolean;
     requireMainControlTools?: boolean;
+    /** Supports a trusted host profile instead of an invocation Gateway. */
+    nativeProfileAuth?: boolean;
   };
 }
 
@@ -91,6 +93,8 @@ export interface SessionRef {
 
 /** Paths an adapter may see. The server-authority Inbox path is deliberately absent. */
 export interface InvocationInputs {
+  contextBackgrounds?: import("../context-injection-budget.js").ContextReplacement[];
+  additionalContextIndexes?: import("../agent-context-index.js").AgentContextIndex[];
   contextIndex?: import("../agent-context-index.js").AgentContextIndex;
   /** Server-generated, scope-filtered read-only management context. */
   workflowContext?: import("../workflow-context.js").WorkflowContextSnapshot;
@@ -189,6 +193,8 @@ export interface HarnessAdapterProject {
 export type HarnessAdapterRequest = Omit<
   AgentRunRequest,
   | "project"
+  | "contextBackgrounds"
+  | "additionalContextIndexes"
   | "gatewayModelFetch"
   | "onDurableSessionStarted"
   | "onControlResult"
@@ -380,6 +386,10 @@ export interface HarnessAdapterContext {
 }
 
 export interface ExplainerInvocationRequest {
+  contextIndex?: import("../agent-context-index.js").AgentContextIndex;
+  contextBackgrounds?: import("../context-injection-budget.js").ContextReplacement[];
+  /** Shared Explainer core has already included current input and index. */
+  evidenceInPrompt?: boolean;
   invocationId: string;
   projectId: string;
   projectPath: string;
@@ -389,6 +399,7 @@ export interface ExplainerInvocationRequest {
   memoryPath: string;
   harnessId: HarnessId;
   gateway: {
+    modelContextWindows?: Record<string, number>;
     id: string;
     name: string;
     url: string;
@@ -417,10 +428,13 @@ export interface HarnessAdapter {
   readonly descriptor: HarnessDescriptor;
   /** Native execution-scoped protocol; launch remains owned by the trusted resident host. */
   readonly resident?: {
-    protocol: BuiltinResidentProtocol;
+    protocol: ResidentProtocol;
     recoveryStrategy: ResidentRecoveryStrategy;
     /** Adapter-owned translation for raw frames emitted by the resident protocol. */
     createOfficialEventMapper(): OfficialEventMapper;
+    /** Code-level extension; the common host still validates authority and the resulting launch plan. */
+    buildLaunch?(input: import("./resident-lease.js").ResidentAdapterLaunchRequest):
+      Promise<import("./resident-lease.js").ResidentAdapterLaunchDefinition>;
   };
   /** CLI compatibility only; the workspace mirror remains the canonical input. */
   readonly requiresInlineInbox?: boolean;

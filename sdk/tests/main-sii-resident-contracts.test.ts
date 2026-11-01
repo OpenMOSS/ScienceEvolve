@@ -8,6 +8,7 @@ import { CodexRunner } from "../src/core/codex-runner.js";
 import { CodexAdapter } from "../src/core/harness-runtime/adapters/codex-adapter.js";
 import { openBuiltinResidentAdapter } from "../src/core/harness-runtime/adapters/resident-adapter-factory.js";
 import { parse } from "smol-toml";
+import { ContextIndexOrganizer } from "../src/core/context-index-organizer.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }))); });
@@ -43,6 +44,8 @@ describe("SII resident lifecycle with simulated process boundary", () => {
     const scopes: string[] = [], turns: any[] = [];
     const native: any = {
       nativeProtocol: () => "responses",
+      prepareAgentContext: async (_request: unknown, inputs: unknown) => inputs,
+      contextIndexes: new ContextIndexOrganizer(),
       openSiiBinding: async (request: any, signal: AbortSignal) => { binding = await service.bind(request, signal); return binding; },
       prepareResidentScope: async (input: any) => {
         broker = input.turnAuthority;

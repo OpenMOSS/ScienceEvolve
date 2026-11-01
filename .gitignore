@@ -12,6 +12,7 @@ sdk/assets/
 /.npm-cache/
 /temp/
 /tmp-diag-*/
+/shared-core/.sync.lock
 
 # Python tools bundled with research method Skills
 __pycache__/

@@ -25,7 +25,7 @@ for (const entry of manifest.files.filter((entry) => entry.source.startsWith("se
   let verified = before;
   for (const replacement of replacements) {
     if (verified.split(replacement.before).length !== 2) throw new Error(`Non-unique diff context: ${entry.source}`);
-    verified = verified.replace(replacement.before, replacement.after);
+    verified = verified.replace(replacement.before, () => replacement.after);
   }
   if (verified !== after) throw new Error(`Diff does not reproduce exact source: ${entry.source}`);
   index.fixes.push({ id: `${prefix}-${entry.source.slice(11, -3).replaceAll("/", "-")}`, source: entry.source, replacements });

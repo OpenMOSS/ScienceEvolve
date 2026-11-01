@@ -1,4 +1,5 @@
 import { beginWorkflowRecovery, checkpointWorkflowRecovery, finishWorkflowRecovery, hasUserWorkflowPause } from "./workflow-recovery.js";
+import { legacyContextBackground } from "./context-injection-budget.js";
 import { removedWorkflowAgentTaskReason } from "./workflow-session-archive.js";
 import { assertWorkflowSessionHarnesses } from "./workflow-session-compatibility.js";
 import type { WorkflowAdjustmentPageInput, WorkflowAdjustmentRecord, WorkflowAdjustmentSnapshot, WorkflowConfigurationVersion } from "./workflow-adjustments.js";
@@ -86,6 +87,7 @@ import {
 } from "./agent-runtime.js";
 import {
   harnessCatalogRegistry,
+  harnessSupportsNativeProfile,
   toPublicHarnessDescriptor
 } from "./harness-runtime/registry.js";
 import { HANDOFF_CHARACTER_LIMIT } from "./content-limits.js";
@@ -132,6 +134,7 @@ import {
   userInterventionResponseMarkdown,
   workerHandoffMarkdown
 } from "./prompt.js";
+import { MainDecisionValidationError, resolveMainDecision, validateDisplaySelection } from "./main-decision.js";
 import {
   ControlActionService,
   hashControlCapability,
@@ -297,10 +300,7 @@ export interface AgentActivityIdleObservation {
   idleWindowMs: number;
 }
 
-/** A structurally valid Main response violated the active routing contract. */
-export class MainDecisionValidationError extends Error {
-  override name = "MainDecisionValidationError";
-}
+export { MainDecisionValidationError, resolveMainDecision } from "./main-decision.js";
 
 /** The model returned prose but did not commit the required control action. */
 export class ControlProtocolError extends Error {
@@ -600,7 +600,8 @@ export class Orchestrator {
       if (
         state.status === "completed" ||
         state.status === "cancelled" ||
-        state.status === "paused"
+        state.status === "paused" ||
+        state.status === "interrupted" && state.phase === "harness-recovery-required"
       ) {
         continue;
       }
@@ -958,11 +959,14 @@ export class Orchestrator {
   async createProject(
     input: z.input<typeof createProjectSchema>,
     /** Trusted host lifecycle only; never parsed from HTTP/workflow/Agent input. */
-    host?: {
+    hostInput?: {
       beforePersist?: (context: { projectId: string; gitEnabled: boolean }) => Promise<void>;
       initialInputs?: { files: string[]; install: (projectId: string) => Promise<void> };
-    }
+    } | { files: string[]; install: (projectId: string) => Promise<void> }
   ): Promise<ProjectView> {
+    // Preserve the Web host's existing positional initial-input contract.
+    const host = hostInput && "files" in hostInput ? { initialInputs: hostInput } : hostInput;
+    const creationStartedAt = performance.now();
     const parsed = createProjectSchema.parse(input);
     if (Boolean(parsed.inputUploadId) !== Boolean(host?.initialInputs)) {
       throw new Error("上传会话与课题输入不匹配");
@@ -990,13 +994,15 @@ export class Orchestrator {
       this.storage.projectDir(projectId),
       mcpDefinitions
     );
-    const availableSkills = await this.skills.list(true);
+    const skillValidationStartedAt = performance.now();
+    const availableSkills = await this.skills.forSelections(Object.values(agents).flatMap(config => [...config.skills, ...config.autoSkills]));
     for (const role of Object.keys(agents)) {
       await this.skills.resolveConfigured(availableSkills, [
         ...agents[role].skills,
         ...agents[role].autoSkills
       ], projectSkills);
     }
+    const skillValidationMs = Math.round(performance.now() - skillValidationStartedAt);
     const timestamp = nowIso();
     const firstAgent = orchestration.input.target;
     const git: ProjectGitState = parsed.git.enabled
@@ -1128,7 +1134,7 @@ export class Orchestrator {
     await this.emit(runtime, {
       type: "project.created",
       message: `Project created; orchestration input is routed to ${firstAgent}`,
-      data: { firstAgent, orchestration }
+      data: { firstAgent, orchestration, preparationMs: Math.round(performance.now() - creationStartedAt), skillValidationMs }
     });
     if (orchestration.loops?.some((loop) => loop.to === firstAgent)) {
       await this.beginLoopBatch(runtime, firstAgent, true);
@@ -1251,7 +1257,7 @@ export class Orchestrator {
       }
       if (config.nativeCodexProfileId) {
         try {
-          if (harness !== "codex" || config.gatewayId || config.gatewaySnapshot || config.gatewayReasoningOption ||
+          if (!harnessSupportsNativeProfile(harness) || config.gatewayId || config.gatewaySnapshot || config.gatewayReasoningOption ||
             !this.hostLifecycle?.validateNativeCodexProfile) {
             throw new Error("Native Codex profile requires an explicit trusted host binding and cannot be mixed with a Gateway");
           }
@@ -1528,7 +1534,7 @@ export class Orchestrator {
       proposal.orchestration,
       { preserveGatewaySnapshots: true }
     );
-    const availableSkills = await this.skills.list(true);
+    const availableSkills = await this.skills.forSelections(Object.values(proposal.agents).flatMap(config => [...config.skills, ...config.autoSkills]));
     const projectSkills = await materializeProjectSkills(
       this.storage.projectDir(state.id),
       proposal.skillDefinitions
@@ -2735,7 +2741,7 @@ export class Orchestrator {
     if (Object.keys(requested).length === 0) {
       throw new Error("At least one agent configuration must be provided");
     }
-    const availableSkills = await this.skills.list(true);
+    const availableSkills = await this.skills.forSelections(Object.values(requested).flatMap(config => [...(config?.skills ?? []), ...(config?.autoSkills ?? [])]));
     const projectSkills = await materializeProjectSkills(
       this.storage.projectDir(projectId),
       runtime.state.skillDefinitions
@@ -3622,7 +3628,13 @@ export class Orchestrator {
         }
       });
 
-      const allSkills = await this.skills.list(true);
+      const skillPreparationStartedAt = performance.now();
+      state.phase = `${agent}:preparing-skills`;
+      await this.emit(runtime, { type: "agent.trace", agent, message: "正在准备选中的 Skills…",
+        data: { invocationId, stage: "preparing-skills", selectedSkills: state.agents[agent].skills.length + state.agents[agent].autoSkills.length } });
+      const allSkills = agent === "main" && state.orchestration.allowMainReconfiguration
+        ? await this.skills.list()
+        : await this.skills.forSelections([...state.agents[agent].skills, ...state.agents[agent].autoSkills]);
       const projectSkills = await materializeProjectSkills(
         this.storage.projectDir(state.id),
         state.skillDefinitions
@@ -3637,6 +3649,9 @@ export class Orchestrator {
         state.agents[agent].autoSkills,
         projectSkills
       );
+      state.phase = `${agent}:preparing-context`;
+      await this.emit(runtime, { type: "agent.trace", agent, message: "Skills 准备完成，正在准备调用上下文…",
+        data: { invocationId, stage: "preparing-context", skillPreparationMs: Math.round(performance.now() - skillPreparationStartedAt) } });
       const projectPath = this.storage.projectDir(state.id);
       const workspacePath = await this.storage.roleWorkspace(
         state.id,
@@ -3697,12 +3712,13 @@ export class Orchestrator {
       // always retains canonical requirements, state and file references so a
       // replacement can reconstruct context without replaying the transcript.
       const contextFullSync = durableSession && !agentSessionId && !taskSessionRef && !state.agentSessions?.[agent];
-      const context = await this.storage.buildContextIndex(
+      const contextPackage = await this.storage.buildContextPackage(
         state,
         durableSession ? agentContextSeq : 0,
         contextFullSync,
         true
       );
+      const context = contextPackage.text;
       if (kind === "main") {
         state.mainInvocationContext = buildMainInvocationContext(state) as unknown as Record<string, unknown>;
         await this.storage.saveState(state);
@@ -3939,6 +3955,8 @@ export class Orchestrator {
         skillPaths,
         autoSkillPaths,
         availableSkills: allSkills,
+        contextBackgrounds: legacyContextBackground(context),
+        additionalContextIndexes: contextPackage.index ? [contextPackage.index] : [],
         ...(kind === "main" ? { workflowContext: { scope: "global" as const,
           configuredMcpServers: structuredClone(state.agents[agent].mcpServers) } } : {}),
         availableSkillPaths: [
@@ -4032,7 +4050,7 @@ export class Orchestrator {
         onHarnessAttemptReset: async (attempt) => {
           const replacedAttemptPerformance = performanceTracker.finish("incomplete");
           recordTerminalPerformance(state, replacedAttemptPerformance, false);
-          await onTrace("status", "Harness attempt replaced for automatic recovery", {
+          await onTrace("status", "Harness attempt ended; continuing the original task", {
             diagnostic: true,
             invocationId,
             attempt: replacedAttemptPerformance.attempt,
@@ -4582,6 +4600,7 @@ export class Orchestrator {
         agent,
         invocationId,
         markdown: handoffText,
+        body: handoff ?? "The Agent completed without a textual handoff.",
         excerpt: handoffExcerpt(handoff),
         updatedAt: nowIso()
       };
@@ -4674,6 +4693,7 @@ export class Orchestrator {
         agent,
         invocationId,
         markdown: handoffText,
+        body: handoff ?? "The Agent completed without a textual handoff.",
         excerpt: handoffExcerpt(handoff),
         updatedAt: nowIso()
       };
@@ -5164,6 +5184,7 @@ export class Orchestrator {
       agent: SYSTEM_CONTROLLER_AGENT,
       invocationId,
       markdown: mainHandoff,
+        body: handoff ?? "Agent orchestration committed.",
       excerpt: handoffExcerpt(handoff ?? mainHandoff),
       updatedAt: nowIso()
     };
@@ -5433,6 +5454,7 @@ export class Orchestrator {
           agent,
           invocationId,
           markdown: mainHandoff,
+        body: handoff ?? "Main completed without recording an orchestration decision.",
           excerpt: handoffExcerpt(handoff ?? mainHandoff),
           updatedAt: nowIso()
         };
@@ -5547,6 +5569,7 @@ export class Orchestrator {
         agent,
         invocationId,
         markdown: mainHandoff,
+        body: handoff ?? decision.message,
         excerpt: handoffExcerpt(handoff ?? mainHandoff),
         updatedAt: nowIso()
       };
@@ -5788,6 +5811,7 @@ export class Orchestrator {
       agent,
       invocationId,
       markdown: handoffText,
+        body: handoff ?? "The Agent completed without a textual handoff.",
       excerpt: handoffExcerpt(handoff ?? handoffText),
       updatedAt: nowIso()
     };
@@ -6520,20 +6544,23 @@ export class Orchestrator {
     }
     if (harnessError && !harnessError.retryable) {
       state.retryAt = undefined;
-      state.status = "retrying";
+      state.status = "interrupted";
       state.phase = "harness-recovery-required";
+      state.interruptedAt = nowIso();
+      finishWorkflowRecovery(state);
       await this.emit(runtime, {
         type: "agent.failed",
         level: "error",
         agent,
-        message: `${agent} failed with a non-retryable Harness error; the original task will be rechecked automatically`,
+        message: `${agent} failed with a non-retryable Harness error; fix the reported problem before explicitly continuing the retained task`,
         data: {
           error: record.error,
           errorType: record.errorType,
           invocationId,
           tracePath,
           failureCount,
-          automaticRetry: true,
+          automaticRetry: false,
+          userActionRequired: true,
           harnessRecoveryRequired: true,
           ...failureMetadata
         }
@@ -6961,9 +6988,9 @@ export class Orchestrator {
   private publishLiveHarnessEvent(
     projectId: string,
     agent: AgentName,
-    value: Record<string, unknown>
+    value: HarnessEvent
   ): void {
-    const event = value as unknown as HarnessEvent;
+    const event = value;
     const attempt = Number.isSafeInteger(event.attempt) ? event.attempt! : 0;
     if (
       (event.kind === "assistant.delta" || event.kind === "assistant.message") &&
@@ -7023,98 +7050,14 @@ export class Orchestrator {
   }
 }
 
-export function resolveMainDecision(
-  state: ProjectState,
-  raw: MainDecision
-): MainDecision {
-  const orchestration = orchestrationFor(state);
-  const pending = state.pendingMainDecision;
-  const capabilities = state.mainCapabilities ??
-    pending?.capabilities ??
-    buildMainCapabilitySnapshot(state);
-  const allowedCandidates = capabilities.routeCandidates;
-  const isAgentTarget =
-    raw.nextAgent !== "finish" && raw.nextAgent !== "user";
-  if (raw.display) {
-    validateDisplaySelection(orchestration, raw.display);
-  }
-  if (raw.nextAgent === "user" && !capabilities.canRequestUser) {
-    throw new MainDecisionValidationError(
-      "Main cannot request user intervention because this workflow has it disabled"
-    );
-  }
-  if (raw.nextAgent === "finish") {
-    const weakFinishSelection = capabilities.controlMode === "weak-branch" &&
-      allowedCandidates.includes("finish");
-    if (!capabilities.canComplete && !weakFinishSelection) {
-      throw new MainDecisionValidationError(
-        `Main selected finish outside a configured termination decision`
-      );
-    }
-    assertMainRouteIsValid(state, raw);
-    return { ...raw };
-  }
-  if (isAgentTarget && !isConfiguredAgent(orchestration, raw.nextAgent)) {
-    throw new MainDecisionValidationError(
-      `Main cannot route to unknown Agent name ${raw.nextAgent}`
-    );
-  }
-  if (
-    isAgentTarget &&
-    !allowedCandidates.includes(raw.nextAgent)
-  ) {
-    throw new MainDecisionValidationError(
-      `Main selected ${raw.nextAgent}, but the configured candidate edges are: ${allowedCandidates.join(", ")}`
-    );
-  }
-  return { ...raw };
-}
-
-function validateDisplaySelection(
-  orchestration: AgentOrchestrationTemplate,
-  display: NonNullable<MainDecision["display"]>
-): void {
-  const entries = [display.primary, ...display.items];
-  for (const item of entries) {
-    if (!isConfiguredAgent(orchestration, item.agent)) {
-      throw new MainDecisionValidationError(
-        `Main cannot display a file from unknown Agent ${item.agent}`
-      );
-    }
-    if (item.path.includes("\0")) {
-      throw new MainDecisionValidationError(
-        `Main selected an invalid display path: ${item.path}`
-      );
-    }
-  }
-}
-
-function assertMainRouteIsValid(
-  state: ProjectState,
-  decision: MainDecision
-): void {
-  const orchestration = orchestrationFor(state);
-  if (decision.nextAgent !== "finish") return;
-  if (orchestration.termination.agent === SYSTEM_CONTROLLER_AGENT) return;
-  const pending = state.pendingMainDecision;
-  const routeSource = pending?.sourceAgent ?? orchestration.termination.agent;
-  const finishConfigured = workflowRoutesForAgent(orchestration, routeSource).some(
-    (edge) => edge.target === "finish"
-  );
-  if (!finishConfigured) {
-    throw new MainDecisionValidationError(
-      `Main cannot finish because ${routeSource} has no configured finish edge`
-    );
-  }
-}
-
 function naturalHandoffMarkdown(
   state: ProjectState,
   agent: AgentName,
   invocationId: string,
   handoff: string
 ): string {
-  const bounded = handoff.trim().slice(0, HANDOFF_CHARACTER_LIMIT);
+  if (handoff.length > HANDOFF_CHARACTER_LIMIT) throw new Error("Handoff exceeds the communication character limit");
+  const bounded = handoff;
   return `---\nproject_id: ${state.id}\ninvocation_id: ${invocationId}\nagent: ${agent}\nkind: natural_language_handoff\nfrom: ${agent}\n---\n\n# ${agent} handoff\n\n${bounded}\n`;
 }
 

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { hermesAcpCodec, hermesOfficialEventMapper, hermesMcpServers } from "../src/core/harness-runtime/adapters/hermes-acp.js";
+import { hermesAcpCodec, hermesOfficialEventMapper, hermesMcpServers } from "../src/host/hermes/hermes-acp.js";
 import type { ResidentProtocolConnection } from "../src/core/harness-runtime/resident-native-driver.js";
 import type { SessionRef } from "../src/core/harness-runtime/contracts.js";
 import type { ResidentTurn } from "../src/core/harness-runtime/resident-lease.js";
 import { HarnessRegistry } from "../src/core/harness-runtime/registry.js";
-import { HermesAdapter } from "../src/core/harness-runtime/adapters/hermes-adapter.js";
+import { HermesAdapter } from "../src/host/hermes/hermes-adapter.js";
 import { OfficialEventBridge } from "../src/core/harness-runtime/official-event-bridge.js";
 
 const session: SessionRef = { schemaVersion: 1, harnessId: "hermes", adapterVersion: "1", generation: 0,

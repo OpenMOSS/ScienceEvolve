@@ -2811,6 +2811,21 @@
       "from": "sdk/examples/requirement.txt",
       "to": "sdk/examples/research_proposal.txt",
       "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
+    },
+    {
+      "from": "sdk/src/core/harness-runtime/adapters/hermes-acp.ts",
+      "to": "sdk/src/host/hermes/hermes-acp.ts",
+      "reason": "SDK-owned Hermes implementation moved outside the byte-identical shared core; common runtime exposes the trusted Adapter extension hook."
+    },
+    {
+      "from": "sdk/src/core/harness-runtime/adapters/hermes-adapter.ts",
+      "to": "sdk/src/host/hermes/hermes-adapter.ts",
+      "reason": "SDK-owned Hermes implementation moved outside the byte-identical shared core; common runtime exposes the trusted Adapter extension hook."
+    },
+    {
+      "from": "sdk/src/core/harness-runtime/adapters/hermes-settings.ts",
+      "to": "sdk/src/host/hermes/hermes-settings.ts",
+      "reason": "SDK-owned Hermes implementation moved outside the byte-identical shared core; common runtime exposes the trusted Adapter extension hook."
     }
   ],
   "removals": [

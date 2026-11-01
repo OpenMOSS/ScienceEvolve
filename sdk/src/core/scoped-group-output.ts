@@ -1,3 +1,4 @@
+import type { WorkflowDirectMessage } from "./workflow-input.js";
 import type { CredentialFreeProjectStateProjection, ScopedArrivalRecord } from "./collaboration-state/contracts.js";
 
 /** sourceRunId names the predecessor arrival, not its execution or child run. */
@@ -32,5 +33,20 @@ export function scopedGroupOutput(projection: CredentialFreeProjectStateProjecti
   const skips = (projection.scopedArrivals ?? []).filter((arrival) => groups.has(arrival.groupRunId) && arrival.status === "skipped");
   return [reports.map((report) => report.output).filter(Boolean).join("\n\n"),
     skips.length ? `Explicitly skipped (not successful work): ${skips.map((arrival) => `${arrival.targetNodeId}/${arrival.requestId}`).join(", ")}` : ""]
-    .filter(Boolean).join("\n\n").slice(0, 100_000) || "Necessary paths reached Finish; no business result is claimed without a merged report.";
+    .filter(Boolean).join("\n\n") || "Necessary paths reached Finish; no business result is claimed without a merged report.";
+}
+
+/** All completed, relevant predecessors in this scheduling batch. Readiness
+ * and arrivals are untouched; message selection never creates a dependency. */
+export function scopedPredecessorMessages(projection: CredentialFreeProjectStateProjection,
+  arrival: ScopedArrivalRecord, routes: Record<string, Array<{ target: string; kind: string }>>): WorkflowDirectMessage[] {
+  const candidates = (projection.scopedArrivals ?? []).filter(source =>
+    source.groupRunId === arrival.groupRunId && source.status === "completed" &&
+    (source.requestId === arrival.sourceRunId ||
+      (routes[source.targetNodeId] ?? []).some(edge => edge.kind === "strong" && edge.target === arrival.targetNodeId) &&
+      JSON.stringify(source.pathContext?.loops ?? {}) === JSON.stringify(arrival.pathContext?.loops ?? {})));
+  return candidates.flatMap(source => {
+    const body = scopedPredecessorOutput(projection, { ...arrival, sourceRunId: source.requestId });
+    return body === undefined ? [] : [{ sender: source.agentId ?? source.targetNodeId, body }];
+  });
 }

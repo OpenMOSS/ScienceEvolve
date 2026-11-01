@@ -71,12 +71,13 @@ export async function stageInvocationSkills(
   const selectedDirectoryNames = new Set(
     selectedSources.map((skillPath) => path.basename(path.dirname(skillPath)))
   );
-  const managedDirectoryNames = new Set([
-    ...(await readManagedSkillDirectories(manifestPath)),
-    ...(await skillDirectoryNames(availableSkillPaths))
-  ]);
-  for (const directoryName of managedDirectoryNames) {
+  const managedDirectoryNames = new Set(await readManagedSkillDirectories(manifestPath));
+  const catalogDirectoryNames = new Set(availableSkillPaths.map(skillPath => path.basename(path.dirname(skillPath))).filter(safeSkillDirectoryName));
+  // Only inspect the workspace's existing entries. A new empty cache must not
+  // resolve or attempt to delete every Skill installed in the global library.
+  for (const { name: directoryName } of await fs.readdir(destinationRoot, { withFileTypes: true })) {
     if (selectedDirectoryNames.has(directoryName)) continue;
+    if (!managedDirectoryNames.has(directoryName) && !catalogDirectoryNames.has(directoryName)) continue;
     await fs.rm(path.join(destinationRoot, directoryName), { recursive: true, force: true });
   }
 
@@ -170,19 +171,6 @@ async function expandSkillSupportDependencies(skillPaths: readonly string[]): Pr
     }
   }
   return expanded;
-}
-
-async function skillDirectoryNames(skillPaths: readonly string[]): Promise<string[]> {
-  const names: string[] = [];
-  for (const skillPath of skillPaths) {
-    try {
-      const realPath = await fs.realpath(skillPath);
-      names.push(path.basename(path.dirname(realPath)));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  return [...new Set(names.filter(safeSkillDirectoryName))];
 }
 
 async function readManagedSkillDirectories(manifestPath: string): Promise<string[]> {

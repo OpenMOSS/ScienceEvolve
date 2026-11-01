@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { execFileSync as sdkFixtureGit } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationRecord } from "../../src/core/types.js";
 import type { ControlAction } from "../../src/core/types.js";
 import { executeAgentGitTool, type AgentGitFacts } from "../../src/core/agent-git-tools.js";
@@ -10,9 +10,11 @@ import { mergedPullSynchronizationOperationId } from "../../src/core/collaborati
 import { mergedTreeFromBareRepo } from "./helpers/merged-tree.js";
 import {
   CollaborationGitFacade,
+  CollaborationGitInitializer,
   ExecFileGitCommandRunner,
   GitCommandError,
   GitHubAuthorizationError,
+  GitHubProviderError,
   GitHubUncertainResultError,
   GitHubUserProvider,
   LocalCollaborationGitService,
@@ -23,6 +25,7 @@ import {
   type GitCommandRequest,
   type GitCommandResult,
   type GitCommandRunner,
+  type GitHubRefFact,
   type InitializationCheckpoint,
   type OperationTransition
 } from "../../src/core/collaboration-git/index.js";
@@ -1117,6 +1120,197 @@ async function initialPushFixture(name: string) {
     }
   };
 }
+
+function observedInitialPushFixture() {
+  const projectId = "observed-initial-push";
+  const repositoryPath = path.join(os.tmpdir(), projectId, "repository");
+  const remote: GitHubRefFact = {
+    owner: "alice", repository: "demo", ref: "main", status: "missing", observedAt: NOW
+  };
+  const store = new MemoryOperationStore();
+  const observeRef = vi.fn(async (_owner: string, _repository: string, _ref: string, signal?: AbortSignal) => {
+    signal?.throwIfAborted();
+    return { ...remote };
+  });
+  const ensureRepository = vi.fn(async () => ({
+    provider: "github" as const, providerId: 1, owner: "alice", name: "demo",
+    htmlUrl: "https://github.com/alice/demo", cloneUrl: "https://github.com/alice/demo.git",
+    private: true, defaultBranch: "main" as const, observedAt: NOW
+  }));
+  const pending: { signal: AbortSignal; resolve: (head: string) => void }[] = [];
+  const pushMain = vi.fn((signal?: AbortSignal): Promise<string> => new Promise((resolve, reject) => {
+    signal!.throwIfAborted();
+    const onAbort = () => reject(signal!.reason);
+    signal!.addEventListener("abort", onAbort, { once: true });
+    pending.push({ signal: signal!, resolve: (head) => {
+      signal!.removeEventListener("abort", onAbort);
+      resolve(head);
+    } });
+  }));
+  const provider = {
+    verifyIdentity: vi.fn(async () => ({ login: "alice", id: 7, requestedScopes: ["repo"], advertisedScopes: ["repo"], observedAt: NOW })),
+    ensureRepository,
+    observeRef
+  } as unknown as GitHubUserProvider;
+  const local = {
+    projectId, repositoryPath,
+    initializeMain: vi.fn(async () => ({ projectId, repositoryPath, branch: "main", head: HEAD, observedAt: NOW })),
+    configureOrigin: vi.fn(async () => undefined),
+    pushMain
+  } as unknown as LocalCollaborationGitService;
+  return {
+    initializer: new CollaborationGitInitializer(provider, local, store),
+    remote, store, observeRef, ensureRepository, pushMain, pending,
+    request: {
+      projectId, repositoryName: "demo", repositoryVisibility: "private" as const,
+      title: "Observed startup", operationId: "observed-startup", attempt: 1
+    }
+  };
+}
+
+describe("initial main push progress observation", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("starts from the exact remote commit while the original push response is still pending", async () => {
+    const f = observedInitialPushFixture();
+    const result = f.initializer.initialize(f.request);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.pushMain).toHaveBeenCalledTimes(1);
+    expect(f.store.initialization.at(-1)?.state.status).toBe("pushing_main");
+
+    Object.assign(f.remote, { status: "present", sha: HEAD });
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect((await result).state.status).toBe("ready");
+    expect(f.pending[0]!.signal.aborted).toBe(true);
+    expect(f.store.records.get("observed-startup.push-main"))
+      .toMatchObject({ status: "finalized", expectedHead: HEAD, remoteFact: { sha: HEAD } });
+    const reads = f.observeRef.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(f.observeRef).toHaveBeenCalledTimes(reads);
+    expect(f.pushMain).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps a working push alive when one progress query fails", async () => {
+    const f = observedInitialPushFixture();
+    const result = f.initializer.initialize(f.request);
+    await vi.advanceTimersByTimeAsync(0);
+    f.observeRef.mockRejectedValueOnce(new GitHubProviderError("Temporary read outage", true));
+    Object.assign(f.remote, { status: "present", sha: HEAD });
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(f.pending[0]!.signal.aborted).toBe(false);
+    expect(f.store.initialization.at(-1)?.state.status).toBe("pushing_main");
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect((await result).state.status).toBe("ready");
+    expect(f.pushMain).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds slow progress queries and never runs overlapping queries", async () => {
+    const f = observedInitialPushFixture();
+    const result = f.initializer.initialize(f.request);
+    await vi.advanceTimersByTimeAsync(0);
+    let querySignal: AbortSignal | undefined;
+    f.observeRef.mockImplementationOnce(async (_owner, _repository, _ref, signal) => new Promise(() => {
+      querySignal = signal;
+    }));
+
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(f.observeRef).toHaveBeenCalledTimes(2);
+    expect(f.pending[0]!.signal.aborted).toBe(false);
+    Object.assign(f.remote, { status: "present", sha: HEAD });
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(querySignal?.aborted).toBe(true);
+    expect((await result).state.status).toBe("ready");
+    expect(f.observeRef).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rechecks remote absence after 30 seconds before retrying the same initial push", async () => {
+    const f = observedInitialPushFixture();
+    const result = f.initializer.initialize(f.request);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(f.pushMain).toHaveBeenCalledTimes(2);
+    expect(f.pending[0]!.signal.aborted).toBe(true);
+    expect(f.pending[1]!.signal.aborted).toBe(false);
+    expect(f.ensureRepository).toHaveBeenCalledTimes(1);
+    expect(f.store.records.get("observed-startup.push-main")?.status).toBe("uncertain");
+    Object.assign(f.remote, { status: "present", sha: HEAD });
+    f.pending[1]!.resolve(HEAD);
+
+    expect((await result).state.status).toBe("ready");
+    expect(f.store.records.get("observed-startup.push-main"))
+      .toMatchObject({ status: "finalized", expectedHead: HEAD, remoteFact: { sha: HEAD } });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retains uncertainty without another push when the deadline query cannot establish remote truth", async () => {
+    const f = observedInitialPushFixture();
+    const began = Date.now();
+    f.observeRef.mockImplementation(async () => {
+      if (Date.now() - began >= 30_000) throw new GitHubProviderError("Remote truth unavailable", true);
+      return { ...f.remote };
+    });
+    const result = f.initializer.initialize(f.request);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect((await result).state.status).toBe("failed");
+    expect(f.pushMain).toHaveBeenCalledTimes(1);
+    expect(f.store.records.get("observed-startup.push-main")?.status).toBe("uncertain");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("never treats an existing main at another commit as successful startup", async () => {
+    const f = observedInitialPushFixture();
+    const result = f.initializer.initialize(f.request);
+    await vi.advanceTimersByTimeAsync(0);
+    Object.assign(f.remote, { status: "present", sha: UPDATED_HEAD });
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect((await result).state.status).toBe("failed");
+    expect(f.pending[0]!.signal.aborted).toBe(true);
+    expect(f.pushMain).toHaveBeenCalledTimes(1);
+    expect(f.store.records.get("observed-startup.push-main")?.status).toBe("uncertain");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("honors cancellation even when the expected remote commit has arrived", async () => {
+    const f = observedInitialPushFixture();
+    const controller = new AbortController();
+    const result = f.initializer.initialize({ ...f.request, signal: controller.signal });
+    await vi.advanceTimersByTimeAsync(0);
+    Object.assign(f.remote, { status: "present", sha: HEAD });
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((await result).state.status).toBe("failed");
+    expect(f.pending[0]!.signal.aborted).toBe(true);
+    expect(f.store.initialization.some((checkpoint) => checkpoint.state.status === "ready")).toBe(false);
+    expect(f.pushMain).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds repeated unconfirmed startup pushes without waiting for the 120-second Git timeout", async () => {
+    const f = observedInitialPushFixture();
+    const result = f.initializer.initialize(f.request);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(await result).toMatchObject({
+      state: { status: "failed" },
+      failure: { code: "GITHUB_RESULT_UNCERTAIN", cause: { publicData: { timedOut: true, timeoutMs: 30_000 } } }
+    });
+    expect(f.pushMain).toHaveBeenCalledTimes(2);
+    expect(f.pending.every((push) => push.signal.aborted)).toBe(true);
+    expect(f.store.records.get("observed-startup.push-main")?.status).toBe("uncertain");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe("CollaborationGitFacade initialization", () => {
   it("initializes a Workflow-named repository from the same prepared operation after a pre-creation failure", async () => {

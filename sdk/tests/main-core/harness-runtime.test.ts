@@ -15,7 +15,7 @@ import type {
   SessionRef
 } from "../../src/core/harness-runtime/contracts.js";
 import { AgentApiError } from "../../src/core/agent-errors.js";
-import { SessionResumeError } from "../../src/core/harness-runtime/errors.js";
+import { ProtocolToolArgumentsError, SessionResumeError } from "../../src/core/harness-runtime/errors.js";
 import { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";
 import type { ProtocolProxyOptions } from "../../src/core/protocol-router.js";
 import { SiiExperimentService, assertSiiControlAction } from "../../src/core/sii-experiments.js";
@@ -588,7 +588,7 @@ class DuplicateToolCompletionAdapter extends FixtureAdapter {
 
 class OpenToolResumeFailureAdapter extends FixtureAdapter {
   override async run(context: HarnessAdapterContext) {
-    if (!context.spec.session?.resumedAt) return super.run(context);
+    if (!context.spec.session?.resumedAt || this.contexts.length > 0) return super.run(context);
     this.contexts.push(context);
     await context.onEvent({
       schemaVersion: 1,
@@ -670,27 +670,16 @@ class InvalidSelectDisplayAdapter extends FixtureAdapter {
 }
 
 class TamperingResumeAdapter extends FixtureAdapter {
-  replacementCreateSessionInbox?: string;
-
-  override createSession(
-    request: HarnessAdapterRequest,
-    inputs: InvocationInputs,
-    generation: number,
-    durable: boolean
-  ) {
-    if (generation > 4) {
-      this.replacementCreateSessionInbox = readFileSync(inputs.inboxPath, "utf8");
-    }
-    return super.createSession(request, inputs, generation, durable);
-  }
+  resumedInbox?: string;
 
   override async run(context: HarnessAdapterContext) {
-    if (context.spec.session?.resumedAt) {
+    if (context.spec.session?.resumedAt && this.contexts.length === 0) {
       this.contexts.push(context);
       await fs.rm(context.spec.inputs.inboxPath);
       await fs.writeFile(context.spec.inputs.inboxPath, "tampered by failed attempt\n", "utf8");
       throw new SessionResumeError(this.descriptor.id, context.spec.session.nativeId);
     }
+    this.resumedInbox = readFileSync(context.spec.inputs.inboxPath, "utf8");
     return super.run(context);
   }
 }
@@ -1243,8 +1232,9 @@ describe("HarnessRuntimeFacade", () => {
     });
     expect(context.spec.inputs.inboxPath).not.toBe(runRequest.inboxPath);
     expect(await fs.readFile(context.spec.inputs.inboxPath, "utf8")).toBe("authoritative inbox\n");
-    expect(context.spec.prompt).toContain(context.spec.inputs.inboxPath);
-    expect(context.spec.prompt).toContain(context.spec.inputs.memoryPath);
+    expect(context.spec.prompt).toContain("authoritative inbox\n");
+    expect(context.spec.prompt).toContain(`项目入口：${context.spec.inputs.projectPath}`);
+    expect(context.spec.prompt).not.toContain("Persistent project memory:");
     expect(context.spec.prompt).toContain("OpenFARS permission mode: workspace");
     expect(context.spec.policy.skillPaths).toHaveLength(1);
     expect(context.spec.policy.skillPaths[0]).toContain(
@@ -1252,7 +1242,8 @@ describe("HarnessRuntimeFacade", () => {
     );
     expect(context.spec).not.toHaveProperty("shellProxy");
     expect(await fs.readdir(runRequest.runtimePath)).not.toContain("shell-direct.bash");
-    expect(context.spec.prompt).toContain(context.spec.policy.skillPaths[0]!);
+    expect(await fs.readFile(context.spec.policy.skillPaths[0]!, "utf8")).toContain("Fixture Skill");
+    expect(context.spec.prompt).not.toContain(context.spec.policy.skillPaths[0]!);
     expect(Object.isFrozen(context.spec)).toBe(true);
     expect(Object.isFrozen(context.spec.session)).toBe(true);
     expect(context.recoveryBudget).not.toHaveProperty("startAttempt");
@@ -1308,7 +1299,7 @@ describe("HarnessRuntimeFacade", () => {
     const live: HarnessEvent[] = [];
     const traces: HarnessEvent[] = [];
     const runRequest = await request(root, {
-      onLiveHarnessEvent: (event) => live.push(event as unknown as HarnessEvent)
+      onLiveHarnessEvent: (event) => live.push(event)
     });
 
     await facade.run(
@@ -1436,6 +1427,18 @@ describe("HarnessRuntimeFacade", () => {
       code: "HARNESS_EVENT_STREAM_FAILED",
       source: "adapter"
     });
+  });
+
+  it("preserves the original event storage failure through canonical event ingress", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-runtime-event-storage-failure-"));
+    roots.push(root);
+    const { facade, close } = runtime(new FixtureAdapter());
+    const failure = Object.assign(new Error("disk I/O error"), { code: "ERR_SQLITE_ERROR", errcode: 778 });
+    const runRequest = await request(root, { onOfficialHarnessEvent: () => { throw failure; } });
+    const error = await facade.run(runRequest, () => undefined, new AbortController().signal).catch(error => error);
+    expect(error).toMatchObject({ code: "HARNESS_EVENT_STREAM_FAILED", safeMessage: "Unable to publish a canonical Harness event" });
+    expect(error.cause).toBe(failure);
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("serializes concurrent Adapter events and de-duplicates an exact event ID", async () => {
@@ -1655,7 +1658,7 @@ describe("HarnessRuntimeFacade", () => {
     });
   });
 
-  it("rebuilds a tampered mirror before replacement Session allocation", async () => {
+  it("rebuilds a tampered mirror before resuming the original Session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-runtime-replacement-input-"));
     roots.push(root);
     const adapter = new TamperingResumeAdapter();
@@ -1676,13 +1679,14 @@ describe("HarnessRuntimeFacade", () => {
 
     await facade.run(runRequest, () => undefined, new AbortController().signal);
 
-    expect(adapter.replacementCreateSessionInbox).toBe("authoritative inbox\n");
+    expect(adapter.resumedInbox).toBe("authoritative inbox\n");
     expect(await fs.readFile(runRequest.inboxPath, "utf8")).toBe("authoritative inbox\n");
     expect(adapter.contexts[0]?.request.resumeThreadId).toBe("fixture:fixture-native-existing");
-    expect(adapter.contexts[1]?.request.resumeThreadId).toBeUndefined();
+    expect(adapter.contexts[1]?.request.resumeThreadId).toBe("fixture:fixture-native-existing");
+    expect(adapter.createdGenerations).toEqual([]);
     expect(adapter.contexts[1]?.request.project.agentSessions?.main).toMatchObject({
-      generation: 5,
-      nativeId: "fixture-native-5"
+      generation: 4,
+      nativeId: "fixture-native-existing"
     });
   });
 
@@ -1773,7 +1777,7 @@ describe("HarnessRuntimeFacade", () => {
     expect(adapter.contexts).toHaveLength(0);
   });
 
-  it("replaces an invalid resume only inside the locked Harness and increments generation", async () => {
+  it("retries a failed resume in the original Session without allocating a new generation", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-runtime-resume-"));
     roots.push(root);
     const adapter = new FixtureAdapter();
@@ -1806,15 +1810,13 @@ describe("HarnessRuntimeFacade", () => {
     expect(adapter.contexts[0]?.spec.session).toMatchObject({ generation: 4, resumedAt: expect.any(String) });
     expect(adapter.contexts[1]?.spec.session).toMatchObject({
       harnessId: descriptor.id,
-      generation: 5,
-      nativeId: "fixture-native-5"
+      generation: 4,
+      nativeId: "fixture-native-existing",
+      resumedAt: expect.any(String)
     });
     expect(adapter.contexts[0]?.recoveryBudget).not.toHaveProperty("startAttempt");
     expect(adapter.contexts[1]?.recoveryBudget).not.toHaveProperty("startAttempt");
-    expect(adapter.contexts[0]?.spec.prompt).toContain("Session continuation safety");
-    expect(adapter.contexts[0]?.spec.prompt).toContain(
-      "A missing tool response does not mean the operation did not run"
-    );
+    expect(adapter.contexts[0]?.spec.prompt).not.toContain("Session continuation safety");
     expect(adapter.contexts[1]?.spec.prompt).toContain("Session continuation safety");
     expect(adapter.contexts[1]?.spec.prompt).toContain(
       "repeat only the unfinished part"
@@ -1822,8 +1824,8 @@ describe("HarnessRuntimeFacade", () => {
     expect(adapter.contexts[0]?.processHost).not.toBe(
       adapter.contexts[1]?.processHost
     );
-    expect(result.threadId).toBe("fixture:fixture-native-5");
-    expect(traces).toContain("Native session resume failed; retrying once with a same-Harness replacement");
+    expect(result.threadId).toBe("fixture:fixture-native-existing");
+    expect(traces).toContain("Native session recovery retrying the original Session");
     expect(officialEvents.map((event) => event.seq)).toEqual([0, 1, 2, 3]);
     expect(officialEvents.map((event) => event.eventId)).toEqual([
       "inv_fixture:fixture-harness:0",
@@ -1877,7 +1879,7 @@ describe("HarnessRuntimeFacade", () => {
     expect(events.slice(2).every((event) => event.attempt === 1)).toBe(true);
   });
 
-  it("replaces a native Session once after malformed gateway tool arguments without starting a new logical invocation", async () => {
+  it("resumes the original strict task Session after malformed gateway arguments and includes parser feedback", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-runtime-protocol-recovery-"));
     roots.push(root);
     const adapter = new FixtureAdapter();
@@ -1890,7 +1892,7 @@ describe("HarnessRuntimeFacade", () => {
       close,
       getFailure: () => failed ? {
         code: "PROTOCOL_TOOL_ARGUMENTS_INVALID" as const,
-        message: "Gateway returned invalid JSON tool arguments for write",
+        message: "Gateway returned invalid JSON tool arguments for write: Unterminated string at position 5564 upstream-secret",
         toolName: "write",
         toolIndex: 0,
         sourceProtocol: "chat-completions" as const,
@@ -1905,29 +1907,35 @@ describe("HarnessRuntimeFacade", () => {
     });
     const traces: Array<{ message: string; data?: Record<string, unknown> }> = [];
     const result = await facade.run(
-      await request(root),
+      await request(root, { taskSessionId: "task-original", sessionContinuity: "strict" }),
       (_kind, message, data) => { traces.push({ message, data }); },
       new AbortController().signal
     );
 
-    expect(result.threadId).toBe("fixture:fixture-native-1");
+    expect(result.threadId).toBe("fixture:fixture-native-0");
     expect(adapter.contexts).toHaveLength(2);
     expect(adapter.contexts.map((context) => context.spec.invocationId)).toEqual([
       "inv_fixture",
       "inv_fixture"
     ]);
-    expect(adapter.contexts.map((context) => context.spec.session?.generation)).toEqual([0, 1]);
-    expect(adapter.contexts[1]?.request.resumeThreadId).toBeUndefined();
+    expect(adapter.contexts.map((context) => context.spec.session?.generation)).toEqual([0, 0]);
+    expect(adapter.contexts[1]?.request.resumeThreadId).toBe("fixture:fixture-native-0");
+    expect(adapter.createdGenerations).toEqual([0]);
+    expect(adapter.contexts[1]?.request.taskSessionId).toBe("task-original");
+    expect(adapter.contexts[1]?.request.project.taskSessionRefs?.["task-original"]?.nativeId).toBe("fixture-native-0");
+    expect(adapter.contexts[1]?.spec.prompt).toContain("Unterminated string at position 5564");
+    expect(adapter.contexts[1]?.spec.prompt).not.toContain("upstream-secret");
     expect(adapter.contexts[1]?.spec.prompt).toContain(
       "the previous native Session emitted invalid JSON tool arguments"
     );
     expect(traces).toContainEqual({
-      message: "Invalid tool arguments detected; retrying once with a same-Harness replacement Session",
+      message: "Invalid tool arguments detected; retrying once in the original Session",
       data: expect.objectContaining({
         errorCode: "PROTOCOL_TOOL_ARGUMENTS_INVALID",
         automaticRecovery: true,
         recoveryLimit: 1,
-        replacementGeneration: 1
+        sessionGeneration: 0,
+        recoveryStrategy: "native-session-resume"
       })
     });
     expect(traces.filter((trace) => {
@@ -1962,7 +1970,10 @@ describe("HarnessRuntimeFacade", () => {
       }))
     });
     const runRequest = await request(root);
-    await fs.writeFile(runRequest.inboxPath, "original requirement\n" + "old evidence\n".repeat(5000));
+    const currentTask = "original requirement\nCurrent correction: preserve accepted results and finish the missing decision.";
+    await fs.writeFile(runRequest.inboxPath, currentTask);
+    runRequest.contextSources = [{ key: "project.history", label: "Earlier evidence", kind: "history",
+      records: [{ id: "earlier-evidence", status: "completed", output: "old evidence\n".repeat(5000) }] }];
     const promise = facade.run(runRequest, () => undefined, new AbortController().signal);
     if (exhausted) {
       await expect(promise).rejects.toMatchObject({
@@ -1970,20 +1981,26 @@ describe("HarnessRuntimeFacade", () => {
         details: { recoveryAttempted: true, recoveryLimit: 1, requestedTokens: 1230139 }
       });
     } else {
-      expect((await promise).threadId).toBe("fixture:fixture-native-1");
+      expect((await promise).threadId).toBe("fixture:fixture-native-0");
     }
-    expect(adapter.createdGenerations).toEqual([0, 1]);
+    expect(adapter.createdGenerations).toEqual([0]);
     expect(adapter.contexts.map((context) => context.spec.invocationId)).toEqual(["inv_fixture", "inv_fixture"]);
     const recovered = adapter.contexts[1]!;
-    expect(recovered.request.resumeThreadId).toBeUndefined();
+    expect(recovered.request.resumeThreadId).toBe("fixture:fixture-native-0");
     expect(recovered.spec.prompt).toContain("single context-limit recovery for the SAME invocation");
     expect(recovered.spec.prompt).toContain("Inspect existing deliverables and memory");
+    expect(recovered.spec.prompt).toContain(currentTask);
     expect(recovered.spec.prompt).not.toContain("old evidence");
-    expect(await fs.readFile(recovered.spec.inputs.inboxPath, "utf8")).toContain("original requirement");
+    expect(await fs.readFile(recovered.spec.inputs.inboxPath, "utf8")).toBe(currentTask);
+    const contextRoot = path.dirname(recovered.spec.inputs.inboxPath);
+    const catalog = JSON.parse(await fs.readFile(recovered.spec.inputs.contextIndex!.indexPath, "utf8"));
+    const history = catalog.entries.find((entry: { key: string }) => entry.key === "project.history");
+    const historyList = JSON.parse(await fs.readFile(path.join(contextRoot, history.list.path), "utf8"));
+    expect(await fs.readFile(path.join(contextRoot, historyList.entries[0].detail.path), "utf8")).toContain("old evidence");
     expect(resetFailure).toHaveBeenCalledOnce();
   });
 
-  it("rolls back a staged decision when the native turn fails with a context limit", async () => {
+  it("retains staged decision receipts when resuming the original Session after a context limit", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-runtime-context-terminal-"));
     roots.push(root);
     const adapter = new FixtureAdapter();
@@ -2018,9 +2035,7 @@ describe("HarnessRuntimeFacade", () => {
       details: { recoveryAttempted: true, recoveryLimit: 1 }
     });
     expect(adapter.contexts).toHaveLength(2);
-    await expect(fs.access(runRequest.control.stagingPath)).rejects.toMatchObject({
-      code: "ENOENT"
-    });
+    expect(JSON.parse(await fs.readFile(runRequest.control.stagingPath, "utf8"))).toEqual(actions);
   });
 
   it("reports a retained provider transport failure as a retryable gateway error", async () => {
@@ -2125,7 +2140,7 @@ describe("HarnessRuntimeFacade", () => {
     expect(resetFailure).toHaveBeenCalledOnce();
   });
 
-  it("keeps the malformed-argument recovery available after an independent resume replacement", async () => {
+  it("keeps the malformed-argument recovery available after an independent resume retry", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-runtime-resume-then-protocol-"));
     roots.push(root);
     const adapter = new FixtureAdapter();
@@ -2172,19 +2187,19 @@ describe("HarnessRuntimeFacade", () => {
       new AbortController().signal
     );
 
-    expect(result.threadId).toBe("fixture:fixture-native-6");
-    expect(adapter.contexts.map((context) => context.spec.session?.generation)).toEqual([4, 5, 6]);
+    expect(result.threadId).toBe("fixture:fixture-native-existing");
+    expect(adapter.contexts.map((context) => context.spec.session?.generation)).toEqual([4, 4, 4]);
     expect(adapter.contexts.map((context) => context.spec.invocationId)).toEqual([
       "inv_fixture",
       "inv_fixture",
       "inv_fixture"
     ]);
-    expect(adapter.createdGenerations).toEqual([5, 6]);
+    expect(adapter.createdGenerations).toEqual([]);
     expect(adapter.contexts[2]?.spec.prompt).toContain(
       "the previous native Session emitted invalid JSON tool arguments"
     );
-    expect(traces).toContain("Native session resume failed; retrying once with a same-Harness replacement");
-    expect(traces).toContain("Invalid tool arguments detected; retrying once with a same-Harness replacement Session");
+    expect(traces).toContain("Native session recovery retrying the original Session");
+    expect(traces).toContain("Invalid tool arguments detected; retrying once in the original Session");
     expect(resetFailure).toHaveBeenCalledTimes(2);
   });
 
@@ -2227,8 +2242,55 @@ describe("HarnessRuntimeFacade", () => {
       })
     });
     expect(adapter.contexts).toHaveLength(2);
-    expect(adapter.createdGenerations).toEqual([0, 1]);
+    expect(adapter.createdGenerations).toEqual([0]);
     expect(resetFailure).toHaveBeenCalledOnce();
+  });
+
+  it("uses the official identity published after launch when recovering a strict task", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-runtime-pending-session-"));
+    roots.push(root);
+    const adapter = new FixtureAdapter();
+    const originalCreate = adapter.createSession.bind(adapter);
+    adapter.createSession = (...args) => ({ ...originalCreate(...args), nativeId: "pending-session" });
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async context => {
+      if (!context.spec.session?.resumedAt) {
+        adapter.contexts.push(context);
+        await context.onSessionStarted?.({ ...context.spec.session!, nativeId: "fixture-native-official" });
+        throw new ProtocolToolArgumentsError(descriptor.id, { protocolMessage: "Unterminated string at position 42" });
+      }
+      return originalRun(context);
+    };
+    const { facade } = runtime(adapter);
+    const sessions: string[] = [];
+    const runRequest = await request(root, { taskSessionId: "task-original", sessionContinuity: "strict",
+      onDurableSessionStarted: async session => { sessions.push(session.nativeId); } });
+    expect((await facade.run(runRequest, () => undefined, new AbortController().signal)).threadId)
+      .toBe("fixture:fixture-native-official");
+    expect(sessions).toEqual(["fixture-native-official"]);
+    expect(adapter.createdGenerations).toEqual([0]);
+    expect(adapter.contexts[1]!.spec.session).toMatchObject({ nativeId: "fixture-native-official", generation: 0, resumedAt: expect.any(String) });
+    expect(adapter.contexts[1]!.request.resumeThreadId).toBe("fixture:fixture-native-official");
+  });
+
+  it("bounds a failed original-Session resume without allocating a replacement or enabling scheduler retries", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-runtime-resume-exhausted-"));
+    roots.push(root);
+    const adapter = new FixtureAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async context => { adapter.failNextResume = true; return originalRun(context); };
+    const { facade } = runtime(adapter);
+    const persisted: SessionRef = { schemaVersion: 1, harnessId: descriptor.id, adapterVersion: descriptor.adapterVersion,
+      generation: 4, nativeId: "fixture-native-existing", durable: true, createdAt: "2026-09-16T00:00:00.000Z" };
+    const runRequest = await request(root, { taskSessionId: "task-original", sessionContinuity: "strict" });
+    runRequest.project.taskSessionRefs = { "task-original": persisted };
+    await expect(facade.run(runRequest, () => undefined, new AbortController().signal)).rejects.toMatchObject({
+      code: "SESSION_RESUME_FAILED", retryable: false, details: { recoveryLimit: 1 }, cause: { code: "SESSION_RESUME_FAILED" }
+    });
+    expect(adapter.createdGenerations).toEqual([]);
+    expect(adapter.contexts).toHaveLength(2);
+    expect(adapter.contexts.every(context => context.spec.session?.nativeId === persisted.nativeId)).toBe(true);
+    expect(runRequest.project.taskSessionRefs["task-original"]).toEqual(persisted);
   });
 
   it("fails closed for an unknown locked Harness without calling another Adapter", async () => {
@@ -2458,7 +2520,6 @@ describe("HarnessRuntimeFacade", () => {
 
     expect(facade.harnessIds()).toEqual([
       "dsh",
-      "hermes",
       "pi",
       "codex",
       "claude-code",
@@ -2546,6 +2607,36 @@ describe("HarnessRuntimeFacade", () => {
     expect(secondMirror).not.toBe(firstMirror);
     expect(await fs.readFile(secondMirror, "utf8")).toBe("second authority\n");
     expect(await fs.readFile(second.inboxPath, "utf8")).toBe("second authority\n");
+  });
+
+  it("fits Explainer quoted background against its selected window before native dispatch", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-explainer-budget-"));
+    roots.push(root);
+    const source = await request(root);
+    const workspacePath = path.join(source.runtimePath, "workspaces");
+    const inboxPath = path.join(workspacePath, `${source.invocationId}.md`);
+    const memoryPath = path.join(workspacePath, "Memory.md");
+    await fs.mkdir(workspacePath, { recursive: true });
+    const output = "OLD_OUTPUT_BODY ".repeat(2000);
+    await fs.writeFile(inboxPath, output);
+    await fs.writeFile(memoryPath, "Independent summary task.");
+    const adapter = new FixtureAdapter();
+    let budget: ProtocolProxyOptions["getContextInjectionBudget"];
+    const facade = new HarnessRuntimeFacade({ adapters: [adapter], protocolProxyFactory: async options => {
+      budget = options.getContextInjectionBudget;
+      return { baseUrl: "http://127.0.0.1:43199/v1", token: "fixture", close: async () => undefined };
+    } });
+    await facade.runExplainer({ invocationId: source.invocationId, projectId: source.project.id,
+      projectPath: source.projectPath, workspacePath, runtimePath: source.runtimePath, inboxPath, memoryPath,
+      harnessId: descriptor.id, gateway: { ...source.project.agents.main!.gatewaySnapshot!, modelContextWindows: { "fixture-model": 8192 } },
+      model: "fixture-model", reasoningEffort: "low", prompt: `Summarize the actual saved results.\n${output}`,
+      evidenceInPrompt: true, contextBackgrounds: [{ text: output, alternatives: [`Read selected output at ${inboxPath}.`] }],
+      onTrace: () => undefined, onEvent: () => undefined }, new AbortController().signal);
+    expect(adapter.contexts[0]!.spec.prompt).toContain("Summarize the actual saved results.");
+    expect(adapter.contexts[0]!.spec.prompt).toContain(inboxPath);
+    expect(adapter.contexts[0]!.spec.prompt).not.toContain("OLD_OUTPUT_BODY");
+    expect(budget!()!.estimatedTokens).toBeLessThanOrEqual(4096);
+    expect(await fs.readFile(inboxPath, "utf8")).toBe(output);
   });
 
   it.each(["proxy-visible-output", "native"] as const)("streams Explainer text before completion using %s", async assistantStreaming => {

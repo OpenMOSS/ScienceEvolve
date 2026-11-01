@@ -18,6 +18,7 @@ type LiveListener = (snapshot: ProjectLiveSnapshot) => void;
 
 const LIVE_FLUSH_MS = 100;
 const ASSISTANT_LIVE_LIMIT = ASSISTANT_DISPLAY_CHARACTER_LIMIT;
+const PERSISTED_LIVE_KEY_LIMIT = 4_096;
 
 /**
  * `redactTrace` always receives the complete text accumulated so far, which
@@ -46,6 +47,7 @@ export class EventHub {
   private readonly livePerformance = new Map<string, InvocationPerformance>();
   private readonly runtimeProjections = new Map<string, ProjectRuntimeProjection>();
   private readonly liveFlushTimers = new Map<string, NodeJS.Timeout>();
+  private readonly persistedLiveKeys = new Map<string, Set<string>>();
 
   subscribe(projectId: string, listener: EventListener): () => void {
     const projectListeners = this.listeners.get(projectId) ?? new Set<EventListener>();
@@ -61,6 +63,7 @@ export class EventHub {
   }
 
   publish(event: TimelineEvent): void {
+    this.retirePersistedHarnessEvent(event);
     for (const listener of this.allListeners) listener(event);
     for (const listener of this.listeners.get(event.projectId) ?? []) {
       listener(event);
@@ -106,6 +109,7 @@ export class EventHub {
   ): void {
     if (!fragment) return;
     const key = this.liveStreamKey(stream.projectId, stream.invocationId, stream.attempt, stream.itemId);
+    this.persistedLiveKeys.get(stream.projectId)?.delete(key);
     const previousRaw = this.rawLiveContent.get(key) ?? "";
     const combined = `${previousRaw}${fragment}`;
     const truncated = combined.length > ASSISTANT_LIVE_LIMIT;
@@ -133,6 +137,7 @@ export class EventHub {
     content: string
   ): void {
     const key = this.liveStreamKey(stream.projectId, stream.invocationId, stream.attempt, stream.itemId);
+    if (this.persistedLiveKeys.get(stream.projectId)?.has(key)) return;
     const truncated = content.length > ASSISTANT_LIVE_LIMIT;
     this.rawLiveContent.set(
       key,
@@ -178,6 +183,8 @@ export class EventHub {
     if (!event.kind.startsWith("tool.")) return;
     const attempt = Number.isSafeInteger(event.attempt) ? event.attempt! : 0;
     const key = this.liveHarnessEventKey(projectId, event.invocationId, attempt, event.eventId);
+    // Official callbacks can commit before the matching live callback arrives.
+    if (this.persistedLiveKeys.get(projectId)?.has(key)) return;
     const projectEvents = this.liveHarnessEvents.get(projectId) ?? new Map();
     projectEvents.set(key, {
       id: `live:${event.eventId}`,
@@ -265,6 +272,7 @@ export class EventHub {
     this.liveHarnessEvents.delete(projectId);
     this.livePerformance.delete(projectId);
     this.runtimeProjections.delete(projectId);
+    this.persistedLiveKeys.delete(projectId);
     const snapshot: ProjectLiveSnapshot = { projectId, streams: [], events: [] };
     for (const listener of this.liveListeners.get(projectId) ?? []) listener(snapshot);
   }
@@ -296,12 +304,42 @@ export class EventHub {
     if (projectEvents.size === 0) this.liveHarnessEvents.delete(projectId);
   }
 
+  private retirePersistedHarnessEvent(event: TimelineEvent): void {
+    if (event.data?.liveEphemeral === true) return;
+    const value = event.data?.canonicalEvent ?? event.data?.event;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const canonical = value as Partial<HarnessEvent>;
+    if (canonical.schemaVersion !== 1 || typeof canonical.invocationId !== "string" ||
+      typeof canonical.eventId !== "string" || typeof canonical.kind !== "string") return;
+    const attempt = Number.isSafeInteger(canonical.attempt) ? canonical.attempt! : 0;
+    let key: string;
+    if (canonical.kind.startsWith("tool.")) {
+      key = this.liveHarnessEventKey(event.projectId, canonical.invocationId, attempt, canonical.eventId);
+      const projectEvents = this.liveHarnessEvents.get(event.projectId);
+      projectEvents?.delete(key);
+      if (projectEvents?.size === 0) this.liveHarnessEvents.delete(event.projectId);
+    } else if (canonical.kind === "assistant.message" && canonical.itemId) {
+      key = this.liveStreamKey(event.projectId, canonical.invocationId, attempt, canonical.itemId);
+      const projectStreams = this.liveStreams.get(event.projectId);
+      projectStreams?.delete(key);
+      this.rawLiveContent.delete(key);
+      if (projectStreams?.size === 0) this.liveStreams.delete(event.projectId);
+    } else return;
+    const keys = this.persistedLiveKeys.get(event.projectId) ?? new Set<string>();
+    keys.add(key);
+    while (keys.size > PERSISTED_LIVE_KEY_LIMIT) keys.delete(keys.values().next().value!);
+    this.persistedLiveKeys.set(event.projectId, keys);
+    this.scheduleLiveFlush(event.projectId);
+  }
+
   private scheduleLiveFlush(projectId: string): void {
     if (this.liveFlushTimers.has(projectId)) return;
     const timer = setTimeout(() => {
       this.liveFlushTimers.delete(projectId);
+      const listeners = this.liveListeners.get(projectId);
+      if (!listeners?.size) return;
       const snapshot = this.liveSnapshot(projectId);
-      for (const listener of this.liveListeners.get(projectId) ?? []) {
+      for (const listener of listeners) {
         listener(snapshot);
       }
     }, LIVE_FLUSH_MS);

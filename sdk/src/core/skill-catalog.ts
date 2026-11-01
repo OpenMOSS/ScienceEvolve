@@ -18,6 +18,8 @@ export interface CreateUserSkillInput {
 
 export class SkillCatalog {
   private cache: SkillDescriptor[] | undefined;
+  private loading: Promise<SkillDescriptor[]> | undefined;
+  private missingSelectionRefreshAt = 0;
   private readonly roots: string[];
 
   constructor(
@@ -36,7 +38,30 @@ export class SkillCatalog {
     if (this.cache && !forceRefresh) {
       return this.cache;
     }
+    if (this.loading) return this.loading;
+    const loading = this.scan();
+    this.loading = loading;
+    try { return await loading; }
+    finally { if (this.loading === loading) this.loading = undefined; }
+  }
 
+  /** Empty and project-owned selections do not require a library scan. */
+  async forSelections(selected: readonly string[]): Promise<SkillDescriptor[]> {
+    const library = selected.filter(value => !value.startsWith("project:"));
+    if (!library.length) return [];
+    const cached = this.cache;
+    const catalog = await this.list();
+    // Detect newly installed named Skills on a cache miss, rather than forcing
+    // a scan for every valid selection. Bound repeated invalid-name retries.
+    if (cached && Date.now() - this.missingSelectionRefreshAt > 60_000 && library.some(value =>
+      !path.isAbsolute(value) && !value.startsWith(".") && !findCatalogSkill(catalog, value, this.roots[0]))) {
+      this.missingSelectionRefreshAt = Date.now();
+      return this.list(true);
+    }
+    return catalog;
+  }
+
+  private async scan(): Promise<SkillDescriptor[]> {
     const descriptors: SkillDescriptor[] = [];
     const seenPaths = new Set<string>();
     for (let rootIndex = 0; rootIndex < this.roots.length; rootIndex += 1) {
@@ -63,7 +88,8 @@ export class SkillCatalog {
           });
           seenPaths.add(realPath);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ENOENT" && code !== "ENOTDIR") {
             throw error;
           }
         }
@@ -103,6 +129,7 @@ export class SkillCatalog {
       throw error;
     }
 
+    await this.loading;
     this.cache = undefined;
     const realPath = await fs.realpath(path.join(destination, "SKILL.md"));
     const created = (await this.list(true)).find(
@@ -113,14 +140,14 @@ export class SkillCatalog {
   }
 
   async resolve(selected: string[]): Promise<string[]> {
-    const catalog = await this.list();
+    const catalog = await this.forSelections(selected);
     return this.resolveConfigured(catalog, selected);
   }
 
   async resolveInput(input: string): Promise<SkillDescriptor> {
     const selection = input.trim();
     if (!selection) throw new Error("Skill 输入不能为空");
-    const catalog = await this.list(true);
+    const catalog = await this.list();
     const catalogSkill = findCatalogSkill(catalog, selection, this.roots[0]);
     if (catalogSkill) return catalogSkill;
     return resolveSkillPath(selection);
@@ -163,27 +190,31 @@ export class SkillCatalog {
 
 /** Categories are recursive only in the trusted builtin root. A Skill is a
  * leaf: never scan its references/assets as additional installed Skills.
- * Directory symlinks may expose a Skill, as before, but are never traversed. */
+ * Dependencies are excluded. Directory symlinks may expose a Skill, as
+ * before, but are never traversed; file and broken symlinks are skipped. */
 async function* discoverSkillFiles(root: string, recursive: boolean): AsyncGenerator<string> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(root, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return;
     throw error;
   }
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (entry.name.startsWith(".")) continue;
+    if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const directory = path.join(root, entry.name);
     const skillPath = path.join(directory, "SKILL.md");
     try {
+      if (entry.isSymbolicLink() && !(await fs.stat(directory)).isDirectory()) continue;
       if ((await fs.stat(skillPath)).isFile()) {
         yield skillPath;
         continue;
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
     }
     if (recursive && entry.isDirectory()) yield* discoverSkillFiles(directory, true);
   }

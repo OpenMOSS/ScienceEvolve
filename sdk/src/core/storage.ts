@@ -19,6 +19,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
+import { AgentContextSources, publishAgentContextIndex, type AgentContextSource, type AgentContextIndex } from "./agent-context-index.js";
 import readline from "node:readline";
 import { MAIN_AGENT_ORCHESTRATION_CURRENT_FILE, MAIN_AGENT_ORCHESTRATION_FILE } from "./main-workflow-files.js";
 import { ProjectFileBrowser } from "./project-file-browser.js";
@@ -301,12 +302,18 @@ export interface ProjectStorageOptions {
 }
 
 export class ProjectStorage {
+  private contextIndexPublisher?: (input: { projectId: string; projectPath: string; inboxPath: string; sources: readonly AgentContextSource[] }) => Promise<AgentContextIndex | undefined>;
+
+  configureContextIndexPublisher(publish: NonNullable<ProjectStorage["contextIndexPublisher"]>): void {
+    this.contextIndexPublisher = publish;
+  }
   private configuredProjectStateStore?: ProjectStateDocumentStore;
   private readOnlyProjectStateStore?: ProjectStateDocumentStore;
   private readonly activeCommits = new Map<string, ActiveInvocationCommit>();
   private readonly activeMutations = new Map<string, ActiveProjectMutation>();
   private readonly projectEpochs = new Map<string, number>();
   private readonly workspacePreparations = new Map<string, Promise<string>>();
+  private readonly artifactCatalogReads = new Map<string, Promise<ArtifactListItem[]>>();
   private readonly workflowReferenceWrites = new Map<string, Promise<void>>();
   private readonly workspaceRoots = new Map<string, string>();
   private readonly workspaceResolver?: ProjectStorageOptions["workspaceResolver"];
@@ -1769,7 +1776,20 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   }
 
   private async projectFileBrowser(projectId: string): Promise<ProjectFileBrowser> {
-    return new ProjectFileBrowser(this.projectDir(projectId), await this.loadState(projectId), () => this.readArtifactCatalog(projectId));
+    return new ProjectFileBrowser(this.projectDir(projectId), await this.loadState(projectId), () => this.artifactCatalog(projectId));
+  }
+
+  private artifactCatalog(projectId: string, scope?: "project"): Promise<ArtifactListItem[]> {
+    const key = `${projectId}:${scope ?? "published"}`;
+    const pending = this.artifactCatalogReads.get(key);
+    if (pending) return pending;
+    const read = scope === "project"
+      ? this.projectFileBrowser(projectId).then(browser => browser.catalog())
+      : this.readArtifactCatalog(projectId);
+    this.artifactCatalogReads.set(key, read);
+    const clear = () => { if (this.artifactCatalogReads.get(key) === read) this.artifactCatalogReads.delete(key); };
+    void read.then(clear, clear);
+    return read;
   }
 
   async resolveBrowserWorkspaceFile(projectId: string, workspaceId: string, requestedPath: string): Promise<WorkspaceArtifactSource> {
@@ -1777,19 +1797,16 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   }
 
   async listArtifactSummary(projectId: string, options: { scope?: "project" } = {}): Promise<ArtifactCatalogSummary> {
-    const catalog = options.scope === "project" ? await (await this.projectFileBrowser(projectId)).catalog() : await this.readArtifactCatalog(projectId);
+    const catalog = await this.artifactCatalog(projectId, options.scope);
     return this.artifactSummaryFromCatalog(catalog);
   }
 
   private artifactSummaryFromCatalog(
     catalog: ArtifactListItem[]
   ): ArtifactCatalogSummary {
-    const groups = Object.fromEntries(
-      [...new Set(catalog.map((item) => item.producer))].map((agent) => [
-        agent,
-        catalog.filter((item) => item.producer === agent).length
-      ])
-    ) as Record<AgentName, number>;
+    const counts = new Map<AgentName, number>();
+    for (const item of catalog) counts.set(item.producer, (counts.get(item.producer) ?? 0) + 1);
+    const groups = Object.fromEntries(counts) as Record<AgentName, number>;
     return { groups, total: catalog.length };
   }
 
@@ -1803,7 +1820,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       scope?: "project";
     } = {}
   ): Promise<ArtifactCatalogPage> {
-    const catalog = options.scope === "project" ? await (await this.projectFileBrowser(projectId)).catalog() : await this.readArtifactCatalog(projectId);
+    const catalog = await this.artifactCatalog(projectId, options.scope);
     const query = options.query?.trim().toLowerCase();
     const filtered = catalog.filter(
       (item) =>
@@ -2674,9 +2691,18 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     state: ProjectState,
     afterSeq = 0,
     fullSync = false,
-    _includeArtifactContents = false
+    includeArtifactContents = false
   ): Promise<string> {
-    const projectDir = this.projectDir(state.id);
+    return (await this.buildContextPackage(state, afterSeq, fullSync, includeArtifactContents)).text;
+  }
+
+  async buildContextPackage(
+    state: ProjectState,
+    afterSeq = 0,
+    fullSync = false,
+    _includeArtifactContents = false
+  ): Promise<{ text: string; index?: AgentContextIndex }> {
+    const projectDir = await fs.realpath(this.projectDir(state.id));
     const workspaceDir = await this.workspaceResolver?.(state.id) ?? path.join(projectDir, "workspaces");
     let cursor = fullSync ? 0 : Math.max(0, Math.floor(afterSeq));
     let effectiveFullSync = fullSync;
@@ -2695,9 +2721,19 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     const messagesDir = path.join(projectDir, "messages");
     const messageNames = (await fs.readdir(messagesDir)).sort();
     const handoffNames = messageNames.filter((name) => name.endsWith("_handoff.md"));
-    const eventText = events.length
-      ? events.map((event) => `- #${event.seq} ${event.type}${event.agent ? ` · ${event.agent}` : ""} · ${event.ts}`).join("\n")
-      : "- No new events since the Main context cursor.";
+    const sources = new AgentContextSources();
+    sources.list("project.history.events", "Recorded project events", events.map(event => ({ id: `event-${event.seq}`,
+      name: `#${event.seq} ${event.type}`, type: event.type, agentId: event.agent, createdAt: event.ts, event })), "history");
+    sources.list("project.history.handoffs", "Saved Agent handoffs", handoffNames.map(name => ({ id: name, name,
+      path: path.join(messagesDir, name) })), "history");
+    sources.list("project.workspace-checkpoints", "Unverified workspace checkpoint references", state.workspaceCheckpoints ?? [], "history");
+    sources.list("project.published-artifacts", "Published artifact index", (state.artifacts ?? []).map(artifact => ({
+      id: artifact.id, path: artifact.path, agentId: artifact.agent, kind: artifact.kind, size: artifact.size,
+      updatedAt: artifact.updatedAt, sha256: artifact.sha256 })), "current");
+    const contextRoot = path.join(projectDir, "runtime", "project-context");
+    await fs.mkdir(contextRoot, { recursive: true, mode: 0o700 });
+    const indexInput = { projectId: state.id, projectPath: projectDir, inboxPath: path.join(contextRoot, "Inbox.md"), sources: sources.sources };
+    const published = await (this.contextIndexPublisher?.(indexInput) ?? publishAgentContextIndex(indexInput.inboxPath, indexInput.sources));
     const stateSummary = [
       `status=${state.status}`,
       `phase=${state.phase}`,
@@ -2708,37 +2744,20 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       `currentAgent=${state.currentAgent ?? "none"}`,
       `queuedAgent=${state.queuedAgent ?? "none"}`
     ].join(", ");
-    return [
+    const text = [
       `- Project path: \`${projectDir}\``,
       `- Workspace path: \`${workspaceDir}\``,
       `- Main context mode: ${effectiveFullSync ? "full" : "incremental"} (after event #${cursor})`,
       `- Current state: ${stateSummary}`,
       "",
-      "## Events for this Main invocation",
-      "",
-      eventText,
-      "",
-      "## Handoff paths",
-      "",
-      handoffNames.length ? handoffNames.map((name) => `- messages/${name}`).join("\n") : "- None",
-      "Open only the handoffs relevant to this task; bodies and old event messages are not automatically included. Full events are available in events.jsonl and timeline.md.",
-      "",
       "## Control and display state",
       "",
       `- User intervention: ${state.userIntervention?.status ?? "none"}`,
-      `- Current display: ${state.display ? JSON.stringify(state.display) : "none"}`,
       "",
-      "## Published artifact catalog",
-      ...(state.workspaceCheckpoints?.length ? [
-        "Workspace checkpoint manifests (unverified; not published artifacts):",
-        ...state.workspaceCheckpoints.map((entry) => `- checkpoints/${entry.id}.json: ${entry.agent}, ${entry.fileCount} changed files, ${entry.createdAt}${entry.incomplete ? " (incomplete)" : ""}`)
-      ] : []),
-      "",
-      state.artifacts?.length
-        ? state.artifacts.map((artifact) => `- ${artifact.id}: ${artifact.path} (Agent: ${artifact.agent}) (${artifact.kind}, ${artifact.size} bytes)`).join("\n")
-        : "- No artifacts have been explicitly published.",
-      "Every published artifact is listed above. Read selected artifact detail bodies through scienceevolve_read_published_artifact with the catalog ID; large bodies support bounded reads."
+      "<project-context-index>", published?.preview ?? "No historical records.", "</project-context-index>",
+      "All handoff, event and artifact references remain in the complete expandable index. Open selected handoff paths; read selected publications with scienceevolve_read_published_artifact. Large bodies support bounded reads. Full events are retained in events.jsonl and timeline.md."
     ].join("\n");
+    return { text, index: published };
   }
 
   private assertInvocationId(invocationId: string): void {

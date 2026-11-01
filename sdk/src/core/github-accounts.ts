@@ -10,6 +10,7 @@ import type { GitHubCredential, GitHubCredentialResolver } from "./collaboration
 import { GitHubAuthorizationError } from "./collaboration-git/errors.js";
 import type { ProjectGitAccountBinding } from "./types.js";
 import { newId } from "./utils.js";
+import { GitHubRepositoryManagementError, type GitHubRepositoryDeletionIdentity } from "./github-repository-management-types.js";
 
 const ACCOUNT_ID = /^gha_[a-f0-9]{32}$/i;
 const OAUTH_SESSION_TTL_MS = 10 * 60_000;
@@ -83,6 +84,7 @@ interface OAuthSession {
   verifier: string;
   openerOrigin: string;
   createdAt: number;
+  deletionAccountProviderId?: number;
 }
 
 interface OAuthTokenResponse {
@@ -210,7 +212,13 @@ export class GitHubAccountStore {
     });
   }
 
-  startAuthorization(openerOrigin?: string): GitHubAuthorizationStart {
+  async startRepositoryDeletionAuthorization(accountId: string, openerOrigin?: string): Promise<GitHubAuthorizationStart> {
+    const account = await this.get(accountId);
+    if (!account) throw new Error("GitHub account not found");
+    return this.startAuthorization(openerOrigin, account);
+  }
+
+  startAuthorization(openerOrigin?: string, deletionAccount?: GitHubAccountRecord): GitHubAuthorizationStart {
     const config = this.requireOAuthConfiguration();
     const callbackOrigin = new URL(config.callbackUrl).origin;
     const origin = openerOrigin ? this.safeOrigin(openerOrigin) : callbackOrigin;
@@ -222,11 +230,13 @@ export class GitHubAccountStore {
     const verifier = randomBytes(48).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
     const createdAt = this.now().getTime();
-    this.sessions.set(state, { verifier, openerOrigin: origin, createdAt });
+    this.sessions.set(state, { verifier, openerOrigin: origin, createdAt,
+      ...(deletionAccount ? { deletionAccountProviderId: deletionAccount.providerUserId } : {}) });
     const url = new URL("https://github.com/login/oauth/authorize");
     url.searchParams.set("client_id", config.clientId);
     url.searchParams.set("redirect_uri", config.callbackUrl);
-    url.searchParams.set("scope", REQUIRED_SCOPES.join(" "));
+    url.searchParams.set("scope", [...REQUIRED_SCOPES, ...(deletionAccount ? ["delete_repo"] : [])].join(" "));
+    if (deletionAccount) url.searchParams.set("login", deletionAccount.login);
     url.searchParams.set("state", state);
     url.searchParams.set("code_challenge", challenge);
     url.searchParams.set("code_challenge_method", "S256");
@@ -275,6 +285,12 @@ export class GitHubAccountStore {
       throw new GitHubAuthorizationError(403, "GitHub 授权缺少创建个人私有仓库所需的 repo 权限");
     }
     const identity = await this.fetchIdentity(token.accessToken);
+    if (session.deletionAccountProviderId !== undefined) {
+      if (identity.id !== session.deletionAccountProviderId)
+        throw new GitHubAuthorizationError(403, "请使用所选 GitHub 账号完成仓库删除授权");
+      if (!token.scopes.includes("delete_repo"))
+        throw new GitHubAuthorizationError(403, "GitHub 未授予 delete_repo 删除权限，原账号授权保持不变");
+    }
     const account = await this.upsertAuthorizedAccount(identity, token);
     return { account, openerOrigin: session.openerOrigin };
   }
@@ -374,6 +390,74 @@ export class GitHubAccountStore {
       ...(typeof data.private === "boolean" ? { private: data.private } : {}),
       ...(defaultBranch ? { defaultBranch } : {})
     };
+  }
+
+  async inspectRepositoryForDeletion(accountId: string, owner: string, name: string): Promise<GitHubRepositoryDeletionIdentity> {
+    this.assertDeletionRepositoryName(owner, name);
+    const { credential, account } = await this.deletionCredential(accountId);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, {
+        headers: this.deletionHeaders(credential.token), redirect: "manual", signal: AbortSignal.timeout(15_000)
+      });
+    } catch { throw new GitHubRepositoryManagementError(502, "无法连接 GitHub 核验待删除仓库，请稍后重试"); }
+    if (response.status >= 300 && response.status < 400)
+      throw new GitHubRepositoryManagementError(409, "仓库已移动或重命名，请刷新列表后重新选择");
+    if (!response.ok) throw this.deletionProviderError(response.status);
+    const data = await this.safeJson(response);
+    const repositoryOwner = data.owner as { id?: unknown; login?: unknown } | undefined;
+    if (!Number.isSafeInteger(data.id) || Number(data.id) <= 0 ||
+      repositoryOwner?.id !== account.providerUserId ||
+      typeof repositoryOwner.login !== "string" || repositoryOwner.login.toLowerCase() !== owner.toLowerCase() ||
+      typeof data.name !== "string" || data.name.toLowerCase() !== name.toLowerCase() ||
+      owner.toLowerCase() !== account.login.toLowerCase())
+      throw new GitHubRepositoryManagementError(409, "仓库身份或所属账号已变化，请重新核对后操作");
+    if (!data.permissions || (data.permissions as { admin?: boolean }).admin !== true)
+      throw new GitHubRepositoryManagementError(403, "当前 GitHub 账号没有此仓库的管理员权限");
+    return { providerId: Number(data.id), owner: repositoryOwner.login, name: data.name };
+  }
+
+  async deleteRepository(accountId: string, expected: GitHubRepositoryDeletionIdentity): Promise<void> {
+    const current = await this.inspectRepositoryForDeletion(accountId, expected.owner, expected.name);
+    if (current.providerId !== expected.providerId)
+      throw new GitHubRepositoryManagementError(409, "仓库 ID 已变化，可能是同名新仓库；已停止删除");
+    const { credential } = await this.deletionCredential(accountId);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`https://api.github.com/repos/${encodeURIComponent(current.owner)}/${encodeURIComponent(current.name)}`, {
+        method: "DELETE", headers: this.deletionHeaders(credential.token), redirect: "manual", signal: AbortSignal.timeout(15_000)
+      });
+    } catch {
+      throw new GitHubRepositoryManagementError(502, "GitHub 删除请求结果尚未确认，请先核对仓库状态，避免重复操作", "github_repository_deletion_uncertain");
+    }
+    if (response.status === 204) return;
+    if (response.status >= 500)
+      throw new GitHubRepositoryManagementError(502, "GitHub 删除请求返回服务错误，结果待核对；不会自动重试删除", "github_repository_deletion_uncertain");
+    if (response.status >= 300 && response.status < 400)
+      throw new GitHubRepositoryManagementError(409, "GitHub 返回仓库重定向，已停止删除；请重新核对仓库");
+    throw this.deletionProviderError(response.status);
+  }
+
+  private assertDeletionRepositoryName(owner: string, name: string) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(name) || [".", ".."].includes(name))
+      throw new GitHubRepositoryManagementError(400, "GitHub 仓库名称无效");
+  }
+  private async deletionCredential(accountId: string) {
+    const credential = await this.credentialResolver(accountId)();
+    const account = await this.get(accountId);
+    if (!account?.scopes.includes("delete_repo"))
+      throw new GitHubRepositoryManagementError(403, "请先为此 GitHub 账号授权 delete_repo 删除权限", "github_repository_deletion_scope_required");
+    return { credential, account };
+  }
+  private deletionHeaders(token: string) {
+    return { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "ScienceEvolve" };
+  }
+  private deletionProviderError(status: number) {
+    if (status === 401) return new GitHubRepositoryManagementError(401, "GitHub 账号授权已失效，请重新登录");
+    if (status === 403) return new GitHubRepositoryManagementError(403, "GitHub 拒绝删除操作，请核对删除权限、组织策略或 API 额度");
+    if (status === 404) return new GitHubRepositoryManagementError(404, "仓库不存在或当前账号无权访问，未确认删除成功");
+    return new GitHubRepositoryManagementError(502, `GitHub 仓库操作失败（HTTP ${status}）`);
   }
 
   private async resolveCredential(accountId: string, signal?: AbortSignal): Promise<GitHubCredential> {

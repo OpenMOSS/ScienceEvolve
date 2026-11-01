@@ -20,8 +20,6 @@ import { mergeAgentConfigs } from "../../src/core/validation.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SiiExperimentService, assertSiiControlAction } from "../../src/core/sii-experiments.js";
-import { cloneAgentOrchestrationTemplate } from "../../src/core/agent-orchestration.js";
-import type { AgentPermission, AgentRunRequest } from "../../src/core/types.js";
 import { CodexAdapter } from "../../src/core/harness-runtime/adapters/codex-adapter.js";
 import { ClaudeCodeAdapter } from "../../src/core/harness-runtime/adapters/claude-code-adapter.js";
 import { PiAdapter } from "../../src/core/harness-runtime/adapters/pi-adapter.js";
@@ -91,7 +89,8 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
         prompt: `Preserve the completed work. ${"Relevant current constraint. ".repeat(120)}\nCURRENT_REQUIRED_ACTION: call finish_task and the assigned routing tool.` });
       const received = observed.join("\n");
       expect(received).toContain("CURRENT_REQUIRED_ACTION: call finish_task and the assigned routing tool.");
-      expect(received).toContain("user intervention is disabled for every Main, Leader and Worker");
+      expect(received).not.toContain("user intervention is disabled for every Main, Leader and Worker");
+      expect(received).toContain("项目入口：");
     } finally { await handle.close(); }
   }, 30_000);
   it.each(["codex", "claude-code", "pi", "dsh"])("automatically continues the same %s task after a terminal gateway failure", async harnessId => {
@@ -139,6 +138,35 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       expect(routes.every(route => route.closed)).toBe(true);
       expect(facade.residentLeases.snapshot("exec-fixture", harnessId)).toMatchObject({
         pid: identity.pid, session: identity.session, ownershipEpoch: 7, state: "waiting" });
+    } finally { await handle.close(); }
+  }, 30_000);
+
+  it.each(["codex", "claude-code", "pi", "dsh"])("sends the current correction and an expandable index instead of a large late-bound %s background body", async harnessId => {
+    const adapter = harnessId === "codex" ? new CodexAdapter() : harnessId === "claude-code" ? new ClaudeCodeAdapter()
+      : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
+    const fixture = await createFixture(harnessId, adapter);
+    await fs.writeFile(fixture.launch.executable, fakeSource(harnessId, true), { mode: 0o700 });
+    const configured = configuredAdapter(harnessId, fixture.launch.executable);
+    const facade = new HarnessRuntimeFacade({ adapters: harnessId === "codex" ? [configured] : [new CodexAdapter(), configured] });
+    const prepared = await highLevelInput(fixture, async () => undefined);
+    const original = "LARGE_HISTORICAL_PROPOSAL_BODY".repeat(6000), received: string[] = [];
+    const resident = new HarnessRuntimeResidentAdapter({ runtime: facade,
+      routeFactory: async request => openTestInvocationRoute(configured.descriptor.nativeProtocol, `indexed-${request.invocationId}`) });
+    const handle = await resident.open({ ...prepared, turnRequestFactory: async ({ baseRequest, turn }) => ({
+      request: { ...baseRequest, invocationId: turn.invocationId,
+        onPendingWorkflowAdjustments: async (_inputId, _session, publishContext) => {
+          const sources = new AgentContextSources(); sources.record("late-proposal-history", "Saved old proposal", { id: "old-proposal", status: "completed", output: original });
+          return `CURRENT CORRECTION: preserve the current task and apply only the requested change.\n${await publishContext!(sources.sources)}`;
+        }, onNativeUserInput: event => { received.push(String(event.message)); } }, onTrace: async () => undefined }) });
+    try {
+      await expect(handle.submit({ inputId: "indexed-notice", invocationId: "indexed-invocation", prompt: "Original task stays complete" })).resolves.toMatchObject({ handoff: expect.stringContaining("-1") });
+      expect(received).toHaveLength(1); expect(received[0]).toContain("CURRENT CORRECTION: preserve the current task");
+      expect(received[0]).not.toContain("LARGE_HISTORICAL_PROPOSAL_BODY");
+      expect(Buffer.byteLength(received[0])).toBeLessThan(131072);
+      const index = JSON.parse(await fs.readFile(received[0].match(/Context index: (.+)/)![1], "utf8"));
+      const source = index.entries.find((entry: any) => entry.key === "late-proposal-history");
+      const list = JSON.parse(await fs.readFile(path.join(index.baseDirectory, source.list.path), "utf8"));
+      expect(JSON.parse(await fs.readFile(path.join(index.baseDirectory, list.entries[0].detail.path), "utf8")).output).toBe(original);
     } finally { await handle.close(); }
   }, 30_000);
 
@@ -217,8 +245,9 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       const result = await handle.submit({ inputId: "state-input", invocationId: "state-turn", prompt: "Inspect the current formal state" });
       expect(result.controlActions).toHaveLength(1);
       expect(calls).toEqual([{ operation: "get", object: { kind: "agent", id: "writer" } }]);
-      expect(turns.mock.calls[0][1].prompt).toContain("state_list");
-      expect(turns.mock.calls[0][1].prompt).toContain("all nested descendant groups");
+      expect(result.controlActions?.[0].action.tool).toBe("finish_task");
+      expect(turns.mock.calls[0][1].prompt).toContain("Inspect the current formal state");
+      expect(turns.mock.calls[0][1].prompt).not.toContain("all nested descendant groups");
       await expect(services.at(-1)!.requestProjectState(capabilities.at(-1)!, { operation: "list" })).rejects.toThrow(/revoked/);
     } finally { await handle.close(); }
   }, 30_000);
@@ -263,7 +292,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     } finally { releaseClose(); await submitted; await paused; await handle.close(); }
   });
 
-  it.each(["codex", "claude-code", "pi", "dsh"])("transports a complete late-bound %s input larger than the ordinary frame ceiling on the retained Session", async harnessId => {
+  it.each(["codex", "claude-code", "pi", "dsh"])("rejects an oversized late-bound %s injection before sending and retains the Session for valid input", async harnessId => {
     const adapter = harnessId === "codex" ? new CodexAdapter() : harnessId === "claude-code" ? new ClaudeCodeAdapter()
       : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
     const fixture = await createFixture(harnessId, adapter);
@@ -283,13 +312,10 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
         onPendingWorkflowAdjustments: () => turn.inputId === "large-input" ? notice : "",
         onNativeUserInput: (event, session) => { observations.push({ message: event.message, session }); } }, onTrace: async () => undefined }) });
     try {
-      await expect(handle.submit({ inputId: "large-input", invocationId: "large-invocation", prompt: "Continue only the original task" })).resolves.toMatchObject({ handoff: expect.stringContaining("-1") });
+      await expect(handle.submit({ inputId: "large-input", invocationId: "large-invocation", prompt: "Continue only the original task" })).rejects.toMatchObject({ cause: { code: "CONTEXT_INJECTION_LIMIT_EXCEEDED" } });
+      expect(observations).toHaveLength(0);
+      await expect(handle.submit({ inputId: "ordinary-follow-up", invocationId: "ordinary-invocation", prompt: "Keep the existing task and permissions" })).resolves.toMatchObject({ handoff: expect.stringContaining("-1") });
       expect(observations).toHaveLength(1); expect(observations[0].session).toEqual(handle.initialLease.session);
-      const actual = String(observations[0].message);
-      expect(Buffer.byteLength(JSON.stringify(actual))).toBeGreaterThan(8 * 1024 * 1024);
-      expect(createHash("sha256").update(actual.slice(0, notice.length)).digest("hex")).toBe(createHash("sha256").update(notice).digest("hex"));
-      await expect(handle.submit({ inputId: "ordinary-follow-up", invocationId: "ordinary-invocation", prompt: "Keep the existing task and permissions" })).resolves.toMatchObject({ handoff: expect.stringContaining("-2") });
-      expect(observations).toHaveLength(2); expect(observations[1].session).toEqual(handle.initialLease.session);
       expect((await handle.probe()).pid).toBe(handle.initialLease.pid);
     } finally { await handle.close(); }
   }, 30_000);
@@ -417,7 +443,8 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     const prepared = await facade.prepareResidentScope(input);
     expect(prepared.spec.inputs.workflowReadDirectory).toBe(workflowDirectory);
     const authority = prepared.filesystemAuthority;
-    expect(authority.readRoots).not.toContain(fixture.projectPath);
+    expect(authority.readRoots).toContain(fixture.projectPath);
+    expect(authority.writeRoots).not.toContain(fixture.projectPath);
     const workflowRoot = authority.rootBindings.find(root => root.path === workflowDirectory)!;
     const workspaceRoot = authority.rootBindings.find(root => root.path === fixture.workspace)!;
     expect(workflowRoot).toMatchObject({ write: false });
@@ -488,6 +515,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     const facade = new HarnessRuntimeFacade({ adapters: [new CodexAdapter(), configured] });
     const opens = vi.spyOn(facade, "prepareResidentScope");
     const turns = vi.spyOn(facade, "submitResidentTurn");
+    const contexts = vi.spyOn(facade, "prepareAgentContext");
     let routeSequence = 0;
     const adapter = new HarnessRuntimeResidentAdapter({ runtime: facade,
       routeFactory: async () => openTestInvocationRoute("chat-completions", `workflow-context-route-${++routeSequence}`) });
@@ -512,6 +540,9 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       await expect(handle.submit({ inputId: "workflow-context-one", invocationId: request.invocationId, prompt: "Choose the next experiment step" }))
         .resolves.toMatchObject({ handoff: "pi-1" });
       const original = await handle.probe();
+      const firstContext = await contexts.mock.results.at(-1)!.value;
+      const firstDetails = JSON.parse(await fs.readFile(firstContext.workflowContext!.agentsPath, "utf8"));
+      expect(firstDetails.agents.scientist.skills).toEqual(["project:experiment-v1"]);
       request.project.workflowRevision = 2; request.project.eventSeq = 2;
       request.project.agents.scientist.skills = ["project:experiment-v2"];
       request.project.skillDefinitions = { "experiment-v2": { files: { "SKILL.md": "FULL_EXPERIMENT_SKILL_V2" } } };
@@ -519,19 +550,16 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
         .resolves.toMatchObject({ handoff: "pi-2" });
       expect(opens).toHaveBeenCalledTimes(1);
       const first = turns.mock.calls[0][1].prompt; const second = turns.mock.calls[1][1].prompt;
-      expect(first).toContain("Configuration revision: 1"); expect(first).toContain("project:experiment-v1");
-      expect(second).toContain("Configuration revision: 2"); expect(second).toContain("project:experiment-v2");
-      expect(second).not.toContain("project:experiment-v1");
+      expect(first).toContain("Choose the next experiment step");
+      expect(second).toContain("Use the updated experiment capability");
       for (const prompt of [first, second]) {
-        expect(prompt).toContain("Current group Workflow overview");
-        expect(prompt).toContain("experiment_node => Agent scientist");
-        expect(prompt).toContain("experiment-service");
-        expect(prompt).toContain("Read-only Agent / Skills / MCP details: rootId=");
+        expect(prompt).not.toContain("Configuration revision:");
+        expect(prompt).not.toContain("Current group Workflow overview");
+        expect(prompt).not.toContain("project:experiment-v");
         expect(prompt).not.toContain("private_other_node");
         expect(prompt).not.toContain("FULL_SCIENTIST_INSTRUCTIONS");
-        expect(prompt).not.toContain("FULL_EXPERIMENT_SKILL_");
       }
-      const detailsPath = second.match(/Agent instructions, Skills and MCP configuration: ([^\n]+)/)![1];
+      const detailsPath = (await contexts.mock.results.at(-1)!.value).workflowContext!.agentsPath;
       const details = JSON.parse(await fs.readFile(detailsPath, "utf8"));
       expect(Object.keys(details.agents).sort()).toEqual(["scientist", "writer"]);
       expect(details.agents.scientist.instructions).toBe("FULL_SCIENTIST_INSTRUCTIONS");
@@ -597,7 +625,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     const retained: string[] = [];
     const reserveRepair = vi.fn(() => 1);
     const invoker = new ResidentScopedAgentTurnInvoker(launcher, {
-      prepare: async () => ({ ...prepared, controlScope: scope,
+      prepare: async () => ({ ...prepared, initialTask: "来源：Leader\n内容：Continue the original task in its retained session and inspect the missing delivery actions.", controlScope: scope,
         controlAuthorityFactory: async ({ turn: current }) => {
           const capability = createHash("sha256").update(current.inputId).digest("hex");
           return { control: { stagingPath: path.join(runtimePath, `${capability}.json`),
@@ -1781,7 +1809,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     const index = (await publishAgentContextIndex(fixture.launch.spec.inputs.inboxPath, sources.sources))!;
     const rootId = "read-fixture0000000";
     const indexRelative = path.relative(fixture.root, index.indexPath).split(path.sep).join("/");
-    const directory = path.posix.dirname(indexRelative);
+    const directory = path.relative(fixture.root, path.dirname(fixture.launch.spec.inputs.inboxPath)).split(path.sep).join("/");
     const requests: Array<Record<string, any>> = [];
     let providerError: unknown;
     const findList = (value: unknown): any => {
@@ -1803,8 +1831,9 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
         const n = requests.length;
         if (n === 1) {
           const input = JSON.stringify(body.input);
-          for (let index = 0; index < 64; index++) if (!input.includes(`unused-${index}`))
-            throw new Error(`Initial native index hid entry unused-${index}`);
+          if (!input.includes("Context index:")) throw new Error("Initial input omitted the complete context directory");
+          if (input.includes("UNNEEDED_HISTORY_BODY") || input.includes("UNREQUESTED_DETAIL_")) throw new Error("Initial input included historical detail bodies");
+          if (Array.from({ length: 64 }, (_, index) => `unused-${index}`).every(id => input.includes(id))) throw new Error("Initial input repeated the entire historical index");
           if (!input.includes('chosen')) throw new Error("Initial native index hid the chosen entry");
         }
         const namespace = body.tools.find((tool: any) => tool.type === "namespace" && tool.name === "mcp__openfars_filesystem_authority");
@@ -2069,6 +2098,22 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     await opened.driver.close();
   });
 
+  it("validates shared authority before invoking an adapter-owned resident launch", async () => {
+    const fixture = await createFixture("pi", new PiAdapter());
+    const buildLaunch = vi.fn(async () => { throw new Error("extension launch reached"); });
+    const adapter: HarnessAdapter = {
+      ...fixture.launch.adapter,
+      descriptor: { ...fixture.launch.adapter.descriptor, id: "fixture-extension" },
+      resident: { ...fixture.launch.adapter.resident!, buildLaunch }
+    };
+    await expect(openBuiltinResidentAdapter({ ...fixture.launch, adapter,
+      spec: { ...fixture.launch.spec, inputs: { ...fixture.launch.spec.inputs, workspacePath: fixture.root } }
+    })).rejects.toThrow(/workspace does not match execution ownership/);
+    expect(buildLaunch).not.toHaveBeenCalled();
+    await expect(openBuiltinResidentAdapter({ ...fixture.launch, adapter })).rejects.toThrow("extension launch reached");
+    expect(buildLaunch).toHaveBeenCalledOnce();
+  });
+
   it("rejects fixed management with delivery writes or another invocation snapshot", async () => {
     const fixture = await createFixture("pi", new PiAdapter(), "leader", "workspace", true);
     await expect(openBuiltinResidentAdapter({ ...fixture.launch,
@@ -2328,10 +2373,10 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     expect(prepared.filesystemAuthority).toMatchObject({
       writeRoots: [], gitCapability: "none", rawTools: "forbidden"
     });
-    expect(prepared.spec.prompt).not.toContain("leader management snapshot");
+    expect(prepared.spec.prompt).toContain("leader management snapshot");
     expect(await fs.readFile(prepared.spec.inputs.inboxPath, "utf8")).toContain("leader management snapshot");
-    expect(prepared.spec.prompt).toContain(prepared.spec.policy.skillPaths[0]);
-    expect(prepared.spec.prompt).toContain("Web Search is enabled");
+    expect(await fs.readFile(prepared.spec.policy.skillPaths[0], "utf8")).toContain("Fixed read-only evidence skill");
+    expect(prepared.spec.prompt).not.toContain("Web Search is enabled");
     expect(traces).toContainEqual(expect.objectContaining({
       message: "Compiled invocation capability policy",
       data: expect.objectContaining({
@@ -2760,9 +2805,10 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     for (const [, turn] of submittedTurns.mock.calls) {
       expect(turn.prompt).toContain("Standing resident mandate sentinel");
       expect(turn.prompt).not.toContain("resident fixture inbox");
-      expect(turn.prompt).toContain("Current task Inbox:");
-      expect(turn.prompt.includes("Descriptor filesystem tool references")).toBe(row.permission !== "yolo");
-      expect(turn.prompt.includes("The openfars-filesystem-authority MCP exposes callable tools")).toBe(row.permission !== "yolo");
+      expect(turn.prompt).toContain("项目入口：");
+      expect(turn.prompt).not.toContain("Current task Inbox:");
+      expect(turn.prompt).not.toContain("Descriptor filesystem tool references");
+      expect(turn.prompt).not.toContain("The openfars-filesystem-authority MCP exposes callable tools");
     }
     expect(routes.every((route) => route.closed)).toBe(true);
     expect((await handle.probe())).toMatchObject({

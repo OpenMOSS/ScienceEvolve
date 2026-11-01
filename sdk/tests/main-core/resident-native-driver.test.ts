@@ -302,6 +302,28 @@ describe("ResidentTurnActivityClock", () => {
 
 describe.runIf(process.platform === "linux")("built-in resident native protocols", () => {
   it.each([
+    { pending: true, resumed: false, allocation: true, accepted: true },
+    { pending: true, resumed: false, allocation: false, accepted: false },
+    { pending: false, resumed: false, allocation: true, accepted: false },
+    { pending: true, resumed: true, allocation: true, accepted: false }
+  ])("restricts extension native identity allocation to a fresh pending session: %j", async row => {
+    const child = await fakeNative("pi-rpc");
+    const requested = { ...session("fixture-extension", row.pending ? "pending:extension" : "existing-native-id"),
+      ...(row.resumed ? { resumedAt: new Date().toISOString() } : {}) };
+    const codec: ResidentProtocolCodec = { ...piRpcCodec(), protocol: "fixture-extension-protocol",
+      allocatesNativeSessionId: row.allocation,
+      initialize: async (_connection, current) => ({ ...current, nativeId: "allocated-native-id" }),
+      close: async () => undefined };
+    const opening = ResidentNativeDriver.open({ child, session: requested, codec,
+      turnAuthority: inertAuthority(), ownershipEpoch: 1 });
+    if (row.accepted) {
+      const driver = await opening;
+      expect(driver.session).toMatchObject({ harnessId: "fixture-extension", nativeId: "allocated-native-id" });
+      await driver.close();
+    } else await expect(opening).rejects.toThrow(/authoritative native session identity/);
+  });
+
+  it.each([
     ["codex", "codex-app-server", "pending:fixture", () => codexAppServerCodec({ cwd: process.cwd(), model: "fixture", sandbox: "read-only" })],
     ["claude-code", "claude-stream-json", "claude-session", claudeStreamJsonCodec],
     ["pi", "pi-rpc", "pi-session", piRpcCodec],

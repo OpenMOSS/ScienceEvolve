@@ -9,19 +9,22 @@ import { BUILTIN_HARNESS_DESCRIPTORS } from "../../src/core/harness-runtime/regi
 import type { AgentRunRequest } from "../../src/core/types.js";
 
 describe("invocation policy", () => {
-  it.each(["main", "worker", "leader"] as const)("gives %s the project-wide autonomous policy before conflicting old instructions", role => {
-    const config = { instructions: "Wait for the user to supply a topic before doing research.", skills: [], autoSkills: [],
-      mcpServers: [], permission: "workspace", webSearch: false } as AgentRunRequest["project"]["agents"][string];
+  it.each(["main", "worker", "leader"] as const)("sends %s only the project entry, current communication and configured instructions", role => {
+    const config = { instructions: "Exact configured Agent instructions", mcpServers: [], webSearch: false } as AgentRunRequest["project"]["agents"][string];
     const request = { agent: role, kind: role === "main" ? "main" : "worker", permission: "workspace", skillPaths: [],
-      project: { agents: { [role]: config }, orchestration: { allowUserIntervention: false } },
-      ...(role === "leader" ? { executionContext: { role: "leader", executionId: "group", groupRunId: "G" } } : {}) } as unknown as AgentRunRequest;
-    const prompt = compileWorkflowPrompt(request, { projectPath: "/project", workspacePath: "/workspace",
-      inboxPath: "/inputs/inbox", memoryPath: "/workspace/Memory.md", runtimePath: "/runtime", inboxSha256: "fixture" }, compileInvocationPolicy(config, request));
-    expect(prompt).toContain("user intervention is disabled for every Main, Leader and Worker");
-    expect(prompt).toContain("continue the assigned research through a final deliverable without user intervention");
-    expect(prompt).toContain("Never invent data, citations or successful experiments");
-    expect(prompt.indexOf("Project execution policy:")).toBeLessThan(prompt.indexOf("Standing Agent mandate:"));
-    expect(config.instructions).toBe("Wait for the user to supply a topic before doing research.");
+      project: { requirement: "UNREQUESTED_GLOBAL_REQUIREMENT", inputDescription: "UNREQUESTED_INPUT_NOTE", agents: { [role]: config },
+        orchestration: { allowUserIntervention: false, termination: { condition: "UNREQUESTED_TERMINATION" } } } } as unknown as AgentRunRequest;
+    const inputs = { projectPath: "/project", workspacePath: "/workspace", inboxPath: "/inputs/inbox", memoryPath: "/workspace/Memory.md", runtimePath: "/runtime", inboxSha256: "fixture",
+      workflowContext: { preview: "UNREQUESTED_WORKFLOW_PREVIEW" }, contextIndex: { preview: "UNREQUESTED_HISTORY_PREVIEW" } } as any;
+    const task = "来源：analysis\n内容：Preserve samples A=27 and B=31.\n\n来源：charts\n内容：Use seconds and clean-data.png.";
+    const policy = compileInvocationPolicy(config, request);
+    const prompt = compileWorkflowPrompt(request, inputs, policy, { inlineInbox: task });
+    expect(prompt).toContain(`项目入口：/project\n\n本轮直接消息：\n${task}`);
+    expect(prompt).toContain(config.instructions);
+    expect(prompt.split(task)).toHaveLength(2);
+    expect(prompt).not.toContain("UNREQUESTED_");
+    expect(prompt).not.toContain("Current role and execution stage");
+    expect(policy.constraintPrompt).toContain("Shell");
   });
   it.each(["workspace", "compute", "yolo"] as const)("worktree closing removes %s business capabilities and names only the exact closing scope", permission => {
     const config = { instructions: "Implement my whole business mandate", experimentMcp: true,
@@ -79,9 +82,8 @@ describe("invocation policy", () => {
     expect(prompt).toContain('operationId="original-push", historical=true');
     expect(prompt).toContain("provider returns its actual result directly to you");
     expect(prompt).toContain("finish_task for this supplement");
-    expect(prompt).toContain("/runtime/inbox.md");
-    expect(prompt).toContain("agent-memory/worker/Memory.md");
-    expect(prompt).toContain("exposes exactly: `finish_task`, `git_reconcile_push`");
+    expect(prompt).toContain("项目入口：/fixture/project");
+    expect(policy.mcpServers).toEqual([]);
     expect(prompt).not.toContain("Implement the whole business product");
     expect(prompt).not.toContain("call git_push");
     expect(prompt).not.toContain("github_create_pr");
@@ -124,10 +126,9 @@ describe("invocation policy", () => {
         inboxSha256: "fixture"
       }, policy);
       expect(policy.constraintPrompt).toContain(`permission mode: ${permission}`);
-      expect(prompt).toContain(".scienceevolve/inbox/inv.md");
-      expect(prompt).toContain("Memory.md");
-      expect(prompt).toContain("/fixture/project/workspaces/user_inputs");
-      expect(prompt).toContain("preserve originals");
+      expect(prompt).toContain("项目入口：/fixture/project");
+      expect(prompt).not.toContain("Persistent project memory:");
+      expect(prompt).not.toContain("/fixture/project/workspaces/user_inputs");
       expect(prompt).not.toContain("Session continuation safety");
     }
   );
@@ -185,24 +186,12 @@ describe("invocation policy", () => {
       mcpServers: [{ name: "external", url: "https://example.invalid/mcp" }],
       webSearch: true
     });
-    expect(prompt).toContain("returned a handoff without a required terminal control action");
-    expect(prompt).toContain("Re-read the Inbox, workspace and project evidence");
-    expect(prompt).not.toContain("The analysis is complete");
-    expect(prompt).toContain('source="terminal-control-repair"');
-    expect(prompt).toContain("commit exactly one currently legal terminal action");
-    expect(prompt).toContain(".scienceevolve/inbox");
-    expect(prompt).toContain("Memory.md");
-    expect(prompt).not.toContain("large normal invocation context");
-    expect(prompt).toContain("Inspect the whole repository");
-    expect(prompt).toContain("/fixture/selected/SKILL.md");
-    expect(prompt).toContain("Web Search is enabled");
-    expect(prompt).toContain("## Current role and execution stage");
-    expect(prompt).toContain(`- role: ${kind}`);
-    expect(prompt).toContain("- stage: unknown");
-    expect(prompt).toContain("The authoritative orchestration tools/list for this invocation exposes exactly:");
-    if (kind === "main") expect(prompt).toContain("`route_to_agent`");
-    else expect(prompt).not.toContain("`route_to_agent`");
-    expect(prompt).toContain("`publish_artifact`");
-    expect(prompt).not.toContain("`coordinate_group_task`");
+    expect(prompt).toContain("Supply the missing formal completion/control action");
+    expect(prompt).toContain("The analysis is complete");
+    expect(prompt).toContain("large normal invocation context");
+    expect(prompt).toContain(config.instructions);
+    expect(prompt).not.toContain("context index");
+    expect(policy.skillPaths).toEqual(["/fixture/selected/SKILL.md"]);
+    expect(policy.webSearch).toBe(true);
   });
 });

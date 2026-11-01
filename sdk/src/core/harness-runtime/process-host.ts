@@ -26,6 +26,7 @@ import type {
   SessionRef
 } from "./contracts.js";
 import { HarnessRuntimeError } from "./errors.js";
+import { harnessSupportsNativeProfile } from "./registry.js";
 import {
   PUBLISHED_ARTIFACT_MANIFEST_ENV,
   PUBLISHED_ARTIFACT_MANIFEST_FILENAME
@@ -1041,7 +1042,7 @@ function assertAuthorizedLaunchPlan(
     if (!homeInsideProject && !authorizedHostHome) {
       reject("Harness launch HOME is outside the permitted invocation boundary");
     }
-    const trustedNativeHome = binding.harnessId === "codex" && binding.route && "nativeCodexProfileHome" in binding.route
+    const trustedNativeHome = harnessSupportsNativeProfile(binding.harnessId) && binding.route && "nativeCodexProfileHome" in binding.route
       ? binding.route.nativeCodexProfileHome : undefined;
     if (trustedNativeHome && codexHome !== trustedNativeHome) reject("Harness launch did not install its trusted native Codex profile");
     if (codexHome !== undefined && codexHome !== trustedNativeHome &&
@@ -1068,7 +1069,7 @@ function assertAuthorizedLaunchPlan(
     validateControlContext(plan, binding as InvocationProcessBinding, reject);
   }
   if (binding.route && "nativeCodexProfileHome" in binding.route) {
-    if (binding.harnessId !== "codex" || plan.env.CODEX_HOME !== binding.route.nativeCodexProfileHome ||
+    if (!harnessSupportsNativeProfile(binding.harnessId) || plan.env.CODEX_HOME !== binding.route.nativeCodexProfileHome ||
       !path.isAbsolute(binding.route.nativeCodexProfileHome)) reject("Invalid native Codex profile authority");
     for (const key of ["SCIENCEEVOLVE_GATEWAY_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]) {
       if (plan.env[key] !== undefined) reject(`Native Codex profile launch injected provider environment key ${key}`);
@@ -2281,4 +2282,11 @@ export async function writeStreamWithBackpressure(
     stream.once("error", onError);
     stream.once("close", onClose);
   });
+}
+
+/** Launch JavaScript npm entrypoints through Node on Windows, without cmd shims. */
+export function harnessExecutableLaunch(executable: string, args: readonly string[]): { command: string; args: string[] } {
+  return process.platform === "win32" && [".js", ".mjs", ".cjs"].includes(path.extname(executable).toLowerCase())
+    ? { command: process.execPath, args: [executable, ...args] }
+    : { command: executable, args: [...args] };
 }

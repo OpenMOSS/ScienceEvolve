@@ -1019,6 +1019,38 @@ describe("orchestration control MCP", () => {
       .toMatchObject([{ action: { tool: "apply_workflow" } }]);
   });
 
+  it.each(["allowAgentOrchestrationReconfiguration", "allowWorkflowReconfiguration"] as const)(
+    "accepts Main workflow MCP receipts through Harness validation with %s",
+    async (authority) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-main-workflow-receipt-")); roots.push(root);
+      const settings = context(root, { agent: "main", kind: "main", candidates: [], decisionBy: "main",
+        allowUserIntervention: false, canComplete: false, [authority]: true,
+        capabilityHash: createHash("sha256").update("capability-test-secret").digest("hex") });
+      await fs.writeFile(path.join(root, "workflow.json"), "{}\n");
+      const responses = await runMcp(settings, [
+        { id: 1, method: "tools/call", params: { name: "apply_workflow", arguments: {
+          callId: "legacy-path", path: "agent-orchestration.json", rationale: "Reject the retired proposal path." } } },
+        { id: 2, method: "tools/call", params: { name: "apply_workflow", arguments: {
+          callId: "current-path", path: "workflow.json", rationale: "Apply the current Main proposal." } } }
+      ]);
+      expectRecoverableToolError(responses.find(response => response.id === 1));
+      const accepted = responses.find(response => response.id === 2)!;
+      expect(accepted.error).toBeUndefined();
+      expect(accepted.result).not.toMatchObject({ isError: true });
+      const actions = JSON.parse(await fs.readFile(String(settings.stagingPath), "utf8")) as ControlActionEnvelope[];
+      expect(actions).toHaveLength(1);
+      expect(actions[0]!.action).toEqual({ tool: "apply_workflow", path: "workflow.json", rationale: "Apply the current Main proposal." });
+      const request = { project: { id: settings.projectId, agents: { main: { harness: "codex" } } }, agent: "main",
+        invocationId: settings.invocationId, control: { ...settings, capability: "capability-test-secret" } } as unknown as AgentRunRequest;
+      const facade = new HarnessRuntimeFacade();
+      const returned = { handoff: "Main submitted the current workflow proposal.", controlActions: actions };
+      expect(facade.validateResidentTurnResult(returned, request)).toEqual(returned);
+      expect(() => facade.validateResidentTurnResult(returned, { ...request, control: { ...request.control!,
+        allowAgentOrchestrationReconfiguration: false, allowWorkflowReconfiguration: false } }))
+        .toThrow(/invalid orchestration control envelope/);
+    }
+  );
+
   it("returns workflow validation failures as recoverable Main tool results", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-orch-mcp-workflow-retry-"));
     roots.push(root);

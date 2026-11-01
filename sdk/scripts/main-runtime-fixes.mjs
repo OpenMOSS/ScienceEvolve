@@ -5,6 +5,7 @@ export const sharedFixBytes = await readFile(new URL("../resources/main-runtime/
 export const sharedFixesDigest = createHash("sha256").update(sharedFixBytes).digest("hex");
 export const sharedFixes = JSON.parse(sharedFixBytes);
 if (sharedFixes.schemaVersion !== 1 || !Array.isArray(sharedFixes.fixes)) throw new Error("Invalid shared-fix index");
+if (!["git", "working-tree"].includes(sharedFixes.sourceSnapshotKind ?? "git")) throw new Error("Invalid source snapshot kind");
 const ids = new Set();
 // SDK-owned adapters have no upstream blob. Track them explicitly instead of
 // inventing a main commit or weakening the byte checks for imported main code.
@@ -53,7 +54,7 @@ export function applySharedFixes(source, bytes, reverse = false, recordedIds) {
       const before = reverse ? replacement.after : replacement.before;
       const after = reverse ? replacement.before : replacement.after;
       if (text.split(before).length !== 2) throw new Error(`Shared-fix context drift: ${fix.id}`);
-      text = text.replace(before, after);
+      text = text.replace(before, () => after);
     }
   }
   return Buffer.from(text);

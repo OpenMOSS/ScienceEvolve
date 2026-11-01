@@ -7,27 +7,40 @@ import {
   isRejectedHarnessExecutable
 } from "./harness-runtime/registry.js";
 
+const SETTING_PREFIXES = ["SCIENCEEVOLVE_", "SCION_AR_"] as const;
+
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function setting(name: string): string | undefined {
-  return process.env[`SCIENCEEVOLVE_${name}`];
+  for (const prefix of SETTING_PREFIXES) {
+    const value = process.env[`${prefix}${name}`];
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
 
 function secretSetting(name: string, projectRoot: string): string | undefined {
-  const inlineValue = setting(name)?.trim();
+  // Select the prefix before the source so a new secret file overrides an old
+  // inline secret. Explicit empty new settings also suppress legacy fallback.
+  const prefix = SETTING_PREFIXES.find((candidate) =>
+    process.env[`${candidate}${name}`] !== undefined ||
+    process.env[`${candidate}${name}_FILE`] !== undefined
+  );
+  if (!prefix) return undefined;
+  const inlineValue = process.env[`${prefix}${name}`]?.trim();
   if (inlineValue) return inlineValue;
 
-  const configuredFile = setting(`${name}_FILE`)?.trim();
+  const configuredFile = process.env[`${prefix}${name}_FILE`]?.trim();
   if (!configuredFile) return undefined;
   const secretFile = path.isAbsolute(configuredFile)
     ? configuredFile
     : path.resolve(projectRoot, configuredFile);
   const value = readFileSync(secretFile, "utf8").trim();
   if (!value) {
-    throw new Error(`SCIENCEEVOLVE_${name}_FILE 指向的密钥文件为空`);
+    throw new Error(`${prefix}${name}_FILE 指向的密钥文件为空`);
   }
   return value;
 }
@@ -36,6 +49,8 @@ export interface AppConfig {
   host: string;
   port: number;
   dataDir: string;
+  /** Writer lease must outlast the deployment's longest synchronous state read. */
+  collaborationLeaseDurationMs?: number;
   /** Internal deployment mapping for retained project directories, verified by storage. */
   projectDirectoryAliases?: Readonly<Record<string, string>>;
   codexBin: string;
@@ -172,10 +187,15 @@ export function loadConfig(cwd = process.cwd()): AppConfig {
     setting("RESIDENT_TOOL_INACTIVITY_TIMEOUT_MS"),
     120 * 60_000
   );
+  const collaborationLeaseDurationMs = Number(setting("COLLABORATION_LEASE_MS") ?? 30_000);
+  if (!Number.isSafeInteger(collaborationLeaseDurationMs) || collaborationLeaseDurationMs < 1_000 || collaborationLeaseDurationMs > 86_400_000) {
+    throw new Error("COLLABORATION_LEASE_MS must be an integer between 1000 and 86400000");
+  }
   return {
     host: process.env.HOST?.trim() || "127.0.0.1",
     port: positiveInt(process.env.PORT, 4311),
     dataDir,
+    collaborationLeaseDurationMs,
     ...(projectDirectoryAliases ? { projectDirectoryAliases } : {}),
     codexBin: useEmbeddedCodex
       ? embeddedCodexBin

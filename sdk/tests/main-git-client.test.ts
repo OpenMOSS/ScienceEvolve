@@ -178,11 +178,9 @@ describe("main Git-on SDK integration: actual kernel/SQLite/local Git, simulated
         inboxPath: input.request.inboxPath, memoryPath: path.join(input.request.workspacePath, "Memory.md"),
         runtimePath: input.request.runtimePath, userInputsPath: inputDirectory, inboxSha256: "fixture"
       }, compileInvocationPolicy(input.request.project.agents.main, input.request));
-      expect(prompt).toContain(inputDirectory);
-      expect(prompt).toContain("Original reference image");
-      expect(prompt).toContain('"reference.png"');
-      // Scoped routing Inboxes are not the general project Inbox; input
-      // context must reach the native prompt independently of that format.
+      expect(prompt).toContain(input.request.projectPath);
+      // The complete input catalog remains in formal state and the shared
+      // directory, rather than being repeated in every native prompt.
       const many = { ...input.request, project: { ...input.request.project,
         inputFiles: Array.from({ length: 1000 }, (_, i) => `reference-${i}.png`) } };
       const bounded = compileWorkflowPrompt(many, {
@@ -190,9 +188,8 @@ describe("main Git-on SDK integration: actual kernel/SQLite/local Git, simulated
         inboxPath: input.request.inboxPath, memoryPath: path.join(input.request.workspacePath, "Memory.md"),
         runtimePath: input.request.runtimePath, userInputsPath: inputDirectory, inboxSha256: "fixture"
       }, compileInvocationPolicy(input.request.project.agents.main, input.request));
-      expect(bounded).toContain('"reference-19.png"');
-      expect(bounded).not.toContain('"reference-20.png"');
-      expect(bounded).toContain("Additional names omitted");
+      expect(bounded).not.toContain(JSON.stringify(many.project.inputFiles));
+      expect(bounded).toBe(prompt);
       const session = { schemaVersion: 1, harnessId: "codex", adapterVersion: "fixture",
         nativeId: "fixture-main-session", generation: 1, durable: true, createdAt: new Date().toISOString() };
       return { initialLease: { session, acknowledgedControlSeq: 0 }, probe: async () => ({ session, acknowledgedControlSeq: 0 }),

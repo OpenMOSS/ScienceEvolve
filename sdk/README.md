@@ -92,4 +92,4 @@ English and Chinese guides are included in the package. Use the language links a
 
 The API and CLI use the main runtime. `@scienceevolve/sdk/main` and `--engine main` remain explicit aliases. The legacy engine and its package exports have been removed; existing legacy data requires an older release.
 
-The runtime is based on main `6bf6a7bb`; see the [2026-10-16 synchronization notes](docs/main-sync-20261016.md).
+The runtime's Git baseline and per-file source hashes are recorded in the [runtime manifest](resources/main-runtime/manifest.json). The [2026-10-30 synchronization notes](docs/main-sync-20261030.md) retain the historical update record.

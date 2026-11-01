@@ -6,10 +6,10 @@ import { CollaborationStateDatabase } from "../../src/core/collaboration-state/s
 import { cloneAgentOrchestrationTemplate } from "../../src/core/agent-orchestration.js";
 import { mergeAgentConfigs } from "../../src/core/validation.js";
 import { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";
-import { workflowAdjustmentContextSources } from "../../src/core/workflow-adjustment-notifications.js";
 import type { AgentRunRequest, ProjectState } from "../../src/core/types.js";
 import type { SessionRef } from "../../src/core/harness-runtime/contracts.js";
 import type { SerialWorkflowNotificationContext } from "../../src/core/serial-workflow-notifications.js";
+import { workflowAdjustmentContextSources, type WorkflowAdjustmentNotificationFact } from "../../src/core/workflow-adjustment-notifications.js";
 import { dshSessionArtifactPath } from "../../src/core/harness-runtime/adapters/dsh-adapter.js";
 
 const roots: string[] = [], databases: CollaborationStateDatabase[] = [];
@@ -35,7 +35,17 @@ if (harness === "codex" && args[0] === "debug" && args[1] === "models") {
   process.exit(0);
 }
 const emit = value => process.stdout.write(JSON.stringify(value) + "\\n");
-const capture = prompt => fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ prompt, args }));
+const capture = prompt => {
+  const workflowUpdates = [];
+  for (const line of prompt.split("\\n").filter(line => line.startsWith("Context index: "))) {
+    const index = JSON.parse(fs.readFileSync(line.slice("Context index: ".length), "utf8"));
+    const source = index.entries.find(entry => entry.key === "workflow-updates");
+    if (!source) continue;
+    const list = JSON.parse(fs.readFileSync(path.join(index.baseDirectory, source.list.path), "utf8"));
+    for (const entry of list.entries) workflowUpdates.push(JSON.parse(fs.readFileSync(path.join(list.baseDirectory, entry.detail.path), "utf8")));
+  }
+  fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ prompt, args, workflowUpdates }));
+};
 if (args.includes("--help") || args.includes("--version")) { console.log("Controlled native fixture 1.0"); process.exit(0); }
 if (harness === "dsh") {
   let seq = 0;
@@ -122,7 +132,7 @@ async function fixture(harness: Harness, large = false, echo = true) {
       nativeProtocol: harness === "codex" ? "responses" : harness === "pi" ? "chat-completions" : "anthropic-messages", routeMode: "proxy" },
     sessionPersistence: true, permission: "workspace", webSearch: false, skills: [], autoSkills: [], mcpServers: [] } },
     agentSessionIds: {}, agentSessions: {}, agentSessionMeta: {} } as unknown as ProjectState;
-  const prepared: Array<{ inputId: string; expectedSession?: SessionRef; text: string }> = [], received: SessionRef[] = [],
+  const prepared: Array<{ inputId: string; expectedSession?: SessionRef; text: string; facts: WorkflowAdjustmentNotificationFact[] }> = [], received: SessionRef[] = [],
     nativeInputs: string[] = [], actualSessions: SessionRef[] = [];
   const request: AgentRunRequest = { project, agent: "main", kind: "main", permission: "workspace", invocationId, inboxPath,
     projectPath, workspacePath, schemaPath: join(projectPath, "schema.json"), runtimePath,
@@ -132,8 +142,8 @@ async function fixture(harness: Harness, large = false, echo = true) {
     onPrepareWorkflowAdjustmentInput: async input => {
       const notification = database.prepareSerialWorkflowAdjustmentInput(context, input.inputId, input.expectedSession);
       const details = notification ? await input.publishContext?.(workflowAdjustmentContextSources(notification.facts)) : undefined;
-      const text = `${notification?.text ?? ""}${details ? `\n\n${details}` : ""}`;
-      prepared.push({ ...input, text }); return text;
+      const text = notification ? `${notification.text}${details ? `\n\n${details}` : ""}` : "";
+      prepared.push({ ...input, text, facts: notification?.facts ?? [] }); return text;
     },
     onWorkflowAdjustmentInputReceived: (event, session, inputId) => {
       database.confirmSerialWorkflowAdjustmentInput(context, inputId, session, event); received.push(session);
@@ -147,34 +157,23 @@ async function fixture(harness: Harness, large = false, echo = true) {
 }
 
 describe("Ordinary workflow notification input through the actual built-in process transports", () => {
-  it.each<Harness>(["codex", "claude-code", "dsh", "pi"])("%s publishes complete large facts on demand and records receipt of the actual native notice once", async harness => {
+  it.each<Harness>(["codex", "claude-code", "dsh", "pi"])("%s carries complete large accepted facts and records the actual native Session once", async harness => {
     const f = await fixture(harness, true);
     const result = await f.runtime.run(f.request, async () => undefined, new AbortController().signal);
     expect(result.handoff).toContain("Original native handoff");
     expect(f.prepared).toHaveLength(1);
-    const captured = JSON.parse(await readFile(f.native.capture, "utf8")).prompt as string;
+    const native = JSON.parse(await readFile(f.native.capture, "utf8"));
+    const captured = native.prompt as string;
     expect(f.nativeInputs.some(text => text === captured), `Native input lengths ${f.nativeInputs.map(text => text.length)}, actual ${captured.length}`).toBe(true);
     expect(captured.includes(f.prepared[0]!.text), `Prepared ${f.prepared[0]!.text.length}, actually sent ${captured.length}`).toBe(true);
     expect(f.received).toHaveLength(1);
     const full = f.prepared[0]!.text, actual = f.received[0]!;
-    expect(Buffer.byteLength(full)).toBeLessThan(128 * 1024);
-    const summary = JSON.parse(full.slice(full.indexOf("\n") + 1).split("\n\n")[0]!);
-    expect(summary.total).toBe(8); expect(summary.records).toHaveLength(8);
-    expect(full).not.toContain("原始说明");
-    const indexPath = full.match(/Context index: ([^\r\n]+)/)![1]!;
-    const index = JSON.parse(await readFile(indexPath, "utf8"));
-    const source = index.entries.find(entry => entry.key === "workflow-updates");
-    const list = JSON.parse(await readFile(join(dirname(indexPath), source.list.path), "utf8"));
-    expect(list.entries).toHaveLength(8);
-    let detailBytes = 0;
-    for (const entry of list.entries) {
-      const text = await readFile(join(dirname(indexPath), entry.detail.path), "utf8");
-      detailBytes += Buffer.byteLength(text);
-      const detail = JSON.parse(text), original = f.database.workflowAdjustment(f.context.projectId, detail.record.requestId)!;
-      expect(detail.record).toEqual(original); expect(detail.transition).toEqual(original.history.at(-1));
-      expect(summary.records.some(record => record.eventId === detail.eventId)).toBe(true);
-    }
-    expect(detailBytes).toBeGreaterThan(128 * 1024);
+    const details = native.workflowUpdates as Array<{ id: string; status: string } & WorkflowAdjustmentNotificationFact>;
+    expect(Buffer.byteLength(JSON.stringify(details))).toBeGreaterThan(128 * 1024);
+    expect(details).toEqual(f.prepared[0]!.facts.map(fact => ({ id: fact.record.requestId, status: fact.transition.status, ...fact })));
+    expect(details.map(fact => fact.record.requestId)).toEqual(Array.from({ length: 8 }, (_, index) => `original-change-${index}`));
+    expect(captured).toContain("source=workflow-updates");
+    expect(captured).not.toContain(details[0]!.record.explanation);
     expect(captured.includes(full)).toBe(true);
     expect(actual.nativeId).not.toMatch(/^pending:/); expect(actual).toEqual(f.actualSessions.at(-1));
     if (harness === "codex") expect(f.prepared[0]!.expectedSession).toBeUndefined();

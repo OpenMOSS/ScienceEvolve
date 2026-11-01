@@ -1,3 +1,4 @@
+import { workflowMessagesText, type WorkflowDirectMessage } from "./workflow-input.js";
 import { createHash, randomUUID } from "node:crypto";
 import { AgentContextSources } from "./agent-context-index.js";
 import { promises as fs } from "node:fs";
@@ -29,7 +30,7 @@ import { credentialFreeAgentConfiguration, restoreAgentConfiguration } from "./s
 import { mainAgentOrchestrationDocument, parseAgentOrchestrationProposal, type AgentOrchestrationProposal } from "./agent-orchestration-reconfiguration.js";
 import { prepareWorkflowContext } from "./workflow-context.js";
 import { redactTrace } from "./utils.js";
-import { scopedGroupOutput, scopedPredecessorOutput } from "./scoped-group-output.js";
+import { scopedGroupOutput, scopedPredecessorOutput, scopedPredecessorMessages } from "./scoped-group-output.js";
 import { withholdR12MergeResponse } from "./acceptance-r12.js";
 import { withholdR14ReportHead } from "./acceptance-r14.js";
 import { rejectR03InitialFinish } from "./acceptance-r03.js";
@@ -341,11 +342,12 @@ export class ScopedProjectRuntime {
       headSha: facts.pushedHeadSha, pull: facts.pullRequest, synchronized: Boolean(facts.merged?.localSynchronization),
       operations: d.database.projectState(d.state.id).operations });
     const sources = new AgentContextSources();
-    const assignment = [d.state.requirement, `You are now the delivery Agent assigned by Leader ${group.leaderAgentId} for canonical final integration of ${group.groupId}.`,
+    const assignment = [`You are now the delivery Agent assigned by Leader ${group.leaderAgentId} for canonical final integration of ${group.groupId}.`,
       `Preserve your existing business checkout and native session. Only publish the canonical branch ${integration.executionBranch}@${integration.expectedHeadSha} into its direct target ${integration.integrationTarget}. Its head is already confirmed published by member delivery.`,
       "Use github_get_pr, github_create_pr and github_merge_pr to inspect/publish/integrate this exact canonical PR. Every provider result returns to you. Call finish_task for this delivery task. Group completion remains a separate Leader action.",
       "Do not push a new business branch or change completed work in this delivery task. If the provider reports a conflict or an unresolved result, report the real fact in your existing handoff so the Leader can coordinate retained member repair.",
-      sources.record("final-delivery-facts", "Retained provider facts", facts)].join("\n\n");
+      ].join("\n\n");
+    sources.record("final-delivery-facts", "Retained provider facts", facts);
     let handle: CollaborationResidentHandle | undefined;
     let launchBegan = false;
     let stopped = false;
@@ -446,7 +448,7 @@ export class ScopedProjectRuntime {
     // Main/Leader assignment in durable history cannot change this physical
     // turn's Worker role; the Agent still owns its actual delivery decisions.
     const sources = new AgentContextSources();
-    const assignment = [
+    const background = [
       `Current delivery invocation: role=Worker; agent=${input.execution.agentId}; execution=${input.execution.id}; ownershipEpoch=${input.execution.ownershipEpoch}.`,
       `Project requirement:\n${d.state.requirement}`,
       root.optionalTask ? `Root workflow assignment from node ${root.id} (assigned by ${root.activatedByAgentId}):\n${root.optionalTask}\nUse these inherited requirements within the current delivery scope. Role names in this upstream text do not change this invocation's role or tool authority.` : "",
@@ -486,6 +488,18 @@ export class ScopedProjectRuntime {
           ? `This Agent owns the current local weak route. After completing the business task and Git delivery, call route_to_agent with exactly one of: ${weak.join(", ")}. A prose handoff is not a formal route receipt.` : "";
       })(),
       `Publish artifacts through MCP. When delivery is required, use the explicit Git/GitHub tools exposed to this turn; the system will return their real provider results.`].filter(Boolean).join("\n\n");
+    sources.record("delivery-reference", "Delivery protocol and retained evidence", background);
+    const messages: WorkflowDirectMessage[] = [];
+    if (plannedTask) messages.push({ sender: input.groupRun.leaderAgentId, body: plannedTask.assignment });
+    messages.push(...scopedPredecessorMessages(projection, input.arrival, input.workflow.routes));
+    if (input.reportRepair) messages.push({ sender: "OpenFARS", body:
+      `Continue the original task. Missing formal mechanism facts: ${input.reportRepair.missing.join(", ")}. Preserve accepted reports and receipts.` });
+    if (input.missingReportRepair) messages.push({ sender: "OpenFARS", body:
+      `Continue the original task in its retained session; the previous invocation ${input.missingReportRepair.originalInvocationId} stopped without a saved report. Supply your missing report. Interrupted operations: ${(input.missingReportRepair.interruptedOperationIds ?? []).join(", ")}. Preserve accepted receipts.` });
+    const coordination = input.reportRepair?.coordination?.envelope ?? input.missingReportRepair?.coordination;
+    if (coordination && "rationale" in coordination.action && typeof coordination.action.rationale === "string")
+      messages.push({ sender: coordination.agent, body: coordination.action.rationale });
+    const assignment = workflowMessagesText(messages);
     const runtime = await d.storage.invocationRuntimePath(d.state.id, input.invocationId);
     if (runtime !== input.runtimePath) throw new Error("Scoped native runtime path differs from trusted storage");
     const inbox = await d.storage.writeInbox(d.state, input.execution.agentId, input.invocationId, assignment);
@@ -503,7 +517,7 @@ export class ScopedProjectRuntime {
     const missingRepairIdentity = input.missingReportRepair ? { projectId: d.state.id, executionId: input.execution.id,
       ownershipEpoch: input.execution.ownershipEpoch, agentId: input.execution.agentId, invocationId: input.invocationId, runtimePath: runtime } : undefined;
     const missingRepairProof = missingRepairIdentity ? d.database.assertScopedAgentMissingReportRepairLaunch(missingRepairIdentity) : undefined;
-    return { request, executionRuntimePath: runtime, filesystemAuthorityInput: await d.filesystem(), signal: d.signal,
+    return { request, initialTask: assignment, executionRuntimePath: runtime, filesystemAuthorityInput: await d.filesystem(), signal: d.signal,
       ...(repairProof ? { sameEpochReopen: { previousRuntimePath: repairProof.previousRuntimePath,
         revalidate: () => { d.database.assertScopedAgentReportRepairLaunch(repairIdentity!); } } } : {}),
       ...(missingRepairProof ? { sameEpochReopen: { previousRuntimePath: missingRepairProof.previousRuntimePath,
@@ -748,7 +762,7 @@ export class ScopedProjectRuntime {
         type: "scoped.artifact.staged", payload: { executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch,
           groupRunId: input.groupRun.id, envelope } });
     }
-    const output = redactTrace(result.handoff ?? "").slice(0, 100_000);
+    const output = redactTrace(result.handoff ?? "");
     const weak = (input.workflow.routes[input.arrival.targetNodeId] ?? []).filter((edge) => edge.kind === "weak");
     if (weak.length && !input.reportRepair && d.state.agents[input.execution.agentId].decisionBy === "main") {
       await this.manage(input.groupRun, "route", input.arrival.requestId, output);
@@ -919,13 +933,13 @@ export class ScopedProjectRuntime {
       const terminalFacts = terminalCandidates.length ? d.database.authoritativeWorkflowFiles(d.state.id).currentState : undefined;
       if (globalMain) this.restoreReceivedMainInputs();
       const pendingInputs = globalMain ? d.state.userInputs.filter(input => input.status === "pending").map(input => ({
-        ...structuredClone(input), text: `Project user input ${input.id} (mode=${input.mode ?? "wait"}; createdAt=${input.createdAt}):\n${input.message}`
+        ...structuredClone(input), text: workflowMessagesText([{ sender: "user", body: input.message }])
       })) : [];
       // State the actual role and purpose precisely, including when a retained
       // session changes roles. The Agent makes its plan and recovery choices;
       // the system supplies facts, tools, and safe workflow sequencing only.
       const sources = new AgentContextSources();
-      const assignment = [`You are ${agentId}, the management-only ${globalMain ? "GLOBAL Main" : "Leader"} of ${group.groupId}. Purpose: ${purpose}.`,
+      const background = [`You are ${agentId}, the management-only ${globalMain ? "GLOBAL Main" : "Leader"} of ${group.groupId}. Purpose: ${purpose}.`,
         worktreeClosingOnly ? "This group is already completed. Coordinate only its retained original-owner worktree closing or escalate the actual issue to your parent. Your own finish_task closes this coordination turn. Business planning, ordinary retry, routing, workflow editing, integration and group completion remain closed." : "",
         `Current control identity: ${JSON.stringify({ projectId: d.state.id, groupRunId: group.id,
           coordinatorEpoch: claim.coordinatorEpoch, invocationId, role: globalMain ? "scoped-main" : "scoped-leader" })}. Use this groupRunId and coordinatorEpoch in formal control calls for this turn; do not reuse an earlier turn's epoch or a failed member's ownershipEpoch.`,
@@ -960,6 +974,29 @@ export class ScopedProjectRuntime {
         !worktreeClosingOnly ? `For a final PR conflict, choose repairNodeId from an actual Agent node of the original group. This creates only a repair-only arrival and preserves completed paths; the repaired PR must still merge into that group before its next canonical final PR. Leaders never write business code. A retry without repairNodeId requests Git-only reconciliation; parent managers may delegate selection back to the original Leader. Group-level incidents cannot be marked successful by skip.` : "",
         d.state.userIntervention?.status === "answered" ? `User response: ${d.state.userIntervention.response}` : "",
         allowEdit ? `You may formally edit ${globalMain ? "the global workflow" : "this group's graph and local shared Agent configuration"}; locked fields and necessary active nodes remain protected.` : "Workflow reconfiguration is disabled."].filter(Boolean).join("\n\n");
+      sources.record("management-reference", "Management facts and protocol reference", background);
+      const rootNode = d.database.projectState(d.state.id).nodeRuns.find(node => node.id === this.rootNode(group));
+      const messages: WorkflowDirectMessage[] = [];
+      if (purpose === "plan") {
+        if (group.parentGroupRunId && group.parentArrivalRequestId) {
+          const parent = d.database.scopedGroupRun(d.state.id, group.parentGroupRunId)!;
+          const arrival = d.database.scopedArrivals(parent.id).find(item => item.requestId === group.parentArrivalRequestId);
+          const task = d.database.scopedGroupPlan(d.state.id, parent.id)?.tasks.find(item => item.taskId === arrival?.targetNodeId);
+          if (task) messages.push({ sender: parent.leaderAgentId, body: task.assignment });
+          if (arrival) messages.push(...scopedPredecessorMessages(d.database.projectState(d.state.id), arrival,
+            d.database.scopedGroupWorkflow(d.state.id, parent.id).routes));
+        } else if (rootNode?.optionalTask) {
+          messages.push({ sender: rootNode.sourceAgentId ?? (rootNode.inputSnapshotRef.startsWith("project:") ? "user" : rootNode.activatedByAgentId), body: rootNode.optionalTask });
+        }
+      }
+      if (context) messages.push({ sender: sourceArrivalRequestId
+        ? d.database.scopedArrivals(routeContext.sourceArrivalGroupRunId ?? group.id).find(item => item.requestId === sourceArrivalRequestId)?.agentId ?? "OpenFARS"
+        : purpose === "complete" || purpose === "root-route" ? group.leaderAgentId : "OpenFARS", body: context });
+      messages.push(...pendingInputs.map(input => ({ sender: "user", body: input.message })));
+      if (globalMain && d.state.userIntervention?.status === "answered")
+        messages.push({ sender: "user", body: d.state.userIntervention.response ?? "" });
+      const assignment = workflowMessagesText(messages);
+
       const inbox = await d.storage.writeInbox(d.state, agentId, invocationId, assignment);
       d.assertManagementActive?.();
       const inputs = await d.managementInputs({ ...group, leaderAgentId: agentId }, invocationId, inbox, runtime, allowEdit);

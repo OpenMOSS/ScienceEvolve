@@ -3,15 +3,15 @@ import { createServer, type Server } from "node:http";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { HermesAdapter } from "../src/core/harness-runtime/adapters/hermes-adapter.js";
+import { HermesAdapter } from "../src/host/hermes/hermes-adapter.js";
 import { CommonProcessHost } from "../src/core/harness-runtime/process-host.js";
 import { prepareAdapterRuntime } from "../src/core/harness-runtime/adapters/adapter-utils.js";
 import type { HarnessAdapterContext, HarnessEvent, SessionRef } from "../src/core/harness-runtime/contracts.js";
 import { openBuiltinResidentAdapter } from "../src/core/harness-runtime/adapters/resident-adapter-factory.js";
 import { compileFilesystemAuthority } from "../src/core/harness-runtime/filesystem-authority.js";
 import { OfficialEventBridge } from "../src/core/harness-runtime/official-event-bridge.js";
-import { hermesOfficialEventMapper } from "../src/core/harness-runtime/adapters/hermes-acp.js";
-import { HarnessRuntimeFacade } from "../src/core/harness-runtime/runtime.js";
+import { hermesOfficialEventMapper } from "../src/host/hermes/hermes-acp.js";
+import { createSdkHarnessRuntime } from "../src/host/harness-adapters.js";
 
 // Opt-in real installed Hermes + local deterministic model transport. No paid API,
 // personal Hermes profile, GitHub writes or test-double Harness implementation.
@@ -63,7 +63,7 @@ describe.skipIf(!binary)("real installed Hermes ACP (local deterministic provide
       const fixtureUrl = await provider();
       // Trusted internal test hook only: production still requires its normal HTTPS
       // gateway validation. Allow exactly this ephemeral deterministic local server.
-      const facade = new HarnessRuntimeFacade({ harnessExecutables: { hermes: binary }, residentModelInactivityTimeoutMs: 30_000,
+      const facade = createSdkHarnessRuntime({ harnessExecutables: { hermes: binary }, residentModelInactivityTimeoutMs: 30_000,
         validateGatewayTarget: async url => { expect(url).toBe(fixtureUrl); } });
       const result = await facade.runSmoke({ harness: "hermes", model: "sdk-hermes-fixture", gateway: {
         id: "fixture", name: "fixture", url: fixtureUrl, apiKey: "fixture-only", models: ["sdk-hermes-fixture"],

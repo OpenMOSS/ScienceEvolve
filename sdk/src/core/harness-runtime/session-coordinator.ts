@@ -20,7 +20,7 @@ export interface PreparedHarnessSession {
   };
 }
 
-/** Owns durable/ephemeral and same-Harness replacement semantics. */
+/** Owns durable/ephemeral Session preparation and continuation semantics. */
 export class SessionCoordinator {
   async prepare(
     adapter: HarnessAdapter,
@@ -112,6 +112,26 @@ export class SessionCoordinator {
     return {
       session,
       resumed: false,
+      replaced: false
+    };
+  }
+
+  resume(adapter: HarnessAdapter, previous: SessionRef): PreparedHarnessSession {
+    const validation = validateSessionRef(previous);
+    const rejection = validation.valid
+      ? this.validatePersisted(adapter, validation.session)
+      : validation.reason;
+    if (!validation.valid || rejection) {
+      throw new HarnessRuntimeError(
+        "SESSION_RESUME_FAILED",
+        "The original native Session cannot be resumed; it was preserved for explicit recovery",
+        { harnessId: adapter.descriptor.id, reason: rejection },
+        { source: "runtime", retryable: false }
+      );
+    }
+    return {
+      session: { ...validation.session, resumedAt: new Date().toISOString() },
+      resumed: true,
       replaced: false
     };
   }

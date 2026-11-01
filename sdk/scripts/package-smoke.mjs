@@ -29,7 +29,8 @@ if (metadata.files.some(({ path: file }) => /(?:config-recommendations|configura
   throw new Error("Removed recommendation or Project Explainer code was packaged");
 }
 if (!metadata.files.some(({ path: file }) => file === "dist/core/orchestration-control-mcp.js")) throw new Error("Missing MCP helper");
-for (const moduleName of ["context-limit", "model-context", "gateway-tool-choice", "workflow-reconfiguration", "project-mcp", "project-mcp-host"]) {
+for (const moduleName of ["context-limit", "context-index-organizer", "context-injection-budget", "workflow-input",
+  "model-context", "gateway-tool-choice", "workflow-reconfiguration", "project-mcp", "project-mcp-host"]) {
   if (!metadata.files.some(({ path: file }) => file === `dist/core/${moduleName}.js`)) {
     throw new Error(`Missing synced runtime module: ${moduleName}`);
   }
@@ -55,6 +56,9 @@ for (const file of ["dist/main-runtime.js", "dist/main-runtime.d.ts", "dist/core
   "dist/core/sleep-tool-contract.js", "dist/core/control-result-receipts.js", "dist/core/serial-workflow-notifications.js",
   "docs/main-sync-20261013-zh.md",
   "docs/main-sync-20261014-zh.md", "docs/main-sync-20261016-zh.md",
+  "docs/main-sync-20261030-zh.md", "docs/main-sync-20261030.md",
+  "dist/core/harness-runtime/prompt-catalog.js", "dist/core/harness-runtime/adapters/native-prompt-source.js",
+  "dist/core/internal/shared/agent-permission-prompts.js",
   "dist/core/agent-context-index.js", "dist/core/agent-git-delivery.js",
   "dist/core/collaboration-git/inspection.js", "dist/core/collaboration-git/revert.js",
   "dist/core/workflow-recovery.js", "dist/core/project-runtime-waiting.js",
@@ -62,8 +66,8 @@ for (const file of ["dist/main-runtime.js", "dist/main-runtime.d.ts", "dist/core
   "dist/core/project-state-mcp.js", "dist/core/project-state-service.js", "dist/core/project-runtime-projection.js",
   "dist/core/agent-queue-view.js",
   "dist/core/harness-runtime/descriptor-broker-mcp.js", "dist/core/harness-runtime/adapters/pi-mcp-extension.js",
-  "dist/core/harness-runtime/adapters/hermes-adapter.js", "dist/core/harness-runtime/adapters/hermes-acp.js",
-  "dist/core/harness-runtime/adapters/hermes-settings.js", "docs/hermes-zh.md", "examples/hermes/workflow.json",
+  "dist/host/hermes/hermes-adapter.js", "dist/host/hermes/hermes-acp.js",
+  "dist/host/hermes/hermes-settings.js", "docs/hermes-zh.md", "examples/hermes/workflow.json",
   "dist/core/collaboration-state/store.js", "dist/schemas/main-decision.json", "dist/schemas/worker-result.json",
   "resources/main-runtime/manifest.json", "docs/main-runtime-migration-zh.md"]) {
   assert.ok(metadata.files.some((entry) => entry.path === file), `Missing main-runtime package file: ${file}`);

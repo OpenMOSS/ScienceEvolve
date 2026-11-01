@@ -1,5 +1,6 @@
 import type { HarnessId, HarnessPurpose } from "./contracts.js";
 import type { ProtocolProxyFailure } from "../protocol-router.js";
+import { redactTrace } from "../utils.js";
 import {
   AgentApiError,
   AgentAuthenticationError,
@@ -19,6 +20,7 @@ export type HarnessRuntimeErrorCode =
   | "INVOCATION_ATTEMPT_BUDGET_EXHAUSTED"
   | "SESSION_RESUME_FAILED"
   | "INVOCATION_INPUT_STAGING_FAILED"
+  | "CONTEXT_INJECTION_LIMIT_EXCEEDED"
   | "PERMISSION_PROMPT_INJECTION_FAILED"
   | "MODEL_AUTHENTICATION_FAILED"
   | "MODEL_PROVIDER_FAILED"
@@ -76,6 +78,15 @@ export class HarnessRuntimeError extends Error {
   }
 }
 
+/** Trusted driver evidence: no native input/codec write was attempted. It is
+ * safe to revoke this turn while retaining its idle process and session. */
+export class ResidentInputPreparationError extends Error {
+  constructor(cause: unknown) {
+    super("Resident input preparation failed before native submission", { cause });
+    this.name = "ResidentInputPreparationError";
+  }
+}
+
 /** The selected gateway emitted a tool-call argument that is not valid JSON. */
 export class ProtocolToolArgumentsError extends HarnessRuntimeError {
   constructor(
@@ -93,7 +104,7 @@ export class ProtocolToolArgumentsError extends HarnessRuntimeError {
   }
 }
 
-/** A replacement Session also failed with the same protocol error. */
+/** The bounded correction attempt also failed with the same protocol error. */
 export class ProtocolRecoveryExhaustedError extends HarnessRuntimeError {
   constructor(
     harnessId: HarnessId,
@@ -102,7 +113,8 @@ export class ProtocolRecoveryExhaustedError extends HarnessRuntimeError {
   ) {
     super(
       "PROTOCOL_RECOVERY_EXHAUSTED",
-      "Gateway continued to return invalid JSON tool arguments after one automatic Session recovery",
+      "Gateway continued to return invalid JSON tool arguments after one automatic Session recovery" +
+        (typeof details.protocolMessage === "string" ? `: ${redactTrace(details.protocolMessage).slice(0, 500)}` : ""),
       { harnessId, ...details, recoveryAttempted: true },
       { ...options, source: "gateway", retryable: false }
     );
@@ -136,8 +148,8 @@ export function transientHarnessFailure(error: unknown): HarnessRuntimeError | u
   for (let current = error; current && !seen.has(current);) {
     seen.add(current);
     if (current instanceof HarnessRuntimeError) {
-      if ((current.retryable || current.code === "PROTOCOL_RECOVERY_EXHAUSTED") && [
-        "MODEL_PROVIDER_FAILED", "PROTOCOL_TOOL_ARGUMENTS_INVALID", "PROTOCOL_RECOVERY_EXHAUSTED",
+      if (current.retryable && [
+        "MODEL_PROVIDER_FAILED", "PROTOCOL_TOOL_ARGUMENTS_INVALID",
         "PROTOCOL_ROUTE_FAILED", "INVOCATION_TIMED_OUT"
       ].includes(current.code)) return current;
       // An explicit permanent error must not acquire retry permission from a
@@ -160,6 +172,8 @@ export function proxyFailureError(failure: ProtocolProxyFailure, harnessId: stri
     toolName: failure.toolName, toolIndex: failure.toolIndex };
   const options = { source: "gateway" as const, cause: cause instanceof Error ? cause : undefined };
   if (failure.code === "PROTOCOL_TOOL_ARGUMENTS_INVALID") return new ProtocolToolArgumentsError(harnessId, details, options);
+  if (failure.code === "CONTEXT_INJECTION_LIMIT_EXCEEDED") return new HarnessRuntimeError(failure.code,
+    failure.message, { ...details, requestedTokens: failure.requestedTokens, limitTokens: failure.limitTokens }, { ...options, source: "inputs", retryable: false });
   if (failure.code === "MODEL_CONTEXT_LIMIT_EXCEEDED") return new HarnessRuntimeError(failure.code,
     "Model context window exceeded; native compaction did not recover the request",
     { ...details, requestedTokens: failure.requestedTokens, limitTokens: failure.limitTokens }, { ...options, retryable: false });

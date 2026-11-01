@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { access, mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,7 +11,13 @@ import { deriveRuntimePins, unpinBytes, assertRuntimePinEdits, runtimePinsDigest
 
 const sdkRoot = path.resolve(fileURLToPath(new URL("../", import.meta.url)));
 const manifestFile = path.join(sdkRoot, "resources/main-runtime/manifest.json");
-const sourceCommit = "6bf6a7bb5b200e92511aa4010b7d5fc3711ed79b";
+const sourceCommit = sharedFixes.sourceCommit;
+const sourceSnapshotKind = sharedFixes.sourceSnapshotKind ?? "git";
+const coreIdentity = "exact-source-v1";
+if (!/^[a-f0-9]{40}$/.test(sourceCommit) || sharedFixes.fixes.length || hostSources.length || supplementalSources.length)
+  throw new Error("Shared core must use one exact main source without SDK patches or host files");
+if (["--refresh-host-extensions", "--refresh-branding", "--refresh-runtime-pins"].some(flag => process.argv.includes(flag)))
+  throw new Error("Shared core transformations are retired; adapt the host or update the common implementation");
 const roots = [
   "orchestrator.ts", "collaboration-runtime.ts", "collaboration-resident-launcher.ts",
   "harness-runtime/runtime.ts", "harness-runtime/resident-runtime-adapter.ts",
@@ -32,6 +39,9 @@ const regressionTests = [
   "agent-context-index.test.ts", "agent-git-delivery.test.ts",
   "agent-orchestration-reconfiguration.test.ts", "collaboration-git-command-runner.test.ts",
   "harness-recovery.test.ts", "invocation-inputs.test.ts", "invocation-policy.test.ts",
+  "session-coordinator.test.ts", "orchestrator-main.test.ts", "builtin-adapters.test.ts",
+  "skill-library.test.ts", "skill-staging.test.ts", "dsh-adapter-config.test.ts",
+  "harness-prompt-catalog.test.ts", "dsh-protocol-recovery.test.ts",
   "pi-mcp-extension.test.ts", "pi-protocol-backpressure.test.ts",
   "project-runtime-waiting.test.ts", "workflow-adjustment-notifications.test.ts",
   "workflow-context.test.ts", "workflow-recovery.test.ts", "scoped-collaboration-schema.test.ts",
@@ -62,6 +72,16 @@ const regressionTests = [
   "fixtures/harness-events/codex.jsonl", "fixtures/harness-events/pi.jsonl",
   "fixtures/harness-events/claude-code.jsonl", "fixtures/harness-events/dsh.jsonl"
 ];
+const selectedRegressionTests = sharedFixes.regressionTests ?? regressionTests;
+const selectedSchemas = sharedFixes.schemas ?? ["main-decision.json", "worker-result.json"];
+const additionalSources = sharedFixes.additionalSources ?? [];
+if (!Array.isArray(selectedRegressionTests) || !Array.isArray(selectedSchemas) || !Array.isArray(additionalSources) ||
+  selectedSchemas.some(value => typeof value !== "string" || !/^[\w/-]+\.json$/.test(value) || path.posix.normalize(value) !== value) ||
+  selectedRegressionTests.some(value => typeof value !== "string" || value.includes("\\") ||
+    path.posix.normalize(value) !== value || value.startsWith("../") || path.posix.isAbsolute(value)) ||
+  additionalSources.some(value => typeof value !== "string" || !value.startsWith("server/src/") ||
+    value.includes("\\") || path.posix.normalize(value) !== value))
+  throw new Error("Invalid shared-core source/test selection");
 // Portable upstream test fixtures: exact, reversible test-only adaptations.
 const portableRegressionFixes = {
   "scoped-worktree-closing-runtime.test.ts": {
@@ -88,11 +108,8 @@ const portableRegressionFixes = {
     }]
   },
   "harness-runtime.test.ts": {
-    description: "Preserve SDK Hermes composition and Windows Inspire wrapper/mode expectations",
+    description: "Windows Inspire wrapper/mode expectations",
     replacements: [{
-      before: '      "dsh",\n      "pi",\n      "codex",\n      "claude-code",\n      "fixture-five"',
-      after: '      "dsh",\n      "hermes",\n      "pi",\n      "codex",\n      "claude-code",\n      "fixture-five"'
-    }, {
       before: '  it("stages the shared Inspire wrapper before a fixture compute Adapter starts", async () => {',
       after: '  it.runIf(process.platform !== "win32")("stages the shared Inspire wrapper before a fixture compute Adapter starts", async () => {'
     }]
@@ -305,37 +322,11 @@ const portableRegressionFixes = {
 // context and recovery contracts. Keep every original source digest and record
 // exact test adaptations; production runtime bytes are unchanged.
 const contractRegressionFixes = {
-  "agent-tool-catalog.test.ts": {
-    description: "Verify on-demand catalog discovery rather than obsolete inline metadata; retain authorization and tool-policy assertions",
-    replacements: [{
-      before: 'it("gives an authorized Main metadata while leaving its actual tool policy unchanged",',
-      after: 'it("directs an authorized Main to on-demand metadata while leaving its actual tool policy unchanged",'
-    }, {
-      before: '    expect(prompt).toContain("<agent_tool_catalog>");\n    expect(prompt).toContain(\'"experimentMcp":true\');',
-      after: '    expect(prompt).toContain("agent-tool-catalog sources in the on-demand context index");\n    expect(prompt).not.toContain(JSON.stringify(catalog));'
-    }, {
-      before: 'expect(compileWorkflowPrompt(other, inputs, policy)).not.toContain("<agent_tool_catalog>");',
-      after: 'expect(compileWorkflowPrompt(other, inputs, policy)).not.toContain("agent-tool-catalog sources");'
-    }]
-  },
   "collaboration-runtime-integration.test.ts": {
     description: "Await the durable retrying projection after the in-memory transition; retain recovery and single-dispatch checks",
     replacements: [{
       before: '        expect((await storage.loadState(state.id)).status).toBe("retrying");\n        await waitFor(() => gitFactory.mock.calls.length > 0);',
       after: '        await vi.waitFor(async () => expect((await storage.loadState(state.id)).status).toBe("retrying"), { timeout: 5_000 });\n        await waitFor(() => gitFactory.mock.calls.length > 0);'
-    }]
-  },
-  "scoped-worktree-closing-authorization.test.ts": {
-    description: "Assert rejection at the current recovery-options gate for duplicate grants and ordinary retry; preserve all ownership checks",
-    replacements: [{
-      before: 'expect(() => f.db.revalidateScopedLeaderAction({ ...m.input, envelope: m.envelope(m.action, "second-grant") })).toThrow("duplicates");',
-      after: 'expect(() => f.db.revalidateScopedLeaderAction({ ...m.input, envelope: m.envelope(m.action, "second-grant") })).toThrow("no pending grant");\n    expect(f.db.scopedWorktreeClosingAuthorizations("p")).toHaveLength(1);'
-    }, {
-      before: 'expect(() => f.db.revalidateScopedLeaderAction({ ...m.input, envelope: m.envelope({ ...action, operation: "retry" }) })).toThrow("separate");',
-      after: 'expect(() => f.db.revalidateScopedLeaderAction({ ...m.input, envelope: m.envelope({ ...action, operation: "retry" }) })).toThrow("exact current retained failure");'
-    }, {
-      before: 'expect(() => next.acceptScopedLeaderAction({ ...newManager.input, residentStopConfirmed: true })).toThrow("duplicates");',
-      after: 'expect(() => next.acceptScopedLeaderAction({ ...newManager.input, residentStopConfirmed: true })).toThrow("no pending grant");\n    expect(next.scopedWorktreeClosingAuthorizations("p")).toEqual(grants);'
     }]
   },
   "scoped-worktree-closing-runtime.test.ts": {
@@ -345,39 +336,7 @@ const contractRegressionFixes = {
       after: '    expect(f.db.scopedGroupRun(P, "run-G")!.status).toBe("completed");\n  }, process.platform === "win32" ? 60_000 : 30_000);'
     }]
   },
-  "serial-workflow-native-input.test.ts": {
-    description: "Exercise actual native transport of compact workflow notices and on-demand publication of every complete original fact",
-    replacements: [{
-      before: 'import { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";',
-      after: 'import { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";\nimport { workflowAdjustmentContextSources } from "../../src/core/workflow-adjustment-notifications.js";'
-    }, {
-      before: '    onPrepareWorkflowAdjustmentInput: input => {\n      const text = database.prepareSerialWorkflowAdjustmentInput(context, input.inputId, input.expectedSession)?.text ?? "";\n      prepared.push({ ...input, text }); return text;\n    },',
-      after: '    onPrepareWorkflowAdjustmentInput: async input => {\n      const notification = database.prepareSerialWorkflowAdjustmentInput(context, input.inputId, input.expectedSession);\n      const details = notification ? await input.publishContext?.(workflowAdjustmentContextSources(notification.facts)) : undefined;\n      const text = `${notification?.text ?? ""}${details ? `\\n\\n${details}` : ""}`;\n      prepared.push({ ...input, text }); return text;\n    },'
-    }, {
-      before: '"%s carries complete large accepted facts and records the actual native Session once"',
-      after: '"%s publishes complete large facts on demand and records receipt of the actual native notice once"'
-    }, {
-      before: '    expect(Buffer.byteLength(full)).toBeGreaterThan(128 * 1024);',
-      after: `    expect(Buffer.byteLength(full)).toBeLessThan(128 * 1024);
-    const summary = JSON.parse(full.slice(full.indexOf("\\n") + 1).split("\\n\\n")[0]!);
-    expect(summary.total).toBe(8); expect(summary.records).toHaveLength(8);
-    expect(full).not.toContain("原始说明");
-    const indexPath = full.match(/Context index: ([^\\r\\n]+)/)![1]!;
-    const index = JSON.parse(await readFile(indexPath, "utf8"));
-    const source = index.entries.find(entry => entry.key === "workflow-updates");
-    const list = JSON.parse(await readFile(join(dirname(indexPath), source.list.path), "utf8"));
-    expect(list.entries).toHaveLength(8);
-    let detailBytes = 0;
-    for (const entry of list.entries) {
-      const text = await readFile(join(dirname(indexPath), entry.detail.path), "utf8");
-      detailBytes += Buffer.byteLength(text);
-      const detail = JSON.parse(text), original = f.database.workflowAdjustment(f.context.projectId, detail.record.requestId)!;
-      expect(detail.record).toEqual(original); expect(detail.transition).toEqual(original.history.at(-1));
-      expect(summary.records.some(record => record.eventId === detail.eventId)).toBe(true);
-    }
-    expect(detailBytes).toBeGreaterThan(128 * 1024);`
-    }]
-  }
+
 };
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -397,6 +356,8 @@ async function pinRuntimeEntries(entries) {
   for (const entry of entries) {
     const pinned = derived.outputs.get(entry.target);
     if (!pinned) continue;
+    if (entry.target.startsWith("src/core/") && !pinned.bytes.equals(entry.bytes))
+      throw new Error("Executable pins must be reviewed in the common source: " + entry.target);
     entry.bytes = pinned.bytes;
     entry.sha256 = digest(pinned.bytes);
     if (pinned.edits.length) entry.derivedPinEdits = pinned.edits;
@@ -411,17 +372,20 @@ function reverseAddedBrandedFixes(source, bytes, ids) {
     const before = brandBytes(Buffer.from(replacement.after)).bytes.toString("utf8");
     const after = brandBytes(Buffer.from(replacement.before)).bytes.toString("utf8");
     if (text.split(before).length !== 2) throw new Error(`Shared-fix context drift: ${fix.id}`);
-    text = text.replace(before, after);
+    text = text.replace(before, () => after);
   }
   return Buffer.from(text);
 }
 async function check(allowPrevious = false, suppliedManifest, suppliedBytes = new Map()) {
   const manifest = suppliedManifest ?? JSON.parse(await readFile(manifestFile, "utf8"));
+  const exactCore = manifest.coreIdentity === coreIdentity;
+  if (!allowPrevious && !exactCore) throw new Error("Missing exact shared-core identity policy");
   const previous = allowPrevious && manifest.schemaVersion === 1;
   const branded = manifest.brandingVersion !== undefined;
   if (branded ? manifest.brandingVersion !== brandingVersion || manifest.brandingSha256 !== brandingDigest
     : !allowPrevious) throw new Error("Unexpected runtime branding policy");
   if ((!previous && manifest.schemaVersion !== 2) || manifest.sourceCommit !== sourceCommit) throw new Error("Unexpected main-runtime source manifest");
+  if ((manifest.sourceSnapshotKind ?? "git") !== sourceSnapshotKind) throw new Error("Unexpected runtime source snapshot kind");
   const expectedRoots = previous ? roots.slice(0, 12) : roots;
   if (JSON.stringify(manifest.roots) !== JSON.stringify(expectedRoots) &&
     !(allowPrevious && [13, 15, 16, 17].includes(manifest.roots.length) && JSON.stringify(manifest.roots) === JSON.stringify(roots.slice(0, manifest.roots.length)))) throw new Error("Unexpected runtime roots");
@@ -448,14 +412,19 @@ async function check(allowPrevious = false, suppliedManifest, suppliedBytes = ne
       ? `src/core/${entry.source.slice("server/src/".length)}`
       : entry.source.startsWith("server/schemas/")
         ? `resources/main-runtime/schemas/${entry.source.slice("server/schemas/".length)}`
-        : regressionTests.includes(entry.source.slice("server/tests/".length)) && entry.source.startsWith("server/tests/")
+        : selectedRegressionTests.includes(entry.source.slice("server/tests/".length)) && entry.source.startsWith("server/tests/")
           ? `tests/main-core/${entry.source.slice("server/tests/".length)}` : undefined;
     if (!expected || expected !== entry.target) throw new Error(`Unexpected manifest mapping: ${entry.source}`);
     const bytes = suppliedBytes.get(entry.target) ?? await readFile(target(entry.target));
     checkedBytes.set(entry.target, bytes);
     if (digest(bytes) !== entry.sha256) throw new Error(`Main source drift: ${entry.target}`);
-    const originalPins = unpinBytes(bytes, entry.derivedPinEdits ?? []);
-    const originalBranding = branded ? unbrandBytes(originalPins, entry.brandingEdits) : originalPins;
+    const commonFile = entry.source.startsWith("server/src/") || entry.source.startsWith("server/schemas/");
+    if (exactCore && commonFile && ((entry.sharedFixes ?? []).length || (entry.brandingEdits ?? []).length ||
+      (entry.derivedPinEdits ?? []).length || entry.sourceSha256 !== entry.sha256))
+      throw new Error("Shared core contains a source transformation: " + entry.target);
+    const originalPins = exactCore && commonFile ? bytes : unpinBytes(bytes, entry.derivedPinEdits ?? []);
+    const originalBranding = branded && !(exactCore && commonFile)
+      ? unbrandBytes(originalPins, entry.brandingEdits) : originalPins;
     if (entry.target.startsWith("src/core/")) assertNoExpress(bytes, entry.source);
     if (supplementalSource(entry.source)) {
       const available = new Set(manifest.files.map((file) => file.source));
@@ -627,8 +596,26 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
   // Reject invalid candidates without changing the persisted manifest.
   await check(false, manifest);
   await writeFile(manifestFile, JSON.stringify(manifest, null, 2) + "\n");
-} else if (process.argv.includes("--check")) {
+} else if (process.argv.includes("--check") || process.argv.includes("--check-source")) {
   await check();
+  if (process.argv.includes("--check-source")) {
+    const argument = process.argv.indexOf("--source");
+    if (argument < 0 || !process.argv[argument + 1] || process.argv[argument + 1].startsWith("--"))
+      throw new Error("Use --check-source --source <main checkout>");
+    const checkout = path.resolve(process.argv[argument + 1]);
+    const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+    let checked = 0;
+    for (const entry of manifest.files.filter(entry => entry.source.startsWith("server/"))) {
+      const original = await readFile(path.join(checkout, entry.source));
+      if (digest(original) !== entry.sourceSha256) throw new Error("Current main source drift: " + entry.source);
+      if (entry.source.startsWith("server/src/")) {
+        const output = await readFile(target(entry.target));
+        if (!output.equals(original)) throw new Error("Actual main core differs: " + entry.source);
+      }
+      checked++;
+    }
+    console.log(`Actual main core parity verified: ${checked} sources; shared core is compared without transformations`);
+  }
 } else {
   const sourceArgument = process.argv.indexOf("--source");
   const fromSnapshot = sourceArgument < 0 && process.argv.includes("--verify-generation");
@@ -644,9 +631,26 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
   if (fromSnapshot && !previousManifest) throw new Error("Generation verification requires an existing runtime manifest");
   const snapshot = fromSnapshot ? (await import("./runtime-source-snapshot.mjs")).decodeSnapshot(
     await readFile(target("tests/fixtures/main-runtime-upstream.json.gz")), previousManifest) : undefined;
-  const readSource = (commit, source) => snapshot ? snapshot.read(commit, source) : git(["show", `${commit}:${source}`]);
+  const useWorkingTree = process.argv.includes("--worktree");
+  if (!fromSnapshot && useWorkingTree !== (sourceSnapshotKind === "working-tree"))
+    throw new Error("This source baseline requires --worktree for explicit capture of current main files");
+  if (useWorkingTree && git(["rev-parse", "HEAD"]).toString().trim() !== sourceCommit)
+    throw new Error("Working-tree base commit does not match the pinned main commit");
+  const readSource = (commit, source) => snapshot ? snapshot.read(commit, source)
+    : useWorkingTree ? readFileSync(path.join(checkout, source)) : git(["show", `${commit}:${source}`]);
   const resolveSource = commit => snapshot ? snapshot.resolve(commit) : git(["rev-parse", `${commit}^{commit}`]).toString().trim();
-  if (previousManifest && previousManifest.sourceCommit !== sourceCommit && process.argv.includes("--upgrade")) {
+  const acceptSyncedCore = process.argv.includes("--accept-synced-core");
+  const acceptSyncedTests = acceptSyncedCore && process.argv.includes("--accept-synced-tests");
+  if (acceptSyncedCore && (!previousManifest || previousManifest.coreIdentity !== coreIdentity))
+    throw new Error("Synced-core capture requires an existing exact-source baseline");
+  if (acceptSyncedCore) {
+    // A bidirectional synchronization already applied a reviewed merge. Check
+    // its actual core against the new main source before refreshing metadata.
+    for (const entry of previousManifest.files.filter(entry => !entry.source.startsWith("server/src/") && !entry.source.startsWith("server/schemas/"))) {
+      if (!acceptSyncedTests && digest(await readFile(target(entry.target))) !== entry.sha256)
+        throw new Error("Unrelated regression fixture changed: " + entry.target);
+    }
+  } else if (previousManifest && previousManifest.sourceCommit !== sourceCommit && process.argv.includes("--upgrade")) {
     // A baseline upgrade may retire patches and remove upstream files. Verify
     // every old published byte before replacing anything; a dirty core must
     // never be silently overwritten. Git is needed only for source extraction.
@@ -654,6 +658,9 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
       previousManifest.runtimeRevision !== runtimeRevision(previousManifest.sourceCommit, previousManifest.files))
       throw new Error("Invalid previous runtime manifest");
     const seen = new Set(), seenSources = new Set();
+    const oldSnapshot = previousManifest.sourceSnapshotKind === "working-tree"
+      ? (await import("./runtime-source-snapshot.mjs")).decodeSnapshot(
+        await readFile(target("tests/fixtures/main-runtime-upstream.json.gz")), previousManifest) : undefined;
     for (const entry of previousManifest.files) {
       if (!entry || typeof entry.source !== "string" || typeof entry.target !== "string" ||
         entry.source.includes("\\") || path.posix.normalize(entry.source) !== entry.source ||
@@ -666,7 +673,7 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
           ? `resources/main-runtime/schemas/${entry.source.slice("server/schemas/".length)}`
           : entry.source.startsWith("server/tests/")
             ? `tests/main-core/${entry.source.slice("server/tests/".length)}`
-            : entry.source.startsWith("sdk/src/core/") && hostSources.includes(entry.source.slice("sdk/src/core/".length))
+            : /^sdk\/src\/core\/harness-runtime\/adapters\/hermes-(?:acp|adapter|settings)\.ts$/.test(entry.source)
               ? entry.source.slice("sdk/".length) : undefined;
       if (!expected || expected !== entry.target || !/^[a-f0-9]{64}$/.test(entry.sha256) ||
         (entry.sourceSha256 !== undefined && !/^[a-f0-9]{64}$/.test(entry.sourceSha256)) ||
@@ -677,7 +684,9 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
       seenSources.add(entry.source);
       if (digest(await readFile(target(entry.target))) !== entry.sha256) throw new Error("Previous runtime source drift: " + entry.target);
       if (entry.source.startsWith("server/")) {
-        const original = git(["show", `${entry.upstreamCommit ?? previousManifest.sourceCommit}:${entry.source}`]);
+        const original = oldSnapshot
+          ? oldSnapshot.read(entry.upstreamCommit ?? previousManifest.sourceCommit, entry.source)
+          : git(["show", `${entry.upstreamCommit ?? previousManifest.sourceCommit}:${entry.source}`]);
         if (digest(original) !== (entry.sourceSha256 ?? entry.sha256)) throw new Error("Previous upstream source drift: " + entry.source);
       }
     }
@@ -689,17 +698,20 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
   } else if (hasManifest) await check(true);
   const resolved = resolveSource(sourceCommit);
   if (resolved !== sourceCommit) throw new Error("Pinned main commit not found");
-  const tree = snapshot?.tree ?? new Set(git(["ls-tree", "-r", "--name-only", sourceCommit, "server/src", "server/schemas"]).toString().trim().split("\n"));
+  const tree = snapshot?.tree ?? new Set(git(useWorkingTree
+    ? ["ls-files", "--cached", "--others", "--exclude-standard", "server/src", "server/schemas"]
+    : ["ls-tree", "-r", "--name-only", sourceCommit, "server/src", "server/schemas"]).toString().trim().split("\n"));
   for (const declared of supplementalSources) {
     if (tree.has(declared.source)) throw new Error("Supplemental source already belongs to baseline: " + declared.source);
     const revision = resolveSource(declared.upstreamCommit);
     if (revision !== declared.upstreamCommit || digest(readSource(declared.upstreamCommit, declared.source)) !== declared.sourceSha256) throw new Error("Supplemental Git source drift: " + declared.source);
   }
   const available = (source) => tree.has(source) || Boolean(supplementalSource(source)) || hostSources.includes(source.slice("server/src/".length));
-  const queue = [...roots, ...supplementalSources.map((entry) => entry.source.slice("server/src/".length))];
+  const queue = [...roots, ...additionalSources.filter(source => /\.(?:ts|mjs)$/.test(source)).map(source => source.slice("server/src/".length)),
+    ...supplementalSources.map((entry) => entry.source.slice("server/src/".length))];
   // Regression fixtures may cover leaf runtime modules that are not reached
   // from an application entrypoint. Import their exact upstream dependencies.
-  for (const relative of regressionTests) {
+  for (const relative of selectedRegressionTests) {
     const text = readSource(sourceCommit, `server/tests/${relative}`).toString("utf8");
     for (const match of text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*)["'](\.[^"']+)["']/g)) {
       const resolved = path.posix.normalize(path.posix.join("server/tests", path.posix.dirname(relative), match[1]));
@@ -729,6 +741,8 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
     }
   }
   for (const resource of helperResources) sources.set(resource, readSource(sourceCommit, `server/src/${resource}`));
+  for (const source of additionalSources.filter(source => !/\.(?:ts|mjs)$/.test(source)))
+    sources.set(source.slice("server/src/".length), readSource(sourceCommit, source));
   const entries = [];
   for (const [relative, original] of [...sources].sort(([a], [b]) => a.localeCompare(b))) {
     if (hostSources.includes(relative)) {
@@ -736,7 +750,7 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
       continue;
     }
     const source = `server/src/${relative}`;
-    const branded = brandBytes(applySharedFixes(source, original));
+    const branded = { bytes: original, edits: [] };
     const bytes = branded.bytes;
     const fixes = sharedFixIds(source);
     // Confirm shared fixes match the main host. SDK-only deployment extensions
@@ -751,27 +765,34 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
       ...(supplementalSource(source) ? { upstreamCommit: supplementalSource(source).upstreamCommit } : {}),
       sharedFixes: fixes, brandingEdits: branded.edits, sha256: digest(bytes), bytes });
   }
-  for (const schema of ["main-decision.json", "worker-result.json"]) {
+  for (const schema of selectedSchemas) {
     const source = `server/schemas/${schema}`;
     const original = readSource(sourceCommit, source);
-    const branded = brandBytes(original);
+    const branded = { bytes: original, edits: [] };
     entries.push({ source, target: `resources/main-runtime/schemas/${schema}`, sourceSha256: digest(original),
       brandingEdits: branded.edits, sha256: digest(branded.bytes), bytes: branded.bytes });
   }
   // Keep main's regression bodies, changing only import paths for the SDK layout.
-  for (const relative of regressionTests) {
+  for (const relative of selectedRegressionTests) {
     const source = `server/tests/${relative}`;
     const original = readSource(sourceCommit, source);
     const outputPath = `tests/main-core/${relative}`;
     let text = original.toString("utf8").replace(/((?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\bnew\s+URL\s*\(\s*)["'])(\.[^"']+)(["'])/g,
       (match, prefix, specifier, suffix) => {
         const resolved = path.posix.normalize(path.posix.join("server/tests", path.posix.dirname(relative), specifier));
-        if (!resolved.startsWith("server/src/")) return match;
-        let replacement = path.posix.relative(path.posix.dirname(outputPath), `src/core/${resolved.slice("server/src/".length)}`);
+        if (!resolved.startsWith("server/src/") && !resolved.startsWith(".agents/")) return match;
+        const destination = resolved.startsWith(".agents/") ? `../${resolved}` : `src/core/${resolved.slice("server/src/".length)}`;
+        let replacement = path.posix.relative(path.posix.dirname(outputPath), destination);
         if (!replacement.startsWith(".")) replacement = `./${replacement}`;
         return prefix + replacement + suffix;
       });
     const testAdaptations = [];
+    if (relative === "dsh-protocol-recovery.test.ts") {
+      const before = 'const executable = path.resolve("../harness/dsh/node_modules/.bin/dsh");';
+      if (text.split(before).length !== 2) throw new Error("Installed DSH fixture path changed");
+      text = text.replace(before, 'const executable = process.env.SCIENCEEVOLVE_TEST_DSH_BIN ?? path.resolve("../harness/dsh/node_modules/.bin/dsh");');
+      testAdaptations.push("Explicit installed DSH executable for SDK-only source layouts");
+    }
     if (relative === "official-event-bridge.test.ts") {
       if (text.split('"/bin/true"').length !== 7) throw new Error("Pinned adapter contract executable fixture changed");
       text = text.replaceAll('"/bin/true"', '(process.platform === "win32" ? process.execPath : "/bin/true")');
@@ -831,27 +852,10 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
     for (const portable of [portableRegressionFixes[relative], contractRegressionFixes[relative]]) {
       if (!portable) continue;
       for (const { before, after } of portable.replacements) {
-        if (text.split(before).length !== 2) throw new Error("Pinned portable fixture changed: " + relative);
-        text = text.replace(before, after);
+        if (text.split(before).length !== 2) throw new Error("Pinned portable fixture changed: " + relative + " / " + portable.description + " / " + before.slice(0, 120));
+        text = text.replace(before, () => after);
       }
       testAdaptations.push(portable.description);
-    }
-    if (relative === "serial-workflow-native-input.test.ts") {
-      const before = "const args = process.argv.slice(2);";
-      if (text.split(before).length !== 2) throw new Error("Native CLI fixture arguments changed");
-      text = text.replace(before, `${before}
-if (harness === "codex" && args[0] === "debug" && args[1] === "models") {
-  console.log(JSON.stringify({ models: [{ slug: "fixture-model", use_responses_lite: false, tool_mode: null }] }));
-  process.exit(0);
-}`);
-      testAdaptations.push("Controlled Codex catalog probe for SDK gateway tools");
-    }
-    if (relative === "resident-adapter-factory.test.ts") {
-      const before = '  if (harnessId === "codex") return `${prelude}r.on(\'line\',l=>{';
-      const after = '  if (harnessId === "codex") return `${prelude}if(process.argv[2]===\'debug\'&&process.argv[3]===\'models\'&&process.argv.includes(\'--bundled\')){s({models:[{slug:\'fixture-model\',use_responses_lite:false,tool_mode:null}]});process.exit(0);}r.on(\'line\',l=>{';
-      if (text.split(before).length !== 2) throw new Error("Pinned Codex resident catalog fixture changed");
-      text = text.replace(before, after);
-      testAdaptations.push("Controlled Codex bundled model catalog response in the resident executable fixture");
     }
     if (relative === "workflow-adjustment-restart.test.ts") {
       const original = "tests/helpers/workflow-adjustment-restart-worker.ts";
@@ -890,7 +894,7 @@ if (harness === "codex" && args[0] === "debug" && args[1] === "models") {
       ];
       for (const [before, after] of replacements) {
         if (!text.includes(before)) throw new Error(`Pinned regression fixture changed: ${before}`);
-        text = text.replace(before, after);
+        text = text.replace(before, () => after);
       }
       testAdaptations.push("fixture-local-autocrlf=false", "Windows directory junctions", "it.for context: explicit skip on file-symlink EPERM", "fixture-local commit identity", "Windows legal quoted filename", "finite 30/60s slow-Git cases", "temporary cleanup retry");
     }
@@ -908,10 +912,30 @@ if (harness === "codex" && args[0] === "debug" && args[1] === "models") {
       if (previousTargets.has(entry.target)) continue;
       try {
         await access(target(entry.target));
-        throw new Error(`Refusing to overwrite an existing, unmanifested file: ${entry.target}`);
+        if (!(acceptSyncedCore && (entry.target.startsWith("src/core/") || entry.source.startsWith("server/schemas/") ||
+          (acceptSyncedTests && entry.source.startsWith("server/tests/"))) &&
+          (await readFile(target(entry.target))).equals(entry.bytes)))
+          throw new Error(`Refusing to overwrite an existing, unmanifested file: ${entry.target}`);
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
       }
+    }
+  }
+  if (acceptSyncedCore) {
+    for (const entry of entries.filter(entry => entry.source.startsWith("server/schemas/") ||
+      (acceptSyncedTests && entry.source.startsWith("server/tests/")))) {
+      if (!(await readFile(target(entry.target))).equals(entry.bytes))
+        throw new Error("Synced schema/test does not match its declared source: " + entry.target);
+    }
+    const coreEntries = new Map(entries.filter(entry => entry.target.startsWith("src/core/")).map(entry => [entry.target, entry]));
+    for (const entry of coreEntries.values()) {
+      if (!(await readFile(target(entry.target))).equals(entry.bytes))
+        throw new Error("Synced core does not match actual main: " + entry.target);
+    }
+    for (const file of await readdir(target("src/core"), { recursive: true, withFileTypes: true })) {
+      if (file.isDirectory()) continue;
+      const relative = path.relative(sdkRoot, path.join(file.parentPath, file.name)).split(path.sep).join("/");
+      if (!coreEntries.has(relative)) throw new Error("Synced core contains an unregistered file: " + relative);
     }
   }
   if (process.argv.includes("--verify-generation")) {
@@ -932,16 +956,23 @@ if (harness === "codex" && args[0] === "debug" && args[1] === "models") {
   // shared main source. No unmanifested SDK-only core changes are accepted.
   for (const entry of entries) {
     await mkdir(path.dirname(target(entry.target)), { recursive: true });
-    await writeFile(target(entry.target), entry.bytes);
+    let current;
+    try { current = await readFile(target(entry.target)); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (current?.equals(entry.bytes)) continue;
+    if (acceptSyncedCore) throw new Error("Concurrent edit during SDK source capture: " + entry.target);
+    const temporary = target(entry.target) + ".runtime-capture.tmp";
+    await writeFile(temporary, entry.bytes, { flag: "wx" });
+    try { await (await import("node:fs/promises")).rename(temporary, target(entry.target)); }
+    finally { await unlink(temporary).catch(error => { if (error.code !== "ENOENT") throw error; }); }
   }
   // Remove only verified files retired from the old source closure. Leave all
   // other SDK sources, user files and generated artifacts alone.
   const nextTargets = new Set(entries.map((entry) => entry.target));
   for (const entry of previousManifest?.files ?? []) {
-    if (!nextTargets.has(entry.target)) await unlink(target(entry.target));
+    if (!nextTargets.has(entry.target)) await unlink(target(entry.target)).catch(error => { if (error.code !== "ENOENT") throw error; });
   }
   await mkdir(path.dirname(manifestFile), { recursive: true });
-  await writeFile(manifestFile, JSON.stringify({ schemaVersion: 2, sourceCommit, roots, sharedFixesSha256: sharedFixesDigest,
+  await writeFile(manifestFile, JSON.stringify({ schemaVersion: 2, coreIdentity, sourceCommit, sourceSnapshotKind, roots, sharedFixesSha256: sharedFixesDigest,
     brandingVersion, brandingSha256: brandingDigest, runtimePins,
     runtimeRevision: runtimeRevision(sourceCommit, entries),
     files: entries.map(({ bytes, ...entry }) => entry) }, null, 2) + "\n");

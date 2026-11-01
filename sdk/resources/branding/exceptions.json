@@ -692,6 +692,31 @@
       "expectedMatches": 282,
       "category": "reversible-provenance",
       "reason": "Exact original naming edits reverse canonical workflow semantics to every immutable pre-migration digest; original semantic hashes and all non-naming prompt/configuration bytes remain protected."
+    },
+    {
+      "id": "shared-config-legacy-environment-source",
+      "path": "sdk/src/core/config.ts",
+      "selector": {
+        "kind": "line",
+        "sha256": "d5895be845838f13a5886b6267bdf4f135f852016b995ba9f94db42453b84c2b"
+      },
+      "contentSha256": "d5895be845838f13a5886b6267bdf4f135f852016b995ba9f94db42453b84c2b",
+      "expectedMatches": 1,
+      "category": "runtime-compatibility",
+      "reason": "The shared main/SDK configuration retains the existing environment alias for compatibility. Actual common source bytes must remain identical; the alias is not a current product name."
+    },
+    {
+      "id": "shared-config-legacy-environment-compiled",
+      "path": "sdk/dist/core/config.js",
+      "packagePath": "dist/core/config.js",
+      "selector": {
+        "kind": "line",
+        "sha256": "9f6d83cebcaef0e03d5de237d70be93933aa628ab22a403a91c30909e94addd3"
+      },
+      "contentSha256": "9f6d83cebcaef0e03d5de237d70be93933aa628ab22a403a91c30909e94addd3",
+      "expectedMatches": 1,
+      "category": "runtime-compatibility",
+      "reason": "Compiled form of the exact shared configuration; preserves the existing environment alias for main/SDK compatibility."
     }
   ]
 }

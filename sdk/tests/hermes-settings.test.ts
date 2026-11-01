@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
-import { prepareHermesSettings } from "../src/core/harness-runtime/adapters/hermes-settings.js";
+import { prepareHermesSettings } from "../src/host/hermes/hermes-settings.js";
 import { readMainHarnessGateway } from "../src/main-harness-gateway.js";
 
 const roots: string[] = [];

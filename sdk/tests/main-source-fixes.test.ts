@@ -4,8 +4,6 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { applySharedFixes, sharedFixIds, sharedFixes, sharedFixesDigest, runtimeRevision } from "../scripts/main-runtime-fixes.mjs";
-import { brandBytes, unbrandBytes } from "../scripts/scienceevolve-branding.mjs";
-import { unpinBytes } from "../scripts/scienceevolve-runtime-pins.mjs";
 import { startProjectMcps } from "../src/core/project-mcp.js";
 import { connectMcp } from "./fixtures/mcp-client.mjs";
 import { projectMcpSource } from "./fixtures/project-mcp-source.mjs";
@@ -17,36 +15,39 @@ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.rm(ro
 async function directory() { const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-main-shared-fixes-")); roots.push(root); return root; }
 const digest = (value: Buffer) => createHash("sha256").update(value).digest("hex");
 
-describe("traceable shared fixes and Windows source/runtime compatibility", () => {
-  it("tracks SDK-owned Hermes adapters without claiming they came from main", async () => {
+describe("exact common source and host/runtime compatibility", () => {
+  it("keeps SDK-owned Hermes outside the common source provenance", async () => {
     const manifest = JSON.parse(await fs.readFile(new URL("../resources/main-runtime/manifest.json", import.meta.url), "utf8"));
-    expect(sharedFixes.hostSources).toHaveLength(3);
-    for (const relative of sharedFixes.hostSources) {
-      const entry = manifest.files.find((item) => item.source === `sdk/src/core/${relative}`);
-      expect(entry).toBeDefined();
-      expect(entry.upstreamCommit).toBeUndefined();
-      expect(entry.sourceSha256).toBeUndefined();
-      expect(entry.target).toBe(`src/core/${relative}`);
-      expect(digest(await fs.readFile(new URL(`../${entry.target}`, import.meta.url)))).toBe(entry.sha256);
+    expect(sharedFixes.hostSources).toEqual([]);
+    expect(manifest.files.some(item => item.source.startsWith("sdk/"))).toBe(false);
+    for (const name of ["hermes-acp.ts", "hermes-adapter.ts", "hermes-settings.ts"]) {
+      await expect(fs.access(new URL(`../src/host/hermes/${name}`, import.meta.url))).resolves.toBeUndefined();
+      await expect(fs.access(new URL(`../src/core/harness-runtime/adapters/${name}`, import.meta.url))).rejects.toMatchObject({ code: "ENOENT" });
     }
   });
-  it("reverses every declared fix to the exact upstream blob without a main checkout", async () => {
+  it("verifies every actual common file directly against its recorded source hash", async () => {
     const manifest = JSON.parse(await fs.readFile(new URL("../resources/main-runtime/manifest.json", import.meta.url), "utf8"));
-    expect(manifest.schemaVersion).toBe(2); expect(manifest.sharedFixesSha256).toBe(sharedFixesDigest);
+    expect(manifest.schemaVersion).toBe(2); expect(manifest.coreIdentity).toBe("exact-source-v1");
+    expect(manifest.sharedFixesSha256).toBe(sharedFixesDigest);
     expect(manifest.runtimeRevision).toBe(runtimeRevision(manifest.sourceCommit, manifest.files));
-    for (const fix of sharedFixes.fixes) {
-      const entry = manifest.files.find((entry) => entry.source === fix.source);
+    expect(sharedFixes.fixes).toEqual([]);
+    const common = manifest.files.filter(item => item.source.startsWith("server/src/") || item.source.startsWith("server/schemas/"));
+    expect(common.length).toBeGreaterThan(200);
+    for (const entry of common) {
+      expect(entry.sharedFixes ?? []).toEqual([]);
+      expect(entry.brandingEdits ?? []).toEqual([]);
+      expect(entry.derivedPinEdits ?? []).toEqual([]);
       const output = await fs.readFile(new URL(`../${entry.target}`, import.meta.url));
-      const unpinned = unpinBytes(output, entry.derivedPinEdits ?? []);
-      const base = applySharedFixes(entry.source, unbrandBytes(unpinned, entry.brandingEdits ?? []), true);
-      expect(digest(base)).toBe(entry.sourceSha256);
-      expect(brandBytes(applySharedFixes(entry.source, base)).bytes.equals(unpinned)).toBe(true);
-      expect(entry.sharedFixes).toEqual(sharedFixIds(entry.source));
+      expect(digest(output)).toBe(entry.sourceSha256);
+      expect(entry.sha256).toBe(entry.sourceSha256);
     }
   });
-  it("fails closed if a patch context no longer matches, rather than applying a fuzzy fix", () => {
-    expect(() => applySharedFixes(sharedFixes.fixes[0].source, Buffer.from("unrelated source"))).toThrow(/context drift/);
-    expect(() => applySharedFixes(sharedFixes.fixes[0].source, Buffer.from("unrelated source"), true)).toThrow(/context drift/);
+  it("has no core patch mechanism enabled and refuses unregistered patch IDs", () => {
+    const bytes = Buffer.from("unmodified common implementation");
+    expect(sharedFixIds("server/src/original.ts")).toEqual([]);
+    expect(applySharedFixes("server/src/original.ts", bytes)).toBe(bytes);
+    expect(() => applySharedFixes("server/src/original.ts", bytes, false, ["unknown-patch"]))
+      .toThrow(/Unknown\/duplicate recorded shared fixes/);
   });
   it("loads main's actual fork supervisor in source mode and performs a real MCP round trip", async () => {
     const root = await directory(), workspace = path.join(root, "workspace"); await fs.mkdir(workspace);

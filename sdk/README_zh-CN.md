@@ -92,4 +92,4 @@ try {
 
 API 与 CLI 统一使用 main 内核，`@scienceevolve/sdk/main` / `--engine main` 保留为显式别名。legacy 引擎及其包入口已移除；已有旧运行数据需使用旧版本处理。
 
-当前内核基于 main `6bf6a7bb`，更新范围见 [2026-10-16 同步说明](docs/main-sync-20261016-zh.md)。
+当前内核的 Git 基线与逐文件源码哈希以[运行时清单](resources/main-runtime/manifest.json)为准；[2026-10-30 同步说明](docs/main-sync-20261030-zh.md)保留此前更新记录。

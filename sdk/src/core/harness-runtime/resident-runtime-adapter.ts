@@ -10,8 +10,9 @@ import {
 } from "node:http";
 import net, { type Server as NetServer, type Socket } from "node:net";
 import path from "node:path";
-import { prepareWorkflowContext } from "../workflow-context.js";
-import { AgentContextSources, publishAgentContextIndex } from "../agent-context-index.js";
+import { AgentContextSources } from "../agent-context-index.js";
+import type { AgentContextIndex } from "../agent-context-index.js";
+import { agentContextWindow, fitContextInjection, contextReplacements } from "../context-injection-budget.js";
 import { protectWindowsRuntimeFile } from "./windows-resident.js";
 import readline from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
@@ -48,9 +49,9 @@ import {
 import type { InvocationInputs, InvocationPolicy, SessionRef } from "./contracts.js";
 import { validateSessionRef } from "./session-ref.js";
 import { compileWorkflowPrompt } from "./invocation-policy.js";
-import { filesystemAuthorityPrompt, type FilesystemAuthority } from "./filesystem-authority.js";
+import { type FilesystemAuthority } from "./filesystem-authority.js";
 import { modelRouteBinding, type InvocationGatewayRoute, type InvocationModelRoute } from "./gateway-route.js";
-import { HarnessRuntimeError, ResidentTurnRetryableError, harnessRecoveryDelayMs, proxyFailureError } from "./errors.js";
+import { HarnessRuntimeError, ResidentInputPreparationError, ResidentTurnRetryableError, harnessRecoveryDelayMs, proxyFailureError } from "./errors.js";
 import { sessionRecoveryNote } from "../internal/shared/session-recovery.js";
 import {
   resolveOrchestrationControlMcpCommand,
@@ -616,6 +617,7 @@ class FacadeResidentHandle implements HarnessRuntimeResidentHandle {
         return submitted.result;
       } catch (error) {
         await this.#broker.cancelPrepared(turn).catch(() => undefined);
+        if (error instanceof ResidentInputPreparationError) throw new ResidentTurnPreparationError(error.cause);
         throw error;
       }
     });
@@ -724,6 +726,8 @@ interface PreparedControlAuthority {
 
 interface PreparedTurnAuthority {
   inboxPath: string;
+  inputs: InvocationInputs;
+  supplementaryIndexes: AgentContextIndex[];
   key: string;
   request: AgentRunRequest;
   turn: ResidentTurn;
@@ -861,25 +865,26 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       if (!context) throw adapterError("Resident prompt context was not prepared");
       const sources = new AgentContextSources();
       sources.record("resident-assignment", "Current resident assignment", input.prompt);
-      const inputs = await prepareWorkflowContext({ ...request,
+      let inputs = await this.#options.runtime.prepareAgentContext({ ...request,
         contextSources: [...(request.contextSources ?? []), ...sources.sources] }, {
         ...context.inputs,
         ...(request.invocationId !== this.#options.request.invocationId ? { inboxPath: request.inboxPath } : {})
       });
+      inputs = { ...inputs, contextIndex: await this.#options.runtime.contextIndexes.delivery(inputs.contextIndex,
+        inputs.projectPath, request.agent, this.#nativeSession) };
       if (request.onPendingControlResults && !this.#nativeSession) {
         throw adapterError("Result notification requires the actually opened native Session");
       }
       const resultNotification = request.onPendingControlResults
         ? await request.onPendingControlResults(input.inputId, structuredClone(this.#nativeSession!)) : "";
-      const prompt = [
+      const unboundedPrompt = [
         resultNotification,
-        compileWorkflowPrompt(request, inputs, context.policy),
-        // Describe callable descriptor tools only when this launch mounted them.
-        ...(context.filesystemMcpAvailable ? [filesystemAuthorityPrompt(context.authority, inputs)] : []),
-        // Current instructions are required input, regardless of their size.
-        // Only their supporting evidence/history belongs behind an index.
-        input.nativeNotice ?? `Current resident assignment:\n${input.prompt}`
+        compileWorkflowPrompt(request, inputs, context.policy, { inlineInbox: input.nativeNotice ?? input.prompt }),
       ].filter(Boolean).join("\n\n");
+      const fitted = fitContextInjection(unboundedPrompt, agentContextWindow(request.project.agents[request.agent]),
+        [], context.policy.constraintPrompt);
+      const prompt = fitted.prompt;
+      route.setInjectionBudget?.(prompt, context.policy.constraintPrompt);
       this.#turnSequence += 1;
       const turn: ResidentTurn = {
         inputId: input.inputId,
@@ -893,6 +898,8 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       };
       const prepared: PreparedTurnAuthority = {
         inboxPath: inputs.inboxPath,
+        inputs,
+        supplementaryIndexes: [],
         key,
         request,
         turn,
@@ -975,11 +982,20 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
         inputSupplement: async () => {
           if (this.#current !== prepared || prepared.revoked || !this.#nativeSession)
             throw adapterError("Late native input facts lost their actual resident authority");
-          const supplement = await prepared.request.onPendingWorkflowAdjustments?.(prepared.turn.inputId, structuredClone(this.#nativeSession),
-            async sources => (await publishAgentContextIndex(prepared.inboxPath, sources))?.preview ?? "") ?? "";
+          const rawSupplement = await prepared.request.onPendingWorkflowAdjustments?.(prepared.turn.inputId, structuredClone(this.#nativeSession),
+            async sources => {
+              const index = await this.#options.runtime.publishContextIndex({ projectId: prepared.request.project.id,
+                projectPath: prepared.inputs.projectPath, inboxPath: prepared.inboxPath, sources });
+              if (index) prepared.supplementaryIndexes.push(index);
+              return index?.preview ?? "";
+            }) ?? "";
+          const supplement = fitContextInjection(rawSupplement, agentContextWindow(prepared.request.project.agents[prepared.request.agent]),
+            prepared.supplementaryIndexes.map(index => ({ text: index.preview, alternatives: [index.compactPreview, index.minimalPreview] })),
+            `${prepared.turn.prompt}\n\n${this.#promptContext!.policy.constraintPrompt}`).prompt;
           if (typeof supplement !== "string" || this.#current !== prepared || prepared.revoked)
             throw adapterError("Late native input facts changed their active authority");
           prepared.nativeTurn = supplement ? { ...prepared.turn, prompt: `${supplement}\n\n${prepared.turn.prompt}` } : prepared.turn;
+          prepared.route.setInjectionBudget?.(prepared.nativeTurn.prompt, this.#promptContext!.policy.constraintPrompt);
           return supplement;
         },
         classifyFailure: error => {
@@ -1209,6 +1225,12 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
     const actions = outcome === "completed" && prepared.control
       ? await readStagedControlActions(prepared.control.stagingPath)
       : [];
+    if (outcome === "completed" && !drainFailure && !disposeFailure) {
+      for (const index of [prepared.inputs.contextIndex, ...prepared.supplementaryIndexes]) {
+        await this.#options.runtime.contextIndexes.acknowledge(index, prepared.inputs.projectPath,
+          prepared.request.agent, this.#nativeSession).catch(() => undefined);
+      }
+    }
     try {
       await prepared.onTrace("status", "Resident turn authority released", {
         diagnostic: true,

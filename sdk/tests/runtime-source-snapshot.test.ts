@@ -17,7 +17,7 @@ describe("original runtime source snapshot", () => {
     expect(() => snapshot.resolve("0".repeat(40))).toThrow("Commit missing");
   });
 
-  it.each(["bytes", "missing", "duplicate", "unexpected", "commit", "path", "tree"])("rejects %s drift", fault => {
+  it.each(["bytes", "missing", "duplicate", "unexpected", "commit", "path", "tree", "kind"])("rejects %s drift", fault => {
     const snapshot = JSON.parse(gunzipSync(compressed).toString());
     if (fault === "bytes") snapshot.files[0].base64 = Buffer.from("changed upstream source").toString("base64");
     if (fault === "missing") snapshot.files.pop();
@@ -26,6 +26,7 @@ describe("original runtime source snapshot", () => {
     if (fault === "commit") snapshot.sourceCommit = "0".repeat(40);
     if (fault === "path") snapshot.files[0].source = "server/src/../../outside.ts";
     if (fault === "tree") snapshot.tree = [];
+    if (fault === "kind") snapshot.sourceSnapshotKind = "git";
     expect(() => decodeSnapshot(gzipSync(JSON.stringify(snapshot)), manifest)).toThrow();
   });
 });

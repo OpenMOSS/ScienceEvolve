@@ -81,6 +81,62 @@ async function fixture() {
 async function json(file: string) { return JSON.parse(await fs.readFile(file, "utf8")); }
 
 describe("management Workflow context", () => {
+  // Linux fixture baseline (UTF-16 / UTF-8 / lines): global 18474/18726/167,
+  // group 15229/15307/143, group-65 35572/35650/465. Allow 5% for readable
+  // wording, rounded up to 128 units / 256 bytes / 8 lines. These are output
+  // regression budgets, not token counts or model context-window limits.
+  it.each([
+    { scene: "global", scope: "global" as const, extraAgents: 0, budget: { utf16: 19456, utf8: 19712, lines: 176 } },
+    { scene: "group", scope: "group" as const, extraAgents: 0, budget: { utf16: 16000, utf8: 16128, lines: 152 } },
+    { scene: "group-65", scope: "group" as const, extraAgents: 65, budget: { utf16: 37376, utf8: 37632, lines: 496 } }
+  ])("bounds assembled workflow output and preserves scope ($scene)", async ({ scene, scope, extraAgents, budget }) => {
+    const f = await fixture();
+    const group = f.state.orchestration.scopedWorkflow!.groups.find(group => group.id === "G")!;
+    for (let index = 0; index < extraAgents; index++) {
+      const agentId = `budget_agent_${index}`, nodeId = `budget_node_${index}`;
+      f.state.agents[agentId] = structuredClone(f.state.agents.execution!);
+      f.state.orchestration.agents.push({ name: agentId, template: "general" });
+      group.workflow.nodes.push({ kind: "agent", nodeId, agentId });
+      group.workflow.input.edges.push({ kind: "parallel", target: nodeId });
+      group.workflow.routes[nodeId] = [{ kind: "strong", target: "finish" }];
+    }
+    const candidates = scope === "global" ? ["G", "review"] : ["finish"];
+    f.request.workflowContext = scope === "global" ? { scope, candidates, purpose: "outer-routing" }
+      : { scope, groupId: "G", groupRunId: "run-G", candidates, purpose: "route" };
+    const inputs = await prepareWorkflowContext(f.request, f.inputs);
+    const context = inputs.workflowContext!;
+    const policy = compileInvocationPolicy(f.state.agents.main, f.request);
+    const prompt = compileWorkflowPrompt(f.request, inputs, policy);
+    const normalized = prompt.replaceAll(f.root, "<fixture-root>")
+      .replaceAll(JSON.stringify(f.root).slice(1, -1), "<fixture-root>").replaceAll("\r\n", "\n");
+    const metrics = { utf16: normalized.length, codePoints: [...normalized].length,
+      utf8: Buffer.byteLength(normalized), lines: normalized.split("\n").length - Number(normalized.endsWith("\n")) };
+    const details = await json(context.agentsPath);
+    const agentIds = Object.keys(details.agents);
+    console.info("workflow-output-budget", JSON.stringify({ scene, ...metrics, visibleAgents: agentIds.length, budget }));
+    expect(metrics.utf16).toBeLessThanOrEqual(budget.utf16);
+    expect(metrics.utf8).toBeLessThanOrEqual(budget.utf8);
+    expect(metrics.lines).toBeLessThanOrEqual(budget.lines);
+    for (const agentId of agentIds) {
+      expect(prompt).not.toContain(`| ${agentId} |`);
+      expect(details.agents[agentId].instructions).toBe(f.state.agents[agentId].instructions);
+    }
+    expect(prompt).not.toContain(context.preview);
+    expect(await fs.readFile(context.definitionPath, "utf8")).toContain("workflowRevision");
+    expect(prompt).not.toContain("Configuration revision: 7; state revision: 12;");
+    expect(prompt).not.toContain("Current Agent: main; role:");
+    expect(context.preview).toContain(`Legal route candidates for this turn (exact node IDs): ${JSON.stringify(candidates)}`);
+    expect(prompt).toContain("OpenFARS permission mode:");
+    expect(prompt).not.toContain("gateway-credential-must-stay-private");
+    if (scope === "group") expect(context.preview).toContain("it does not complete the project");
+    else expect(context.preview).toContain("Project completion:");
+    if (extraAgents) {
+      expect(context.preview).toContain("budget_node_64 => Agent budget_agent_64");
+      expect(context.preview).toContain("budget_node_64 --strong--> finish");
+      expect(context.preview).toContain("budget_agent_64");
+    }
+  });
+
   it("shows the last node and connection when a group has more than 50 graph entries", async () => {
     const f = await fixture();
     const workflow = f.state.orchestration.scopedWorkflow!.groups.find(group => group.id === "G")!.workflow;
@@ -113,8 +169,8 @@ describe("management Workflow context", () => {
     for (const candidate of candidates) expect(inputs.workflowContext!.preview).toContain(`"${candidate}"`);
     expect(inputs.workflowContext!.preview).toContain("builtin:large-skill-499");
     expect(inputs.workflowContext!.preview).not.toContain("FULL_DETAIL_");
-    const directory = path.dirname(inputs.contextIndex!.indexPath);
     const index = await json(inputs.contextIndex!.indexPath);
+    const directory = index.baseDirectory;
     const source = index.entries.find((entry: any) => entry.key === "workflow.route-candidates");
     const first = await json(path.join(directory, source.list.path));
     expect(first.entries).toHaveLength(65); expect(first.entries.at(-1).id).toBe("agent_64");
@@ -148,8 +204,9 @@ describe("management Workflow context", () => {
     expect(JSON.stringify(details)).not.toContain("gateway-credential-must-stay-private");
     expect((await fs.stat(context.agentsPath)).mode & (process.platform === "win32" ? 0o222 : 0o777)).toBe(process.platform === "win32" ? 0 : 0o400);
     const prompt = compileWorkflowPrompt(f.request, prepared, compileInvocationPolicy(f.state.agents.main, f.request), { inlineInbox: "L".repeat(32_001) });
-    expect(prompt).toContain("Global Workflow overview");
-    expect(prompt).toContain("| Skills | autoSkills | MCP services |");
+    expect(prompt).not.toContain("Global Workflow overview");
+    expect(prompt).toContain("L".repeat(32_001));
+    expect(prompt).not.toContain("| Skills | autoSkills | MCP services |");
     expect(prompt).not.toContain("<openfars_inbox>");
     expect(prompt).not.toContain("FULL_INSTRUCTIONS_execution");
   });

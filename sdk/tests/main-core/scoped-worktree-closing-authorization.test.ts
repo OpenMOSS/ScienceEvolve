@@ -110,7 +110,12 @@ describe("explicit original-Agent closing authorization", () => {
     expect(f.db.scopedWorktreeClosingAuthorizations("p")).toMatchObject([{ candidate: { originalStatus: status, originalSession: f.binding.session }, paths: f.files, envelope: m.input.envelope }]);
     expect(f.db.scopedRecoveryCandidates("p", "run-G")[0]?.pendingOperation).toBe("close_worktree");
     expect(f.snapshot()).toEqual(original);
-    expect(() => f.db.revalidateScopedLeaderAction({ ...m.input, envelope: m.envelope(m.action, "second-grant") })).toThrow("no pending grant");
+    expect(() => f.db.revalidateScopedLeaderAction({ ...m.input, envelope: m.envelope(m.action, "second-grant") })).toThrow(expect.objectContaining({
+      code: "INVALID_STATE_TRANSITION", details: expect.objectContaining({ invalidField: "operation", recoveryOptions: [expect.objectContaining({
+        arrivalRequestId: f.execution.arrivalRequestId, allowedOperations: ["escalate"],
+        blockedOperations: { close_worktree: expect.stringContaining("trusted original-owner file manifest") }
+      })] })
+    }));
     expect(f.db.scopedWorktreeClosingAuthorizations("p")).toHaveLength(1);
     expect(() => f.db.assertScopedGitExecutionOwnership({ projectId: "p", executionId: "original", ownershipEpoch: 1,
       expectedBranch: f.execution.executionBranch, operation: "checkpoint" })).toThrow();
@@ -119,7 +124,11 @@ describe("explicit original-Agent closing authorization", () => {
   it("does not reinterpret ordinary retry as completed/bound-report file authority", async () => {
     const f = await fixture("failed"); f.db.recordScopedWorktreeClosingIssue(f.input); const m = f.manager();
     const { closing: _closing, ...action } = m.action;
-    expect(() => f.db.revalidateScopedLeaderAction({ ...m.input, envelope: m.envelope({ ...action, operation: "retry" }) })).toThrow("exact current retained failure");
+    expect(() => f.db.revalidateScopedLeaderAction({ ...m.input, envelope: m.envelope({ ...action, operation: "retry" }) })).toThrow(expect.objectContaining({
+      code: "INVALID_STATE_TRANSITION", details: expect.objectContaining({ invalidField: "operation", recoveryOptions: [expect.objectContaining({
+        arrivalRequestId: f.execution.arrivalRequestId, allowedOperations: ["escalate", "close_worktree"], blockedOperations: {}
+      })] })
+    }));
     expect(f.db.scopedWorktreeClosingAuthorizations("p")).toEqual([]);
     expect(() => f.db.revalidateScopedLeaderAction({ ...m.input, envelope: m.envelope({ ...action, operation: "escalate" }) })).not.toThrow();
   });
@@ -175,7 +184,12 @@ describe("explicit original-Agent closing authorization", () => {
     expect(next.scopedRecoveryCandidates("p", "run-G")[0]?.pendingOperation).toBe("close_worktree");
     expect(f.snapshot()).toEqual(original);
     const newManager = f.manager(next, "inv_new_manager");
-    expect(() => next.acceptScopedLeaderAction({ ...newManager.input, residentStopConfirmed: true })).toThrow("no pending grant");
+    expect(() => next.acceptScopedLeaderAction({ ...newManager.input, residentStopConfirmed: true })).toThrow(expect.objectContaining({
+      code: "INVALID_STATE_TRANSITION", details: expect.objectContaining({ invalidField: "operation", recoveryOptions: [expect.objectContaining({
+        arrivalRequestId: f.execution.arrivalRequestId, allowedOperations: ["escalate"],
+        blockedOperations: { close_worktree: expect.stringContaining("trusted original-owner file manifest") }
+      })] })
+    }));
     expect(next.scopedWorktreeClosingAuthorizations("p")).toEqual(grants);
   });
 

@@ -6,9 +6,7 @@ import { codexGatewayConfigOverrides, codexIndexToolOutputConfig } from "../../c
 import { EXPLAINER_MCP_NAME } from "../../internal/shared/explainer-tools.js";
 import { prepareCodexGatewayModelCatalog } from "../../codex-gateway-model-catalog.js";
 import type {
-  HarnessAdapter,
-  LaunchPlan,
-  ResidentInactivityPolicy
+  LaunchPlan
 } from "../contracts.js";
 import {
   validatePreparedFilesystemMcp,
@@ -17,8 +15,7 @@ import {
 import { HarnessRuntimeError } from "../errors.js";
 import {
   buildInvocationEnvironment,
-  DEFAULT_RAW_LOG_LIMIT_BYTES,
-  type ResidentProcessLauncher
+  DEFAULT_RAW_LOG_LIMIT_BYTES
 } from "../process-host.js";
 import {
   ResidentNativeDriver,
@@ -33,22 +30,16 @@ import { harnessExecutableLaunch, gatewayModelContextWindow, safeName, sleepMcpR
 import { assertDshSessionArtifact, dshMcpPatch, dshNativeSdkPatch, dshSessionArtifactPath, resolveDshSessionArtifactPath, prepareDshSettings } from "./dsh-adapter.js";
 import { piMcpConfig, readResumedPiSession } from "./pi-adapter.js";
 import { CONTROL_PROXY_TIMEOUT_MS } from "../../control-request-lifetime.js";
-import { hermesAcpCodec } from "./hermes-acp.js";
-import { prepareHermesSettings, hermesSkillPrompt } from "./hermes-settings.js";
 import type {
   ResidentAdapterLaunchEvidence,
-  ResidentScopeOpenRequest
+  ResidentAdapterLaunchRequest,
+  ResidentAdapterLaunchDefinition
 } from "../resident-lease.js";
 import { residentScopeId } from "../resident-lease.js";
 import { validateStagedInvocationInputs } from "../invocation-inputs.js";
 import { installWindowsCodexPatch } from "../windows-codex-patch.js";
 
-export interface ResidentAdapterLaunchRequest extends ResidentScopeOpenRequest {
-  adapter: HarnessAdapter;
-  executable: string;
-  processHost: ResidentProcessLauncher;
-  inactivityPolicy?: Partial<ResidentInactivityPolicy>;
-}
+export type { ResidentAdapterLaunchRequest, ResidentAdapterLaunchDefinition } from "../resident-lease.js";
 
 export interface OpenedResidentAdapter {
   driver: ResidentNativeDriver;
@@ -117,18 +108,14 @@ export async function openBuiltinResidentAdapter(
   }
 }
 
-async function buildLaunch(input: ResidentAdapterLaunchRequest): Promise<{
-  plan: LaunchPlan;
-  codec: ReturnType<typeof codexAppServerCodec>;
-  unstartedReservation?: true;
-}> {
+async function buildLaunch(input: ResidentAdapterLaunchRequest): Promise<ResidentAdapterLaunchDefinition> {
   const harnessId = input.adapter.descriptor.id;
   if (harnessId === "codex") return buildCodexLaunch(input);
   if ("nativeCodexProfileHome" in input.launchRoute) throw launchError("Native Codex profile cannot launch another Harness");
   if (harnessId === "claude-code") return buildClaudeLaunch(input);
   if (harnessId === "pi") return buildPiLaunch(input);
   if (harnessId === "dsh") return buildDshLaunch(input);
-  if (harnessId === "hermes") return buildHermesLaunch(input);
+  if (input.adapter.resident?.buildLaunch) return input.adapter.resident.buildLaunch(input);
   throw launchError(`No trusted resident launch mapping exists for ${harnessId}`);
 }
 
@@ -385,30 +372,6 @@ async function buildDshLaunch(input: ResidentAdapterLaunchRequest) {
   };
 }
 
-async function buildHermesLaunch(input: ResidentAdapterLaunchRequest) {
-  const { spec } = input;
-  // Agent-bound native storage survives execution-runtime replacement.
-  const home = path.join(input.request.projectPath, "runtime", "harness-sessions",
-    safeName(input.request.agent), "hermes");
-  const allowNativeTools = input.filesystemAuthority.rawTools === "trusted-yolo";
-  const prepared = await prepareHermesSettings({ home, cwd: spec.inputs.workspacePath,
-    baseUrl: gatewayLaunchRoute(input).baseUrl, model: spec.model,
-    contextWindow: gatewayModelContextWindow(input.request, spec.model),
-    allowNativeTools, session: input.session });
-  const launch = harnessExecutableLaunch(input.executable, ["acp"]);
-  const environment = residentEnvironment(input, {
-    HOME: input.filesystemAuthority.serviceUserRoot, HERMES_HOME: home,
-    HERMES_IGNORE_RULES: "1", HERMES_ACP_SKIP_CONFIGURED_MCP: "1"
-  });
-  return {
-    plan: launchPlan(input, launch.command, launch.args, environment,
-      ["HERMES_HOME", "HERMES_IGNORE_RULES", "HERMES_ACP_SKIP_CONFIGURED_MCP"]),
-    codec: hermesAcpCodec({ cwd: spec.inputs.workspacePath, model: spec.model,
-      mcpRows: await residentMcpRows(input), allowNativeTools, ...prepared,
-      promptPreamble: await hermesSkillPrompt([...spec.policy.skillPaths, ...spec.policy.autoSkillPaths]) })
-  };
-}
-
 function residentHarnessHome(input: ResidentAdapterLaunchRequest, directory: string): string {
   return usesFixedAgentWorkspace(input)
     ? path.join(input.spec.inputs.projectPath, "runtime", "harness-agents", safeName(input.request.agent), directory)
@@ -424,7 +387,7 @@ function gatewayLaunchRoute(input: ResidentAdapterLaunchRequest): { baseUrl: str
   return input.launchRoute;
 }
 
-function residentEnvironment(
+export function residentEnvironment(
   input: ResidentAdapterLaunchRequest,
   adapter: NodeJS.ProcessEnv
 ): NodeJS.ProcessEnv {
@@ -447,7 +410,7 @@ function residentEnvironment(
   });
 }
 
-function launchPlan(
+export function launchPlan(
   input: ResidentAdapterLaunchRequest,
   command: string,
   args: string[],
@@ -580,7 +543,7 @@ async function assertResidentLaunchAuthority(input: ResidentAdapterLaunchRequest
   }
 }
 
-async function residentMcpRows(input: ResidentAdapterLaunchRequest): Promise<readonly AdapterMcpRow[]> {
+export async function residentMcpRows(input: ResidentAdapterLaunchRequest): Promise<readonly AdapterMcpRow[]> {
   return [
     await sleepMcpRow(),
     ...input.mcpRows,

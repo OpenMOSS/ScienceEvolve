@@ -13,7 +13,7 @@ import {
   type ResidentProtocolObservation,
   type SessionRef
 } from "./contracts.js";
-import { HarnessRuntimeError, ResidentTurnRetryableError, transientHarnessFailure } from "./errors.js";
+import { HarnessRuntimeError, ResidentInputPreparationError, ResidentTurnRetryableError, transientHarnessFailure } from "./errors.js";
 import {
   linuxProcessStopped,
   linuxProcPath,
@@ -30,8 +30,9 @@ export type BuiltinResidentProtocol =
   | "codex-app-server"
   | "claude-stream-json"
   | "pi-rpc"
-  | "dsh-sdk-json-rpc"
-  | "hermes-acp-json-rpc";
+  | "dsh-sdk-json-rpc";
+/** Additional codecs are supplied by trusted Adapter code, never a workflow string. */
+export type ResidentProtocol = BuiltinResidentProtocol | (string & {});
 
 export const RESIDENT_PROTOCOL_BUFFER_CAPACITY = 256;
 /**
@@ -109,7 +110,9 @@ export interface ResidentCompletionTailPolicy {
 }
 
 export interface ResidentProtocolCodec {
-  readonly protocol: BuiltinResidentProtocol;
+  readonly protocol: ResidentProtocol;
+  /** Only an initial pending session may receive a native-allocated identity. */
+  readonly allocatesNativeSessionId?: boolean;
   readonly recoveryStrategy: ResidentRecoveryStrategy;
   /** Native-frame mapping; the common driver alone owns liveness policy. */
   observe(frame: Readonly<Record<string, unknown>>): ResidentProtocolObservation | undefined;
@@ -396,7 +399,7 @@ export class ResidentNativeDriver implements ResidentHarnessDriver {
   #windowsPaused = false;
   readonly identity: ResidentProcessIdentity;
   session: SessionRef;
-  readonly protocol: BuiltinResidentProtocol;
+  readonly protocol: ResidentProtocol;
   readonly recoveryStrategy: ResidentRecoveryStrategy;
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #connection: JsonLineConnection;
@@ -523,6 +526,7 @@ export class ResidentNativeDriver implements ResidentHarnessDriver {
       throw error;
     }
     let result: AgentRunResult;
+    let nativeSubmissionAttempted = false;
     try {
       const supplement = await authority.inputSupplement?.();
       if (supplement !== undefined && typeof supplement !== "string") throw driverError("Resident input supplement is invalid");
@@ -532,6 +536,7 @@ export class ResidentNativeDriver implements ResidentHarnessDriver {
         invocationId: turn.invocationId
       });
       try {
+        nativeSubmissionAttempted = true;
         result = await this.#codec.submit(this.#connection, this.session, nativeTurn);
       } finally {
         this.#activityClock.end();
@@ -545,6 +550,16 @@ export class ResidentNativeDriver implements ResidentHarnessDriver {
       this.#connection.clearInputEcho();
       this.#submittedInputIds.add(turn.inputId);
     } catch (originalError) {
+      if (!nativeSubmissionAttempted) {
+        try {
+          await authority.release("failed");
+          this.#connection.assertQuiescent("after rejected input preparation");
+        } catch (releaseError) {
+          this.#connection.fail(releaseError instanceof Error ? releaseError : driverError("Input preparation revocation failed"));
+          await this.forceClose(); throw releaseError;
+        } finally { this.#active = false; }
+        throw new ResidentInputPreparationError(originalError);
+      }
       const modelBoundaryFailure = originalError instanceof NativeTurnFailedError ||
         originalError instanceof HarnessRuntimeError && ["HARNESS_PROCESS_EXITED", "INVOCATION_TIMED_OUT", "TOOL_EXECUTION_TIMED_OUT"].includes(originalError.code);
       let error = modelBoundaryFailure ? authority.classifyFailure?.(originalError) ?? originalError : originalError;
@@ -764,7 +779,7 @@ export class ResidentNativeDriver implements ResidentHarnessDriver {
 
 export class JsonLineConnection implements ResidentProtocolConnection {
   #inputEcho?: { session: SessionRef; text: string; frameLimit: number };
-  readonly #protocol: BuiltinResidentProtocol;
+  readonly #protocol: ResidentProtocol;
   readonly #frameBytes = new WeakMap<Record<string, unknown>, number>();
   #maxObservedOversizedFrames = 0;
   readonly completed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
@@ -800,7 +815,7 @@ export class JsonLineConnection implements ResidentProtocolConnection {
     child: ChildProcessWithoutNullStreams,
     onFrame: OpenResidentNativeDriverOptions["onFrame"],
     onProtocolFrame: ((frame: Readonly<Record<string, unknown>>) => void) | undefined,
-    protocol: BuiltinResidentProtocol
+    protocol: ResidentProtocol
   ) {
     this.#child = child;
     this.#onFrame = onFrame;
@@ -1749,7 +1764,7 @@ const CODEX_INITIALIZATION_NOTIFICATIONS = new Set([
 /** A larger frame is permitted only for the verbatim, just-sent native user
  * input. All remaining metadata stays bounded and every other frame retains
  * the ordinary limit, including assistant/tool output and stale input. */
-function isExactNativeInputEcho(protocol: BuiltinResidentProtocol, frame: Record<string, unknown>, session: SessionRef, text: string): boolean {
+function isExactNativeInputEcho(protocol: ResidentProtocol, frame: Record<string, unknown>, session: SessionRef, text: string): boolean {
   const strip = (content: unknown): unknown => {
     if (content === text) return "";
     if (!Array.isArray(content) || !content.length) return undefined;
@@ -2495,9 +2510,9 @@ function assertInitializedSession(
     initialized.nativeId.includes("\0")) {
     throw driverError("Resident protocol returned an invalid initialized SessionRef");
   }
-  const codexAllocation = (codec.protocol === "codex-app-server" || codec.protocol === "hermes-acp-json-rpc") &&
+  const nativeAllocation = (codec.protocol === "codex-app-server" || codec.allocatesNativeSessionId === true) &&
     requested.nativeId.startsWith("pending:") && !requested.resumedAt;
-  if (!codexAllocation && initialized.nativeId !== requested.nativeId) {
+  if (!nativeAllocation && initialized.nativeId !== requested.nativeId) {
     throw driverError("Resident protocol changed its authoritative native session identity");
   }
 }

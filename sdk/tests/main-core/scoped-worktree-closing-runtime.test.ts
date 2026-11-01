@@ -4,6 +4,11 @@ import { createHash } from "node:crypto";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+// These cases create real Git repositories and persist SQLite recovery facts.
+// Use the same bounded integration budget as the SDK host, rather than the
+// five-second unit default (observed Git cases take 6-11s during full runs).
+vi.setConfig({ testTimeout: process.platform === "win32" ? 60_000 : 30_000 });
+
 import { CollaborationRuntimeCoordinator, ProductionCollaborationExecutionInputBuilder } from "../../src/core/collaboration-runtime.js";
 import { ScopedWorktreeClosingRuntime } from "../../src/core/scoped-worktree-closing-runtime.js";
 import { ScopedProjectRuntime } from "../../src/core/scoped-project-runtime.js";
@@ -478,7 +483,7 @@ describe("original-session production closing dispatcher", () => {
     await f.runtime.advance(); await f.runtime.reconcile(); expect(f.launcher.open).toHaveBeenCalledTimes(1);
     expect(f.snapshot()).toEqual(before); expect(f.db.scopedAgentHasUnreleasedActivity(P, "worker")).toBe(true);
     expect(f.db.eventsAfter(P).filter(event => event.type === "scoped.group.issue.returned")).toHaveLength(1);
-  });
+  }, process.platform === "win32" ? 60_000 : 15_000); // Real Git and durable reconciliation use a bounded integration budget.
 
   it("dispatches exactly one new formal grant in the same Session with a new capability and previous stopped runtime", async () => {
     const f = await fixture(), before = f.snapshot(); await f.runtime.advance();
@@ -749,7 +754,8 @@ describe("original-session production closing dispatcher", () => {
       expect(input.request).toMatchObject({ sessionContinuity: "strict", resumeThreadId: "original-main-session" });
       await input.onOpened!();
       return { pause: async () => {}, resume: async () => {}, close: async () => { managerClosed = true; }, submit: async turn => {
-        expect(turn.prompt).toContain("This group is already completed");
+        expect(turn.prompt).toContain("Retained child closing");
+        expect(input.controlScope).toMatchObject({ worktreeClosingOnly: true });
         const authority = await input.controlAuthorityFactory!({ request: input.request, turn });
         expect(authority.control.collaboration).toMatchObject({ worktreeClosingOnly: true, memberNodeIds: [], routeCandidates: [], allowReconfiguration: false });
         const service = new ControlActionService({ projectId: P, agent: "main", invocationId: input.request.invocationId,

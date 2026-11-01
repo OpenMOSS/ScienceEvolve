@@ -80,6 +80,7 @@ export class CodexAdapter extends AdapterBase implements HarnessAdapter {
         ...this.options,
         harnessId: descriptor.id,
         skillsAlreadyStaged: true,
+        workflowPromptPrepared: true,
         ...("nativeCodexProfileHome" in context.route
           ? { nativeCodexProfileHome: context.route.nativeCodexProfileHome } : {})
       },
@@ -98,15 +99,7 @@ export class CodexAdapter extends AdapterBase implements HarnessAdapter {
     }
     const sourceGateway = sourceConfig.gatewaySnapshot;
     if (!sourceGateway && !("nativeCodexProfileHome" in route)) throw new Error("Codex requires a validated model route");
-    const explainerPrompt = spec.purpose === "explainer"
-      ? [
-          spec.prompt,
-          spec.policy.mcpServers.length ? "The quoted context is below. You may use only the injected Project Explainer MCP tools; native filesystem and shell tools remain unavailable." : "The complete quoted evidence is below. Do not call tools or read any filesystem path; answer only from this evidence.",
-          "<quoted-project-evidence>",
-          await fs.readFile(spec.inputs.inboxPath, "utf8"),
-          "</quoted-project-evidence>"
-        ].join("\n\n")
-      : spec.prompt;
+    const explainerPrompt = spec.prompt;
     const routedConfig = {
       ...sourceConfig,
       instructions: explainerPrompt,

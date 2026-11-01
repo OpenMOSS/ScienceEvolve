@@ -9,6 +9,7 @@ import type { InvocationInputs } from "./harness-runtime/contracts.js";
 import type { AgentConfig, AgentMcpServer, AgentRunRequest, AuthoritativeWorkflowFiles, NodeRef, ProjectState } from "./types.js";
 import { redactTrace } from "./utils.js";
 import { AgentContextSources, publishAgentContextIndex } from "./agent-context-index.js";
+import type { ContextSummaryLookup } from "./context-index-organizer.js";
 
 /** Trusted management identity, independent of the Agent's name/session. */
 export interface WorkflowContextRequest {
@@ -29,6 +30,7 @@ export interface WorkflowContextSnapshot {
   stateRevision: number;
   configurationHash: string;
   preview: string;
+  compactPreview?: string;
   definitionPath: string;
   currentStatePath: string;
   agentsPath: string;
@@ -42,9 +44,9 @@ type JsonRecord = Record<string, unknown>;
 
 /** Refresh for every native turn, including retained-session management repairs. */
 export async function prepareWorkflowContext(request: ContextInput, inputs: InvocationInputs,
-  authoritative?: AuthoritativeWorkflowFiles): Promise<InvocationInputs> {
+  authoritative?: AuthoritativeWorkflowFiles, options: { lookup?: ContextSummaryLookup } = {}): Promise<InvocationInputs> {
   const identity = contextIdentity(request);
-  if (!identity) return prepareDetailIndex(request, inputs);
+  if (!identity) return prepareDetailIndex(request, inputs, options);
   request = { ...request, project: structuredClone(request.project) };
   const state = request.project;
   const orchestration = state.orchestration;
@@ -121,6 +123,12 @@ export async function prepareWorkflowContext(request: ContextInput, inputs: Invo
     definitionPath, currentStatePath, agentsPath,
     preview: preview(request, identity, nodes, agents, scoped?.workflow, metadata, configurationHash,
       { definitionPath, currentStatePath, agentsPath }) };
+  snapshot.compactPreview = [
+    `Current Workflow scope: ${identity.scope}; Agent=${request.agent}; group=${identity.groupId ?? identity.groupRunId ?? "root"}; revision=${workflowRevision}; state=${stateRevision}.`,
+    `Legal route candidates (exact current IDs): ${JSON.stringify(routeCandidatesFor(request, identity))}.`,
+    `Complete topology, current-state index and configuration remain available without pagination:\n${definitionPath}\n${currentStatePath}\n${agentsPath}`,
+    "Read the relevant graph or Agent configuration through the context index. These references do not grant capabilities; the current task and actual tools/list determine this turn's authority."
+  ].join("\n");
   const sources = new AgentContextSources();
   sources.list("workflow.agents", "Agent configuration details", Object.entries(agents).map(([agentId, config]) => ({ agentId, ...config })));
   sources.list("workflow.skill-definitions", "Project Skill definitions", Object.entries(skillDefinitions).map(([name, definition]) => ({ name, definition })));
@@ -132,20 +140,20 @@ export async function prepareWorkflowContext(request: ContextInput, inputs: Invo
   sources.list("workflow.routes", "Workflow routes", Object.entries((definition.workflow as { routes?: unknown }).routes ?? {}).map(([nodeId, routes]) => ({ nodeId, routes })));
   sources.fields("workflow.state", "Current runtime records", currentState);
   return prepareDetailIndex({ ...request, contextSources: [...(request.contextSources ?? []), ...sources.sources] },
-    { ...inputs, workflowContext: snapshot });
+    { ...inputs, workflowContext: snapshot }, options);
 }
 
-async function prepareDetailIndex(request: ContextInput, inputs: InvocationInputs): Promise<InvocationInputs> {
+async function prepareDetailIndex(request: ContextInput, inputs: InvocationInputs, options: { lookup?: ContextSummaryLookup }): Promise<InvocationInputs> {
   const sources = new AgentContextSources();
   if (request.project.artifacts?.length) sources.list("project.artifacts", "Published artifact catalog", request.project.artifacts);
   if (request.toolCatalog) sources.fields("agent-tool-catalog", "Available Agent Skill/MCP directory", request.toolCatalog as unknown as Record<string, unknown>);
   if (request.terminalControlRepair) sources.record("terminal-control-repair", "Previous handoff for the missing terminal action", request.terminalControlRepair.originalHandoff);
-  const contextIndex = await publishAgentContextIndex(inputs.inboxPath, [...(request.contextSources ?? []), ...sources.sources]);
+  const contextIndex = await publishAgentContextIndex(inputs.inboxPath, [...(request.contextSources ?? []), ...sources.sources], options);
   return contextIndex ? { ...inputs, contextIndex } : inputs;
 }
 
 function contextIdentity(request: ContextInput): WorkflowContextRequest | undefined {
-  if (!request.project.orchestration?.agents || request.terminalPushObservation ||
+  if (!request.project.orchestration?.agents || request.terminalPushObservation || request.terminalPushCoordination ||
     (request.purpose !== undefined && request.purpose !== "workflow")) return undefined;
   const context = request.executionContext;
   if (request.workflowContext) {
@@ -154,7 +162,7 @@ function contextIdentity(request: ContextInput): WorkflowContextRequest | undefi
     return { ...request.workflowContext, groupRunId, groupId: groupIdFor(request.project, groupRunId, context?.nodeRunId) };
   }
   if (context?.role === "leader" && context.groupRunId) {
-    if (request.control?.collaboration?.role === "scoped-main" || request.terminalPushCoordination?.role === "main") {
+    if (request.control?.collaboration?.role === "scoped-main") {
       return { scope: "global", groupRunId: context.groupRunId };
     }
     const groupId = groupIdFor(request.project, context.groupRunId, context.nodeRunId);

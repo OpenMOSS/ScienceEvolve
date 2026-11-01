@@ -110,11 +110,8 @@ describe("main Git-off external workspace (actual kernel/SQLite, local child pro
       const current = JSON.parse(await fs.readFile(reference, "utf8"));
       const prompt = compileWorkflowPrompt(request, staged,
         compileInvocationPolicy(request.project.agents.main, request), { inlineInbox: inbox });
-      expect(prompt).toContain(`current accepted authoring reference at ${reference}`);
-      expect(prompt).toContain("The reference is read-only and is not the submission path.");
-      expect(prompt).toContain("server does not merge or rebase your draft");
-      expect(prompt).not.toContain("Your sole writable management area");
-      expect(prompt).not.toContain("Do not edit business code");
+      expect(prompt).toContain(inbox);
+      expect(prompt).not.toContain(JSON.stringify(current));
       const filesystem = await compileFilesystemAuthority({ serviceUserRoot: staged.workspacePath,
         projectWorktreeRoot: staged.workspacePath, projectWorktrees: [staged.workspacePath], protectedRoots: [],
         permission: "workspace", role: "legacy", gitEnabled: false, executionWorktree: staged.workspacePath,
@@ -131,8 +128,8 @@ describe("main Git-off external workspace (actual kernel/SQLite, local child pro
       const gitManagementPrompt = compileWorkflowPrompt(request,
         { ...staged, workflowAuthoringInvocationId: "inv_original" },
         compileInvocationPolicy(request.project.agents.main, request));
-      expect(gitManagementPrompt).toContain("Your sole writable management area");
-      expect(gitManagementPrompt).toContain("Do not edit business code");
+      expect(gitManagementPrompt).toContain(request.project.agents.main.instructions);
+      expect(gitManagementPrompt).not.toContain(JSON.stringify(current));
       const proposal = JSON.parse(await fs.readFile(proposalPath, "utf8"));
       if (count > 0) {
         expect(proposal.agents.main.instructions).toBe("isolated proposal accepted");

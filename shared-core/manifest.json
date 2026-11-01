@@ -1,0 +1,2343 @@
+{
+  "schemaVersion": 1,
+  "coreIdentity": "exact-source-v1",
+  "baselineSha256": "085bbcf0696911fc83440ec4d19e881d24f27dde54a5089b188186395969035f",
+  "files": [
+    {
+      "id": "scripts/sync-shared-core.mjs",
+      "kind": "tool",
+      "mainPath": "scripts/sync-shared-core.mjs",
+      "sdkPath": "scripts/sync-shared-core.mjs",
+      "mainSha256": "9b21cac78eef2f6fda362df5d118dc9962027c715e828c1c801f8500535511cc",
+      "sdkSha256": "9b21cac78eef2f6fda362df5d118dc9962027c715e828c1c801f8500535511cc"
+    },
+    {
+      "id": "scripts/tests/shared-core-sync.test.mjs",
+      "kind": "tool",
+      "mainPath": "scripts/tests/shared-core-sync.test.mjs",
+      "sdkPath": "scripts/tests/shared-core-sync.test.mjs",
+      "mainSha256": "d62807656f1b8e0b8ceefc67067baec3626a4507cd4efe138263c6f32359d0fe",
+      "sdkSha256": "d62807656f1b8e0b8ceefc67067baec3626a4507cd4efe138263c6f32359d0fe"
+    },
+    {
+      "id": "server/schemas/main-decision.json",
+      "kind": "schema",
+      "mainPath": "server/schemas/main-decision.json",
+      "sdkPath": "sdk/resources/main-runtime/schemas/main-decision.json",
+      "mainSha256": "32e7d4b40c45d4e39389f7e2fa6a3864e425dbe6ce5e68d5729b779c8b94b209",
+      "sdkSha256": "32e7d4b40c45d4e39389f7e2fa6a3864e425dbe6ce5e68d5729b779c8b94b209"
+    },
+    {
+      "id": "server/schemas/worker-result.json",
+      "kind": "schema",
+      "mainPath": "server/schemas/worker-result.json",
+      "sdkPath": "sdk/resources/main-runtime/schemas/worker-result.json",
+      "mainSha256": "331520ac485bd3b3218a11d506e558658e7838fe2f60167e7b6330a6b71b35a6",
+      "sdkSha256": "331520ac485bd3b3218a11d506e558658e7838fe2f60167e7b6330a6b71b35a6"
+    },
+    {
+      "id": "server/src/acceptance-controller.ts",
+      "kind": "source",
+      "mainPath": "server/src/acceptance-controller.ts",
+      "sdkPath": "sdk/src/core/acceptance-controller.ts",
+      "mainSha256": "a9f67cfb01802b24266f59a5da60d53fcd2e302f75f067ebec1573dc81c3ad67",
+      "sdkSha256": "a9f67cfb01802b24266f59a5da60d53fcd2e302f75f067ebec1573dc81c3ad67"
+    },
+    {
+      "id": "server/src/acceptance-r03.ts",
+      "kind": "source",
+      "mainPath": "server/src/acceptance-r03.ts",
+      "sdkPath": "sdk/src/core/acceptance-r03.ts",
+      "mainSha256": "edb82c7524427b197860528a61f80fd9328814d0328ef4839b9b6eb73699cb39",
+      "sdkSha256": "edb82c7524427b197860528a61f80fd9328814d0328ef4839b9b6eb73699cb39"
+    },
+    {
+      "id": "server/src/acceptance-r04-pending.ts",
+      "kind": "source",
+      "mainPath": "server/src/acceptance-r04-pending.ts",
+      "sdkPath": "sdk/src/core/acceptance-r04-pending.ts",
+      "mainSha256": "5e259ba9c81d128b0d0e04e6fd37ade1645bc95ea20925cc70666906c4e4793d",
+      "sdkSha256": "5e259ba9c81d128b0d0e04e6fd37ade1645bc95ea20925cc70666906c4e4793d"
+    },
+    {
+      "id": "server/src/acceptance-r04-preparation.ts",
+      "kind": "source",
+      "mainPath": "server/src/acceptance-r04-preparation.ts",
+      "sdkPath": "sdk/src/core/acceptance-r04-preparation.ts",
+      "mainSha256": "d3e2dcc7d1405f83ac171c197e91abbf1e05b233da3f74ab0ba5ebeee2070e0d",
+      "sdkSha256": "d3e2dcc7d1405f83ac171c197e91abbf1e05b233da3f74ab0ba5ebeee2070e0d"
+    },
+    {
+      "id": "server/src/acceptance-r11.ts",
+      "kind": "source",
+      "mainPath": "server/src/acceptance-r11.ts",
+      "sdkPath": "sdk/src/core/acceptance-r11.ts",
+      "mainSha256": "ad4b4c72b52af170ef41d6f20377e7e38f873f17b8183ad3db7f4afa3b3af425",
+      "sdkSha256": "ad4b4c72b52af170ef41d6f20377e7e38f873f17b8183ad3db7f4afa3b3af425"
+    },
+    {
+      "id": "server/src/acceptance-r12.ts",
+      "kind": "source",
+      "mainPath": "server/src/acceptance-r12.ts",
+      "sdkPath": "sdk/src/core/acceptance-r12.ts",
+      "mainSha256": "6f2cf56a61ef7e6946eccf4d0c85325abf59f17de1852fa99773973495fbb30b",
+      "sdkSha256": "6f2cf56a61ef7e6946eccf4d0c85325abf59f17de1852fa99773973495fbb30b"
+    },
+    {
+      "id": "server/src/acceptance-r14.ts",
+      "kind": "source",
+      "mainPath": "server/src/acceptance-r14.ts",
+      "sdkPath": "sdk/src/core/acceptance-r14.ts",
+      "mainSha256": "118de57127d83f685df6402dd1b0a61b83d1aabdd291b3c35878fb52e9fc1ef3",
+      "sdkSha256": "118de57127d83f685df6402dd1b0a61b83d1aabdd291b3c35878fb52e9fc1ef3"
+    },
+    {
+      "id": "server/src/agent-context-index.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-context-index.ts",
+      "sdkPath": "sdk/src/core/agent-context-index.ts",
+      "mainSha256": "1ec34a9513ca7b7c6f36c6fcae1a271a6eda4d9f519d2213902740db25fd26ea",
+      "sdkSha256": "1ec34a9513ca7b7c6f36c6fcae1a271a6eda4d9f519d2213902740db25fd26ea"
+    },
+    {
+      "id": "server/src/agent-errors.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-errors.ts",
+      "sdkPath": "sdk/src/core/agent-errors.ts",
+      "mainSha256": "297eb08c27c13800d02c569b7550061bc79bdcc7a73d08c8b920d3be5a806cae",
+      "sdkSha256": "297eb08c27c13800d02c569b7550061bc79bdcc7a73d08c8b920d3be5a806cae"
+    },
+    {
+      "id": "server/src/agent-git-delivery.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-git-delivery.ts",
+      "sdkPath": "sdk/src/core/agent-git-delivery.ts",
+      "mainSha256": "af067cdf79a748a874c3698067c5cf9771d5fe0b2b35ec864eb808ab59f0adc0",
+      "sdkSha256": "af067cdf79a748a874c3698067c5cf9771d5fe0b2b35ec864eb808ab59f0adc0"
+    },
+    {
+      "id": "server/src/agent-git-operation-journal.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-git-operation-journal.ts",
+      "sdkPath": "sdk/src/core/agent-git-operation-journal.ts",
+      "mainSha256": "5c464436fb3448e18662700c5448c4adb6cc3abf5f2a54e6564a5bf60d73a189",
+      "sdkSha256": "5c464436fb3448e18662700c5448c4adb6cc3abf5f2a54e6564a5bf60d73a189"
+    },
+    {
+      "id": "server/src/agent-git-operation-query.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-git-operation-query.ts",
+      "sdkPath": "sdk/src/core/agent-git-operation-query.ts",
+      "mainSha256": "d86f3821af5db64b76cbb6a186ce73475dc2fc121cbab6f38ebe4a37034b2680",
+      "sdkSha256": "d86f3821af5db64b76cbb6a186ce73475dc2fc121cbab6f38ebe4a37034b2680"
+    },
+    {
+      "id": "server/src/agent-git-result-observations.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-git-result-observations.ts",
+      "sdkPath": "sdk/src/core/agent-git-result-observations.ts",
+      "mainSha256": "f12b8e4d8dc6a430c5c4cdb3acd8ff13128551adeeba7dcc83d6d97574c1e6ef",
+      "sdkSha256": "f12b8e4d8dc6a430c5c4cdb3acd8ff13128551adeeba7dcc83d6d97574c1e6ef"
+    },
+    {
+      "id": "server/src/agent-git-result-proof.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-git-result-proof.ts",
+      "sdkPath": "sdk/src/core/agent-git-result-proof.ts",
+      "mainSha256": "f7254034c84927232d2c9581c6924dfcd01e88e7f2d27b650532e89a8abc8e08",
+      "sdkSha256": "f7254034c84927232d2c9581c6924dfcd01e88e7f2d27b650532e89a8abc8e08"
+    },
+    {
+      "id": "server/src/agent-git-result.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-git-result.ts",
+      "sdkPath": "sdk/src/core/agent-git-result.ts",
+      "mainSha256": "9963242137945964209e487a3364ca0dc28d7b686e9e0d9f4a3dbf3cd744a75d",
+      "sdkSha256": "9963242137945964209e487a3364ca0dc28d7b686e9e0d9f4a3dbf3cd744a75d"
+    },
+    {
+      "id": "server/src/agent-git-tools.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-git-tools.ts",
+      "sdkPath": "sdk/src/core/agent-git-tools.ts",
+      "mainSha256": "f056a4a797b0d9361ab46acc4b0e7c7a503f6d914458371ed8a7e0243cdda186",
+      "sdkSha256": "f056a4a797b0d9361ab46acc4b0e7c7a503f6d914458371ed8a7e0243cdda186"
+    },
+    {
+      "id": "server/src/agent-orchestration-reconfiguration.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-orchestration-reconfiguration.ts",
+      "sdkPath": "sdk/src/core/agent-orchestration-reconfiguration.ts",
+      "mainSha256": "8cfee5303a96affb3fa7b3524b88d85a5bc532addeb4a25f71abede9f1c3fda4",
+      "sdkSha256": "8cfee5303a96affb3fa7b3524b88d85a5bc532addeb4a25f71abede9f1c3fda4"
+    },
+    {
+      "id": "server/src/agent-orchestration.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-orchestration.ts",
+      "sdkPath": "sdk/src/core/agent-orchestration.ts",
+      "mainSha256": "055a7ed091ab5e42ee0f9b44c244f2adad6f3a00b024a06f303c63650bfeac36",
+      "sdkSha256": "055a7ed091ab5e42ee0f9b44c244f2adad6f3a00b024a06f303c63650bfeac36"
+    },
+    {
+      "id": "server/src/agent-queue-view.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-queue-view.ts",
+      "sdkPath": "sdk/src/core/agent-queue-view.ts",
+      "mainSha256": "eb55eed69b17b225912532b1f98db9c9af09518ae84cf5e3337c4914168d05de",
+      "sdkSha256": "eb55eed69b17b225912532b1f98db9c9af09518ae84cf5e3337c4914168d05de"
+    },
+    {
+      "id": "server/src/agent-runtime.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-runtime.ts",
+      "sdkPath": "sdk/src/core/agent-runtime.ts",
+      "mainSha256": "81a598b4113b6e2131eb6e707b8d772effdcdb46d7a24019a827931c778470af",
+      "sdkSha256": "81a598b4113b6e2131eb6e707b8d772effdcdb46d7a24019a827931c778470af"
+    },
+    {
+      "id": "server/src/agent-scheduler.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-scheduler.ts",
+      "sdkPath": "sdk/src/core/agent-scheduler.ts",
+      "mainSha256": "04445850c1533e6cc1b5b79444ebf9aeb42cfcf57b365182d1d1c3129f58356f",
+      "sdkSha256": "04445850c1533e6cc1b5b79444ebf9aeb42cfcf57b365182d1d1c3129f58356f"
+    },
+    {
+      "id": "server/src/agent-tool-catalog.ts",
+      "kind": "source",
+      "mainPath": "server/src/agent-tool-catalog.ts",
+      "sdkPath": "sdk/src/core/agent-tool-catalog.ts",
+      "mainSha256": "bcabde3a6acdf30e8ebc79de24c6824c2325bf8dbab6c49e96d8db64139b67f1",
+      "sdkSha256": "bcabde3a6acdf30e8ebc79de24c6824c2325bf8dbab6c49e96d8db64139b67f1"
+    },
+    {
+      "id": "server/src/cancellation.ts",
+      "kind": "source",
+      "mainPath": "server/src/cancellation.ts",
+      "sdkPath": "sdk/src/core/cancellation.ts",
+      "mainSha256": "d5ec74cd4f972da838133da4f40237db1762ea8d3cbe500df74eb09c0f2da2c0",
+      "sdkSha256": "d5ec74cd4f972da838133da4f40237db1762ea8d3cbe500df74eb09c0f2da2c0"
+    },
+    {
+      "id": "server/src/codex-gateway-model-catalog.ts",
+      "kind": "source",
+      "mainPath": "server/src/codex-gateway-model-catalog.ts",
+      "sdkPath": "sdk/src/core/codex-gateway-model-catalog.ts",
+      "mainSha256": "b2d1bf59084f7e94876defb8db30836eac6262594d19ed59e7806c709db5a1c9",
+      "sdkSha256": "b2d1bf59084f7e94876defb8db30836eac6262594d19ed59e7806c709db5a1c9"
+    },
+    {
+      "id": "server/src/codex-provider-config.ts",
+      "kind": "source",
+      "mainPath": "server/src/codex-provider-config.ts",
+      "sdkPath": "sdk/src/core/codex-provider-config.ts",
+      "mainSha256": "c67c57e7b21608626122ec6a9dd1d362d2254f3874383e7e48de18f71b2c11de",
+      "sdkSha256": "c67c57e7b21608626122ec6a9dd1d362d2254f3874383e7e48de18f71b2c11de"
+    },
+    {
+      "id": "server/src/codex-runner.ts",
+      "kind": "source",
+      "mainPath": "server/src/codex-runner.ts",
+      "sdkPath": "sdk/src/core/codex-runner.ts",
+      "mainSha256": "2a68aa8d9753be23d58e12dfd419e410d3b80912ddd645a8293f5a113f6cc48e",
+      "sdkSha256": "2a68aa8d9753be23d58e12dfd419e410d3b80912ddd645a8293f5a113f6cc48e"
+    },
+    {
+      "id": "server/src/collaboration-dissolution.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-dissolution.ts",
+      "sdkPath": "sdk/src/core/collaboration-dissolution.ts",
+      "mainSha256": "0098cbdb24e86673b91cbeaeea929871703db0622e5d8eceb7d5ba19270d6d60",
+      "sdkSha256": "0098cbdb24e86673b91cbeaeea929871703db0622e5d8eceb7d5ba19270d6d60"
+    },
+    {
+      "id": "server/src/collaboration-git/command-runner.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/command-runner.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/command-runner.ts",
+      "mainSha256": "87c99176e5aa740e97ea8dc2c89b8dcbb97e3a7eac4bec012f5aff6fe644323a",
+      "sdkSha256": "87c99176e5aa740e97ea8dc2c89b8dcbb97e3a7eac4bec012f5aff6fe644323a"
+    },
+    {
+      "id": "server/src/collaboration-git/contracts.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/contracts.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/contracts.ts",
+      "mainSha256": "958aeb042b7446b4b5bb46b63f6734c10812046be63dab79113a4fedcbd1e16c",
+      "sdkSha256": "958aeb042b7446b4b5bb46b63f6734c10812046be63dab79113a4fedcbd1e16c"
+    },
+    {
+      "id": "server/src/collaboration-git/credential-helper.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/credential-helper.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/credential-helper.ts",
+      "mainSha256": "47b3d914c09f8db330c91867749c5262a824aae62652b99250e520727d0ba1d1",
+      "sdkSha256": "47b3d914c09f8db330c91867749c5262a824aae62652b99250e520727d0ba1d1"
+    },
+    {
+      "id": "server/src/collaboration-git/credential.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/credential.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/credential.ts",
+      "mainSha256": "40961260a4310512099891d463b993dddc9a6fbb9fade87a3c5a73e381637bf0",
+      "sdkSha256": "40961260a4310512099891d463b993dddc9a6fbb9fade87a3c5a73e381637bf0"
+    },
+    {
+      "id": "server/src/collaboration-git/errors.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/errors.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/errors.ts",
+      "mainSha256": "2e2daace63b3848401a79c00e685f9421118313db9f714805017997f86a6e1ab",
+      "sdkSha256": "2e2daace63b3848401a79c00e685f9421118313db9f714805017997f86a6e1ab"
+    },
+    {
+      "id": "server/src/collaboration-git/facade.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/facade.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/facade.ts",
+      "mainSha256": "9f9ebccf9fb05d964229e975f56d7c832e3b8dfd41d1dbd6cdab26e6ac472204",
+      "sdkSha256": "9f9ebccf9fb05d964229e975f56d7c832e3b8dfd41d1dbd6cdab26e6ac472204"
+    },
+    {
+      "id": "server/src/collaboration-git/factory.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/factory.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/factory.ts",
+      "mainSha256": "f2ab491033865791c9abc0dc75ca3193f489610936ab84ad39237f519cc8fb7a",
+      "sdkSha256": "f2ab491033865791c9abc0dc75ca3193f489610936ab84ad39237f519cc8fb7a"
+    },
+    {
+      "id": "server/src/collaboration-git/github-provider.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/github-provider.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/github-provider.ts",
+      "mainSha256": "3fb90adb0024317606eaade34156ba3357e776f1d0a9994bc0193fc5ebd8fbcc",
+      "sdkSha256": "3fb90adb0024317606eaade34156ba3357e776f1d0a9994bc0193fc5ebd8fbcc"
+    },
+    {
+      "id": "server/src/collaboration-git/index.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/index.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/index.ts",
+      "mainSha256": "19179d0e65cd54712ba18079ac6d430be38d09c5428dcef56fa067581c98a583",
+      "sdkSha256": "19179d0e65cd54712ba18079ac6d430be38d09c5428dcef56fa067581c98a583"
+    },
+    {
+      "id": "server/src/collaboration-git/initialization.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/initialization.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/initialization.ts",
+      "mainSha256": "5371aae7bc60d5943cc9a2745463937a574e1ab45c41bdce5b526a07cf28c20f",
+      "sdkSha256": "5371aae7bc60d5943cc9a2745463937a574e1ab45c41bdce5b526a07cf28c20f"
+    },
+    {
+      "id": "server/src/collaboration-git/inspection.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/inspection.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/inspection.ts",
+      "mainSha256": "3df583c04120ca650630d9cbdbde3e3cd7072e7029d5a439dabba50773057222",
+      "sdkSha256": "3df583c04120ca650630d9cbdbde3e3cd7072e7029d5a439dabba50773057222"
+    },
+    {
+      "id": "server/src/collaboration-git/local-git.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/local-git.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/local-git.ts",
+      "mainSha256": "d8a7853840c07f3f78fd5aab755a83d3fccb2145faef1b656d96dab0c9c387bd",
+      "sdkSha256": "d8a7853840c07f3f78fd5aab755a83d3fccb2145faef1b656d96dab0c9c387bd"
+    },
+    {
+      "id": "server/src/collaboration-git/operation.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/operation.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/operation.ts",
+      "mainSha256": "afeea602f09039bf3d2b3392eecd988e8e6f3944b60901929e6e4cea26810c14",
+      "sdkSha256": "afeea602f09039bf3d2b3392eecd988e8e6f3944b60901929e6e4cea26810c14"
+    },
+    {
+      "id": "server/src/collaboration-git/projection.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/projection.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/projection.ts",
+      "mainSha256": "95d70506b3f20613725cc07db3ef4370cb48b9ef6839cd295bec9b9f54ec6cbc",
+      "sdkSha256": "95d70506b3f20613725cc07db3ef4370cb48b9ef6839cd295bec9b9f54ec6cbc"
+    },
+    {
+      "id": "server/src/collaboration-git/restricted-worktree-closing.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/restricted-worktree-closing.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/restricted-worktree-closing.ts",
+      "mainSha256": "ef484150c317bbb314f0752b0e64dc6b20c18db3b3ef3481c0550dc9ed9a20ea",
+      "sdkSha256": "ef484150c317bbb314f0752b0e64dc6b20c18db3b3ef3481c0550dc9ed9a20ea"
+    },
+    {
+      "id": "server/src/collaboration-git/revert.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-git/revert.ts",
+      "sdkPath": "sdk/src/core/collaboration-git/revert.ts",
+      "mainSha256": "3aa17624a1af40c18f235197782b83bf403fae10643963a6bb8f3e912652f29b",
+      "sdkSha256": "3aa17624a1af40c18f235197782b83bf403fae10643963a6bb8f3e912652f29b"
+    },
+    {
+      "id": "server/src/collaboration-resident-launcher.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-resident-launcher.ts",
+      "sdkPath": "sdk/src/core/collaboration-resident-launcher.ts",
+      "mainSha256": "8aea929e31436a5600e72f502bdde720d1a7837b3abe01a39f913100f43c6794",
+      "sdkSha256": "8aea929e31436a5600e72f502bdde720d1a7837b3abe01a39f913100f43c6794"
+    },
+    {
+      "id": "server/src/collaboration-runtime.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-runtime.ts",
+      "sdkPath": "sdk/src/core/collaboration-runtime.ts",
+      "mainSha256": "c27b9694f0bc66d12daad98132644f10b0144daa7cf539669dd56ac1780f742e",
+      "sdkSha256": "c27b9694f0bc66d12daad98132644f10b0144daa7cf539669dd56ac1780f742e"
+    },
+    {
+      "id": "server/src/collaboration-state/contracts.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-state/contracts.ts",
+      "sdkPath": "sdk/src/core/collaboration-state/contracts.ts",
+      "mainSha256": "9649bb96b31f2f0285190836519aa1a34ea304b9edb163ec4052a5560d483e35",
+      "sdkSha256": "9649bb96b31f2f0285190836519aa1a34ea304b9edb163ec4052a5560d483e35"
+    },
+    {
+      "id": "server/src/collaboration-state/errors.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-state/errors.ts",
+      "sdkPath": "sdk/src/core/collaboration-state/errors.ts",
+      "mainSha256": "b6db888b0899f55a32edfdddbf5a55557585109f747c00ab2018b8fe6f73263a",
+      "sdkSha256": "b6db888b0899f55a32edfdddbf5a55557585109f747c00ab2018b8fe6f73263a"
+    },
+    {
+      "id": "server/src/collaboration-state/index.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-state/index.ts",
+      "sdkPath": "sdk/src/core/collaboration-state/index.ts",
+      "mainSha256": "969130af51df5b7b8d36ebf385fad3dfe777ebf1fd714a88ecfcbbc6b11692e1",
+      "sdkSha256": "969130af51df5b7b8d36ebf385fad3dfe777ebf1fd714a88ecfcbbc6b11692e1"
+    },
+    {
+      "id": "server/src/collaboration-state/leader.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-state/leader.ts",
+      "sdkPath": "sdk/src/core/collaboration-state/leader.ts",
+      "mainSha256": "073dc8de745b8d7aee12e91a4bfbc34c151d0ecd7e47158258154401d84e162f",
+      "sdkSha256": "073dc8de745b8d7aee12e91a4bfbc34c151d0ecd7e47158258154401d84e162f"
+    },
+    {
+      "id": "server/src/collaboration-state/schema.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-state/schema.ts",
+      "sdkPath": "sdk/src/core/collaboration-state/schema.ts",
+      "mainSha256": "73284eb565b09a59cae5b63bd4e846c551c0a5c8d9f197ceb431c3ae59d05622",
+      "sdkSha256": "73284eb565b09a59cae5b63bd4e846c551c0a5c8d9f197ceb431c3ae59d05622"
+    },
+    {
+      "id": "server/src/collaboration-state/store.ts",
+      "kind": "source",
+      "mainPath": "server/src/collaboration-state/store.ts",
+      "sdkPath": "sdk/src/core/collaboration-state/store.ts",
+      "mainSha256": "15fc181c87a6a9c969fae396ce3aa72315efdbb2192ec45927e085332c3ed71d",
+      "sdkSha256": "15fc181c87a6a9c969fae396ce3aa72315efdbb2192ec45927e085332c3ed71d"
+    },
+    {
+      "id": "server/src/config.ts",
+      "kind": "source",
+      "mainPath": "server/src/config.ts",
+      "sdkPath": "sdk/src/core/config.ts",
+      "mainSha256": "66689591c52ea28a1934cd5640bd10c54347e2dc2571050958b097b50512693b",
+      "sdkSha256": "66689591c52ea28a1934cd5640bd10c54347e2dc2571050958b097b50512693b"
+    },
+    {
+      "id": "server/src/content-limits.ts",
+      "kind": "source",
+      "mainPath": "server/src/content-limits.ts",
+      "sdkPath": "sdk/src/core/content-limits.ts",
+      "mainSha256": "6cd095958fa9ce9b8f96001756eaecfefa85d96b811066f7e5624cc32130a1c7",
+      "sdkSha256": "6cd095958fa9ce9b8f96001756eaecfefa85d96b811066f7e5624cc32130a1c7"
+    },
+    {
+      "id": "server/src/context-index-organizer.ts",
+      "kind": "source",
+      "mainPath": "server/src/context-index-organizer.ts",
+      "sdkPath": "sdk/src/core/context-index-organizer.ts",
+      "mainSha256": "c3b5f5fd1600fcb2e64554e0d9a0cf5e496b018ce9903fee98d246b7ec5a4e5b",
+      "sdkSha256": "c3b5f5fd1600fcb2e64554e0d9a0cf5e496b018ce9903fee98d246b7ec5a4e5b"
+    },
+    {
+      "id": "server/src/context-injection-budget.ts",
+      "kind": "source",
+      "mainPath": "server/src/context-injection-budget.ts",
+      "sdkPath": "sdk/src/core/context-injection-budget.ts",
+      "mainSha256": "fdda726ada8b1ebb5e94bd1635a274fd518ea45e44a58f14d3f571bf75d88c5d",
+      "sdkSha256": "fdda726ada8b1ebb5e94bd1635a274fd518ea45e44a58f14d3f571bf75d88c5d"
+    },
+    {
+      "id": "server/src/context-limit.ts",
+      "kind": "source",
+      "mainPath": "server/src/context-limit.ts",
+      "sdkPath": "sdk/src/core/context-limit.ts",
+      "mainSha256": "4754f2b6118a639dceb795db25f0d9340d4524f52656d925cd11eb43a394b34a",
+      "sdkSha256": "4754f2b6118a639dceb795db25f0d9340d4524f52656d925cd11eb43a394b34a"
+    },
+    {
+      "id": "server/src/control-action-identity.ts",
+      "kind": "source",
+      "mainPath": "server/src/control-action-identity.ts",
+      "sdkPath": "sdk/src/core/control-action-identity.ts",
+      "mainSha256": "6743d574eabad6a5c10eb462e70abda85312009a79b56b5afa89f006b912b5df",
+      "sdkSha256": "6743d574eabad6a5c10eb462e70abda85312009a79b56b5afa89f006b912b5df"
+    },
+    {
+      "id": "server/src/control-mcp.ts",
+      "kind": "source",
+      "mainPath": "server/src/control-mcp.ts",
+      "sdkPath": "sdk/src/core/control-mcp.ts",
+      "mainSha256": "e6a462264e6684fecf93a22e8899c5405b62f7fe3d4b5a1bfe307c46b3e626e7",
+      "sdkSha256": "e6a462264e6684fecf93a22e8899c5405b62f7fe3d4b5a1bfe307c46b3e626e7"
+    },
+    {
+      "id": "server/src/control-request-lifetime.ts",
+      "kind": "source",
+      "mainPath": "server/src/control-request-lifetime.ts",
+      "sdkPath": "sdk/src/core/control-request-lifetime.ts",
+      "mainSha256": "4e660873d88c540d4049099273321d022db5f67b803d80e57e2b1c04a3e103e3",
+      "sdkSha256": "4e660873d88c540d4049099273321d022db5f67b803d80e57e2b1c04a3e103e3"
+    },
+    {
+      "id": "server/src/control-result-receipts.ts",
+      "kind": "source",
+      "mainPath": "server/src/control-result-receipts.ts",
+      "sdkPath": "sdk/src/core/control-result-receipts.ts",
+      "mainSha256": "fd6be06934303f504f639a6cfd2e41c9650d1d276b068cc314574fd2c6822829",
+      "sdkSha256": "fd6be06934303f504f639a6cfd2e41c9650d1d276b068cc314574fd2c6822829"
+    },
+    {
+      "id": "server/src/event-hub.ts",
+      "kind": "source",
+      "mainPath": "server/src/event-hub.ts",
+      "sdkPath": "sdk/src/core/event-hub.ts",
+      "mainSha256": "6adb443a32b62500883ab6707438fc8193780a43bf5b8c270cf44c8c72b9a84f",
+      "sdkSha256": "6adb443a32b62500883ab6707438fc8193780a43bf5b8c270cf44c8c72b9a84f"
+    },
+    {
+      "id": "server/src/execution-worktree-closing.ts",
+      "kind": "source",
+      "mainPath": "server/src/execution-worktree-closing.ts",
+      "sdkPath": "sdk/src/core/execution-worktree-closing.ts",
+      "mainSha256": "3ac7b38caf656ab6b516a48514022f293d5c53d3fba0967cdc1fee29244fe139",
+      "sdkSha256": "3ac7b38caf656ab6b516a48514022f293d5c53d3fba0967cdc1fee29244fe139"
+    },
+    {
+      "id": "server/src/gateway-reasoning.ts",
+      "kind": "source",
+      "mainPath": "server/src/gateway-reasoning.ts",
+      "sdkPath": "sdk/src/core/gateway-reasoning.ts",
+      "mainSha256": "c5906015d8abe8fae09ad67f49723587fcf5efbd9ec64772732f02bc6eceb99e",
+      "sdkSha256": "c5906015d8abe8fae09ad67f49723587fcf5efbd9ec64772732f02bc6eceb99e"
+    },
+    {
+      "id": "server/src/gateway-security.ts",
+      "kind": "source",
+      "mainPath": "server/src/gateway-security.ts",
+      "sdkPath": "sdk/src/core/gateway-security.ts",
+      "mainSha256": "26e9405aa25d3b400b6afb7449c5b173999bc05fffd63d323b125fd46876a49d",
+      "sdkSha256": "26e9405aa25d3b400b6afb7449c5b173999bc05fffd63d323b125fd46876a49d"
+    },
+    {
+      "id": "server/src/gateway-tool-choice.ts",
+      "kind": "source",
+      "mainPath": "server/src/gateway-tool-choice.ts",
+      "sdkPath": "sdk/src/core/gateway-tool-choice.ts",
+      "mainSha256": "9cf32a6a618e5d87696ee3fe5f4df6dc2655bccf44dd37670ebb986b33b08ce8",
+      "sdkSha256": "9cf32a6a618e5d87696ee3fe5f4df6dc2655bccf44dd37670ebb986b33b08ce8"
+    },
+    {
+      "id": "server/src/git-graph.ts",
+      "kind": "source",
+      "mainPath": "server/src/git-graph.ts",
+      "sdkPath": "sdk/src/core/git-graph.ts",
+      "mainSha256": "962cf0f1bd603c452640ccd90623790ae7fc8165cce4589090ebfa0f04788806",
+      "sdkSha256": "962cf0f1bd603c452640ccd90623790ae7fc8165cce4589090ebfa0f04788806"
+    },
+    {
+      "id": "server/src/github-accounts.ts",
+      "kind": "source",
+      "mainPath": "server/src/github-accounts.ts",
+      "sdkPath": "sdk/src/core/github-accounts.ts",
+      "mainSha256": "7e44e94c34a0fab8cbd30836cbdc49ad22cce8845983a67855e1fb2cbc9cb3fa",
+      "sdkSha256": "7e44e94c34a0fab8cbd30836cbdc49ad22cce8845983a67855e1fb2cbc9cb3fa"
+    },
+    {
+      "id": "server/src/github-repository-management-types.ts",
+      "kind": "source",
+      "mainPath": "server/src/github-repository-management-types.ts",
+      "sdkPath": "sdk/src/core/github-repository-management-types.ts",
+      "mainSha256": "7baf3d8c281035c706f0ae7e41ba62d1ff5f95020b3a69ff589808a96e23f0e8",
+      "sdkSha256": "7baf3d8c281035c706f0ae7e41ba62d1ff5f95020b3a69ff589808a96e23f0e8"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/adapter-utils.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/adapter-utils.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/adapter-utils.ts",
+      "mainSha256": "6dd7bd6a630cf5f797a7ef627cf3241cfe9058a3b870649ea96676841688b752",
+      "sdkSha256": "6dd7bd6a630cf5f797a7ef627cf3241cfe9058a3b870649ea96676841688b752"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/claude-code-adapter.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/claude-code-adapter.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/claude-code-adapter.ts",
+      "mainSha256": "2be0fa2c6330859634d26a23bddd555f1a2cec9aaeb32cbc01b9fc62096317a8",
+      "sdkSha256": "2be0fa2c6330859634d26a23bddd555f1a2cec9aaeb32cbc01b9fc62096317a8"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/claude-code-event-mapper.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/claude-code-event-mapper.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/claude-code-event-mapper.ts",
+      "mainSha256": "18431df4e47bb0ad34ef15e59cb2f4a4da1484fb70d4966dcd8f56f5d8652b65",
+      "sdkSha256": "18431df4e47bb0ad34ef15e59cb2f4a4da1484fb70d4966dcd8f56f5d8652b65"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/codex-adapter.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/codex-adapter.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/codex-adapter.ts",
+      "mainSha256": "dc8a9cc4d35e1e9b183481a8c04887f0ef14978ea7689b66d425c00193f36cd0",
+      "sdkSha256": "dc8a9cc4d35e1e9b183481a8c04887f0ef14978ea7689b66d425c00193f36cd0"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/codex-event-mapper.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/codex-event-mapper.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/codex-event-mapper.ts",
+      "mainSha256": "776fe04fb0e86fb211e49d4d513ba5e5a510314b60edaa12e53b03ee20d89a48",
+      "sdkSha256": "776fe04fb0e86fb211e49d4d513ba5e5a510314b60edaa12e53b03ee20d89a48"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/codex-native-input-history.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/codex-native-input-history.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/codex-native-input-history.ts",
+      "mainSha256": "12d1161b490a5de7295c4311ef138a7a9b36243641fa2ff7019bac8a6921b35f",
+      "sdkSha256": "12d1161b490a5de7295c4311ef138a7a9b36243641fa2ff7019bac8a6921b35f"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/dsh-adapter.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/dsh-adapter.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/dsh-adapter.ts",
+      "mainSha256": "abc929e558e7f21077bab022a5a7c0c4b315b3dd3755630bc9df6a20677df61b",
+      "sdkSha256": "abc929e558e7f21077bab022a5a7c0c4b315b3dd3755630bc9df6a20677df61b"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/dsh-event-mapper.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/dsh-event-mapper.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/dsh-event-mapper.ts",
+      "mainSha256": "917dc1745d0d8ea45fd4d60aad92142aeb1d355401d09f03df567594eed72990",
+      "sdkSha256": "917dc1745d0d8ea45fd4d60aad92142aeb1d355401d09f03df567594eed72990"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/native-prompt-source.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/native-prompt-source.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/native-prompt-source.ts",
+      "mainSha256": "9935aa3a4ef25ac106540c52ac8dec00053bda5f93860a909d9cfafadbc7bdea",
+      "sdkSha256": "9935aa3a4ef25ac106540c52ac8dec00053bda5f93860a909d9cfafadbc7bdea"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/pi-adapter.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/pi-adapter.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/pi-adapter.ts",
+      "mainSha256": "becb9ca046e5b002a283c65d086c8dcd0167504569805406e7fbdbd5992157c8",
+      "sdkSha256": "becb9ca046e5b002a283c65d086c8dcd0167504569805406e7fbdbd5992157c8"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/pi-event-mapper.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/pi-event-mapper.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/pi-event-mapper.ts",
+      "mainSha256": "517f301f96f3e43dc1ee2a235d07c775d82eec0264cfeec329f084a537a229fe",
+      "sdkSha256": "517f301f96f3e43dc1ee2a235d07c775d82eec0264cfeec329f084a537a229fe"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/pi-mcp-extension.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/pi-mcp-extension.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/pi-mcp-extension.ts",
+      "mainSha256": "159ee3022a5c25e5f8fd8aae60c74a035b97c841f9bf3a934ee3dc95c226bef5",
+      "sdkSha256": "159ee3022a5c25e5f8fd8aae60c74a035b97c841f9bf3a934ee3dc95c226bef5"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/pi-protocol-stdio.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/pi-protocol-stdio.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/pi-protocol-stdio.ts",
+      "mainSha256": "b87c2f9a1ffbbc67a212f2509756bc43437bfbb0af02e1dc588d478b30dc6716",
+      "sdkSha256": "b87c2f9a1ffbbc67a212f2509756bc43437bfbb0af02e1dc588d478b30dc6716"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/resident-adapter-factory.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/resident-adapter-factory.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/resident-adapter-factory.ts",
+      "mainSha256": "dbe7386cfe5420324f9bacc0a86c6588953caecf9c990be10f9d2abbb69ada0e",
+      "sdkSha256": "dbe7386cfe5420324f9bacc0a86c6588953caecf9c990be10f9d2abbb69ada0e"
+    },
+    {
+      "id": "server/src/harness-runtime/claude-tool-progress.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/claude-tool-progress.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/claude-tool-progress.ts",
+      "mainSha256": "ad188444bc04ea4f258701ccf2c2822df903a425a2d4a3178672404f019be1f1",
+      "sdkSha256": "ad188444bc04ea4f258701ccf2c2822df903a425a2d4a3178672404f019be1f1"
+    },
+    {
+      "id": "server/src/harness-runtime/contracts.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/contracts.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/contracts.ts",
+      "mainSha256": "def8b57e6b3f2b0f52df07a1b3f74dbd3626effbf5749c7905f55d45ab73965f",
+      "sdkSha256": "def8b57e6b3f2b0f52df07a1b3f74dbd3626effbf5749c7905f55d45ab73965f"
+    },
+    {
+      "id": "server/src/harness-runtime/descriptor-broker-helper.py",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/descriptor-broker-helper.py",
+      "sdkPath": "sdk/src/core/harness-runtime/descriptor-broker-helper.py",
+      "mainSha256": "98d3cfcd2952fc07e8da25419030f1695796497bde6c2e28360562082dd92c8f",
+      "sdkSha256": "98d3cfcd2952fc07e8da25419030f1695796497bde6c2e28360562082dd92c8f"
+    },
+    {
+      "id": "server/src/harness-runtime/descriptor-broker-mcp.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/descriptor-broker-mcp.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/descriptor-broker-mcp.ts",
+      "mainSha256": "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e",
+      "sdkSha256": "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e"
+    },
+    {
+      "id": "server/src/harness-runtime/descriptor-broker-windows.py",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/descriptor-broker-windows.py",
+      "sdkPath": "sdk/src/core/harness-runtime/descriptor-broker-windows.py",
+      "mainSha256": "2db9f05100aa658cd1fd813097526c4f9dc286732da6e762cbf73b7c530cbc32",
+      "sdkSha256": "2db9f05100aa658cd1fd813097526c4f9dc286732da6e762cbf73b7c530cbc32"
+    },
+    {
+      "id": "server/src/harness-runtime/directory-sync.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/directory-sync.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/directory-sync.ts",
+      "mainSha256": "f8a7c3e6b830e31cd680a0205eaa8b1c4202eeecba73457b48e88c7d08b5098e",
+      "sdkSha256": "f8a7c3e6b830e31cd680a0205eaa8b1c4202eeecba73457b48e88c7d08b5098e"
+    },
+    {
+      "id": "server/src/harness-runtime/dsh-sdk-resume-plugin.mjs",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/dsh-sdk-resume-plugin.mjs",
+      "sdkPath": "sdk/src/core/harness-runtime/dsh-sdk-resume-plugin.mjs",
+      "mainSha256": "da19604ea977ada9c78004c6bc13566bc09ce62bf83c2a34cd4da82294d5760f",
+      "sdkSha256": "da19604ea977ada9c78004c6bc13566bc09ce62bf83c2a34cd4da82294d5760f"
+    },
+    {
+      "id": "server/src/harness-runtime/errors.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/errors.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/errors.ts",
+      "mainSha256": "e8f9f852f87053a712a95edcc6f89df2205115f32822b584874b70516731dc43",
+      "sdkSha256": "e8f9f852f87053a712a95edcc6f89df2205115f32822b584874b70516731dc43"
+    },
+    {
+      "id": "server/src/harness-runtime/filesystem-authority.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/filesystem-authority.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/filesystem-authority.ts",
+      "mainSha256": "b232abe0280a7b5f3d247671ad2b7456e0ddea5e838389224815495f9ccbc1eb",
+      "sdkSha256": "b232abe0280a7b5f3d247671ad2b7456e0ddea5e838389224815495f9ccbc1eb"
+    },
+    {
+      "id": "server/src/harness-runtime/gateway-route.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/gateway-route.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/gateway-route.ts",
+      "mainSha256": "f98627a4c7b56e7cae60c281b98682182b32ff52bba08970f26fedad9fb026b7",
+      "sdkSha256": "f98627a4c7b56e7cae60c281b98682182b32ff52bba08970f26fedad9fb026b7"
+    },
+    {
+      "id": "server/src/harness-runtime/invocation-inputs.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/invocation-inputs.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/invocation-inputs.ts",
+      "mainSha256": "4b286fb2aac4207c2b9559166588fa0571809bee2fe8ca90e81d6dd5b0d3655e",
+      "sdkSha256": "4b286fb2aac4207c2b9559166588fa0571809bee2fe8ca90e81d6dd5b0d3655e"
+    },
+    {
+      "id": "server/src/harness-runtime/invocation-policy.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/invocation-policy.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/invocation-policy.ts",
+      "mainSha256": "56f059673794c319871482774953ff6d81dacead0ec66b6f89fbfce28e4122bf",
+      "sdkSha256": "56f059673794c319871482774953ff6d81dacead0ec66b6f89fbfce28e4122bf"
+    },
+    {
+      "id": "server/src/harness-runtime/invocation-recovery.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/invocation-recovery.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/invocation-recovery.ts",
+      "mainSha256": "0b8685cc943c77d3b069241ba808f331ed093559058f72fa25feb655eb09678b",
+      "sdkSha256": "0b8685cc943c77d3b069241ba808f331ed093559058f72fa25feb655eb09678b"
+    },
+    {
+      "id": "server/src/harness-runtime/native-input-history.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/native-input-history.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/native-input-history.ts",
+      "mainSha256": "9e76ce3b6a18a144c85cd44b3bb66baf97a18f5be338c76e44225de76442b911",
+      "sdkSha256": "9e76ce3b6a18a144c85cd44b3bb66baf97a18f5be338c76e44225de76442b911"
+    },
+    {
+      "id": "server/src/harness-runtime/official-event-bridge.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/official-event-bridge.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/official-event-bridge.ts",
+      "mainSha256": "f13f14cbd3d6aac1ec291916638940d601482d1f0438e102ba3e08a92f08af42",
+      "sdkSha256": "f13f14cbd3d6aac1ec291916638940d601482d1f0438e102ba3e08a92f08af42"
+    },
+    {
+      "id": "server/src/harness-runtime/process-host.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/process-host.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/process-host.ts",
+      "mainSha256": "c342d5e7bb02b9f51d04cd63f605f8fc2c3e3f801c04743d3d0a3d2bb0fc8d5c",
+      "sdkSha256": "c342d5e7bb02b9f51d04cd63f605f8fc2c3e3f801c04743d3d0a3d2bb0fc8d5c"
+    },
+    {
+      "id": "server/src/harness-runtime/prompt-catalog.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/prompt-catalog.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/prompt-catalog.ts",
+      "mainSha256": "0a3c53c452410d9eebc8c6868981623a2eb66f7f1e677943d4d4b8a1f3bb590a",
+      "sdkSha256": "0a3c53c452410d9eebc8c6868981623a2eb66f7f1e677943d4d4b8a1f3bb590a"
+    },
+    {
+      "id": "server/src/harness-runtime/registry.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/registry.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/registry.ts",
+      "mainSha256": "78174b72ee15d5282249c5ad37951169a4497dcf7c6d9aa4b7e2afd02c056832",
+      "sdkSha256": "78174b72ee15d5282249c5ad37951169a4497dcf7c6d9aa4b7e2afd02c056832"
+    },
+    {
+      "id": "server/src/harness-runtime/resident-lease.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/resident-lease.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/resident-lease.ts",
+      "mainSha256": "166eaa810a2732d4c35c0cde048cb4b6f6d051431e12f2bf15e9326a64cfe79f",
+      "sdkSha256": "166eaa810a2732d4c35c0cde048cb4b6f6d051431e12f2bf15e9326a64cfe79f"
+    },
+    {
+      "id": "server/src/harness-runtime/resident-native-driver.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/resident-native-driver.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/resident-native-driver.ts",
+      "mainSha256": "dc6e178d46fa6b7ea80220d2b6e9395c9171896908b4cd9f571f84d0b767ba1b",
+      "sdkSha256": "dc6e178d46fa6b7ea80220d2b6e9395c9171896908b4cd9f571f84d0b767ba1b"
+    },
+    {
+      "id": "server/src/harness-runtime/resident-runtime-adapter.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/resident-runtime-adapter.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/resident-runtime-adapter.ts",
+      "mainSha256": "8c0c0229476bb1390105548c14ee4ba8bf554fb5ca85996dd89cb37d43ec9508",
+      "sdkSha256": "8c0c0229476bb1390105548c14ee4ba8bf554fb5ca85996dd89cb37d43ec9508"
+    },
+    {
+      "id": "server/src/harness-runtime/runtime-support.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/runtime-support.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/runtime-support.ts",
+      "mainSha256": "45c0aa3030853ecf714f6b4bc9b03139e84c7326d81e1c5809a3e9e260d9ff17",
+      "sdkSha256": "45c0aa3030853ecf714f6b4bc9b03139e84c7326d81e1c5809a3e9e260d9ff17"
+    },
+    {
+      "id": "server/src/harness-runtime/runtime.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/runtime.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/runtime.ts",
+      "mainSha256": "87b9b52fdb0c25e995c9e58033564de8f63e9ee39a99c53bd55077ae70d46f12",
+      "sdkSha256": "87b9b52fdb0c25e995c9e58033564de8f63e9ee39a99c53bd55077ae70d46f12"
+    },
+    {
+      "id": "server/src/harness-runtime/session-coordinator.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/session-coordinator.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/session-coordinator.ts",
+      "mainSha256": "d5a0ea3d8fda983491c3811bbb59ce1c803c3c56bf4aa7b89486f65d8d38454d",
+      "sdkSha256": "d5a0ea3d8fda983491c3811bbb59ce1c803c3c56bf4aa7b89486f65d8d38454d"
+    },
+    {
+      "id": "server/src/harness-runtime/session-ref.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/session-ref.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/session-ref.ts",
+      "mainSha256": "d3d72c8ca2574781cc45dc28925d6cd7a3e748a97613ee5eb4c524fff3f02f10",
+      "sdkSha256": "d3d72c8ca2574781cc45dc28925d6cd7a3e748a97613ee5eb4c524fff3f02f10"
+    },
+    {
+      "id": "server/src/harness-runtime/skill-staging.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/skill-staging.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/skill-staging.ts",
+      "mainSha256": "3560b6164c9b87bb79b4e8654ecbb23597d0517006a58916edabcbb372e5561c",
+      "sdkSha256": "3560b6164c9b87bb79b4e8654ecbb23597d0517006a58916edabcbb372e5561c"
+    },
+    {
+      "id": "server/src/harness-runtime/tool-catalog.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/tool-catalog.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/tool-catalog.ts",
+      "mainSha256": "2e98817ef24c16d649c0b736d5aade46fad2cf9db4e0c1102d1bb3c01f1fc3a2",
+      "sdkSha256": "2e98817ef24c16d649c0b736d5aade46fad2cf9db4e0c1102d1bb3c01f1fc3a2"
+    },
+    {
+      "id": "server/src/harness-runtime/windows-apply-patch.cs",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/windows-apply-patch.cs",
+      "sdkPath": "sdk/src/core/harness-runtime/windows-apply-patch.cs",
+      "mainSha256": "e6d7f7669bb9b5af3858d93282f01af4bc4868b427a82b47cd0616fe8d995c5c",
+      "sdkSha256": "e6d7f7669bb9b5af3858d93282f01af4bc4868b427a82b47cd0616fe8d995c5c"
+    },
+    {
+      "id": "server/src/harness-runtime/windows-codex-patch.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/windows-codex-patch.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/windows-codex-patch.ts",
+      "mainSha256": "7bd5e181f8d7a88c971b658e1383a73df18a47195142c28ef447adba3f100804",
+      "sdkSha256": "7bd5e181f8d7a88c971b658e1383a73df18a47195142c28ef447adba3f100804"
+    },
+    {
+      "id": "server/src/harness-runtime/windows-resident-helper.py",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/windows-resident-helper.py",
+      "sdkPath": "sdk/src/core/harness-runtime/windows-resident-helper.py",
+      "mainSha256": "443280b6de2976fd5c7520c76bcc6c673139a6cc364b707582453d913c9d62d4",
+      "sdkSha256": "443280b6de2976fd5c7520c76bcc6c673139a6cc364b707582453d913c9d62d4"
+    },
+    {
+      "id": "server/src/harness-runtime/windows-resident.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/windows-resident.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/windows-resident.ts",
+      "mainSha256": "4e1c94dbb57a16f2475cc6bbf5aa9b3fb7ee97ea2e3a263dd55717733924bd71",
+      "sdkSha256": "4e1c94dbb57a16f2475cc6bbf5aa9b3fb7ee97ea2e3a263dd55717733924bd71"
+    },
+    {
+      "id": "server/src/inspire-compute-usage.ts",
+      "kind": "source",
+      "mainPath": "server/src/inspire-compute-usage.ts",
+      "sdkPath": "sdk/src/core/inspire-compute-usage.ts",
+      "mainSha256": "36ab60e227528bdf2e3def116775816e7d1903e34c0b4545ddcbd348abe2d34c",
+      "sdkSha256": "36ab60e227528bdf2e3def116775816e7d1903e34c0b4545ddcbd348abe2d34c"
+    },
+    {
+      "id": "server/src/inspire-workload-registry.ts",
+      "kind": "source",
+      "mainPath": "server/src/inspire-workload-registry.ts",
+      "sdkPath": "sdk/src/core/inspire-workload-registry.ts",
+      "mainSha256": "197f98bcb6f1cea9eeb02b89ebf854a8eb50aac1f560cdba250a26361808072f",
+      "sdkSha256": "197f98bcb6f1cea9eeb02b89ebf854a8eb50aac1f560cdba250a26361808072f"
+    },
+    {
+      "id": "server/src/internal/shared/agent-permission-metadata.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/agent-permission-metadata.ts",
+      "sdkPath": "sdk/src/core/internal/shared/agent-permission-metadata.ts",
+      "mainSha256": "748567a166fbf504d9ed1e9073e7df8ee17560b7813648a7b727e348a6054752",
+      "sdkSha256": "748567a166fbf504d9ed1e9073e7df8ee17560b7813648a7b727e348a6054752"
+    },
+    {
+      "id": "server/src/internal/shared/agent-permission-prompts.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/agent-permission-prompts.ts",
+      "sdkPath": "sdk/src/core/internal/shared/agent-permission-prompts.ts",
+      "mainSha256": "bc62f58e2dd74637913fac12d90d778b44f7fc12f35baaa5cfce258125918ed9",
+      "sdkSha256": "bc62f58e2dd74637913fac12d90d778b44f7fc12f35baaa5cfce258125918ed9"
+    },
+    {
+      "id": "server/src/internal/shared/collaboration-session-key.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/collaboration-session-key.ts",
+      "sdkPath": "sdk/src/core/internal/shared/collaboration-session-key.ts",
+      "mainSha256": "82e872adf63a347af57cc9875e5c9f41c7163a45998407d9e19bf72652740d5f",
+      "sdkSha256": "82e872adf63a347af57cc9875e5c9f41c7163a45998407d9e19bf72652740d5f"
+    },
+    {
+      "id": "server/src/internal/shared/contracts.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/contracts.ts",
+      "sdkPath": "sdk/src/core/internal/shared/contracts.ts",
+      "mainSha256": "0fc7e42aec04a894f8cdd09e90cd2e75742a94d4608cc97555ba1d39c6c5c458",
+      "sdkSha256": "0fc7e42aec04a894f8cdd09e90cd2e75742a94d4608cc97555ba1d39c6c5c458"
+    },
+    {
+      "id": "server/src/internal/shared/explainer-tools.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/explainer-tools.ts",
+      "sdkPath": "sdk/src/core/internal/shared/explainer-tools.ts",
+      "mainSha256": "dc1aed067696ab907d217b8eaede0afb270c7bb5a800c1a0fc9d84556793274a",
+      "sdkSha256": "dc1aed067696ab907d217b8eaede0afb270c7bb5a800c1a0fc9d84556793274a"
+    },
+    {
+      "id": "server/src/internal/shared/gateway-reasoning.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/gateway-reasoning.ts",
+      "sdkPath": "sdk/src/core/internal/shared/gateway-reasoning.ts",
+      "mainSha256": "74bd1c0515f41eb73dbc8644192b7d3ef44ff8659803e1650b2ce8664799c50b",
+      "sdkSha256": "74bd1c0515f41eb73dbc8644192b7d3ef44ff8659803e1650b2ce8664799c50b"
+    },
+    {
+      "id": "server/src/internal/shared/harness-prompt-contract.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/harness-prompt-contract.ts",
+      "sdkPath": "sdk/src/core/internal/shared/harness-prompt-contract.ts",
+      "mainSha256": "22bf83a1ed2df604f1860610576d4f684d3c2e3bcde1713dfed8abd77fc20c87",
+      "sdkSha256": "22bf83a1ed2df604f1860610576d4f684d3c2e3bcde1713dfed8abd77fc20c87"
+    },
+    {
+      "id": "server/src/internal/shared/invocation-activity.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/invocation-activity.ts",
+      "sdkPath": "sdk/src/core/internal/shared/invocation-activity.ts",
+      "mainSha256": "e3926d956a442d546f08dfaa987c28e85ad717844738efe4901538bd8a69c73d",
+      "sdkSha256": "e3926d956a442d546f08dfaa987c28e85ad717844738efe4901538bd8a69c73d"
+    },
+    {
+      "id": "server/src/internal/shared/invocation-session-policy.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/invocation-session-policy.ts",
+      "sdkPath": "sdk/src/core/internal/shared/invocation-session-policy.ts",
+      "mainSha256": "80d5493252f2a80cba1419ae67cb9627f55c33e82ce958807707d5c7dd1f08d8",
+      "sdkSha256": "80d5493252f2a80cba1419ae67cb9627f55c33e82ce958807707d5c7dd1f08d8"
+    },
+    {
+      "id": "server/src/internal/shared/main-orchestration-policy.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/main-orchestration-policy.ts",
+      "sdkPath": "sdk/src/core/internal/shared/main-orchestration-policy.ts",
+      "mainSha256": "6e190001021739dbafd21821947e338489122e5da07c722c2abe5193c36182e8",
+      "sdkSha256": "6e190001021739dbafd21821947e338489122e5da07c722c2abe5193c36182e8"
+    },
+    {
+      "id": "server/src/internal/shared/project-runtime-status.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/project-runtime-status.ts",
+      "sdkPath": "sdk/src/core/internal/shared/project-runtime-status.ts",
+      "mainSha256": "6aa30c9eee5598a13c2228b282739f4bfa24870261e2c0ba29c3e7d581997613",
+      "sdkSha256": "6aa30c9eee5598a13c2228b282739f4bfa24870261e2c0ba29c3e7d581997613"
+    },
+    {
+      "id": "server/src/internal/shared/project-state-policy.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/project-state-policy.ts",
+      "sdkPath": "sdk/src/core/internal/shared/project-state-policy.ts",
+      "mainSha256": "92022f575c0cb0891e70c7c9afd515beb657457969d0237bccf7aaba94c2601f",
+      "sdkSha256": "92022f575c0cb0891e70c7c9afd515beb657457969d0237bccf7aaba94c2601f"
+    },
+    {
+      "id": "server/src/internal/shared/session-recovery.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/session-recovery.ts",
+      "sdkPath": "sdk/src/core/internal/shared/session-recovery.ts",
+      "mainSha256": "190a1f99f172f7145cdf03a0c82377f77547084bfaf3f8932574d98386c114b9",
+      "sdkSha256": "190a1f99f172f7145cdf03a0c82377f77547084bfaf3f8932574d98386c114b9"
+    },
+    {
+      "id": "server/src/internal/shared/token-usage-ledger.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/token-usage-ledger.ts",
+      "sdkPath": "sdk/src/core/internal/shared/token-usage-ledger.ts",
+      "mainSha256": "ee85bf71b9584d67120274bd80d28adc56f7afc59d2468735fafbe5c2ae166dd",
+      "sdkSha256": "ee85bf71b9584d67120274bd80d28adc56f7afc59d2468735fafbe5c2ae166dd"
+    },
+    {
+      "id": "server/src/internal/shared/workflow-adjustment-contracts.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/workflow-adjustment-contracts.ts",
+      "sdkPath": "sdk/src/core/internal/shared/workflow-adjustment-contracts.ts",
+      "mainSha256": "d7da79bd9718fde1816e7384f6bc5fed1e33bdd8655a08d5be0a4faa4d9305de",
+      "sdkSha256": "d7da79bd9718fde1816e7384f6bc5fed1e33bdd8655a08d5be0a4faa4d9305de"
+    },
+    {
+      "id": "server/src/internal/shared/workflow-loop-validation.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/shared/workflow-loop-validation.ts",
+      "sdkPath": "sdk/src/core/internal/shared/workflow-loop-validation.ts",
+      "mainSha256": "b3ea9424496a4f16c84f31b856dd21a9e1842b532093e690efba287e399aca58",
+      "sdkSha256": "b3ea9424496a4f16c84f31b856dd21a9e1842b532093e690efba287e399aca58"
+    },
+    {
+      "id": "server/src/internal/terminal-push-coordination.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/terminal-push-coordination.ts",
+      "sdkPath": "sdk/src/core/internal/terminal-push-coordination.ts",
+      "mainSha256": "02be2c31ba42f8bf02b3fe9533aefc530694b30a2d488b2cbe578e7bbd1e225b",
+      "sdkSha256": "02be2c31ba42f8bf02b3fe9533aefc530694b30a2d488b2cbe578e7bbd1e225b"
+    },
+    {
+      "id": "server/src/internal/terminal-push-observation.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/terminal-push-observation.ts",
+      "sdkPath": "sdk/src/core/internal/terminal-push-observation.ts",
+      "mainSha256": "0bd188e70c5757fd66f6b2b46946ff0c1c1bef232cdd3220338aaca7e5b4e5c8",
+      "sdkSha256": "0bd188e70c5757fd66f6b2b46946ff0c1c1bef232cdd3220338aaca7e5b4e5c8"
+    },
+    {
+      "id": "server/src/internal/worktree-closing.ts",
+      "kind": "source",
+      "mainPath": "server/src/internal/worktree-closing.ts",
+      "sdkPath": "sdk/src/core/internal/worktree-closing.ts",
+      "mainSha256": "e93caeacb92731c829838b4b50583aa57f4f7054961e8d20c7cf5cca8733d64a",
+      "sdkSha256": "e93caeacb92731c829838b4b50583aa57f4f7054961e8d20c7cf5cca8733d64a"
+    },
+    {
+      "id": "server/src/invocation-performance.ts",
+      "kind": "source",
+      "mainPath": "server/src/invocation-performance.ts",
+      "sdkPath": "sdk/src/core/invocation-performance.ts",
+      "mainSha256": "1692f96671bc1f9d2c4a2cece781b625119a02a24a19d050a68a1a43308837a9",
+      "sdkSha256": "1692f96671bc1f9d2c4a2cece781b625119a02a24a19d050a68a1a43308837a9"
+    },
+    {
+      "id": "server/src/main-decision.ts",
+      "kind": "source",
+      "mainPath": "server/src/main-decision.ts",
+      "sdkPath": "sdk/src/core/main-decision.ts",
+      "mainSha256": "948163c6d556801607ae333e860a14dfa4e78acf05451b133a819f69bd268c46",
+      "sdkSha256": "948163c6d556801607ae333e860a14dfa4e78acf05451b133a819f69bd268c46"
+    },
+    {
+      "id": "server/src/main-workflow-files.ts",
+      "kind": "source",
+      "mainPath": "server/src/main-workflow-files.ts",
+      "sdkPath": "sdk/src/core/main-workflow-files.ts",
+      "mainSha256": "eca834a98b69a47dad70be87c60b736d2568fec2e18ded57c51d1dabc12b7b0f",
+      "sdkSha256": "eca834a98b69a47dad70be87c60b736d2568fec2e18ded57c51d1dabc12b7b0f"
+    },
+    {
+      "id": "server/src/management-input-paths.ts",
+      "kind": "source",
+      "mainPath": "server/src/management-input-paths.ts",
+      "sdkPath": "sdk/src/core/management-input-paths.ts",
+      "mainSha256": "abc3af3a2fa98a0f6f42c72362a3cb8ff037f7733458581d018bd9d6d39b1eac",
+      "sdkSha256": "abc3af3a2fa98a0f6f42c72362a3cb8ff037f7733458581d018bd9d6d39b1eac"
+    },
+    {
+      "id": "server/src/mcp-directory.ts",
+      "kind": "source",
+      "mainPath": "server/src/mcp-directory.ts",
+      "sdkPath": "sdk/src/core/mcp-directory.ts",
+      "mainSha256": "191a9ab05c01326b451b22ce5f25a5abfc521c49cc615ebedcaa0dedf4aa6d38",
+      "sdkSha256": "191a9ab05c01326b451b22ce5f25a5abfc521c49cc615ebedcaa0dedf4aa6d38"
+    },
+    {
+      "id": "server/src/model-context.ts",
+      "kind": "source",
+      "mainPath": "server/src/model-context.ts",
+      "sdkPath": "sdk/src/core/model-context.ts",
+      "mainSha256": "3b4b1cbaccf67c60cfd3f35840efe7c565e8f8cba81f17878b97521b5729a1f3",
+      "sdkSha256": "3b4b1cbaccf67c60cfd3f35840efe7c565e8f8cba81f17878b97521b5729a1f3"
+    },
+    {
+      "id": "server/src/orchestration-control-bridge.ts",
+      "kind": "source",
+      "mainPath": "server/src/orchestration-control-bridge.ts",
+      "sdkPath": "sdk/src/core/orchestration-control-bridge.ts",
+      "mainSha256": "9055ddad6035fbab0aff2ba922e36d0c57eee478badf11b373674f6a3062fff9",
+      "sdkSha256": "9055ddad6035fbab0aff2ba922e36d0c57eee478badf11b373674f6a3062fff9"
+    },
+    {
+      "id": "server/src/orchestration-control-decisions.ts",
+      "kind": "source",
+      "mainPath": "server/src/orchestration-control-decisions.ts",
+      "sdkPath": "sdk/src/core/orchestration-control-decisions.ts",
+      "mainSha256": "03fdfe4071bd10583c25d7772124407fe9f4cdb335f587ccfc92167ca7d99c47",
+      "sdkSha256": "03fdfe4071bd10583c25d7772124407fe9f4cdb335f587ccfc92167ca7d99c47"
+    },
+    {
+      "id": "server/src/orchestration-control-mcp.ts",
+      "kind": "source",
+      "mainPath": "server/src/orchestration-control-mcp.ts",
+      "sdkPath": "sdk/src/core/orchestration-control-mcp.ts",
+      "mainSha256": "240fafb5ac8ecec8051b7a595d2af4fd1059b7df55d357c2b2f231f0be06c168",
+      "sdkSha256": "240fafb5ac8ecec8051b7a595d2af4fd1059b7df55d357c2b2f231f0be06c168"
+    },
+    {
+      "id": "server/src/orchestrator.ts",
+      "kind": "source",
+      "mainPath": "server/src/orchestrator.ts",
+      "sdkPath": "sdk/src/core/orchestrator.ts",
+      "mainSha256": "945347d99ef408169202ab633d7594f24dc41cf4b993ef2053a736b09a82f951",
+      "sdkSha256": "945347d99ef408169202ab633d7594f24dc41cf4b993ef2053a736b09a82f951"
+    },
+    {
+      "id": "server/src/project-directory-aliases.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-directory-aliases.ts",
+      "sdkPath": "sdk/src/core/project-directory-aliases.ts",
+      "mainSha256": "e678a2df8a298bb2592ae696f49f73fae65232b81b26f1d48d4c3e6b91744735",
+      "sdkSha256": "e678a2df8a298bb2592ae696f49f73fae65232b81b26f1d48d4c3e6b91744735"
+    },
+    {
+      "id": "server/src/project-file-browser.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-file-browser.ts",
+      "sdkPath": "sdk/src/core/project-file-browser.ts",
+      "mainSha256": "6b60465a9192d32856279a17e40de6f922fe237f93889abae2270c617be8a8d8",
+      "sdkSha256": "6b60465a9192d32856279a17e40de6f922fe237f93889abae2270c617be8a8d8"
+    },
+    {
+      "id": "server/src/project-files.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-files.ts",
+      "sdkPath": "sdk/src/core/project-files.ts",
+      "mainSha256": "b12df0b850b2de190bf35fbfae9a8e69940451902bed55fdfb384b09e2f0f970",
+      "sdkSha256": "b12df0b850b2de190bf35fbfae9a8e69940451902bed55fdfb384b09e2f0f970"
+    },
+    {
+      "id": "server/src/project-mcp-host.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-mcp-host.ts",
+      "sdkPath": "sdk/src/core/project-mcp-host.ts",
+      "mainSha256": "3c928b8b68c6527b0589fd91dcaee163ae03f5d80932a9af719713907ff0b0dd",
+      "sdkSha256": "3c928b8b68c6527b0589fd91dcaee163ae03f5d80932a9af719713907ff0b0dd"
+    },
+    {
+      "id": "server/src/project-mcp.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-mcp.ts",
+      "sdkPath": "sdk/src/core/project-mcp.ts",
+      "mainSha256": "97680db7b4762d7c1bf1db506036bfb7b6a6e83baed33d40213ac982d7f9ccf2",
+      "sdkSha256": "97680db7b4762d7c1bf1db506036bfb7b6a6e83baed33d40213ac982d7f9ccf2"
+    },
+    {
+      "id": "server/src/project-runtime-projection.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-runtime-projection.ts",
+      "sdkPath": "sdk/src/core/project-runtime-projection.ts",
+      "mainSha256": "5a3b5585edd9abb70505b61e7cf43ddc046b213419330bb1559d92a73b37bf83",
+      "sdkSha256": "5a3b5585edd9abb70505b61e7cf43ddc046b213419330bb1559d92a73b37bf83"
+    },
+    {
+      "id": "server/src/project-runtime-waiting.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-runtime-waiting.ts",
+      "sdkPath": "sdk/src/core/project-runtime-waiting.ts",
+      "mainSha256": "07abcbbfe7466e9451b688b28ee6775417f06a27f74b8fa92ce35bdf6058958b",
+      "sdkSha256": "07abcbbfe7466e9451b688b28ee6775417f06a27f74b8fa92ce35bdf6058958b"
+    },
+    {
+      "id": "server/src/project-skills.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-skills.ts",
+      "sdkPath": "sdk/src/core/project-skills.ts",
+      "mainSha256": "ce65e47c4e52b9a1dde281dc2573ab5dfc40a792b307f64b0ab44d369317122c",
+      "sdkSha256": "ce65e47c4e52b9a1dde281dc2573ab5dfc40a792b307f64b0ab44d369317122c"
+    },
+    {
+      "id": "server/src/project-state-documents.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-state-documents.ts",
+      "sdkPath": "sdk/src/core/project-state-documents.ts",
+      "mainSha256": "0fea9391603cc8918d7d4648e377757d683c4090edef242a86ac50f7893f65f1",
+      "sdkSha256": "0fea9391603cc8918d7d4648e377757d683c4090edef242a86ac50f7893f65f1"
+    },
+    {
+      "id": "server/src/project-state-mcp.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-state-mcp.ts",
+      "sdkPath": "sdk/src/core/project-state-mcp.ts",
+      "mainSha256": "e748374afc9fd83059eab08cf9ed23264190b8b41f1d619967d51828942e144b",
+      "sdkSha256": "e748374afc9fd83059eab08cf9ed23264190b8b41f1d619967d51828942e144b"
+    },
+    {
+      "id": "server/src/project-state-read-snapshots.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-state-read-snapshots.ts",
+      "sdkPath": "sdk/src/core/project-state-read-snapshots.ts",
+      "mainSha256": "aff149be2d58350e6a57253fb56f260fdb089bd855bdd6139a37927f4da5c7b0",
+      "sdkSha256": "aff149be2d58350e6a57253fb56f260fdb089bd855bdd6139a37927f4da5c7b0"
+    },
+    {
+      "id": "server/src/project-state-service.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-state-service.ts",
+      "sdkPath": "sdk/src/core/project-state-service.ts",
+      "mainSha256": "b2ca7ab147cf1b2cc2c54a2bcaa2823e52a5c1105a5e8bfc2753c3482dbb8c8f",
+      "sdkSha256": "b2ca7ab147cf1b2cc2c54a2bcaa2823e52a5c1105a5e8bfc2753c3482dbb8c8f"
+    },
+    {
+      "id": "server/src/project-state.ts",
+      "kind": "source",
+      "mainPath": "server/src/project-state.ts",
+      "sdkPath": "sdk/src/core/project-state.ts",
+      "mainSha256": "8c0510ca3413df8988ddb187eec784756803adf73c1b0633833ff1fef902c9c8",
+      "sdkSha256": "8c0510ca3413df8988ddb187eec784756803adf73c1b0633833ff1fef902c9c8"
+    },
+    {
+      "id": "server/src/prompt.ts",
+      "kind": "source",
+      "mainPath": "server/src/prompt.ts",
+      "sdkPath": "sdk/src/core/prompt.ts",
+      "mainSha256": "1e005164fa17c4e5eabfe29a7db6e822ab566fd7ace754393ed537696a684bf8",
+      "sdkSha256": "1e005164fa17c4e5eabfe29a7db6e822ab566fd7ace754393ed537696a684bf8"
+    },
+    {
+      "id": "server/src/protocol-router.ts",
+      "kind": "source",
+      "mainPath": "server/src/protocol-router.ts",
+      "sdkPath": "sdk/src/core/protocol-router.ts",
+      "mainSha256": "a91b8c1ed3f4b5cf777f9711e633bebd314e0afe5c0004661da64271a39be6ea",
+      "sdkSha256": "a91b8c1ed3f4b5cf777f9711e633bebd314e0afe5c0004661da64271a39be6ea"
+    },
+    {
+      "id": "server/src/published-artifact-access.ts",
+      "kind": "source",
+      "mainPath": "server/src/published-artifact-access.ts",
+      "sdkPath": "sdk/src/core/published-artifact-access.ts",
+      "mainSha256": "8834213fbdd962a3400fcc8b08fc718b1b681068a17f5e9a5ee8739edd5e2c96",
+      "sdkSha256": "8834213fbdd962a3400fcc8b08fc718b1b681068a17f5e9a5ee8739edd5e2c96"
+    },
+    {
+      "id": "server/src/recovery-proof.ts",
+      "kind": "source",
+      "mainPath": "server/src/recovery-proof.ts",
+      "sdkPath": "sdk/src/core/recovery-proof.ts",
+      "mainSha256": "14f3f4124273d4c7018e8c2bf81ef4355faea27ba304fd31ec18f3f30b7ed7a2",
+      "sdkSha256": "14f3f4124273d4c7018e8c2bf81ef4355faea27ba304fd31ec18f3f30b7ed7a2"
+    },
+    {
+      "id": "server/src/resident-control-proxy.ts",
+      "kind": "source",
+      "mainPath": "server/src/resident-control-proxy.ts",
+      "sdkPath": "sdk/src/core/resident-control-proxy.ts",
+      "mainSha256": "78bdb7910aae9e321d968d414520df729d381676d4dc00618b82d6c492aba86a",
+      "sdkSha256": "78bdb7910aae9e321d968d414520df729d381676d4dc00618b82d6c492aba86a"
+    },
+    {
+      "id": "server/src/scoped-agent-configuration.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-agent-configuration.ts",
+      "sdkPath": "sdk/src/core/scoped-agent-configuration.ts",
+      "mainSha256": "c3a94578fdbe4f2a15d3f109757eed74521b9a5eaa5609cda79f1c7903c8503a",
+      "sdkSha256": "c3a94578fdbe4f2a15d3f109757eed74521b9a5eaa5609cda79f1c7903c8503a"
+    },
+    {
+      "id": "server/src/scoped-agent-delivery-integrator.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-agent-delivery-integrator.ts",
+      "sdkPath": "sdk/src/core/scoped-agent-delivery-integrator.ts",
+      "mainSha256": "e4bbc61a9339ca136f6a8d1e4c22b6ca3561e084870d099e1339e5cd1748caf2",
+      "sdkSha256": "e4bbc61a9339ca136f6a8d1e4c22b6ca3561e084870d099e1339e5cd1748caf2"
+    },
+    {
+      "id": "server/src/scoped-agent-execution.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-agent-execution.ts",
+      "sdkPath": "sdk/src/core/scoped-agent-execution.ts",
+      "mainSha256": "f73912038f2e56dd6fb9ce3ee524e572d8468600cddf4d945b404e603e3bcd02",
+      "sdkSha256": "f73912038f2e56dd6fb9ce3ee524e572d8468600cddf4d945b404e603e3bcd02"
+    },
+    {
+      "id": "server/src/scoped-agent-resident.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-agent-resident.ts",
+      "sdkPath": "sdk/src/core/scoped-agent-resident.ts",
+      "mainSha256": "88539851d7add6c38209df9b21691fd91ffe180f5d06222820fc3b9fc07e764a",
+      "sdkSha256": "88539851d7add6c38209df9b21691fd91ffe180f5d06222820fc3b9fc07e764a"
+    },
+    {
+      "id": "server/src/scoped-group-final-integrator.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-group-final-integrator.ts",
+      "sdkPath": "sdk/src/core/scoped-group-final-integrator.ts",
+      "mainSha256": "c55e162302081fe03b1200e2833aaea7c46e1ab896b7321c2b4024ffc08ff172",
+      "sdkSha256": "c55e162302081fe03b1200e2833aaea7c46e1ab896b7321c2b4024ffc08ff172"
+    },
+    {
+      "id": "server/src/scoped-group-output.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-group-output.ts",
+      "sdkPath": "sdk/src/core/scoped-group-output.ts",
+      "mainSha256": "023c3230b7c73a4850fa3521477dc5e83e0f90722cbaa96259b0b9897fe9969a",
+      "sdkSha256": "023c3230b7c73a4850fa3521477dc5e83e0f90722cbaa96259b0b9897fe9969a"
+    },
+    {
+      "id": "server/src/scoped-project-runtime.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-project-runtime.ts",
+      "sdkPath": "sdk/src/core/scoped-project-runtime.ts",
+      "mainSha256": "35c1638a1747aa1746d5d057b9c68e769643e47505617bf4ad06d03c7df2b187",
+      "sdkSha256": "35c1638a1747aa1746d5d057b9c68e769643e47505617bf4ad06d03c7df2b187"
+    },
+    {
+      "id": "server/src/scoped-workflow-capacity.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-workflow-capacity.ts",
+      "sdkPath": "sdk/src/core/scoped-workflow-capacity.ts",
+      "mainSha256": "e8182221a8515e88788625b49b4d7e0ac4fbe2f0a70743d6cef3c6e67f164de9",
+      "sdkSha256": "e8182221a8515e88788625b49b4d7e0ac4fbe2f0a70743d6cef3c6e67f164de9"
+    },
+    {
+      "id": "server/src/scoped-workflow-contract.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-workflow-contract.ts",
+      "sdkPath": "sdk/src/core/scoped-workflow-contract.ts",
+      "mainSha256": "1b28a4d486234016370d6a5e799b55660a02888879e1320678fdddff08403462",
+      "sdkSha256": "1b28a4d486234016370d6a5e799b55660a02888879e1320678fdddff08403462"
+    },
+    {
+      "id": "server/src/scoped-workflow-planner.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-workflow-planner.ts",
+      "sdkPath": "sdk/src/core/scoped-workflow-planner.ts",
+      "mainSha256": "1d27eb4e8f7c8ae5ff7bd4ee06f6c9f3feed97871c5d2e58dfdcab215190ab42",
+      "sdkSha256": "1d27eb4e8f7c8ae5ff7bd4ee06f6c9f3feed97871c5d2e58dfdcab215190ab42"
+    },
+    {
+      "id": "server/src/scoped-workflow-reconfiguration.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-workflow-reconfiguration.ts",
+      "sdkPath": "sdk/src/core/scoped-workflow-reconfiguration.ts",
+      "mainSha256": "1ea75454bd801dc0cc6f77aec31e92d0aec8693a638ab8f90b539d711884f545",
+      "sdkSha256": "1ea75454bd801dc0cc6f77aec31e92d0aec8693a638ab8f90b539d711884f545"
+    },
+    {
+      "id": "server/src/scoped-workflow-runtime.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-workflow-runtime.ts",
+      "sdkPath": "sdk/src/core/scoped-workflow-runtime.ts",
+      "mainSha256": "77cd8361395133530390297fc36e1c9a53f69028cb7baabd0b7f627029c83249",
+      "sdkSha256": "77cd8361395133530390297fc36e1c9a53f69028cb7baabd0b7f627029c83249"
+    },
+    {
+      "id": "server/src/scoped-worktree-closing-control.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-worktree-closing-control.ts",
+      "sdkPath": "sdk/src/core/scoped-worktree-closing-control.ts",
+      "mainSha256": "51a155dd0424dd99030e651c49e2e147a04dc73b7fe14be00a79af9d2ca065bb",
+      "sdkSha256": "51a155dd0424dd99030e651c49e2e147a04dc73b7fe14be00a79af9d2ca065bb"
+    },
+    {
+      "id": "server/src/scoped-worktree-closing-delivery.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-worktree-closing-delivery.ts",
+      "sdkPath": "sdk/src/core/scoped-worktree-closing-delivery.ts",
+      "mainSha256": "5df1bc0db2bdce6fe6df173f2531f0961cf87f8a0ad61023ffe346bfa66aaea6",
+      "sdkSha256": "5df1bc0db2bdce6fe6df173f2531f0961cf87f8a0ad61023ffe346bfa66aaea6"
+    },
+    {
+      "id": "server/src/scoped-worktree-closing-runtime.ts",
+      "kind": "source",
+      "mainPath": "server/src/scoped-worktree-closing-runtime.ts",
+      "sdkPath": "sdk/src/core/scoped-worktree-closing-runtime.ts",
+      "mainSha256": "a5f710e0d3dc39963ded68a81674cac3530efcd901d588ebb1ced0e6641257b6",
+      "sdkSha256": "a5f710e0d3dc39963ded68a81674cac3530efcd901d588ebb1ced0e6641257b6"
+    },
+    {
+      "id": "server/src/serial-workflow-adjustment-contracts.ts",
+      "kind": "source",
+      "mainPath": "server/src/serial-workflow-adjustment-contracts.ts",
+      "sdkPath": "sdk/src/core/serial-workflow-adjustment-contracts.ts",
+      "mainSha256": "f369b94dd1081efae34eae5be3e7bf7dc9762e2bb6bb398ca1b05b8a9aedec0f",
+      "sdkSha256": "f369b94dd1081efae34eae5be3e7bf7dc9762e2bb6bb398ca1b05b8a9aedec0f"
+    },
+    {
+      "id": "server/src/serial-workflow-notifications.ts",
+      "kind": "source",
+      "mainPath": "server/src/serial-workflow-notifications.ts",
+      "sdkPath": "sdk/src/core/serial-workflow-notifications.ts",
+      "mainSha256": "9db3171274a9d910643f2b2fc5e676eea3ed063379137aa7a9695833cf14d8a0",
+      "sdkSha256": "9db3171274a9d910643f2b2fc5e676eea3ed063379137aa7a9695833cf14d8a0"
+    },
+    {
+      "id": "server/src/serial-workflow-projection.ts",
+      "kind": "source",
+      "mainPath": "server/src/serial-workflow-projection.ts",
+      "sdkPath": "sdk/src/core/serial-workflow-projection.ts",
+      "mainSha256": "3bb072243ca8a8aaeb03c575130df6cbec32cb7be6385c6f2356c9394fa83dc6",
+      "sdkSha256": "3bb072243ca8a8aaeb03c575130df6cbec32cb7be6385c6f2356c9394fa83dc6"
+    },
+    {
+      "id": "server/src/sii-experiments.ts",
+      "kind": "source",
+      "mainPath": "server/src/sii-experiments.ts",
+      "sdkPath": "sdk/src/core/sii-experiments.ts",
+      "mainSha256": "cdc556fe5d92f12968ffff459cffff68c640e68554d753cadbbf434bb912b2ce",
+      "sdkSha256": "cdc556fe5d92f12968ffff459cffff68c640e68554d753cadbbf434bb912b2ce"
+    },
+    {
+      "id": "server/src/sii-local-files.ts",
+      "kind": "source",
+      "mainPath": "server/src/sii-local-files.ts",
+      "sdkPath": "sdk/src/core/sii-local-files.ts",
+      "mainSha256": "2ebfd71e70c4b32e528233d6f10406f82b9ebcd0e556d08a90bbf266c11cbe8d",
+      "sdkSha256": "2ebfd71e70c4b32e528233d6f10406f82b9ebcd0e556d08a90bbf266c11cbe8d"
+    },
+    {
+      "id": "server/src/sii-result-receipt.ts",
+      "kind": "source",
+      "mainPath": "server/src/sii-result-receipt.ts",
+      "sdkPath": "sdk/src/core/sii-result-receipt.ts",
+      "mainSha256": "d06f5c2a368f55195f2745d4beaf54a86470cdf755159e4cbaf9c8283e4b5176",
+      "sdkSha256": "d06f5c2a368f55195f2745d4beaf54a86470cdf755159e4cbaf9c8283e4b5176"
+    },
+    {
+      "id": "server/src/skill-catalog.ts",
+      "kind": "source",
+      "mainPath": "server/src/skill-catalog.ts",
+      "sdkPath": "sdk/src/core/skill-catalog.ts",
+      "mainSha256": "1cb8048c9a8ce9ec1c3a14d94cb788dae7fdeddf49574f0afae65c1013727263",
+      "sdkSha256": "1cb8048c9a8ce9ec1c3a14d94cb788dae7fdeddf49574f0afae65c1013727263"
+    },
+    {
+      "id": "server/src/sleep-mcp.ts",
+      "kind": "source",
+      "mainPath": "server/src/sleep-mcp.ts",
+      "sdkPath": "sdk/src/core/sleep-mcp.ts",
+      "mainSha256": "18c715dd4c743b0b5ff56a26e3d01905d9ba183c9192ba679c1d5cb672d1a68e",
+      "sdkSha256": "18c715dd4c743b0b5ff56a26e3d01905d9ba183c9192ba679c1d5cb672d1a68e"
+    },
+    {
+      "id": "server/src/sleep-tool-contract.ts",
+      "kind": "source",
+      "mainPath": "server/src/sleep-tool-contract.ts",
+      "sdkPath": "sdk/src/core/sleep-tool-contract.ts",
+      "mainSha256": "7ed3914eef1d414e6a77fc1b6695ac96788e7ae60b81aa501ca0f4d2380bfcfe",
+      "sdkSha256": "7ed3914eef1d414e6a77fc1b6695ac96788e7ae60b81aa501ca0f4d2380bfcfe"
+    },
+    {
+      "id": "server/src/storage.ts",
+      "kind": "source",
+      "mainPath": "server/src/storage.ts",
+      "sdkPath": "sdk/src/core/storage.ts",
+      "mainSha256": "419e4c69375378c1ee736404d63c57a17f025263985c46f2d437be0815da8d89",
+      "sdkSha256": "419e4c69375378c1ee736404d63c57a17f025263985c46f2d437be0815da8d89"
+    },
+    {
+      "id": "server/src/system-controller.ts",
+      "kind": "source",
+      "mainPath": "server/src/system-controller.ts",
+      "sdkPath": "sdk/src/core/system-controller.ts",
+      "mainSha256": "fb4480755a679749041c474732fcf8265b8d6574f20137c0d359bdbad1481d40",
+      "sdkSha256": "fb4480755a679749041c474732fcf8265b8d6574f20137c0d359bdbad1481d40"
+    },
+    {
+      "id": "server/src/terminal-push-coordination-control.ts",
+      "kind": "source",
+      "mainPath": "server/src/terminal-push-coordination-control.ts",
+      "sdkPath": "sdk/src/core/terminal-push-coordination-control.ts",
+      "mainSha256": "04be647693f7f37d8f948e27ff0b16fc4ba446de528d1be62f254d038a7a4f1b",
+      "sdkSha256": "04be647693f7f37d8f948e27ff0b16fc4ba446de528d1be62f254d038a7a4f1b"
+    },
+    {
+      "id": "server/src/terminal-push-coordinator-runtime.ts",
+      "kind": "source",
+      "mainPath": "server/src/terminal-push-coordinator-runtime.ts",
+      "sdkPath": "sdk/src/core/terminal-push-coordinator-runtime.ts",
+      "mainSha256": "f22381e769c9e0def3441e63801d3fe3762812fa51745a0b0e2b5c9e35b6e316",
+      "sdkSha256": "f22381e769c9e0def3441e63801d3fe3762812fa51745a0b0e2b5c9e35b6e316"
+    },
+    {
+      "id": "server/src/terminal-push-observation-control.ts",
+      "kind": "source",
+      "mainPath": "server/src/terminal-push-observation-control.ts",
+      "sdkPath": "sdk/src/core/terminal-push-observation-control.ts",
+      "mainSha256": "968fb1f5972f3b38aeb7365170caea9aa90c76215b9350af206572926988811a",
+      "sdkSha256": "968fb1f5972f3b38aeb7365170caea9aa90c76215b9350af206572926988811a"
+    },
+    {
+      "id": "server/src/types.ts",
+      "kind": "source",
+      "mainPath": "server/src/types.ts",
+      "sdkPath": "sdk/src/core/types.ts",
+      "mainSha256": "38bb0db5afb02ac78d385e682e187b0a56089d25659e71827950844d6c5e37b5",
+      "sdkSha256": "38bb0db5afb02ac78d385e682e187b0a56089d25659e71827950844d6c5e37b5"
+    },
+    {
+      "id": "server/src/utils.ts",
+      "kind": "source",
+      "mainPath": "server/src/utils.ts",
+      "sdkPath": "sdk/src/core/utils.ts",
+      "mainSha256": "f3ba94c74c88211e61bdcdf7df4b6ee53e6d51982be4605e7a0db66495afe524",
+      "sdkSha256": "f3ba94c74c88211e61bdcdf7df4b6ee53e6d51982be4605e7a0db66495afe524"
+    },
+    {
+      "id": "server/src/validation.ts",
+      "kind": "source",
+      "mainPath": "server/src/validation.ts",
+      "sdkPath": "sdk/src/core/validation.ts",
+      "mainSha256": "cf80a471d8cf23a6800d86fbcc26b18c07a380ce63362f3a35ea49c9705ca2c4",
+      "sdkSha256": "cf80a471d8cf23a6800d86fbcc26b18c07a380ce63362f3a35ea49c9705ca2c4"
+    },
+    {
+      "id": "server/src/workflow-adjustment-impact.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-adjustment-impact.ts",
+      "sdkPath": "sdk/src/core/workflow-adjustment-impact.ts",
+      "mainSha256": "0f8ee475d3fa0ac6c5bf3e212b28453c0e37059375b4d6b1ecaf0a0a54e57418",
+      "sdkSha256": "0f8ee475d3fa0ac6c5bf3e212b28453c0e37059375b4d6b1ecaf0a0a54e57418"
+    },
+    {
+      "id": "server/src/workflow-adjustment-notification-text.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-adjustment-notification-text.ts",
+      "sdkPath": "sdk/src/core/workflow-adjustment-notification-text.ts",
+      "mainSha256": "d361ddaf0a5510c25cf07ea8e7b85f9901d02e16155e195a654343b0bb1c8280",
+      "sdkSha256": "d361ddaf0a5510c25cf07ea8e7b85f9901d02e16155e195a654343b0bb1c8280"
+    },
+    {
+      "id": "server/src/workflow-adjustment-notifications.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-adjustment-notifications.ts",
+      "sdkPath": "sdk/src/core/workflow-adjustment-notifications.ts",
+      "mainSha256": "970ea152cf93666214987374f6887bbdbb972fc1b6769c2f813f423fba27030b",
+      "sdkSha256": "970ea152cf93666214987374f6887bbdbb972fc1b6769c2f813f423fba27030b"
+    },
+    {
+      "id": "server/src/workflow-adjustments.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-adjustments.ts",
+      "sdkPath": "sdk/src/core/workflow-adjustments.ts",
+      "mainSha256": "2e85b6ee234261b6861faf3296cc63b25cbb7554bdac8dab5732c66186cccb6b",
+      "sdkSha256": "2e85b6ee234261b6861faf3296cc63b25cbb7554bdac8dab5732c66186cccb6b"
+    },
+    {
+      "id": "server/src/workflow-context.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-context.ts",
+      "sdkPath": "sdk/src/core/workflow-context.ts",
+      "mainSha256": "def81c14df272464c83ffe3e4ee734a3cb4d17940aead9b894d5ad083cd58f6c",
+      "sdkSha256": "def81c14df272464c83ffe3e4ee734a3cb4d17940aead9b894d5ad083cd58f6c"
+    },
+    {
+      "id": "server/src/workflow-input.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-input.ts",
+      "sdkPath": "sdk/src/core/workflow-input.ts",
+      "mainSha256": "20839781df66c203215f9e5f39daf2176a06a1a392985dbd6ddae9bd37f5be3b",
+      "sdkSha256": "20839781df66c203215f9e5f39daf2176a06a1a392985dbd6ddae9bd37f5be3b"
+    },
+    {
+      "id": "server/src/workflow-progress.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-progress.ts",
+      "sdkPath": "sdk/src/core/workflow-progress.ts",
+      "mainSha256": "9dcde3759a1a91e0043e9a4388f1311e7d5ecf8740f216a689ab328d84f1034d",
+      "sdkSha256": "9dcde3759a1a91e0043e9a4388f1311e7d5ecf8740f216a689ab328d84f1034d"
+    },
+    {
+      "id": "server/src/workflow-reconfiguration.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-reconfiguration.ts",
+      "sdkPath": "sdk/src/core/workflow-reconfiguration.ts",
+      "mainSha256": "032ebd05837939f914e52b6131e82d0aaf5dcb8992279ff400410bd0b03592fe",
+      "sdkSha256": "032ebd05837939f914e52b6131e82d0aaf5dcb8992279ff400410bd0b03592fe"
+    },
+    {
+      "id": "server/src/workflow-recovery.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-recovery.ts",
+      "sdkPath": "sdk/src/core/workflow-recovery.ts",
+      "mainSha256": "934bfe1bb26724dc862fd0946af006d06bcec33a2d25b424f1568cf7f79a3ea0",
+      "sdkSha256": "934bfe1bb26724dc862fd0946af006d06bcec33a2d25b424f1568cf7f79a3ea0"
+    },
+    {
+      "id": "server/src/workflow-session-archive.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-session-archive.ts",
+      "sdkPath": "sdk/src/core/workflow-session-archive.ts",
+      "mainSha256": "2d07c2b9b98f35962b33e52d2811e59d6de1a25d232fef6982858138d9ac4302",
+      "sdkSha256": "2d07c2b9b98f35962b33e52d2811e59d6de1a25d232fef6982858138d9ac4302"
+    },
+    {
+      "id": "server/src/workflow-session-compatibility.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-session-compatibility.ts",
+      "sdkPath": "sdk/src/core/workflow-session-compatibility.ts",
+      "mainSha256": "36d133523f7d02bdec8a951b4fe73e72adf6ccf117f1e92d37ffdfa521d13331",
+      "sdkSha256": "36d133523f7d02bdec8a951b4fe73e72adf6ccf117f1e92d37ffdfa521d13331"
+    },
+    {
+      "id": "server/src/workflow-user-intervention-policy.ts",
+      "kind": "source",
+      "mainPath": "server/src/workflow-user-intervention-policy.ts",
+      "sdkPath": "sdk/src/core/workflow-user-intervention-policy.ts",
+      "mainSha256": "c6e4a06d4a33b012b07aada48912078c2f2f9e4001a9f1a5612c1aa0fc3a5689",
+      "sdkSha256": "c6e4a06d4a33b012b07aada48912078c2f2f9e4001a9f1a5612c1aa0fc3a5689"
+    },
+    {
+      "id": "server/src/workspace-checkpoint.ts",
+      "kind": "source",
+      "mainPath": "server/src/workspace-checkpoint.ts",
+      "sdkPath": "sdk/src/core/workspace-checkpoint.ts",
+      "mainSha256": "d5140c1ea18053a9f9adab92560f1afbdf43c55d76d17a7ea0b2ef86c4a88aa4",
+      "sdkSha256": "d5140c1ea18053a9f9adab92560f1afbdf43c55d76d17a7ea0b2ef86c4a88aa4"
+    },
+    {
+      "id": "server/tests/agent-context-index.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/agent-context-index.test.ts",
+      "sdkPath": "sdk/tests/main-core/agent-context-index.test.ts",
+      "mainSha256": "53930b1c81dc00ab9c80d360619898b96e05fa7eab9fb5a502d4f906d05c152c",
+      "sdkSha256": "288d210196769950121624f88b0a667270b505a9e530a989046470fb37056f7b"
+    },
+    {
+      "id": "server/tests/agent-git-delivery.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/agent-git-delivery.test.ts",
+      "sdkPath": "sdk/tests/main-core/agent-git-delivery.test.ts",
+      "mainSha256": "6bb9156ead1f592f7aa5d090032b1e3e54a7d1412305061a6a135d4aa19a20e1",
+      "sdkSha256": "d1c6b3c5aa21fc419d285d7af60bc9f8fdecd6c8f29d0e3976041dce489a2cae"
+    },
+    {
+      "id": "server/tests/agent-git-operation-query.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/agent-git-operation-query.test.ts",
+      "sdkPath": "sdk/tests/main-core/agent-git-operation-query.test.ts",
+      "mainSha256": "441c553041fab82744023e0a9a8d46e3c2997611a44999a9ca3586e8608a5fff",
+      "sdkSha256": "dbf29d9b70563db861f255f3b7aaf4af07f5f8660fb6c8e87fae1d76e3bc684b"
+    },
+    {
+      "id": "server/tests/agent-git-tools.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/agent-git-tools.test.ts",
+      "sdkPath": "sdk/tests/main-core/agent-git-tools.test.ts",
+      "mainSha256": "dfb49f59882d1f10e639128efb2bca85928ce1d644af72bc2575fa09d827f944",
+      "sdkSha256": "ad62cf5c682f41442422aa2fb56f17bc8c63e16310ce4df95032b52680f74691"
+    },
+    {
+      "id": "server/tests/agent-orchestration-reconfiguration.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/agent-orchestration-reconfiguration.test.ts",
+      "sdkPath": "sdk/tests/main-core/agent-orchestration-reconfiguration.test.ts",
+      "mainSha256": "b678ad76406fa83a9c8edee2d838ce0274e2faf0fbced7e3d2f398b31defc389",
+      "sdkSha256": "f572b49f23e6055158a32b6f82e32e8d6889578252016e2be36e43745c5d36bc"
+    },
+    {
+      "id": "server/tests/agent-queue-view.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/agent-queue-view.test.ts",
+      "sdkPath": "sdk/tests/main-core/agent-queue-view.test.ts",
+      "mainSha256": "e8a0b585a0f310ccb2fef7839d21a9d6c5c3365269e21b19edccd2f332c80270",
+      "sdkSha256": "4f24171b3c74cd5a671837766ada8f0969224a64e0b5c9bd772e0895d2b830c1"
+    },
+    {
+      "id": "server/tests/agent-tool-catalog.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/agent-tool-catalog.test.ts",
+      "sdkPath": "sdk/tests/main-core/agent-tool-catalog.test.ts",
+      "mainSha256": "eb3a8250035e09c0034a22e8efb771fd746b6985003cac4172f5fd81474756f0",
+      "sdkSha256": "2cc8de61258d3e6e0451588d802280e579982d811c1827996c974ad72e0428e9"
+    },
+    {
+      "id": "server/tests/builtin-adapters.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/builtin-adapters.test.ts",
+      "sdkPath": "sdk/tests/main-core/builtin-adapters.test.ts",
+      "mainSha256": "a862317695e5c598a149e2e3f7a1f429da42f885852791d76658cd32687f00f3",
+      "sdkSha256": "27affbe11dcaf17896757094c6b439c980851098a3737b352e315bb0005b2265"
+    },
+    {
+      "id": "server/tests/claude-stream-native.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/claude-stream-native.test.ts",
+      "sdkPath": "sdk/tests/main-core/claude-stream-native.test.ts",
+      "mainSha256": "05de88970099acf100a38eb10acadd6dcbcf1b4d9a31c021d52532136b11301e",
+      "sdkSha256": "45db47ae37d56521b3213189d6f98d15f586858e9e5bdbda056ab2cba3f26ec4"
+    },
+    {
+      "id": "server/tests/codex-gateway-model-catalog.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/codex-gateway-model-catalog.test.ts",
+      "sdkPath": "sdk/tests/main-core/codex-gateway-model-catalog.test.ts",
+      "mainSha256": "1d897382e9e42a064bbeaece6a47feba90f77f967152c4e59b50bb9e1bbd06a7",
+      "sdkSha256": "b65f0f784caebc7112dd368f7c984b79d013a072656efc5159f2891923348259"
+    },
+    {
+      "id": "server/tests/codex-native-input-history.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/codex-native-input-history.test.ts",
+      "sdkPath": "sdk/tests/main-core/codex-native-input-history.test.ts",
+      "mainSha256": "2c99f485d1e9d915c04575178438fafff229967fec7b99e8eba8f468a904fd75",
+      "sdkSha256": "dac48908bb9588bbebf6c4853cd29a7455aff9caa6fc54ba99db77be23e2a8d5"
+    },
+    {
+      "id": "server/tests/collaboration-dispatcher-rejection.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/collaboration-dispatcher-rejection.test.ts",
+      "sdkPath": "sdk/tests/main-core/collaboration-dispatcher-rejection.test.ts",
+      "mainSha256": "32e11f05a5298a7d717f2d1eb9ddd4ac9d99129214bfa42540e1fcbbd40b2b4b",
+      "sdkSha256": "452baed592f67937380dff01a20752df453448a4100045b0a6770b8ea8558e02"
+    },
+    {
+      "id": "server/tests/collaboration-git-command-runner.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/collaboration-git-command-runner.test.ts",
+      "sdkPath": "sdk/tests/main-core/collaboration-git-command-runner.test.ts",
+      "mainSha256": "c4e2dbad91f02591a449c8e7f1f48d3ba884d0eb710ec9fdfc75b9c4a16ccf5b",
+      "sdkSha256": "ebca14aa78c8cc6c7564752b29dc49d58c05cc0f91e65901cf2583d97e513c63"
+    },
+    {
+      "id": "server/tests/collaboration-git-local.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/collaboration-git-local.test.ts",
+      "sdkPath": "sdk/tests/main-core/collaboration-git-local.test.ts",
+      "mainSha256": "41f00d2ff8c36c702a05f25f4a6e98fb652cf6a1858b07dec2a6bec0aeb3b761",
+      "sdkSha256": "663b07362c8028748219fc70b1a0efb6039f2ad31c79524161fb6a6f32275f7d"
+    },
+    {
+      "id": "server/tests/collaboration-git-provider.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/collaboration-git-provider.test.ts",
+      "sdkPath": "sdk/tests/main-core/collaboration-git-provider.test.ts",
+      "mainSha256": "b23730f16d18d298a361a14e4f13199ba5060fef489ee92eab50932ab0498544",
+      "sdkSha256": "91d0ac3074d2511ed673c5acba9baa066a1567ddbaee92611b8e82be22e43e1e"
+    },
+    {
+      "id": "server/tests/collaboration-runtime-integration.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/collaboration-runtime-integration.test.ts",
+      "sdkPath": "sdk/tests/main-core/collaboration-runtime-integration.test.ts",
+      "mainSha256": "867ef77eb9d8ee3884ea417ab34434a49233020b354419d0c75a3a2b79f5ce4d",
+      "sdkSha256": "e0af05a2bf9442f0249e6f5177e4a229f49ee389975af9b02688bcecf67a4eff"
+    },
+    {
+      "id": "server/tests/collaboration-state.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/collaboration-state.test.ts",
+      "sdkPath": "sdk/tests/main-core/collaboration-state.test.ts",
+      "mainSha256": "aa3c120595ae80561a97660bca6da0b7591fdad38f4228c3811fafe3e7895f80",
+      "sdkSha256": "f06ba3aecd24857c5ee0eecc88ae44f774dd71895622c731b065f079e5dedd66"
+    },
+    {
+      "id": "server/tests/control-result-receipts.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/control-result-receipts.test.ts",
+      "sdkPath": "sdk/tests/main-core/control-result-receipts.test.ts",
+      "mainSha256": "2389746bcb0a0934699c0406b4e981aa25cfcaafea6eaa7ea25cb1559c12a869",
+      "sdkSha256": "b82814fae92206dc614a4d8c352c82f41897f0120ad21862350f39ebb9f2f5fc"
+    },
+    {
+      "id": "server/tests/control-stage-drain.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/control-stage-drain.test.ts",
+      "sdkPath": "sdk/tests/main-core/control-stage-drain.test.ts",
+      "mainSha256": "680ad8f72537585f92b5833ca2d6a0c075ce677648e1876cdde3406b7d04a712",
+      "sdkSha256": "58fe9e10cb1e540b6162baf897c1fc6dd940700081d538b884c6098f485894ef"
+    },
+    {
+      "id": "server/tests/dsh-adapter-config.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/dsh-adapter-config.test.ts",
+      "sdkPath": "sdk/tests/main-core/dsh-adapter-config.test.ts",
+      "mainSha256": "e53ee91fac02e777ee2c44055dfd0e0fc3fe92b0dc09cc77d994c4c10ad69a2f",
+      "sdkSha256": "f2e431a4edecbe9d274d415878412516328137f0dc79aab67f803b00d61ae5e9"
+    },
+    {
+      "id": "server/tests/dsh-protocol-recovery.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/dsh-protocol-recovery.test.ts",
+      "sdkPath": "sdk/tests/main-core/dsh-protocol-recovery.test.ts",
+      "mainSha256": "e27877e3ac02df15411802901ff87ecb5b755d208b5af768f8703a6c6f48f8a4",
+      "sdkSha256": "84c84eb2fb25ff85d5fe0d6a49e47c9795a07fd200ddc04eb89fcab2df639450"
+    },
+    {
+      "id": "server/tests/fixtures/collaboration-concurrent-worker.ts",
+      "kind": "test",
+      "mainPath": "server/tests/fixtures/collaboration-concurrent-worker.ts",
+      "sdkPath": "sdk/tests/main-core/fixtures/collaboration-concurrent-worker.ts",
+      "mainSha256": "00cb9158a58939090296b6283c404070844e8d4def01c2ee38fb6d95f94fdb73",
+      "sdkSha256": "67ff35aa3aaf0ced8e4c90fbd90a8235a11f1c47a3c90438ea31b06b342e9d5d"
+    },
+    {
+      "id": "server/tests/fixtures/harness-events/claude-code.jsonl",
+      "kind": "test",
+      "mainPath": "server/tests/fixtures/harness-events/claude-code.jsonl",
+      "sdkPath": "sdk/tests/main-core/fixtures/harness-events/claude-code.jsonl",
+      "mainSha256": "64dc41cf688449531d0fe659259a33f5475d7d6549b7d12275df3dc64ff0cb4c",
+      "sdkSha256": "64dc41cf688449531d0fe659259a33f5475d7d6549b7d12275df3dc64ff0cb4c"
+    },
+    {
+      "id": "server/tests/fixtures/harness-events/codex.jsonl",
+      "kind": "test",
+      "mainPath": "server/tests/fixtures/harness-events/codex.jsonl",
+      "sdkPath": "sdk/tests/main-core/fixtures/harness-events/codex.jsonl",
+      "mainSha256": "71ad8edc6086f30e0a38c6990a1c2257d23821cb020ee605c66b16d9c7669bb7",
+      "sdkSha256": "71ad8edc6086f30e0a38c6990a1c2257d23821cb020ee605c66b16d9c7669bb7"
+    },
+    {
+      "id": "server/tests/fixtures/harness-events/dsh.jsonl",
+      "kind": "test",
+      "mainPath": "server/tests/fixtures/harness-events/dsh.jsonl",
+      "sdkPath": "sdk/tests/main-core/fixtures/harness-events/dsh.jsonl",
+      "mainSha256": "4cd6b0ddd0a3557b0095218d91432c4073b19d14fbed5c910d8931ddc3213ff0",
+      "sdkSha256": "4cd6b0ddd0a3557b0095218d91432c4073b19d14fbed5c910d8931ddc3213ff0"
+    },
+    {
+      "id": "server/tests/fixtures/harness-events/pi.jsonl",
+      "kind": "test",
+      "mainPath": "server/tests/fixtures/harness-events/pi.jsonl",
+      "sdkPath": "sdk/tests/main-core/fixtures/harness-events/pi.jsonl",
+      "mainSha256": "f8f7a312074f1df851c900cf70b2f02cadebfc66da8d50ca9f890ac7883c226c",
+      "sdkSha256": "f8f7a312074f1df851c900cf70b2f02cadebfc66da8d50ca9f890ac7883c226c"
+    },
+    {
+      "id": "server/tests/harness-prompt-catalog.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/harness-prompt-catalog.test.ts",
+      "sdkPath": "sdk/tests/main-core/harness-prompt-catalog.test.ts",
+      "mainSha256": "373a86111b63a1f6f770e734cffaf8a251866e54495a15bc9b9a527b2cd83a95",
+      "sdkSha256": "2e4eb9434b939b7197540bbea7bb343593eab9d478f1a6d8f1e356baf2746c30"
+    },
+    {
+      "id": "server/tests/harness-recovery.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/harness-recovery.test.ts",
+      "sdkPath": "sdk/tests/main-core/harness-recovery.test.ts",
+      "mainSha256": "0f95947a2e2eebc3e087c21a97c99e820777d4795c946fd36c813eba23b0f7c7",
+      "sdkSha256": "57893a2ed8119d055c7f9ec3ef189f645d60b68e55d921362ed0aacf185dae74"
+    },
+    {
+      "id": "server/tests/harness-runtime-contract.ts",
+      "kind": "test",
+      "mainPath": "server/tests/harness-runtime-contract.ts",
+      "sdkPath": "sdk/tests/main-core/harness-runtime-contract.ts",
+      "mainSha256": "ca38f8d132b62d1a5bc6ce2bb7f328ce66995063bff61f480b8a7bd417eca2fb",
+      "sdkSha256": "0782a87d464f3e5aa127cbd0329f73bf354e5075f9de4852c12b3efb66dcb7df"
+    },
+    {
+      "id": "server/tests/harness-runtime.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/harness-runtime.test.ts",
+      "sdkPath": "sdk/tests/main-core/harness-runtime.test.ts",
+      "mainSha256": "5d133b4fda5295dc632cdbd591e11a47edd26aee44d2e42f07faa8b287f259c4",
+      "sdkSha256": "29a32dbbefd2d981f19bdea5dd1727e8f836041de395c3a22a51a6e29a6dea82"
+    },
+    {
+      "id": "server/tests/helpers/agent-git-native-fixture.ts",
+      "kind": "test",
+      "mainPath": "server/tests/helpers/agent-git-native-fixture.ts",
+      "sdkPath": "sdk/tests/main-core/helpers/agent-git-native-fixture.ts",
+      "mainSha256": "d84560a7395e5e16255039cc0955d5f104c9762edac113faaa74b2748899bdd5",
+      "sdkSha256": "c3652d84e4587fe009aa9b4d6f88b059bad38d1634642ba1c6f6945c01e3fe7c"
+    },
+    {
+      "id": "server/tests/helpers/merged-tree.ts",
+      "kind": "test",
+      "mainPath": "server/tests/helpers/merged-tree.ts",
+      "sdkPath": "sdk/tests/main-core/helpers/merged-tree.ts",
+      "mainSha256": "00b8130b891093c83f6fd54be9701bb0ea508de03c39a74d4ea86a441fe2be07",
+      "sdkSha256": "00b8130b891093c83f6fd54be9701bb0ea508de03c39a74d4ea86a441fe2be07"
+    },
+    {
+      "id": "server/tests/helpers/pause-writer-crash.ts",
+      "kind": "test",
+      "mainPath": "server/tests/helpers/pause-writer-crash.ts",
+      "sdkPath": "sdk/tests/main-core/helpers/pause-writer-crash.ts",
+      "mainSha256": "8631c695e4fc3efc996b5865020d504bee50d78e23db0ac1726d447d0dd9d6c4",
+      "sdkSha256": "dcc264f6d32c3c8eb38faa09abc5f676b09ba35dc6b5885a4c9e615ba7482eb5"
+    },
+    {
+      "id": "server/tests/helpers/scoped-runtime-git.ts",
+      "kind": "test",
+      "mainPath": "server/tests/helpers/scoped-runtime-git.ts",
+      "sdkPath": "sdk/tests/main-core/helpers/scoped-runtime-git.ts",
+      "mainSha256": "9ea65b2379ffd03b700f23ff3563caaa9e21b4b96fee7ca76b7c24f0152637cb",
+      "sdkSha256": "c0bb9d7d61da963ee9a87016a9de2df1ae71b6a03c5a8c38a4dc2e9797cdcfe1"
+    },
+    {
+      "id": "server/tests/helpers/scoped-worktree-closing-delivery-fixture.ts",
+      "kind": "test",
+      "mainPath": "server/tests/helpers/scoped-worktree-closing-delivery-fixture.ts",
+      "sdkPath": "sdk/tests/main-core/helpers/scoped-worktree-closing-delivery-fixture.ts",
+      "mainSha256": "a5595deacdd87459d4c5f19d66828f4ce66231e63ff70c7d33b8356dcc9badf3",
+      "sdkSha256": "d3b63403937096bb03cfe5fed60856b07cfe6164c6dfbfc82ae8fb9d04b1f612"
+    },
+    {
+      "id": "server/tests/helpers/scoped-worktree-closing-fixture.ts",
+      "kind": "test",
+      "mainPath": "server/tests/helpers/scoped-worktree-closing-fixture.ts",
+      "sdkPath": "sdk/tests/main-core/helpers/scoped-worktree-closing-fixture.ts",
+      "mainSha256": "240ca7aaecd4ccfaf7d1e7e2c3d7b7786650355aba844fca826c60cdf0edc4aa",
+      "sdkSha256": "23d7d7946a0d3d0c4b3df9679957fece2da49d4d62f17ae4ff05e6873f693bc5"
+    },
+    {
+      "id": "server/tests/helpers/workflow-adjustment-restart-worker.ts",
+      "kind": "test",
+      "mainPath": "server/tests/helpers/workflow-adjustment-restart-worker.ts",
+      "sdkPath": "sdk/tests/main-core/helpers/workflow-adjustment-restart-worker.ts",
+      "mainSha256": "962812b487df16e90f4c47f6dbd468d9d083976f3cfba4018f5c773dec9e7f7e",
+      "sdkSha256": "28d4b953e87e4697cd47cb12301d75b19b0878af74d850fab52c4fed4906393b"
+    },
+    {
+      "id": "server/tests/helpers/workflow-projection-writer.ts",
+      "kind": "test",
+      "mainPath": "server/tests/helpers/workflow-projection-writer.ts",
+      "sdkPath": "sdk/tests/main-core/helpers/workflow-projection-writer.ts",
+      "mainSha256": "5846d60fccd9f7e9c022b721f33362839a1bb267c4057d8175847fa4fca0d962",
+      "sdkSha256": "9eafc63657b6068914d0453c3ec954b0ad9d5307ee4c79f6eae5e67fe447b136"
+    },
+    {
+      "id": "server/tests/invocation-inputs.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/invocation-inputs.test.ts",
+      "sdkPath": "sdk/tests/main-core/invocation-inputs.test.ts",
+      "mainSha256": "e685089d48698f8ab1dcfc27790f0bd7e546db929a3cc8a6d6578727eb952e9f",
+      "sdkSha256": "c6f64d9309540c2a26f87c4aa5cfd581888f1fbfb6beac59a6e95e4d0387d92a"
+    },
+    {
+      "id": "server/tests/invocation-policy.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/invocation-policy.test.ts",
+      "sdkPath": "sdk/tests/main-core/invocation-policy.test.ts",
+      "mainSha256": "1d605c01d9682402df1fb72535c72bb7ccbe80f60326850d7f6a75c916bfdcdc",
+      "sdkSha256": "650103c3a4cb501905d2a5a86bf4462086b604f6f66085e0d8af5377a0942514"
+    },
+    {
+      "id": "server/tests/main-workflow-draft-storage.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/main-workflow-draft-storage.test.ts",
+      "sdkPath": "sdk/tests/main-core/main-workflow-draft-storage.test.ts",
+      "mainSha256": "72708880b3e265260ede75914f1cabd516da55a90d610df7d89e54e35e986da8",
+      "sdkSha256": "8788f98fa4d3aa6c7cc90529c94361b668c0e78df5208f39a515462a19c31adf"
+    },
+    {
+      "id": "server/tests/official-event-bridge.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/official-event-bridge.test.ts",
+      "sdkPath": "sdk/tests/main-core/official-event-bridge.test.ts",
+      "mainSha256": "6b69aa5e1d5c4d24d00ee9a9d278e82d1c2fa83370cad2fc41453d08ff7323c9",
+      "sdkSha256": "df7b5488e2a1e5ed4ff7fa1245045312d9c31b574090ca7f3f7923b4e26f1032"
+    },
+    {
+      "id": "server/tests/orchestration-control-mcp.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/orchestration-control-mcp.test.ts",
+      "sdkPath": "sdk/tests/main-core/orchestration-control-mcp.test.ts",
+      "mainSha256": "29e9cea101dd1c18f9a58894a587280d36b40ac2486c2049ca9d14ba4aa1c0d6",
+      "sdkSha256": "d01ed6810b5e4a4cb6812985e4337b199db01d9c7a4644493cc76df31c5e301e"
+    },
+    {
+      "id": "server/tests/orchestration-control-pending.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/orchestration-control-pending.test.ts",
+      "sdkPath": "sdk/tests/main-core/orchestration-control-pending.test.ts",
+      "mainSha256": "d80bce68a84554f87c7ab8c17be1ed93ab1c6878783ae42af15e47a02e8c7d37",
+      "sdkSha256": "07ee0a9d7083496308d7d616929c052d5f18f6094acb7c6fa070017edabab677"
+    },
+    {
+      "id": "server/tests/orchestrator-collaboration-api.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/orchestrator-collaboration-api.test.ts",
+      "sdkPath": "sdk/tests/main-core/orchestrator-collaboration-api.test.ts",
+      "mainSha256": "3213d572efa24ddf1cb0cd940f9efe07e1a3dd7333eb5ace8c0f323278e798e2",
+      "sdkSha256": "9fa3292201b10f7e35f0f6e178a0babbbfe7993ac78c5ab20d9939c9328e28b3"
+    },
+    {
+      "id": "server/tests/orchestrator-main.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/orchestrator-main.test.ts",
+      "sdkPath": "sdk/tests/main-core/orchestrator-main.test.ts",
+      "mainSha256": "ebe830d85d9a6d8d989fa44c27f1af0c72c465ed3ac7f133a26809e7996f04db",
+      "sdkSha256": "fbf4c8dd765b485f380caf26418d473f4516d472463c4711c2ccffd3b91ff652"
+    },
+    {
+      "id": "server/tests/pi-mcp-extension.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/pi-mcp-extension.test.ts",
+      "sdkPath": "sdk/tests/main-core/pi-mcp-extension.test.ts",
+      "mainSha256": "43bd5c8e44d6edce67f5a5d032a8731114dc6ae67f8300b77c9ea44ef18b8542",
+      "sdkSha256": "87d563186d53ab227a71ee2f5768ba5d0f3085b9121649b8074099389df045eb"
+    },
+    {
+      "id": "server/tests/pi-protocol-backpressure.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/pi-protocol-backpressure.test.ts",
+      "sdkPath": "sdk/tests/main-core/pi-protocol-backpressure.test.ts",
+      "mainSha256": "54cc3938801e50f583e904c1874d097b235291c647aa63505b5a693a37541ec4",
+      "sdkSha256": "bd2064a77381cae4ae242234acb05628c17b252b6be7008daa547701da48e825"
+    },
+    {
+      "id": "server/tests/project-runtime-waiting.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/project-runtime-waiting.test.ts",
+      "sdkPath": "sdk/tests/main-core/project-runtime-waiting.test.ts",
+      "mainSha256": "7909c187cb4009ff87b93ba7e6033045b5f46555297f494b72ecf43086a1e2f9",
+      "sdkSha256": "9392f031063e7c64fc53b56da1b7a06af185b77ba415ebade7fd7d8d748775fa"
+    },
+    {
+      "id": "server/tests/project-state-documents.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/project-state-documents.test.ts",
+      "sdkPath": "sdk/tests/main-core/project-state-documents.test.ts",
+      "mainSha256": "b032e7ab626a84f42fedb4bab976e39987fe2cd1fa8dcd89923c718ca3244c42",
+      "sdkSha256": "d6886fbf89a19419f2df0fd3ebfef912f474967d917e6da63262a6fac0d89f54"
+    },
+    {
+      "id": "server/tests/project-state-reconciliation.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/project-state-reconciliation.test.ts",
+      "sdkPath": "sdk/tests/main-core/project-state-reconciliation.test.ts",
+      "mainSha256": "09dc93eec6b45f879f794a858a638e4ed7125fde688a93bfcfb668d25e2b5c5f",
+      "sdkSha256": "fd2d9ec944181d1af96cafad3873c28020ae80660d3290892939faee4f0c7f75"
+    },
+    {
+      "id": "server/tests/project-state.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/project-state.test.ts",
+      "sdkPath": "sdk/tests/main-core/project-state.test.ts",
+      "mainSha256": "3de9233fec0f934afb5f0c104af085fc4269386069c7b47ee7bbad480123da70",
+      "sdkSha256": "f4ec7a2e3ed1c06d069fa892e1a976b824a34e5fb25e7531e2f1a79e2d091537"
+    },
+    {
+      "id": "server/tests/push-supersession.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/push-supersession.test.ts",
+      "sdkPath": "sdk/tests/main-core/push-supersession.test.ts",
+      "mainSha256": "cfc7e036c51525879264f1470ef88f5620a21f03acef047e0a2f42271f16d0ca",
+      "sdkSha256": "b2f0150b658b9be804a2a308ba7d7ab81f7c979399e2ce8f1cc9eba6b5311b9e"
+    },
+    {
+      "id": "server/tests/resident-adapter-factory.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/resident-adapter-factory.test.ts",
+      "sdkPath": "sdk/tests/main-core/resident-adapter-factory.test.ts",
+      "mainSha256": "850d0fac772a4ccb350d5d943112d8f040a116e8d56401c97698b00776eea9f0",
+      "sdkSha256": "8d7b3002bcad42d1232cc768c1d051deee5cac6a0f176e0a409da5074d2cedd6"
+    },
+    {
+      "id": "server/tests/resident-initialization-quiet.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/resident-initialization-quiet.test.ts",
+      "sdkPath": "sdk/tests/main-core/resident-initialization-quiet.test.ts",
+      "mainSha256": "d0e40845b32433d25706549f50dc014c81a2e250c77d5fc96517768e8f7bd7b0",
+      "sdkSha256": "641abe9cbe0c5f57db6a3141bf3aca2b226331f73c6551668cf12ca59a2ebaec"
+    },
+    {
+      "id": "server/tests/resident-lease.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/resident-lease.test.ts",
+      "sdkPath": "sdk/tests/main-core/resident-lease.test.ts",
+      "mainSha256": "f81c5fc02b347630dabc050691a958c7c37e33a5f70663bd91b70bd0732c5c3a",
+      "sdkSha256": "784022d31f9afa806a486d19f520ff80576548605a66fafc8d233988a50812cf"
+    },
+    {
+      "id": "server/tests/resident-native-driver.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/resident-native-driver.test.ts",
+      "sdkPath": "sdk/tests/main-core/resident-native-driver.test.ts",
+      "mainSha256": "a9b619986d3b44218df2b1868c710450e396e4e7d92aa7766cbeab837660b14e",
+      "sdkSha256": "2d67270e24018627375474b179baf75614d589d77c49dedcce849c9e2a83d267"
+    },
+    {
+      "id": "server/tests/scoped-agent-execution.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-agent-execution.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-agent-execution.test.ts",
+      "mainSha256": "618d89fb9e629ccca2b3a11353307f9a19e79614c44117f39f5f2c8740ecae4c",
+      "sdkSha256": "400d03b732ca5bef3f1b97165a5fd6f63045ceaaa3c5f85ebad4de09b94ac1ec"
+    },
+    {
+      "id": "server/tests/scoped-collaboration-schema.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-collaboration-schema.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-collaboration-schema.test.ts",
+      "mainSha256": "07ae40772360c5de5001e6bed772ba36a60cf7603b206a082de8623713eae4b5",
+      "sdkSha256": "eeb1a4638d7d381ddadee539db65c591ebb9f53bbc5f8ed2d3e37d5236e3a763"
+    },
+    {
+      "id": "server/tests/scoped-project-runtime.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-project-runtime.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-project-runtime.test.ts",
+      "mainSha256": "a3e461e3d51478894b74656ff53ec56deac3b62aedeed58b8158cd7d0636c318",
+      "sdkSha256": "a36c01d90ceacf5b0441861282f6d47d32ed1b378009a70da451c1b81ddd056a"
+    },
+    {
+      "id": "server/tests/scoped-unopened-preparation.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-unopened-preparation.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-unopened-preparation.test.ts",
+      "mainSha256": "002c6c50a2729e080faf26a64927f3ce1f5fac8952b7f2ac2dc7434ba8599ec3",
+      "sdkSha256": "6572952e0c1adae3574c4e6c69e8d9af582b117b99bab64a1c141e7715b2d9ae"
+    },
+    {
+      "id": "server/tests/scoped-workflow-contract.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-workflow-contract.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-workflow-contract.test.ts",
+      "mainSha256": "235f8e6a8fe222065c8f361ad470bb7acb87270c7ad55d15da426acc577d9908",
+      "sdkSha256": "1b132ff2a0fc84a7f31bb53d7a464a1f7266706eddde55a3394c870f0ee5aec3"
+    },
+    {
+      "id": "server/tests/scoped-worktree-closing-authorization.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-worktree-closing-authorization.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-worktree-closing-authorization.test.ts",
+      "mainSha256": "53ccb6f87845c670fc208a088f5badab0545709d32c6492fd0abfe7946e3bc40",
+      "sdkSha256": "7354c390ee99bdb2fc38943904a9f5fb79067a4fde94c6326eb3ee786964e36e"
+    },
+    {
+      "id": "server/tests/scoped-worktree-closing-control.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-worktree-closing-control.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-worktree-closing-control.test.ts",
+      "mainSha256": "a610bffb40569b72df6a78282e6c52cb1a37e4d968b17a5d7a1a476999ca9da5",
+      "sdkSha256": "3c07032d7c0baa004da00b7bdf12e53fee7c6a95440edb470d1a2d212dfd6df9"
+    },
+    {
+      "id": "server/tests/scoped-worktree-closing-delivery.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-worktree-closing-delivery.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-worktree-closing-delivery.test.ts",
+      "mainSha256": "607f617b12d7e927da32805d3d97518093cc63ce25bffc8f6b6d6e6eb16a4196",
+      "sdkSha256": "fd5b275fa1b83232347ca185a0145941b5289763263b7b63f6e96c0ef98414e1"
+    },
+    {
+      "id": "server/tests/scoped-worktree-closing-runtime.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-worktree-closing-runtime.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-worktree-closing-runtime.test.ts",
+      "mainSha256": "ffcbe12c9ea8917fd453255b9dbe2152f0d2a1f1d8628960c374c52798628eae",
+      "sdkSha256": "ec3b7d0d7ace232a9bf9017898d5d3437c1d2d6e400a0721b408c3a4ff5ad23a"
+    },
+    {
+      "id": "server/tests/scoped-worktree-closing-settlement.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/scoped-worktree-closing-settlement.test.ts",
+      "sdkPath": "sdk/tests/main-core/scoped-worktree-closing-settlement.test.ts",
+      "mainSha256": "2585b9a539212c7f7a1e5b2b4840e5a9b6dfb74f6790634b087396ebad0d5676",
+      "sdkSha256": "478a110c78c232e19d37a629df1eaf2badf2981ebee8fb6446e02b58bb3ce767"
+    },
+    {
+      "id": "server/tests/serial-workflow-native-input.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/serial-workflow-native-input.test.ts",
+      "sdkPath": "sdk/tests/main-core/serial-workflow-native-input.test.ts",
+      "mainSha256": "0308e8da05700bfef343afb4c68ee800629ed5dc13c36d3c2d3630033d0e369a",
+      "sdkSha256": "ae6de37f89bef739da9317c63b900287ab6f98e1ebb2896f0444b8fce8d04144"
+    },
+    {
+      "id": "server/tests/session-coordinator.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/session-coordinator.test.ts",
+      "sdkPath": "sdk/tests/main-core/session-coordinator.test.ts",
+      "mainSha256": "968ae2a26bde1e909857d97a2449bce73313b9a1a49e52e8b75746cb72ad041e",
+      "sdkSha256": "43579a2b803effc737cc642bd5dafab7d99909fc36c3a2917134cbe107715dc0"
+    },
+    {
+      "id": "server/tests/sii-experiments.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/sii-experiments.test.ts",
+      "sdkPath": "sdk/tests/main-core/sii-experiments.test.ts",
+      "mainSha256": "a60cd711a19c765bd45bf9bf4a44033a224cead574765ddb167cdca23d79b4fd",
+      "sdkSha256": "aa4725dc81313b1c1298208182fd4661f56f1ca813286468437b9bbb4ee7af22"
+    },
+    {
+      "id": "server/tests/skill-library.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/skill-library.test.ts",
+      "sdkPath": "sdk/tests/main-core/skill-library.test.ts",
+      "mainSha256": "31252dabe9f094214086f316e6214c2eb7c4fd006ebb8d29a8808354ea251e3c",
+      "sdkSha256": "c6cd32d51694797081f4b9d60f75a0066136534005c328f622ffe9197d0a2ea5"
+    },
+    {
+      "id": "server/tests/skill-staging.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/skill-staging.test.ts",
+      "sdkPath": "sdk/tests/main-core/skill-staging.test.ts",
+      "mainSha256": "a16d0d5c33962baeb90d233ac17df09fb7881e22f60508651989e9702003ba9a",
+      "sdkSha256": "0e249e0110e8f38bd10081ecd66a644e28075efb79234fed5e0528790443f6e6"
+    },
+    {
+      "id": "server/tests/terminal-push-coordination-state.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/terminal-push-coordination-state.test.ts",
+      "sdkPath": "sdk/tests/main-core/terminal-push-coordination-state.test.ts",
+      "mainSha256": "db820ca535d5aef014daca3f4726390c845fffaf69f56ee75b76c40deb965d02",
+      "sdkSha256": "f5328227595ddd450e8717bbacb00c72324f302e709baa17d9b990497ac65ee2"
+    },
+    {
+      "id": "server/tests/terminal-push-observation-completion.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/terminal-push-observation-completion.test.ts",
+      "sdkPath": "sdk/tests/main-core/terminal-push-observation-completion.test.ts",
+      "mainSha256": "c9bcc421a2b9d0b1f994b33703c618bd63e17222675ee22a29045ca79a0a2dba",
+      "sdkSha256": "f439b66bf6088a8e36aef1333c3843ff2b36d8e4e094f70a810ef77a1e1edae8"
+    },
+    {
+      "id": "server/tests/terminal-push-observation-runtime.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/terminal-push-observation-runtime.test.ts",
+      "sdkPath": "sdk/tests/main-core/terminal-push-observation-runtime.test.ts",
+      "mainSha256": "3f4f8f25d70118777356b8abaf9b5c4f64cda1f2811de596d7cd6b0629addc94",
+      "sdkSha256": "d30332f07960d6cc249839dd945f8005be12d3fe9091cd4dd2de23ad218ac18e"
+    },
+    {
+      "id": "server/tests/validation.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/validation.test.ts",
+      "sdkPath": "sdk/tests/main-core/validation.test.ts",
+      "mainSha256": "2dff76b55c23912bd499c32119ae8c785e46cdbc6f5fa3ea313c3dd223dcadf6",
+      "sdkSha256": "78b029b22967820d7b301a856650f978e9263d8021fdbd58b80a5cdc78350981"
+    },
+    {
+      "id": "server/tests/workflow-adjustment-notifications.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/workflow-adjustment-notifications.test.ts",
+      "sdkPath": "sdk/tests/main-core/workflow-adjustment-notifications.test.ts",
+      "mainSha256": "14040f2596784e803aeaefe85860e4db33c7ce5e80f16682791e53486cacc34c",
+      "sdkSha256": "79db6c55c979fc8c6006b5cdc52234f8e81ffc59608333165312f49c440bdead"
+    },
+    {
+      "id": "server/tests/workflow-adjustment-restart.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/workflow-adjustment-restart.test.ts",
+      "sdkPath": "sdk/tests/main-core/workflow-adjustment-restart.test.ts",
+      "mainSha256": "b098c2e8bb7cfee77845e6a5abe0a376e5fe8824501037abd736c2b746e81800",
+      "sdkSha256": "b27ede19b3ae2967571ff16c640dfcead15a6f879e869fbe01b119190ac3fd3d"
+    },
+    {
+      "id": "server/tests/workflow-context.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/workflow-context.test.ts",
+      "sdkPath": "sdk/tests/main-core/workflow-context.test.ts",
+      "mainSha256": "80d0f7500eb6b0c7e5bd128c01bcbc04fa6e3e24975e48a81fd46027902b45cf",
+      "sdkSha256": "c76ee55254fb1df8f84e8d385e033de1232990f1af6b7c82ae297f630965718c"
+    },
+    {
+      "id": "server/tests/workflow-recovery.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/workflow-recovery.test.ts",
+      "sdkPath": "sdk/tests/main-core/workflow-recovery.test.ts",
+      "mainSha256": "026498f7d58e34c641264c3faaf457b63373dc823cd93071179b1bc84c74a97f",
+      "sdkSha256": "2e5f00dbe820230e1cc654f682d56be28d19af551d01403519528e2ea5e54a33"
+    },
+    {
+      "id": "server/tests/workflow-session-compatibility.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/workflow-session-compatibility.test.ts",
+      "sdkPath": "sdk/tests/main-core/workflow-session-compatibility.test.ts",
+      "mainSha256": "a5305b73775f4fe7c7a2d949e98e3e7c46bd7e16c2d8638fa861438d38ed8be5",
+      "sdkSha256": "83f7ae4317732a80e1e89c1e3cdb161fe3947ef6a6a490894b43b1d69f595366"
+    }
+  ]
+}

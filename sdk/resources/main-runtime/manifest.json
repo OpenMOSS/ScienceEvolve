@@ -1,6 +1,8 @@
 {
   "schemaVersion": 2,
-  "sourceCommit": "6bf6a7bb5b200e92511aa4010b7d5fc3711ed79b",
+  "coreIdentity": "exact-source-v1",
+  "sourceCommit": "6c120bfb50f254e0500672cd9e3dc5c24048b2a6",
+  "sourceSnapshotKind": "working-tree",
   "roots": [
     "orchestrator.ts",
     "collaboration-runtime.ts",
@@ -21,7 +23,7 @@
     "harness-runtime/adapters/pi-mcp-extension.ts",
     "sleep-mcp.ts"
   ],
-  "sharedFixesSha256": "c15701ce8a13b2ce4f64e1743f84945359ce3ed43b77319e240dce6b128eae30",
+  "sharedFixesSha256": "24a8c8df4458081c07585c8885038bed7c37632dc0244089d130ee83413bbd3f",
   "brandingVersion": "scienceevolve-v1",
   "brandingSha256": "a8a98aff64705d1bec8f0071fc38608c0692f9e8a4d2230c9832fb530a038725",
   "runtimePins": {
@@ -34,7 +36,7 @@
       },
       {
         "path": "src/core/harness-runtime/descriptor-broker-mcp.ts",
-        "sha256": "40161ef53b3f7120f4727b7cf43236cb01c15a3b28a12d154c15891bff429c59"
+        "sha256": "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e"
       },
       {
         "path": "src/core/harness-runtime/descriptor-broker-windows.py",
@@ -78,13 +80,13 @@
         "target": "src/core/harness-runtime/filesystem-authority.ts",
         "constant": "DESCRIPTOR_BROKER_MCP_SHA256",
         "input": "src/core/harness-runtime/descriptor-broker-mcp.ts",
-        "sha256": "40161ef53b3f7120f4727b7cf43236cb01c15a3b28a12d154c15891bff429c59"
+        "sha256": "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e"
       },
       {
         "target": "src/core/harness-runtime/filesystem-authority.ts",
         "constant": "DESCRIPTOR_BROKER_MCP_COMPILED_SHA256",
         "input": "dist/core/harness-runtime/descriptor-broker-mcp.js",
-        "sha256": "1a78013982c3e50f40110e599b55156d69770fd14bbd7650d64f9b64631dab48"
+        "sha256": "1332fcc5f1a83286f028753f41cfadb37fb9a62a9aa935c0ddcdb14ee1f903bc"
       },
       {
         "target": "src/core/harness-runtime/windows-resident.ts",
@@ -105,15 +107,13 @@
       "configSha256": "ff4bd6f94e96b4da543ea245f3ae3d9db4545a43976619d497afb93a128281b8"
     }
   },
-  "runtimeRevision": "6bf6a7bb5b200e92511aa4010b7d5fc3711ed79b+576cb248b25549c9",
+  "runtimeRevision": "6c120bfb50f254e0500672cd9e3dc5c24048b2a6+62252193a9be88a0",
   "files": [
     {
       "source": "server/src/acceptance-controller.ts",
       "target": "src/core/acceptance-controller.ts",
-      "sourceSha256": "eb5d53546415946cdf602a32da1106e7259c1b8d681df624195a342396070471",
-      "sharedFixes": [
-        "sdk-host-acceptance-directory-sync"
-      ],
+      "sourceSha256": "a9f67cfb01802b24266f59a5da60d53fcd2e302f75f067ebec1573dc81c3ad67",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "a9f67cfb01802b24266f59a5da60d53fcd2e302f75f067ebec1573dc81c3ad67"
     },
@@ -128,10 +128,8 @@
     {
       "source": "server/src/acceptance-r04-pending.ts",
       "target": "src/core/acceptance-r04-pending.ts",
-      "sourceSha256": "48192a6042ebc69a3b7d0a54753865d378bf6352106e1a55f09113c738328de2",
-      "sharedFixes": [
-        "sdk-host-portable-r04-file-identity"
-      ],
+      "sourceSha256": "5e259ba9c81d128b0d0e04e6fd37ade1645bc95ea20925cc70666906c4e4793d",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "5e259ba9c81d128b0d0e04e6fd37ade1645bc95ea20925cc70666906c4e4793d"
     },
@@ -170,10 +168,10 @@
     {
       "source": "server/src/agent-context-index.ts",
       "target": "src/core/agent-context-index.ts",
-      "sourceSha256": "133c0d79b65d0ef8fe9b3e8581a09d33e227977054e6c2588f5afa1020e28249",
+      "sourceSha256": "1ec34a9513ca7b7c6f36c6fcae1a271a6eda4d9f519d2213902740db25fd26ea",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "133c0d79b65d0ef8fe9b3e8581a09d33e227977054e6c2588f5afa1020e28249"
+      "sha256": "1ec34a9513ca7b7c6f36c6fcae1a271a6eda4d9f519d2213902740db25fd26ea"
     },
     {
       "source": "server/src/agent-errors.ts",
@@ -234,18 +232,16 @@
     {
       "source": "server/src/agent-git-tools.ts",
       "target": "src/core/agent-git-tools.ts",
-      "sourceSha256": "7f03265d316afe4ac2c872840d0fae0b0301850691c8f6b02cc4e5f0d7e0c4fa",
+      "sourceSha256": "f056a4a797b0d9361ab46acc4b0e7c7a503f6d914458371ed8a7e0243cdda186",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "7f03265d316afe4ac2c872840d0fae0b0301850691c8f6b02cc4e5f0d7e0c4fa"
+      "sha256": "f056a4a797b0d9361ab46acc4b0e7c7a503f6d914458371ed8a7e0243cdda186"
     },
     {
       "source": "server/src/agent-orchestration-reconfiguration.ts",
       "target": "src/core/agent-orchestration-reconfiguration.ts",
-      "sourceSha256": "52f0d52ab8fef3a0d30f22bd1bee8e070c52268ac53de06bf19376d738e6e207",
-      "sharedFixes": [
-        "sdk-host-agent-orchestration-reconfiguration"
-      ],
+      "sourceSha256": "8cfee5303a96affb3fa7b3524b88d85a5bc532addeb4a25f71abede9f1c3fda4",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "8cfee5303a96affb3fa7b3524b88d85a5bc532addeb4a25f71abede9f1c3fda4"
     },
@@ -300,10 +296,8 @@
     {
       "source": "server/src/codex-gateway-model-catalog.ts",
       "target": "src/core/codex-gateway-model-catalog.ts",
-      "sourceSha256": "9ee3cd97c807742ad2c1d6871e847187fdbdcf9e3991267ea4d58445b8105868",
-      "sharedFixes": [
-        "sdk-host-codex-gateway-model-catalog"
-      ],
+      "sourceSha256": "b2d1bf59084f7e94876defb8db30836eac6262594d19ed59e7806c709db5a1c9",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "b2d1bf59084f7e94876defb8db30836eac6262594d19ed59e7806c709db5a1c9"
     },
@@ -318,12 +312,10 @@
     {
       "source": "server/src/codex-runner.ts",
       "target": "src/core/codex-runner.ts",
-      "sourceSha256": "a2f4c56f937228493833aaced5df6c160cf1fefc7d01594ab0a85aff1de10c1a",
-      "sharedFixes": [
-        "sdk-host-codex-runner"
-      ],
+      "sourceSha256": "2a68aa8d9753be23d58e12dfd419e410d3b80912ddd645a8293f5a113f6cc48e",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "8212ec7a45b52da94118eb3ab0c4229b55d639f5efb5d7e681dc92eb809981ed"
+      "sha256": "2a68aa8d9753be23d58e12dfd419e410d3b80912ddd645a8293f5a113f6cc48e"
     },
     {
       "source": "server/src/collaboration-dissolution.ts",
@@ -384,20 +376,18 @@
     {
       "source": "server/src/collaboration-git/factory.ts",
       "target": "src/core/collaboration-git/factory.ts",
-      "sourceSha256": "a4c8c5fbb71aa436d3fd36d99a74591051311a0d48049ebae03dc553f87e62f0",
-      "sharedFixes": [
-        "sdk-host-collaboration-git-factory"
-      ],
+      "sourceSha256": "f2ab491033865791c9abc0dc75ca3193f489610936ab84ad39237f519cc8fb7a",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "f2ab491033865791c9abc0dc75ca3193f489610936ab84ad39237f519cc8fb7a"
     },
     {
       "source": "server/src/collaboration-git/github-provider.ts",
       "target": "src/core/collaboration-git/github-provider.ts",
-      "sourceSha256": "729d65ec969c12c998ecc5e49b50a40068c361f5235e460da962a8a6729a09ba",
+      "sourceSha256": "3fb90adb0024317606eaade34156ba3357e776f1d0a9994bc0193fc5ebd8fbcc",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "729d65ec969c12c998ecc5e49b50a40068c361f5235e460da962a8a6729a09ba"
+      "sha256": "3fb90adb0024317606eaade34156ba3357e776f1d0a9994bc0193fc5ebd8fbcc"
     },
     {
       "source": "server/src/collaboration-git/index.ts",
@@ -410,12 +400,10 @@
     {
       "source": "server/src/collaboration-git/initialization.ts",
       "target": "src/core/collaboration-git/initialization.ts",
-      "sourceSha256": "9fb7747dbde4b33cb35937729a5976fcef6c5b4bd766e959a7b05a44fe6590b1",
-      "sharedFixes": [
-        "sdk-host-collaboration-git-initialization"
-      ],
+      "sourceSha256": "5371aae7bc60d5943cc9a2745463937a574e1ab45c41bdce5b526a07cf28c20f",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "a58db5cd1d1ba76103d0e2042841e1a422f80987d80732bf2f755f7326b488b1"
+      "sha256": "5371aae7bc60d5943cc9a2745463937a574e1ab45c41bdce5b526a07cf28c20f"
     },
     {
       "source": "server/src/collaboration-git/inspection.ts",
@@ -428,11 +416,8 @@
     {
       "source": "server/src/collaboration-git/local-git.ts",
       "target": "src/core/collaboration-git/local-git.ts",
-      "sourceSha256": "39c82b23da8c5f160f9883c6acade9181cf1abd21e91ab124cd00a076e06b072",
-      "sharedFixes": [
-        "sdk-host-collaboration-git-local-git",
-        "sdk-host-windows-revert-metadata-path"
-      ],
+      "sourceSha256": "d8a7853840c07f3f78fd5aab755a83d3fccb2145faef1b656d96dab0c9c387bd",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "d8a7853840c07f3f78fd5aab755a83d3fccb2145faef1b656d96dab0c9c387bd"
     },
@@ -479,12 +464,10 @@
     {
       "source": "server/src/collaboration-runtime.ts",
       "target": "src/core/collaboration-runtime.ts",
-      "sourceSha256": "e74ae3f8acb0860461f2b1a2d0a0d3ddd2f633d724d7d93efc2fb353099d4681",
-      "sharedFixes": [
-        "sdk-host-collaboration-runtime"
-      ],
+      "sourceSha256": "c27b9694f0bc66d12daad98132644f10b0144daa7cf539669dd56ac1780f742e",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "dca962e76b25ea737f5cbc251ec3805c91af27d61c3f935afd5f9014e1c983dd"
+      "sha256": "c27b9694f0bc66d12daad98132644f10b0144daa7cf539669dd56ac1780f742e"
     },
     {
       "source": "server/src/collaboration-state/contracts.ts",
@@ -529,20 +512,18 @@
     {
       "source": "server/src/collaboration-state/store.ts",
       "target": "src/core/collaboration-state/store.ts",
-      "sourceSha256": "ced465bfa38b7f9c6099ed5acf502f330e9501a37517de0a573db8f914ef0bbc",
-      "sharedFixes": [
-        "sdk-host-collaboration-state-store"
-      ],
+      "sourceSha256": "15fc181c87a6a9c969fae396ce3aa72315efdbb2192ec45927e085332c3ed71d",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "c4c3174216be43d8cac1414e16b5e9a625a3ec5a9ccad57df276b18befd83b53"
+      "sha256": "15fc181c87a6a9c969fae396ce3aa72315efdbb2192ec45927e085332c3ed71d"
     },
     {
       "source": "server/src/config.ts",
       "target": "src/core/config.ts",
-      "sourceSha256": "b8247229517d21c9ce2fa9c6b0b5a6fa08bc52777dfd0b2ebf605a5e40c82f93",
+      "sourceSha256": "66689591c52ea28a1934cd5640bd10c54347e2dc2571050958b097b50512693b",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "b8247229517d21c9ce2fa9c6b0b5a6fa08bc52777dfd0b2ebf605a5e40c82f93"
+      "sha256": "66689591c52ea28a1934cd5640bd10c54347e2dc2571050958b097b50512693b"
     },
     {
       "source": "server/src/content-limits.ts",
@@ -551,6 +532,22 @@
       "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "6cd095958fa9ce9b8f96001756eaecfefa85d96b811066f7e5624cc32130a1c7"
+    },
+    {
+      "source": "server/src/context-index-organizer.ts",
+      "target": "src/core/context-index-organizer.ts",
+      "sourceSha256": "c3b5f5fd1600fcb2e64554e0d9a0cf5e496b018ce9903fee98d246b7ec5a4e5b",
+      "sharedFixes": [],
+      "brandingEdits": [],
+      "sha256": "c3b5f5fd1600fcb2e64554e0d9a0cf5e496b018ce9903fee98d246b7ec5a4e5b"
+    },
+    {
+      "source": "server/src/context-injection-budget.ts",
+      "target": "src/core/context-injection-budget.ts",
+      "sourceSha256": "fdda726ada8b1ebb5e94bd1635a274fd518ea45e44a58f14d3f571bf75d88c5d",
+      "sharedFixes": [],
+      "brandingEdits": [],
+      "sha256": "fdda726ada8b1ebb5e94bd1635a274fd518ea45e44a58f14d3f571bf75d88c5d"
     },
     {
       "source": "server/src/context-limit.ts",
@@ -571,10 +568,8 @@
     {
       "source": "server/src/control-mcp.ts",
       "target": "src/core/control-mcp.ts",
-      "sourceSha256": "2282fd37424dcaf4b0044fb827fbe08108b3dcd5e53003fc810cf1e6800d72f9",
-      "sharedFixes": [
-        "sdk-host-control-mcp"
-      ],
+      "sourceSha256": "e6a462264e6684fecf93a22e8899c5405b62f7fe3d4b5a1bfe307c46b3e626e7",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "e6a462264e6684fecf93a22e8899c5405b62f7fe3d4b5a1bfe307c46b3e626e7"
     },
@@ -597,10 +592,10 @@
     {
       "source": "server/src/event-hub.ts",
       "target": "src/core/event-hub.ts",
-      "sourceSha256": "dcfeb00e42b98141531ad47ef2967763ff2a5bdfe4cb02ad57ef6ef84046d840",
+      "sourceSha256": "6adb443a32b62500883ab6707438fc8193780a43bf5b8c270cf44c8c72b9a84f",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "dcfeb00e42b98141531ad47ef2967763ff2a5bdfe4cb02ad57ef6ef84046d840"
+      "sha256": "6adb443a32b62500883ab6707438fc8193780a43bf5b8c270cf44c8c72b9a84f"
     },
     {
       "source": "server/src/execution-worktree-closing.ts",
@@ -645,28 +640,32 @@
     {
       "source": "server/src/github-accounts.ts",
       "target": "src/core/github-accounts.ts",
-      "sourceSha256": "1e09b02101643c5ee5e72dc421059a183824bda236a2081e53fefffae06d6926",
+      "sourceSha256": "7e44e94c34a0fab8cbd30836cbdc49ad22cce8845983a67855e1fb2cbc9cb3fa",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "1e09b02101643c5ee5e72dc421059a183824bda236a2081e53fefffae06d6926"
+      "sha256": "7e44e94c34a0fab8cbd30836cbdc49ad22cce8845983a67855e1fb2cbc9cb3fa"
+    },
+    {
+      "source": "server/src/github-repository-management-types.ts",
+      "target": "src/core/github-repository-management-types.ts",
+      "sourceSha256": "7baf3d8c281035c706f0ae7e41ba62d1ff5f95020b3a69ff589808a96e23f0e8",
+      "sharedFixes": [],
+      "brandingEdits": [],
+      "sha256": "7baf3d8c281035c706f0ae7e41ba62d1ff5f95020b3a69ff589808a96e23f0e8"
     },
     {
       "source": "server/src/harness-runtime/adapters/adapter-utils.ts",
       "target": "src/core/harness-runtime/adapters/adapter-utils.ts",
-      "sourceSha256": "82f6e196aa60769d70070100ced4338f0d484055c0284945f70ecda624f03764",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-adapters-adapter-utils"
-      ],
+      "sourceSha256": "6dd7bd6a630cf5f797a7ef627cf3241cfe9058a3b870649ea96676841688b752",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "5247eb698d4fe36c44fbd455e8328cb7b6c8ff63305c3ec39cb1b370327249b9"
+      "sha256": "6dd7bd6a630cf5f797a7ef627cf3241cfe9058a3b870649ea96676841688b752"
     },
     {
       "source": "server/src/harness-runtime/adapters/claude-code-adapter.ts",
       "target": "src/core/harness-runtime/adapters/claude-code-adapter.ts",
-      "sourceSha256": "70c69e954ec8d8f9f4c473450d6b639acf6eebe12b52bc3c8c3d015727554b52",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-adapters-claude-code-adapter"
-      ],
+      "sourceSha256": "2be0fa2c6330859634d26a23bddd555f1a2cec9aaeb32cbc01b9fc62096317a8",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "2be0fa2c6330859634d26a23bddd555f1a2cec9aaeb32cbc01b9fc62096317a8"
     },
@@ -681,12 +680,10 @@
     {
       "source": "server/src/harness-runtime/adapters/codex-adapter.ts",
       "target": "src/core/harness-runtime/adapters/codex-adapter.ts",
-      "sourceSha256": "d3dbec636d22f0187580d52f68782189c865679886df716bda42a79fac910839",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-adapters-codex-adapter"
-      ],
+      "sourceSha256": "dc8a9cc4d35e1e9b183481a8c04887f0ef14978ea7689b66d425c00193f36cd0",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "2170fbf7dccd048e9e0c2dfe2819b45c52cfeef2ab3b5020d7a4e3059034f363"
+      "sha256": "dc8a9cc4d35e1e9b183481a8c04887f0ef14978ea7689b66d425c00193f36cd0"
     },
     {
       "source": "server/src/harness-runtime/adapters/codex-event-mapper.ts",
@@ -707,12 +704,10 @@
     {
       "source": "server/src/harness-runtime/adapters/dsh-adapter.ts",
       "target": "src/core/harness-runtime/adapters/dsh-adapter.ts",
-      "sourceSha256": "feae790e9e886bcc53fcee297ae0baf1ac73aed563a901e79874efb9ec77208d",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-adapters-dsh-adapter"
-      ],
+      "sourceSha256": "abc929e558e7f21077bab022a5a7c0c4b315b3dd3755630bc9df6a20677df61b",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "6b24cfed806b456d7828ec2420066e42edf860779b7addf1799539d64501549b"
+      "sha256": "abc929e558e7f21077bab022a5a7c0c4b315b3dd3755630bc9df6a20677df61b"
     },
     {
       "source": "server/src/harness-runtime/adapters/dsh-event-mapper.ts",
@@ -723,29 +718,20 @@
       "sha256": "917dc1745d0d8ea45fd4d60aad92142aeb1d355401d09f03df567594eed72990"
     },
     {
-      "source": "sdk/src/core/harness-runtime/adapters/hermes-acp.ts",
-      "target": "src/core/harness-runtime/adapters/hermes-acp.ts",
-      "sha256": "310d1449c037366dd13287e10d864021c4229e625e94704cfdd9d7c4ac477dcc"
-    },
-    {
-      "source": "sdk/src/core/harness-runtime/adapters/hermes-adapter.ts",
-      "target": "src/core/harness-runtime/adapters/hermes-adapter.ts",
-      "sha256": "db24ea6651d29b5b4d649bca7a2bda6cc0510d07e91e2a4ab3c5054104169df1"
-    },
-    {
-      "source": "sdk/src/core/harness-runtime/adapters/hermes-settings.ts",
-      "target": "src/core/harness-runtime/adapters/hermes-settings.ts",
-      "sha256": "52dbdb0a85c1bd8fe349a55d4f1fc7a2c9d0bbb08a2bd41cc4db4ad91d40d1f7"
+      "source": "server/src/harness-runtime/adapters/native-prompt-source.ts",
+      "target": "src/core/harness-runtime/adapters/native-prompt-source.ts",
+      "sourceSha256": "9935aa3a4ef25ac106540c52ac8dec00053bda5f93860a909d9cfafadbc7bdea",
+      "sharedFixes": [],
+      "brandingEdits": [],
+      "sha256": "9935aa3a4ef25ac106540c52ac8dec00053bda5f93860a909d9cfafadbc7bdea"
     },
     {
       "source": "server/src/harness-runtime/adapters/pi-adapter.ts",
       "target": "src/core/harness-runtime/adapters/pi-adapter.ts",
-      "sourceSha256": "435c6a409a0019fb3aa057171ce400ecb58d1477cf749ca1cf27c3df3e7ce136",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-adapters-pi-adapter"
-      ],
+      "sourceSha256": "becb9ca046e5b002a283c65d086c8dcd0167504569805406e7fbdbd5992157c8",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "e6c0c49a4733a03125b680af787b816cdc5293261624f7bfc58cbe48ad69f7e5"
+      "sha256": "becb9ca046e5b002a283c65d086c8dcd0167504569805406e7fbdbd5992157c8"
     },
     {
       "source": "server/src/harness-runtime/adapters/pi-event-mapper.ts",
@@ -774,13 +760,10 @@
     {
       "source": "server/src/harness-runtime/adapters/resident-adapter-factory.ts",
       "target": "src/core/harness-runtime/adapters/resident-adapter-factory.ts",
-      "sourceSha256": "8651b163b36bd09718420e320f677fef142a1df63c4b7dfccb5c829101bbc467",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-adapters-resident-adapter-factory",
-        "sdk-host-resident-web-search-route"
-      ],
+      "sourceSha256": "dbe7386cfe5420324f9bacc0a86c6588953caecf9c990be10f9d2abbb69ada0e",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "a3413ceecf6da61694f1797fc7dc6bb869ae6655de606e1fcb15804d7d36c14e"
+      "sha256": "dbe7386cfe5420324f9bacc0a86c6588953caecf9c990be10f9d2abbb69ada0e"
     },
     {
       "source": "server/src/harness-runtime/claude-tool-progress.ts",
@@ -793,12 +776,10 @@
     {
       "source": "server/src/harness-runtime/contracts.ts",
       "target": "src/core/harness-runtime/contracts.ts",
-      "sourceSha256": "0692032e8305e23a5e371dc67e9bae76ede97018090a684bec795388e8433716",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-contracts"
-      ],
+      "sourceSha256": "def8b57e6b3f2b0f52df07a1b3f74dbd3626effbf5749c7905f55d45ab73965f",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "cb8dcaa923364964f1ef34f7ce1df84d93f927c1c9552f4a5183e82fcc55ed41"
+      "sha256": "def8b57e6b3f2b0f52df07a1b3f74dbd3626effbf5749c7905f55d45ab73965f"
     },
     {
       "source": "server/src/harness-runtime/descriptor-broker-helper.py",
@@ -811,10 +792,10 @@
     {
       "source": "server/src/harness-runtime/descriptor-broker-mcp.ts",
       "target": "src/core/harness-runtime/descriptor-broker-mcp.ts",
-      "sourceSha256": "40161ef53b3f7120f4727b7cf43236cb01c15a3b28a12d154c15891bff429c59",
+      "sourceSha256": "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "40161ef53b3f7120f4727b7cf43236cb01c15a3b28a12d154c15891bff429c59"
+      "sha256": "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e"
     },
     {
       "source": "server/src/harness-runtime/descriptor-broker-windows.py",
@@ -843,50 +824,42 @@
     {
       "source": "server/src/harness-runtime/errors.ts",
       "target": "src/core/harness-runtime/errors.ts",
-      "sourceSha256": "6c59539bcba72d4f8479ac4e331d7d310ebe4a0a486111dcfc8af59c2ec81117",
+      "sourceSha256": "e8f9f852f87053a712a95edcc6f89df2205115f32822b584874b70516731dc43",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "6c59539bcba72d4f8479ac4e331d7d310ebe4a0a486111dcfc8af59c2ec81117"
+      "sha256": "e8f9f852f87053a712a95edcc6f89df2205115f32822b584874b70516731dc43"
     },
     {
       "source": "server/src/harness-runtime/filesystem-authority.ts",
       "target": "src/core/harness-runtime/filesystem-authority.ts",
-      "sourceSha256": "3bfa8d72732e46f5888d3f99180d74b4e76255f14865106c17fa37db97e47413",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-filesystem-authority"
-      ],
+      "sourceSha256": "b232abe0280a7b5f3d247671ad2b7456e0ddea5e838389224815495f9ccbc1eb",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "4387d9f1eaaab20266d53b74f0d41b8bf21c0a413f89916230255467e9078fe3"
+      "sha256": "b232abe0280a7b5f3d247671ad2b7456e0ddea5e838389224815495f9ccbc1eb"
     },
     {
       "source": "server/src/harness-runtime/gateway-route.ts",
       "target": "src/core/harness-runtime/gateway-route.ts",
-      "sourceSha256": "089bf26c5945397bdcfc3df9d852dbc0ca5b08f6586f54509609b4437871d308",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-gateway-route"
-      ],
+      "sourceSha256": "f98627a4c7b56e7cae60c281b98682182b32ff52bba08970f26fedad9fb026b7",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "3e74e287ac0499643b02620d6ca3ed974e816ed1e444319ac39631b16ea0cfcd"
+      "sha256": "f98627a4c7b56e7cae60c281b98682182b32ff52bba08970f26fedad9fb026b7"
     },
     {
       "source": "server/src/harness-runtime/invocation-inputs.ts",
       "target": "src/core/harness-runtime/invocation-inputs.ts",
-      "sourceSha256": "d41e916e244dc25c153e2ca15d7b07dca39029727a9ba640e9c7de33eab50550",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-invocation-inputs"
-      ],
+      "sourceSha256": "4b286fb2aac4207c2b9559166588fa0571809bee2fe8ca90e81d6dd5b0d3655e",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "4b286fb2aac4207c2b9559166588fa0571809bee2fe8ca90e81d6dd5b0d3655e"
     },
     {
       "source": "server/src/harness-runtime/invocation-policy.ts",
       "target": "src/core/harness-runtime/invocation-policy.ts",
-      "sourceSha256": "d39e4e22204051134f00ed20ad39ff7eb97c1b614593ee5d547000ca73d70ba5",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-invocation-policy"
-      ],
+      "sourceSha256": "56f059673794c319871482774953ff6d81dacead0ec66b6f89fbfce28e4122bf",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "c495fbbf9728fc49d9702098c6bba1e0930419cbd972b19a1f5f6e87c1e42815"
+      "sha256": "56f059673794c319871482774953ff6d81dacead0ec66b6f89fbfce28e4122bf"
     },
     {
       "source": "server/src/harness-runtime/invocation-recovery.ts",
@@ -915,78 +888,74 @@
     {
       "source": "server/src/harness-runtime/process-host.ts",
       "target": "src/core/harness-runtime/process-host.ts",
-      "sourceSha256": "8446cbc68ef98380fc5d1ffa56bcc436c6c2e9894736da0ac5a7b2f2a59a6916",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-process-host"
-      ],
+      "sourceSha256": "c342d5e7bb02b9f51d04cd63f605f8fc2c3e3f801c04743d3d0a3d2bb0fc8d5c",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "13334c2f4c48af55c554f8c2efdb3987cea202d589b6f8c78d4d433ac75facd7"
+      "sha256": "c342d5e7bb02b9f51d04cd63f605f8fc2c3e3f801c04743d3d0a3d2bb0fc8d5c"
+    },
+    {
+      "source": "server/src/harness-runtime/prompt-catalog.ts",
+      "target": "src/core/harness-runtime/prompt-catalog.ts",
+      "sourceSha256": "0a3c53c452410d9eebc8c6868981623a2eb66f7f1e677943d4d4b8a1f3bb590a",
+      "sharedFixes": [],
+      "brandingEdits": [],
+      "sha256": "0a3c53c452410d9eebc8c6868981623a2eb66f7f1e677943d4d4b8a1f3bb590a"
     },
     {
       "source": "server/src/harness-runtime/registry.ts",
       "target": "src/core/harness-runtime/registry.ts",
-      "sourceSha256": "5169a5c8e5cbe8ba6969492589d0335b324e4dfc86f0ef30fa1b8bd42af4c39c",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-registry"
-      ],
+      "sourceSha256": "78174b72ee15d5282249c5ad37951169a4497dcf7c6d9aa4b7e2afd02c056832",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "e45cf2000e39be86478e1ea89d4b867ad73ec779af38b3705fc3ee9eec3370e6"
+      "sha256": "78174b72ee15d5282249c5ad37951169a4497dcf7c6d9aa4b7e2afd02c056832"
     },
     {
       "source": "server/src/harness-runtime/resident-lease.ts",
       "target": "src/core/harness-runtime/resident-lease.ts",
-      "sourceSha256": "84f051308fdb3a220db8925620d0f3505d3124c6d0d08eab19d84d1347a224e6",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-resident-lease"
-      ],
+      "sourceSha256": "166eaa810a2732d4c35c0cde048cb4b6f6d051431e12f2bf15e9326a64cfe79f",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "3f84da482768080c9041b8c803da21bf89f8353349752a98b77ff6dce6920676"
+      "sha256": "166eaa810a2732d4c35c0cde048cb4b6f6d051431e12f2bf15e9326a64cfe79f"
     },
     {
       "source": "server/src/harness-runtime/resident-native-driver.ts",
       "target": "src/core/harness-runtime/resident-native-driver.ts",
-      "sourceSha256": "b6575ca0f19340aec2b00651c9510052f441ba00aff59aa6880a9025e8d2dd88",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-resident-native-driver"
-      ],
+      "sourceSha256": "dc6e178d46fa6b7ea80220d2b6e9395c9171896908b4cd9f571f84d0b767ba1b",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "61eaf3dc9e7bf92154e097ae8c86a13b57436d424f08f4b48f34a3ccbc816f57"
+      "sha256": "dc6e178d46fa6b7ea80220d2b6e9395c9171896908b4cd9f571f84d0b767ba1b"
     },
     {
       "source": "server/src/harness-runtime/resident-runtime-adapter.ts",
       "target": "src/core/harness-runtime/resident-runtime-adapter.ts",
-      "sourceSha256": "179b6aa7a6b474271a99afa3142258a99cb3cc354c4ebcbaa9a5f13378118146",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-resident-runtime-adapter"
-      ],
+      "sourceSha256": "8c0c0229476bb1390105548c14ee4ba8bf554fb5ca85996dd89cb37d43ec9508",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "6af0b71eeb41d268ec39c00cdd0628713bf66df0d57d3a74fa318027f9b5206e"
+      "sha256": "8c0c0229476bb1390105548c14ee4ba8bf554fb5ca85996dd89cb37d43ec9508"
     },
     {
       "source": "server/src/harness-runtime/runtime-support.ts",
       "target": "src/core/harness-runtime/runtime-support.ts",
-      "sourceSha256": "3d4430576d94c57727c099d29598b2cbb0228ab0b503ab1e86b3b5a04bccffd0",
+      "sourceSha256": "45c0aa3030853ecf714f6b4bc9b03139e84c7326d81e1c5809a3e9e260d9ff17",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "3d4430576d94c57727c099d29598b2cbb0228ab0b503ab1e86b3b5a04bccffd0"
+      "sha256": "45c0aa3030853ecf714f6b4bc9b03139e84c7326d81e1c5809a3e9e260d9ff17"
     },
     {
       "source": "server/src/harness-runtime/runtime.ts",
       "target": "src/core/harness-runtime/runtime.ts",
-      "sourceSha256": "07220f4eb2a40e28578a651b26412ca25350e1f76e6717713c9d403044783e89",
-      "sharedFixes": [
-        "sdk-host-harness-runtime-runtime"
-      ],
+      "sourceSha256": "87b9b52fdb0c25e995c9e58033564de8f63e9ee39a99c53bd55077ae70d46f12",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "9f5d2d2c9ebaeb38aba84ef8b9dbc8ec5247ebb4860b45f0b3077a5b6bf8e903"
+      "sha256": "87b9b52fdb0c25e995c9e58033564de8f63e9ee39a99c53bd55077ae70d46f12"
     },
     {
       "source": "server/src/harness-runtime/session-coordinator.ts",
       "target": "src/core/harness-runtime/session-coordinator.ts",
-      "sourceSha256": "fa80c96c89993f36a99d91922b5d333f3b09afef12adf27a22b638fdf94b6a08",
+      "sourceSha256": "d5a0ea3d8fda983491c3811bbb59ce1c803c3c56bf4aa7b89486f65d8d38454d",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "fa80c96c89993f36a99d91922b5d333f3b09afef12adf27a22b638fdf94b6a08"
+      "sha256": "d5a0ea3d8fda983491c3811bbb59ce1c803c3c56bf4aa7b89486f65d8d38454d"
     },
     {
       "source": "server/src/harness-runtime/session-ref.ts",
@@ -999,10 +968,10 @@
     {
       "source": "server/src/harness-runtime/skill-staging.ts",
       "target": "src/core/harness-runtime/skill-staging.ts",
-      "sourceSha256": "f27a92dc9263ca1d1b68cb14709abc3cdb36c6973acb578dd2d5702689eec914",
+      "sourceSha256": "3560b6164c9b87bb79b4e8654ecbb23597d0517006a58916edabcbb372e5561c",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "f27a92dc9263ca1d1b68cb14709abc3cdb36c6973acb578dd2d5702689eec914"
+      "sha256": "3560b6164c9b87bb79b4e8654ecbb23597d0517006a58916edabcbb372e5561c"
     },
     {
       "source": "server/src/harness-runtime/tool-catalog.ts",
@@ -1069,6 +1038,14 @@
       "sha256": "748567a166fbf504d9ed1e9073e7df8ee17560b7813648a7b727e348a6054752"
     },
     {
+      "source": "server/src/internal/shared/agent-permission-prompts.ts",
+      "target": "src/core/internal/shared/agent-permission-prompts.ts",
+      "sourceSha256": "bc62f58e2dd74637913fac12d90d778b44f7fc12f35baaa5cfce258125918ed9",
+      "sharedFixes": [],
+      "brandingEdits": [],
+      "sha256": "bc62f58e2dd74637913fac12d90d778b44f7fc12f35baaa5cfce258125918ed9"
+    },
+    {
       "source": "server/src/internal/shared/collaboration-session-key.ts",
       "target": "src/core/internal/shared/collaboration-session-key.ts",
       "sourceSha256": "82e872adf63a347af57cc9875e5c9f41c7163a45998407d9e19bf72652740d5f",
@@ -1087,10 +1064,10 @@
     {
       "source": "server/src/internal/shared/explainer-tools.ts",
       "target": "src/core/internal/shared/explainer-tools.ts",
-      "sourceSha256": "3b87543d2da8a14bbaa63d0d1977548a3a260028776b38c7776ec15c5f8106ab",
+      "sourceSha256": "dc1aed067696ab907d217b8eaede0afb270c7bb5a800c1a0fc9d84556793274a",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "3b87543d2da8a14bbaa63d0d1977548a3a260028776b38c7776ec15c5f8106ab"
+      "sha256": "dc1aed067696ab907d217b8eaede0afb270c7bb5a800c1a0fc9d84556793274a"
     },
     {
       "source": "server/src/internal/shared/gateway-reasoning.ts",
@@ -1099,6 +1076,14 @@
       "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "74bd1c0515f41eb73dbc8644192b7d3ef44ff8659803e1650b2ce8664799c50b"
+    },
+    {
+      "source": "server/src/internal/shared/harness-prompt-contract.ts",
+      "target": "src/core/internal/shared/harness-prompt-contract.ts",
+      "sourceSha256": "22bf83a1ed2df604f1860610576d4f684d3c2e3bcde1713dfed8abd77fc20c87",
+      "sharedFixes": [],
+      "brandingEdits": [],
+      "sha256": "22bf83a1ed2df604f1860610576d4f684d3c2e3bcde1713dfed8abd77fc20c87"
     },
     {
       "source": "server/src/internal/shared/invocation-activity.ts",
@@ -1199,18 +1184,24 @@
     {
       "source": "server/src/invocation-performance.ts",
       "target": "src/core/invocation-performance.ts",
-      "sourceSha256": "e832622c51088827b18d200277297677a16a2cde0f3fac0797115ad8341f95cc",
+      "sourceSha256": "1692f96671bc1f9d2c4a2cece781b625119a02a24a19d050a68a1a43308837a9",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "e832622c51088827b18d200277297677a16a2cde0f3fac0797115ad8341f95cc"
+      "sha256": "1692f96671bc1f9d2c4a2cece781b625119a02a24a19d050a68a1a43308837a9"
+    },
+    {
+      "source": "server/src/main-decision.ts",
+      "target": "src/core/main-decision.ts",
+      "sourceSha256": "948163c6d556801607ae333e860a14dfa4e78acf05451b133a819f69bd268c46",
+      "sharedFixes": [],
+      "brandingEdits": [],
+      "sha256": "948163c6d556801607ae333e860a14dfa4e78acf05451b133a819f69bd268c46"
     },
     {
       "source": "server/src/main-workflow-files.ts",
       "target": "src/core/main-workflow-files.ts",
-      "sourceSha256": "cbaf3fe262be4f64435fad9eac78b071265272ffe91ccd022aa9feb753577d58",
-      "sharedFixes": [
-        "sdk-host-main-workflow-files"
-      ],
+      "sourceSha256": "eca834a98b69a47dad70be87c60b736d2568fec2e18ded57c51d1dabc12b7b0f",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "eca834a98b69a47dad70be87c60b736d2568fec2e18ded57c51d1dabc12b7b0f"
     },
@@ -1241,10 +1232,10 @@
     {
       "source": "server/src/orchestration-control-bridge.ts",
       "target": "src/core/orchestration-control-bridge.ts",
-      "sourceSha256": "83d543d15f3c207a7fdea6ac0c9bb7e1b1fa7156cd574b2bef4e3047a308a9b1",
+      "sourceSha256": "9055ddad6035fbab0aff2ba922e36d0c57eee478badf11b373674f6a3062fff9",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "83d543d15f3c207a7fdea6ac0c9bb7e1b1fa7156cd574b2bef4e3047a308a9b1"
+      "sha256": "9055ddad6035fbab0aff2ba922e36d0c57eee478badf11b373674f6a3062fff9"
     },
     {
       "source": "server/src/orchestration-control-decisions.ts",
@@ -1257,20 +1248,18 @@
     {
       "source": "server/src/orchestration-control-mcp.ts",
       "target": "src/core/orchestration-control-mcp.ts",
-      "sourceSha256": "ac8f7461fcfe1f6d1275fa42d12b44240ac224b071e111e8bd83e8d40f821780",
+      "sourceSha256": "240fafb5ac8ecec8051b7a595d2af4fd1059b7df55d357c2b2f231f0be06c168",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "ac8f7461fcfe1f6d1275fa42d12b44240ac224b071e111e8bd83e8d40f821780"
+      "sha256": "240fafb5ac8ecec8051b7a595d2af4fd1059b7df55d357c2b2f231f0be06c168"
     },
     {
       "source": "server/src/orchestrator.ts",
       "target": "src/core/orchestrator.ts",
-      "sourceSha256": "4ef02a7b4f31a2790eb8de0368bf71823b3c2bb9affc116d8af7b475f9c2d7e7",
-      "sharedFixes": [
-        "sdk-host-orchestrator"
-      ],
+      "sourceSha256": "945347d99ef408169202ab633d7594f24dc41cf4b993ef2053a736b09a82f951",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "8e0ccf6917ee8af9439390148370bc20ff947208b2f47afd9a2a08740a90bf17"
+      "sha256": "945347d99ef408169202ab633d7594f24dc41cf4b993ef2053a736b09a82f951"
     },
     {
       "source": "server/src/project-directory-aliases.ts",
@@ -1307,10 +1296,8 @@
     {
       "source": "server/src/project-mcp.ts",
       "target": "src/core/project-mcp.ts",
-      "sourceSha256": "3ece2fff40a8bc938ae2c001037e4c663a62dd76c2d8a288135e3496c91b8cfe",
-      "sharedFixes": [
-        "sdk-host-project-mcp"
-      ],
+      "sourceSha256": "97680db7b4762d7c1bf1db506036bfb7b6a6e83baed33d40213ac982d7f9ccf2",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "97680db7b4762d7c1bf1db506036bfb7b6a6e83baed33d40213ac982d7f9ccf2"
     },
@@ -1381,22 +1368,18 @@
     {
       "source": "server/src/prompt.ts",
       "target": "src/core/prompt.ts",
-      "sourceSha256": "74734848114898ef83f620f11e620cb5a35660a47590d4cd988fc384d9a1285d",
-      "sharedFixes": [
-        "sdk-host-prompt"
-      ],
+      "sourceSha256": "1e005164fa17c4e5eabfe29a7db6e822ab566fd7ace754393ed537696a684bf8",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "7b5e88e79f8614c7dcfd747226e3d459788ef2909ed12f4ce39a4b779273a58e"
+      "sha256": "1e005164fa17c4e5eabfe29a7db6e822ab566fd7ace754393ed537696a684bf8"
     },
     {
       "source": "server/src/protocol-router.ts",
       "target": "src/core/protocol-router.ts",
-      "sourceSha256": "36e2040a076280a03be5732881510d447b83479244666cbe284921ba807f3be0",
-      "sharedFixes": [
-        "sdk-host-protocol-router"
-      ],
+      "sourceSha256": "a91b8c1ed3f4b5cf777f9711e633bebd314e0afe5c0004661da64271a39be6ea",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "68f6853c28d153f2e03f85f8d88e63edd38734151069c578605e37ce53aaa7c7"
+      "sha256": "a91b8c1ed3f4b5cf777f9711e633bebd314e0afe5c0004661da64271a39be6ea"
     },
     {
       "source": "server/src/published-artifact-access.ts",
@@ -1425,10 +1408,8 @@
     {
       "source": "server/src/scoped-agent-configuration.ts",
       "target": "src/core/scoped-agent-configuration.ts",
-      "sourceSha256": "6be15e0d17a0cd4b7ada4fb8f710707792a0fa0911d386dce611d0d6c0fdc4ad",
-      "sharedFixes": [
-        "sdk-host-scoped-agent-configuration"
-      ],
+      "sourceSha256": "c3a94578fdbe4f2a15d3f109757eed74521b9a5eaa5609cda79f1c7903c8503a",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "c3a94578fdbe4f2a15d3f109757eed74521b9a5eaa5609cda79f1c7903c8503a"
     },
@@ -1451,10 +1432,10 @@
     {
       "source": "server/src/scoped-agent-resident.ts",
       "target": "src/core/scoped-agent-resident.ts",
-      "sourceSha256": "c982ecfa5b5a5c658c14a74e3a3b4579b16e0ae10d7decb72324bb56be1b8c54",
+      "sourceSha256": "88539851d7add6c38209df9b21691fd91ffe180f5d06222820fc3b9fc07e764a",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "c982ecfa5b5a5c658c14a74e3a3b4579b16e0ae10d7decb72324bb56be1b8c54"
+      "sha256": "88539851d7add6c38209df9b21691fd91ffe180f5d06222820fc3b9fc07e764a"
     },
     {
       "source": "server/src/scoped-group-final-integrator.ts",
@@ -1467,20 +1448,18 @@
     {
       "source": "server/src/scoped-group-output.ts",
       "target": "src/core/scoped-group-output.ts",
-      "sourceSha256": "6706ab20f14a58e47d033de03696b31129b09515a0536542a6c2ca97b61527b1",
+      "sourceSha256": "023c3230b7c73a4850fa3521477dc5e83e0f90722cbaa96259b0b9897fe9969a",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "6706ab20f14a58e47d033de03696b31129b09515a0536542a6c2ca97b61527b1"
+      "sha256": "023c3230b7c73a4850fa3521477dc5e83e0f90722cbaa96259b0b9897fe9969a"
     },
     {
       "source": "server/src/scoped-project-runtime.ts",
       "target": "src/core/scoped-project-runtime.ts",
-      "sourceSha256": "0f2e0fcdc5963547bf8916e67b7293827c61907908a6317b6f2b10f386792a53",
-      "sharedFixes": [
-        "sdk-host-scoped-project-runtime"
-      ],
+      "sourceSha256": "35c1638a1747aa1746d5d057b9c68e769643e47505617bf4ad06d03c7df2b187",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "8a7861c6aaf2bdbcc73bea0f6811f470a682ef1b78e1843068306e31e7f7e4ab"
+      "sha256": "35c1638a1747aa1746d5d057b9c68e769643e47505617bf4ad06d03c7df2b187"
     },
     {
       "source": "server/src/scoped-workflow-capacity.ts",
@@ -1573,10 +1552,8 @@
     {
       "source": "server/src/sii-experiments.ts",
       "target": "src/core/sii-experiments.ts",
-      "sourceSha256": "9a58fdfb4dc20453641cb26bf6b114079990bd5108f1fed4de022b02cafa3791",
-      "sharedFixes": [
-        "sdk-host-sii-experiments"
-      ],
+      "sourceSha256": "cdc556fe5d92f12968ffff459cffff68c640e68554d753cadbbf434bb912b2ce",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "cdc556fe5d92f12968ffff459cffff68c640e68554d753cadbbf434bb912b2ce"
     },
@@ -1599,12 +1576,10 @@
     {
       "source": "server/src/skill-catalog.ts",
       "target": "src/core/skill-catalog.ts",
-      "sourceSha256": "317171bedfbac4423bc381c07f76de93afe34d1d900681d3a86c476a74dd1a41",
-      "sharedFixes": [
-        "shared-categorized-builtin-skill-discovery"
-      ],
+      "sourceSha256": "1cb8048c9a8ce9ec1c3a14d94cb788dae7fdeddf49574f0afae65c1013727263",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "46daf11c293afc968428a93f21090960c67f11d14a6083caa1a7d979aa5a9b17"
+      "sha256": "1cb8048c9a8ce9ec1c3a14d94cb788dae7fdeddf49574f0afae65c1013727263"
     },
     {
       "source": "server/src/sleep-mcp.ts",
@@ -1625,12 +1600,10 @@
     {
       "source": "server/src/storage.ts",
       "target": "src/core/storage.ts",
-      "sourceSha256": "9145b870ed41ceccb6ea9c2e99a306227f0b13a2c972b2dfd20a072c51822eb9",
-      "sharedFixes": [
-        "sdk-host-storage"
-      ],
+      "sourceSha256": "419e4c69375378c1ee736404d63c57a17f025263985c46f2d437be0815da8d89",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "b5dbb9ed3767f80a380025eec54c35e1b2d2a104f4c4227c2bd01ece6a6a47b6"
+      "sha256": "419e4c69375378c1ee736404d63c57a17f025263985c46f2d437be0815da8d89"
     },
     {
       "source": "server/src/system-controller.ts",
@@ -1651,10 +1624,10 @@
     {
       "source": "server/src/terminal-push-coordinator-runtime.ts",
       "target": "src/core/terminal-push-coordinator-runtime.ts",
-      "sourceSha256": "a2d5556f3432b369cb849e094e26153b963538e57ef2337e3a5ecbbd9f699957",
+      "sourceSha256": "f22381e769c9e0def3441e63801d3fe3762812fa51745a0b0e2b5c9e35b6e316",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "a2d5556f3432b369cb849e094e26153b963538e57ef2337e3a5ecbbd9f699957"
+      "sha256": "f22381e769c9e0def3441e63801d3fe3762812fa51745a0b0e2b5c9e35b6e316"
     },
     {
       "source": "server/src/terminal-push-observation-control.ts",
@@ -1667,12 +1640,10 @@
     {
       "source": "server/src/types.ts",
       "target": "src/core/types.ts",
-      "sourceSha256": "186cc3b3de80c6c8848d19c832a64434eb8fc9189fe8490e5c1bab5b0a94056a",
-      "sharedFixes": [
-        "sdk-host-types"
-      ],
+      "sourceSha256": "38bb0db5afb02ac78d385e682e187b0a56089d25659e71827950844d6c5e37b5",
+      "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "52e40cf12f9c592ae7791b08a81653ae9a46cea1ce4d9c35cf2a54beaf2d394c"
+      "sha256": "38bb0db5afb02ac78d385e682e187b0a56089d25659e71827950844d6c5e37b5"
     },
     {
       "source": "server/src/utils.ts",
@@ -1685,10 +1656,8 @@
     {
       "source": "server/src/validation.ts",
       "target": "src/core/validation.ts",
-      "sourceSha256": "fc2bf9fb892dd9966a72b52ac684ca81fb078ba2b864834365c788c675505ceb",
-      "sharedFixes": [
-        "sdk-host-validation"
-      ],
+      "sourceSha256": "cf80a471d8cf23a6800d86fbcc26b18c07a380ce63362f3a35ea49c9705ca2c4",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "cf80a471d8cf23a6800d86fbcc26b18c07a380ce63362f3a35ea49c9705ca2c4"
     },
@@ -1727,10 +1696,18 @@
     {
       "source": "server/src/workflow-context.ts",
       "target": "src/core/workflow-context.ts",
-      "sourceSha256": "a1a354e59e9a1c174f680fbf234271e87160168bc72d91c6c4e1767bb575ef70",
+      "sourceSha256": "def81c14df272464c83ffe3e4ee734a3cb4d17940aead9b894d5ad083cd58f6c",
       "sharedFixes": [],
       "brandingEdits": [],
-      "sha256": "a1a354e59e9a1c174f680fbf234271e87160168bc72d91c6c4e1767bb575ef70"
+      "sha256": "def81c14df272464c83ffe3e4ee734a3cb4d17940aead9b894d5ad083cd58f6c"
+    },
+    {
+      "source": "server/src/workflow-input.ts",
+      "target": "src/core/workflow-input.ts",
+      "sourceSha256": "20839781df66c203215f9e5f39daf2176a06a1a392985dbd6ddae9bd37f5be3b",
+      "sharedFixes": [],
+      "brandingEdits": [],
+      "sha256": "20839781df66c203215f9e5f39daf2176a06a1a392985dbd6ddae9bd37f5be3b"
     },
     {
       "source": "server/src/workflow-progress.ts",
@@ -1743,10 +1720,8 @@
     {
       "source": "server/src/workflow-reconfiguration.ts",
       "target": "src/core/workflow-reconfiguration.ts",
-      "sourceSha256": "352e7bdde2ad78d17de1d5485717acaa98c8bf3446768876628a6eaa83edc445",
-      "sharedFixes": [
-        "sdk-host-workflow-reconfiguration"
-      ],
+      "sourceSha256": "032ebd05837939f914e52b6131e82d0aaf5dcb8992279ff400410bd0b03592fe",
+      "sharedFixes": [],
       "brandingEdits": [],
       "sha256": "032ebd05837939f914e52b6131e82d0aaf5dcb8992279ff400410bd0b03592fe"
     },
@@ -1807,8 +1782,8 @@
     {
       "source": "server/tests/agent-context-index.test.ts",
       "target": "tests/main-core/agent-context-index.test.ts",
-      "sha256": "4d8fab73f8d2f052147c15dc68dedd7081da2539b5f3bdfa5990903a7db38128",
-      "sourceSha256": "27b1822000159f799f43173e406e2459814efa4622bb4f660ed1917aa0781c77",
+      "sha256": "288d210196769950121624f88b0a667270b505a9e530a989046470fb37056f7b",
+      "sourceSha256": "53930b1c81dc00ab9c80d360619898b96e05fa7eab9fb5a502d4f906d05c152c",
       "testAdaptations": [
         "Windows directory junction exercises the redirected context root rejection"
       ],
@@ -1823,11 +1798,88 @@
       "brandingEdits": []
     },
     {
+      "source": "server/tests/agent-git-operation-query.test.ts",
+      "target": "tests/main-core/agent-git-operation-query.test.ts",
+      "sha256": "dbf29d9b70563db861f255f3b7aaf4af07f5f8660fb6c8e87fae1d76e3bc684b",
+      "sourceSha256": "441c553041fab82744023e0a9a8d46e3c2997611a44999a9ca3586e8608a5fff",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/agent-git-tools.test.ts",
+      "target": "tests/main-core/agent-git-tools.test.ts",
+      "sha256": "ad62cf5c682f41442422aa2fb56f17bc8c63e16310ce4df95032b52680f74691",
+      "sourceSha256": "dfb49f59882d1f10e639128efb2bca85928ce1d644af72bc2575fa09d827f944",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
       "source": "server/tests/agent-orchestration-reconfiguration.test.ts",
       "target": "tests/main-core/agent-orchestration-reconfiguration.test.ts",
       "sha256": "f572b49f23e6055158a32b6f82e32e8d6889578252016e2be36e43745c5d36bc",
       "sourceSha256": "b678ad76406fa83a9c8edee2d838ce0274e2faf0fbced7e3d2f398b31defc389",
       "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/agent-queue-view.test.ts",
+      "target": "tests/main-core/agent-queue-view.test.ts",
+      "sha256": "4f24171b3c74cd5a671837766ada8f0969224a64e0b5c9bd772e0895d2b830c1",
+      "sourceSha256": "e8a0b585a0f310ccb2fef7839d21a9d6c5c3365269e21b19edccd2f332c80270",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/agent-tool-catalog.test.ts",
+      "target": "tests/main-core/agent-tool-catalog.test.ts",
+      "sha256": "2cc8de61258d3e6e0451588d802280e579982d811c1827996c974ad72e0428e9",
+      "sourceSha256": "eb3a8250035e09c0034a22e8efb771fd746b6985003cac4172f5fd81474756f0",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/builtin-adapters.test.ts",
+      "target": "tests/main-core/builtin-adapters.test.ts",
+      "sha256": "27affbe11dcaf17896757094c6b439c980851098a3737b352e315bb0005b2265",
+      "sourceSha256": "a862317695e5c598a149e2e3f7a1f429da42f885852791d76658cd32687f00f3",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/claude-stream-native.test.ts",
+      "target": "tests/main-core/claude-stream-native.test.ts",
+      "sha256": "45db47ae37d56521b3213189d6f98d15f586858e9e5bdbda056ab2cba3f26ec4",
+      "sourceSha256": "05de88970099acf100a38eb10acadd6dcbcf1b4d9a31c021d52532136b11301e",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/codex-gateway-model-catalog.test.ts",
+      "target": "tests/main-core/codex-gateway-model-catalog.test.ts",
+      "sha256": "b65f0f784caebc7112dd368f7c984b79d013a072656efc5159f2891923348259",
+      "sourceSha256": "1d897382e9e42a064bbeaece6a47feba90f77f967152c4e59b50bb9e1bbd06a7",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/codex-native-input-history.test.ts",
+      "target": "tests/main-core/codex-native-input-history.test.ts",
+      "sha256": "dac48908bb9588bbebf6c4853cd29a7455aff9caa6fc54ba99db77be23e2a8d5",
+      "sourceSha256": "2c99f485d1e9d915c04575178438fafff229967fec7b99e8eba8f468a904fd75",
+      "testAdaptations": [
+        "Windows directory junctions; skip only unavailable file symlink privilege"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/collaboration-dispatcher-rejection.test.ts",
+      "target": "tests/main-core/collaboration-dispatcher-rejection.test.ts",
+      "sha256": "452baed592f67937380dff01a20752df453448a4100045b0a6770b8ea8558e02",
+      "sourceSha256": "32e11f05a5298a7d717f2d1eb9ddd4ac9d99129214bfa42540e1fcbbd40b2b4b",
+      "testAdaptations": [
+        "Portable file URL for the test-only tsx loader",
+        "SDK source URL location"
+      ],
       "brandingEdits": []
     },
     {
@@ -1839,10 +1891,224 @@
       "brandingEdits": []
     },
     {
+      "source": "server/tests/collaboration-git-local.test.ts",
+      "target": "tests/main-core/collaboration-git-local.test.ts",
+      "sha256": "663b07362c8028748219fc70b1a0efb6039f2ad31c79524161fb6a6f32275f7d",
+      "sourceSha256": "41f00d2ff8c36c702a05f25f4a6e98fb652cf6a1858b07dec2a6bec0aeb3b761",
+      "testAdaptations": [
+        "fixture-local-autocrlf=false",
+        "Windows directory junctions",
+        "it.for context: explicit skip on file-symlink EPERM",
+        "fixture-local commit identity",
+        "Windows legal quoted filename",
+        "finite 30/60s slow-Git cases",
+        "temporary cleanup retry"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/collaboration-git-provider.test.ts",
+      "target": "tests/main-core/collaboration-git-provider.test.ts",
+      "sha256": "91d0ac3074d2511ed673c5acba9baa066a1567ddbaee92611b8e82be22e43e1e",
+      "sourceSha256": "b23730f16d18d298a361a14e4f13199ba5060fef489ee92eab50932ab0498544",
+      "testAdaptations": [
+        "Fixture-local autocrlf=false for byte-exact canonical delivery on Windows"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/collaboration-runtime-integration.test.ts",
+      "target": "tests/main-core/collaboration-runtime-integration.test.ts",
+      "sha256": "e0af05a2bf9442f0249e6f5177e4a229f49ee389975af9b02688bcecf67a4eff",
+      "sourceSha256": "867ef77eb9d8ee3884ea417ab34434a49233020b354419d0c75a3a2b79f5ce4d",
+      "testAdaptations": [
+        "Windows readonly mode and project-directory junction in isolated fixtures",
+        "Await the durable retrying projection after the in-memory transition; retain recovery and single-dispatch checks",
+        "SDK collaboration helper locations"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/collaboration-state.test.ts",
+      "target": "tests/main-core/collaboration-state.test.ts",
+      "sha256": "f06ba3aecd24857c5ee0eecc88ae44f774dd71895622c731b065f079e5dedd66",
+      "sourceSha256": "aa3c120595ae80561a97660bca6da0b7591fdad38f4228c3811fafe3e7895f80",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/control-result-receipts.test.ts",
+      "target": "tests/main-core/control-result-receipts.test.ts",
+      "sha256": "b82814fae92206dc614a4d8c352c82f41897f0120ad21862350f39ebb9f2f5fc",
+      "sourceSha256": "2389746bcb0a0934699c0406b4e981aa25cfcaafea6eaa7ea25cb1559c12a869",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/control-stage-drain.test.ts",
+      "target": "tests/main-core/control-stage-drain.test.ts",
+      "sha256": "58fe9e10cb1e540b6162baf897c1fc6dd940700081d538b884c6098f485894ef",
+      "sourceSha256": "680ad8f72537585f92b5833ca2d6a0c075ce677648e1876cdde3406b7d04a712",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/dsh-adapter-config.test.ts",
+      "target": "tests/main-core/dsh-adapter-config.test.ts",
+      "sha256": "f2e431a4edecbe9d274d415878412516328137f0dc79aab67f803b00d61ae5e9",
+      "sourceSha256": "e53ee91fac02e777ee2c44055dfd0e0fc3fe92b0dc09cc77d994c4c10ad69a2f",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/dsh-protocol-recovery.test.ts",
+      "target": "tests/main-core/dsh-protocol-recovery.test.ts",
+      "sha256": "84c84eb2fb25ff85d5fe0d6a49e47c9795a07fd200ddc04eb89fcab2df639450",
+      "sourceSha256": "e27877e3ac02df15411802901ff87ecb5b755d208b5af768f8703a6c6f48f8a4",
+      "testAdaptations": [
+        "Explicit installed DSH executable for SDK-only source layouts"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/fixtures/collaboration-concurrent-worker.ts",
+      "target": "tests/main-core/fixtures/collaboration-concurrent-worker.ts",
+      "sha256": "67ff35aa3aaf0ced8e4c90fbd90a8235a11f1c47a3c90438ea31b06b342e9d5d",
+      "sourceSha256": "00cb9158a58939090296b6283c404070844e8d4def01c2ee38fb6d95f94fdb73",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/fixtures/harness-events/claude-code.jsonl",
+      "target": "tests/main-core/fixtures/harness-events/claude-code.jsonl",
+      "sha256": "64dc41cf688449531d0fe659259a33f5475d7d6549b7d12275df3dc64ff0cb4c",
+      "sourceSha256": "64dc41cf688449531d0fe659259a33f5475d7d6549b7d12275df3dc64ff0cb4c",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/fixtures/harness-events/codex.jsonl",
+      "target": "tests/main-core/fixtures/harness-events/codex.jsonl",
+      "sha256": "71ad8edc6086f30e0a38c6990a1c2257d23821cb020ee605c66b16d9c7669bb7",
+      "sourceSha256": "71ad8edc6086f30e0a38c6990a1c2257d23821cb020ee605c66b16d9c7669bb7",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/fixtures/harness-events/dsh.jsonl",
+      "target": "tests/main-core/fixtures/harness-events/dsh.jsonl",
+      "sha256": "4cd6b0ddd0a3557b0095218d91432c4073b19d14fbed5c910d8931ddc3213ff0",
+      "sourceSha256": "4cd6b0ddd0a3557b0095218d91432c4073b19d14fbed5c910d8931ddc3213ff0",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/fixtures/harness-events/pi.jsonl",
+      "target": "tests/main-core/fixtures/harness-events/pi.jsonl",
+      "sha256": "f8f7a312074f1df851c900cf70b2f02cadebfc66da8d50ca9f890ac7883c226c",
+      "sourceSha256": "f8f7a312074f1df851c900cf70b2f02cadebfc66da8d50ca9f890ac7883c226c",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/harness-prompt-catalog.test.ts",
+      "target": "tests/main-core/harness-prompt-catalog.test.ts",
+      "sha256": "2e4eb9434b939b7197540bbea7bb343593eab9d478f1a6d8f1e356baf2746c30",
+      "sourceSha256": "373a86111b63a1f6f770e734cffaf8a251866e54495a15bc9b9a527b2cd83a95",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
       "source": "server/tests/harness-recovery.test.ts",
       "target": "tests/main-core/harness-recovery.test.ts",
-      "sha256": "40374f174e4a3429294f2e8090a1ae240546a6716d709e8342f14b05175aa6ec",
-      "sourceSha256": "3cd122fcf4541aef5ef542854d292fb52e77e0d57e989dd83b273d97498aab13",
+      "sha256": "57893a2ed8119d055c7f9ec3ef189f645d60b68e55d921362ed0aacf185dae74",
+      "sourceSha256": "0f95947a2e2eebc3e087c21a97c99e820777d4795c946fd36c813eba23b0f7c7",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/harness-runtime-contract.ts",
+      "target": "tests/main-core/harness-runtime-contract.ts",
+      "sha256": "0782a87d464f3e5aa127cbd0329f73bf354e5075f9de4852c12b3efb66dcb7df",
+      "sourceSha256": "ca38f8d132b62d1a5bc6ce2bb7f328ce66995063bff61f480b8a7bd417eca2fb",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/harness-runtime.test.ts",
+      "target": "tests/main-core/harness-runtime.test.ts",
+      "sha256": "29a32dbbefd2d981f19bdea5dd1727e8f836041de395c3a22a51a6e29a6dea82",
+      "sourceSha256": "5d133b4fda5295dc632cdbd591e11a47edd26aee44d2e42f07faa8b287f259c4",
+      "testAdaptations": [
+        "Windows Inspire wrapper/mode expectations"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/helpers/agent-git-native-fixture.ts",
+      "target": "tests/main-core/helpers/agent-git-native-fixture.ts",
+      "sha256": "c3652d84e4587fe009aa9b4d6f88b059bad38d1634642ba1c6f6945c01e3fe7c",
+      "sourceSha256": "d84560a7395e5e16255039cc0955d5f104c9762edac113faaa74b2748899bdd5",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/helpers/merged-tree.ts",
+      "target": "tests/main-core/helpers/merged-tree.ts",
+      "sha256": "00b8130b891093c83f6fd54be9701bb0ea508de03c39a74d4ea86a441fe2be07",
+      "sourceSha256": "00b8130b891093c83f6fd54be9701bb0ea508de03c39a74d4ea86a441fe2be07",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/helpers/pause-writer-crash.ts",
+      "target": "tests/main-core/helpers/pause-writer-crash.ts",
+      "sha256": "dcc264f6d32c3c8eb38faa09abc5f676b09ba35dc6b5885a4c9e615ba7482eb5",
+      "sourceSha256": "8631c695e4fc3efc996b5865020d504bee50d78e23db0ac1726d447d0dd9d6c4",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/helpers/scoped-runtime-git.ts",
+      "target": "tests/main-core/helpers/scoped-runtime-git.ts",
+      "sha256": "c0bb9d7d61da963ee9a87016a9de2df1ae71b6a03c5a8c38a4dc2e9797cdcfe1",
+      "sourceSha256": "9ea65b2379ffd03b700f23ff3563caaa9e21b4b96fee7ca76b7c24f0152637cb",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/helpers/scoped-worktree-closing-delivery-fixture.ts",
+      "target": "tests/main-core/helpers/scoped-worktree-closing-delivery-fixture.ts",
+      "sha256": "d3b63403937096bb03cfe5fed60856b07cfe6164c6dfbfc82ae8fb9d04b1f612",
+      "sourceSha256": "a5595deacdd87459d4c5f19d66828f4ce66231e63ff70c7d33b8356dcc9badf3",
+      "testAdaptations": [
+        "Single terminal newline"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/helpers/scoped-worktree-closing-fixture.ts",
+      "target": "tests/main-core/helpers/scoped-worktree-closing-fixture.ts",
+      "sha256": "23d7d7946a0d3d0c4b3df9679957fece2da49d4d62f17ae4ff05e6873f693bc5",
+      "sourceSha256": "240ca7aaecd4ccfaf7d1e7e2c3d7b7786650355aba844fca826c60cdf0edc4aa",
+      "testAdaptations": [
+        "Windows temporary worktree cleanup retries"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/helpers/workflow-adjustment-restart-worker.ts",
+      "target": "tests/main-core/helpers/workflow-adjustment-restart-worker.ts",
+      "sha256": "28d4b953e87e4697cd47cb12301d75b19b0878af74d850fab52c4fed4906393b",
+      "sourceSha256": "962812b487df16e90f4c47f6dbd468d9d083976f3cfba4018f5c773dec9e7f7e",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/helpers/workflow-projection-writer.ts",
+      "target": "tests/main-core/helpers/workflow-projection-writer.ts",
+      "sha256": "9eafc63657b6068914d0453c3ec954b0ad9d5307ee4c79f6eae5e67fe447b136",
+      "sourceSha256": "5846d60fccd9f7e9c022b721f33362839a1bb267c4057d8175847fa4fca0d962",
       "testAdaptations": [],
       "brandingEdits": []
     },
@@ -1857,8 +2123,68 @@
     {
       "source": "server/tests/invocation-policy.test.ts",
       "target": "tests/main-core/invocation-policy.test.ts",
-      "sha256": "ffe8665b9cb7937ac04fbe4d19eb03ff7ef4fc7e3d9a6c80cdf339ae40e37260",
-      "sourceSha256": "37adfb991ddbd986966b50611cfb923446b3fab9b25dc2c12f566e822e0660eb",
+      "sha256": "650103c3a4cb501905d2a5a86bf4462086b604f6f66085e0d8af5377a0942514",
+      "sourceSha256": "1d605c01d9682402df1fb72535c72bb7ccbe80f60326850d7f6a75c916bfdcdc",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/main-workflow-draft-storage.test.ts",
+      "target": "tests/main-core/main-workflow-draft-storage.test.ts",
+      "sha256": "8788f98fa4d3aa6c7cc90529c94361b668c0e78df5208f39a515462a19c31adf",
+      "sourceSha256": "72708880b3e265260ede75914f1cabd516da55a90d610df7d89e54e35e986da8",
+      "testAdaptations": [
+        "Windows directory junctions; skip only unavailable file symlink privilege"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/official-event-bridge.test.ts",
+      "target": "tests/main-core/official-event-bridge.test.ts",
+      "sha256": "df7b5488e2a1e5ed4ff7fa1245045312d9c31b574090ca7f3f7923b4e26f1032",
+      "sourceSha256": "6b69aa5e1d5c4d24d00ee9a9d278e82d1c2fa83370cad2fc41453d08ff7323c9",
+      "testAdaptations": [
+        "Actual local Node executable for Windows adapter contract; no Harness or model invocation",
+        "SDK location for upstream official-event fixtures"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/orchestration-control-mcp.test.ts",
+      "target": "tests/main-core/orchestration-control-mcp.test.ts",
+      "sha256": "d01ed6810b5e4a4cb6812985e4337b199db01d9c7a4644493cc76df31c5e301e",
+      "sourceSha256": "29e9cea101dd1c18f9a58894a587280d36b40ac2486c2049ca9d14ba4aa1c0d6",
+      "testAdaptations": [
+        "Portable file URL for the test-only tsx loader",
+        "SDK MCP entrypoint, Windows test pipe and explicit file-symlink privilege skip"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/orchestration-control-pending.test.ts",
+      "target": "tests/main-core/orchestration-control-pending.test.ts",
+      "sha256": "07ee0a9d7083496308d7d616929c052d5f18f6094acb7c6fa070017edabab677",
+      "sourceSha256": "d80bce68a84554f87c7ab8c17be1ed93ab1c6878783ae42af15e47a02e8c7d37",
+      "testAdaptations": [
+        "Portable file URL for the test-only tsx loader",
+        "SDK source URL location",
+        "Windows named-pipe peer for the isolated control transport fixture"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/orchestrator-collaboration-api.test.ts",
+      "target": "tests/main-core/orchestrator-collaboration-api.test.ts",
+      "sha256": "9fa3292201b10f7e35f0f6e178a0babbbfe7993ac78c5ab20d9939c9328e28b3",
+      "sourceSha256": "3213d572efa24ddf1cb0cd940f9efe07e1a3dd7333eb5ace8c0f323278e798e2",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/orchestrator-main.test.ts",
+      "target": "tests/main-core/orchestrator-main.test.ts",
+      "sha256": "fbf4c8dd765b485f380caf26418d473f4516d472463c4711c2ccffd3b91ff652",
+      "sourceSha256": "ebe830d85d9a6d8d989fa44c27f1af0c72c465ed3ac7f133a26809e7996f04db",
       "testAdaptations": [],
       "brandingEdits": []
     },
@@ -1884,367 +2210,6 @@
       "sha256": "9392f031063e7c64fc53b56da1b7a06af185b77ba415ebade7fd7d8d748775fa",
       "sourceSha256": "7909c187cb4009ff87b93ba7e6033045b5f46555297f494b72ecf43086a1e2f9",
       "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/workflow-adjustment-notifications.test.ts",
-      "target": "tests/main-core/workflow-adjustment-notifications.test.ts",
-      "sha256": "79db6c55c979fc8c6006b5cdc52234f8e81ffc59608333165312f49c440bdead",
-      "sourceSha256": "14040f2596784e803aeaefe85860e4db33c7ce5e80f16682791e53486cacc34c",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/workflow-context.test.ts",
-      "target": "tests/main-core/workflow-context.test.ts",
-      "sha256": "d3d151ede7e2f8c083a2c5a5a8f1fce368977418a75f2aef9e28fcadaf70a003",
-      "sourceSha256": "1dc0e3e927cc083632b86472e6fca2471b64ddaeb2919703025890a54e745ac3",
-      "testAdaptations": [
-        "Windows readonly-bit assertion; Unix keeps the full 0400 permission check"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/workflow-recovery.test.ts",
-      "target": "tests/main-core/workflow-recovery.test.ts",
-      "sha256": "2e5f00dbe820230e1cc654f682d56be28d19af551d01403519528e2ea5e54a33",
-      "sourceSha256": "026498f7d58e34c641264c3faaf457b63373dc823cd93071179b1bc84c74a97f",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/scoped-collaboration-schema.test.ts",
-      "target": "tests/main-core/scoped-collaboration-schema.test.ts",
-      "sha256": "eeb1a4638d7d381ddadee539db65c591ebb9f53bbc5f8ed2d3e37d5236e3a763",
-      "sourceSha256": "07ae40772360c5de5001e6bed772ba36a60cf7603b206a082de8623713eae4b5",
-      "testAdaptations": [
-        "Canonical absolute paths for database-only scoped execution fixtures on every host"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/scoped-workflow-contract.test.ts",
-      "target": "tests/main-core/scoped-workflow-contract.test.ts",
-      "sha256": "1b132ff2a0fc84a7f31bb53d7a464a1f7266706eddde55a3394c870f0ee5aec3",
-      "sourceSha256": "235f8e6a8fe222065c8f361ad470bb7acb87270c7ad55d15da426acc577d9908",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/orchestrator-collaboration-api.test.ts",
-      "target": "tests/main-core/orchestrator-collaboration-api.test.ts",
-      "sha256": "9fa3292201b10f7e35f0f6e178a0babbbfe7993ac78c5ab20d9939c9328e28b3",
-      "sourceSha256": "3213d572efa24ddf1cb0cd940f9efe07e1a3dd7333eb5ace8c0f323278e798e2",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/collaboration-git-local.test.ts",
-      "target": "tests/main-core/collaboration-git-local.test.ts",
-      "sha256": "663b07362c8028748219fc70b1a0efb6039f2ad31c79524161fb6a6f32275f7d",
-      "sourceSha256": "41f00d2ff8c36c702a05f25f4a6e98fb652cf6a1858b07dec2a6bec0aeb3b761",
-      "testAdaptations": [
-        "fixture-local-autocrlf=false",
-        "Windows directory junctions",
-        "it.for context: explicit skip on file-symlink EPERM",
-        "fixture-local commit identity",
-        "Windows legal quoted filename",
-        "finite 30/60s slow-Git cases",
-        "temporary cleanup retry"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/collaboration-state.test.ts",
-      "target": "tests/main-core/collaboration-state.test.ts",
-      "sha256": "6e0ffcbeef96e3444cd6c17c89662d60dd035babd8b05eab09d7de62e5be516c",
-      "sourceSha256": "f41c9762cadef457acedec2c5d1cc8b3b929713fff9cd0f9a4417ca8d7a18688",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/agent-git-tools.test.ts",
-      "target": "tests/main-core/agent-git-tools.test.ts",
-      "sha256": "ad62cf5c682f41442422aa2fb56f17bc8c63e16310ce4df95032b52680f74691",
-      "sourceSha256": "dfb49f59882d1f10e639128efb2bca85928ce1d644af72bc2575fa09d827f944",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/workflow-session-compatibility.test.ts",
-      "target": "tests/main-core/workflow-session-compatibility.test.ts",
-      "sha256": "83f7ae4317732a80e1e89c1e3cdb161fe3947ef6a6a490894b43b1d69f595366",
-      "sourceSha256": "a5305b73775f4fe7c7a2d949e98e3e7c46bd7e16c2d8638fa861438d38ed8be5",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/workflow-adjustment-restart.test.ts",
-      "target": "tests/main-core/workflow-adjustment-restart.test.ts",
-      "sha256": "b27ede19b3ae2967571ff16c640dfcead15a6f879e869fbe01b119190ac3fd3d",
-      "sourceSha256": "b098c2e8bb7cfee77845e6a5abe0a376e5fe8824501037abd736c2b746e81800",
-      "testAdaptations": [
-        "SDK helper location"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/serial-workflow-native-input.test.ts",
-      "target": "tests/main-core/serial-workflow-native-input.test.ts",
-      "sha256": "bf7500efe0167d52ca41a9514f45d381b240f7dc7f82c2223c02ba92f219ddba",
-      "sourceSha256": "a2405b31430b94b1a0398765fc4031e2b9f0b675dd8e5a7fb30d58576385240b",
-      "testAdaptations": [
-        "Exercise actual native transport of compact workflow notices and on-demand publication of every complete original fact",
-        "Controlled Codex catalog probe for SDK gateway tools"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/control-result-receipts.test.ts",
-      "target": "tests/main-core/control-result-receipts.test.ts",
-      "sha256": "b82814fae92206dc614a4d8c352c82f41897f0120ad21862350f39ebb9f2f5fc",
-      "sourceSha256": "2389746bcb0a0934699c0406b4e981aa25cfcaafea6eaa7ea25cb1559c12a869",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/control-stage-drain.test.ts",
-      "target": "tests/main-core/control-stage-drain.test.ts",
-      "sha256": "58fe9e10cb1e540b6162baf897c1fc6dd940700081d538b884c6098f485894ef",
-      "sourceSha256": "680ad8f72537585f92b5833ca2d6a0c075ce677648e1876cdde3406b7d04a712",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/codex-native-input-history.test.ts",
-      "target": "tests/main-core/codex-native-input-history.test.ts",
-      "sha256": "dac48908bb9588bbebf6c4853cd29a7455aff9caa6fc54ba99db77be23e2a8d5",
-      "sourceSha256": "2c99f485d1e9d915c04575178438fafff229967fec7b99e8eba8f468a904fd75",
-      "testAdaptations": [
-        "Windows directory junctions; skip only unavailable file symlink privilege"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/main-workflow-draft-storage.test.ts",
-      "target": "tests/main-core/main-workflow-draft-storage.test.ts",
-      "sha256": "8788f98fa4d3aa6c7cc90529c94361b668c0e78df5208f39a515462a19c31adf",
-      "sourceSha256": "72708880b3e265260ede75914f1cabd516da55a90d610df7d89e54e35e986da8",
-      "testAdaptations": [
-        "Windows directory junctions; skip only unavailable file symlink privilege"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/sii-experiments.test.ts",
-      "target": "tests/main-core/sii-experiments.test.ts",
-      "sha256": "aa4725dc81313b1c1298208182fd4661f56f1ca813286468437b9bbb4ee7af22",
-      "sourceSha256": "a60cd711a19c765bd45bf9bf4a44033a224cead574765ddb167cdca23d79b4fd",
-      "testAdaptations": [
-        "Explicit Node fixture launcher and Windows symlink privilege handling"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/agent-tool-catalog.test.ts",
-      "target": "tests/main-core/agent-tool-catalog.test.ts",
-      "sha256": "c8e94088a58196f23536735033b8fa28ee9dcd85e11dd8b9a51284582ac6d65b",
-      "sourceSha256": "3b631a9c4290c56e40622bcdbc65e8c69e562a875f9f0f37d177f2f9b054913a",
-      "testAdaptations": [
-        "Verify on-demand catalog discovery rather than obsolete inline metadata; retain authorization and tool-policy assertions"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/agent-git-operation-query.test.ts",
-      "target": "tests/main-core/agent-git-operation-query.test.ts",
-      "sha256": "dbf29d9b70563db861f255f3b7aaf4af07f5f8660fb6c8e87fae1d76e3bc684b",
-      "sourceSha256": "441c553041fab82744023e0a9a8d46e3c2997611a44999a9ca3586e8608a5fff",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/push-supersession.test.ts",
-      "target": "tests/main-core/push-supersession.test.ts",
-      "sha256": "b2f0150b658b9be804a2a308ba7d7ab81f7c979399e2ce8f1cc9eba6b5311b9e",
-      "sourceSha256": "cfc7e036c51525879264f1470ef88f5620a21f03acef047e0a2f42271f16d0ca",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/scoped-unopened-preparation.test.ts",
-      "target": "tests/main-core/scoped-unopened-preparation.test.ts",
-      "sha256": "6572952e0c1adae3574c4e6c69e8d9af582b117b99bab64a1c141e7715b2d9ae",
-      "sourceSha256": "002c6c50a2729e080faf26a64927f3ce1f5fac8952b7f2ac2dc7434ba8599ec3",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/scoped-worktree-closing-delivery.test.ts",
-      "target": "tests/main-core/scoped-worktree-closing-delivery.test.ts",
-      "sha256": "fd5b275fa1b83232347ca185a0145941b5289763263b7b63f6e96c0ef98414e1",
-      "sourceSha256": "607f617b12d7e927da32805d3d97518093cc63ce25bffc8f6b6d6e6eb16a4196",
-      "testAdaptations": [
-        "Bounded Windows real-Git execution budget"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/scoped-worktree-closing-settlement.test.ts",
-      "target": "tests/main-core/scoped-worktree-closing-settlement.test.ts",
-      "sha256": "478a110c78c232e19d37a629df1eaf2badf2981ebee8fb6446e02b58bb3ce767",
-      "sourceSha256": "2585b9a539212c7f7a1e5b2b4840e5a9b6dfb74f6790634b087396ebad0d5676",
-      "testAdaptations": [
-        "Bounded Windows real-Git execution budget"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/scoped-worktree-closing-authorization.test.ts",
-      "target": "tests/main-core/scoped-worktree-closing-authorization.test.ts",
-      "sha256": "7acffff198e347fb56ad7c4fc38ac28f88e5808855902b84e63e59153bfdc5ef",
-      "sourceSha256": "92998ce207e580262babe7e2623716cb8063a2d088bc77caf7f36ee6191a208a",
-      "testAdaptations": [
-        "Bounded Windows real-Git checkpoint execution budget",
-        "Assert rejection at the current recovery-options gate for duplicate grants and ordinary retry; preserve all ownership checks"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/helpers/scoped-worktree-closing-fixture.ts",
-      "target": "tests/main-core/helpers/scoped-worktree-closing-fixture.ts",
-      "sha256": "23d7d7946a0d3d0c4b3df9679957fece2da49d4d62f17ae4ff05e6873f693bc5",
-      "sourceSha256": "240ca7aaecd4ccfaf7d1e7e2c3d7b7786650355aba844fca826c60cdf0edc4aa",
-      "testAdaptations": [
-        "Windows temporary worktree cleanup retries"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/helpers/scoped-worktree-closing-delivery-fixture.ts",
-      "target": "tests/main-core/helpers/scoped-worktree-closing-delivery-fixture.ts",
-      "sha256": "d3b63403937096bb03cfe5fed60856b07cfe6164c6dfbfc82ae8fb9d04b1f612",
-      "sourceSha256": "a5595deacdd87459d4c5f19d66828f4ce66231e63ff70c7d33b8356dcc9badf3",
-      "testAdaptations": [
-        "Single terminal newline"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/helpers/workflow-adjustment-restart-worker.ts",
-      "target": "tests/main-core/helpers/workflow-adjustment-restart-worker.ts",
-      "sha256": "28d4b953e87e4697cd47cb12301d75b19b0878af74d850fab52c4fed4906393b",
-      "sourceSha256": "962812b487df16e90f4c47f6dbd468d9d083976f3cfba4018f5c773dec9e7f7e",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/helpers/merged-tree.ts",
-      "target": "tests/main-core/helpers/merged-tree.ts",
-      "sha256": "00b8130b891093c83f6fd54be9701bb0ea508de03c39a74d4ea86a441fe2be07",
-      "sourceSha256": "00b8130b891093c83f6fd54be9701bb0ea508de03c39a74d4ea86a441fe2be07",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/fixtures/collaboration-concurrent-worker.ts",
-      "target": "tests/main-core/fixtures/collaboration-concurrent-worker.ts",
-      "sha256": "67ff35aa3aaf0ced8e4c90fbd90a8235a11f1c47a3c90438ea31b06b342e9d5d",
-      "sourceSha256": "00cb9158a58939090296b6283c404070844e8d4def01c2ee38fb6d95f94fdb73",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/agent-queue-view.test.ts",
-      "target": "tests/main-core/agent-queue-view.test.ts",
-      "sha256": "4f24171b3c74cd5a671837766ada8f0969224a64e0b5c9bd772e0895d2b830c1",
-      "sourceSha256": "e8a0b585a0f310ccb2fef7839d21a9d6c5c3365269e21b19edccd2f332c80270",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/collaboration-dispatcher-rejection.test.ts",
-      "target": "tests/main-core/collaboration-dispatcher-rejection.test.ts",
-      "sha256": "452baed592f67937380dff01a20752df453448a4100045b0a6770b8ea8558e02",
-      "sourceSha256": "32e11f05a5298a7d717f2d1eb9ddd4ac9d99129214bfa42540e1fcbbd40b2b4b",
-      "testAdaptations": [
-        "Portable file URL for the test-only tsx loader",
-        "SDK source URL location"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/collaboration-git-provider.test.ts",
-      "target": "tests/main-core/collaboration-git-provider.test.ts",
-      "sha256": "ce76bad2cd3d6fff0e2fa4dc4a46be5c2d5ef2794643d838e3202016c2491887",
-      "sourceSha256": "0568aca06ba836d6c10a5ba38abcbe819481eca660d3a33508e56690a35edf3f",
-      "testAdaptations": [
-        "Fixture-local autocrlf=false for byte-exact canonical delivery on Windows"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/collaboration-runtime-integration.test.ts",
-      "target": "tests/main-core/collaboration-runtime-integration.test.ts",
-      "sha256": "4d1532fe8e88970205727112be1e65486f4051f26e980e3106ca107a5276bdd6",
-      "sourceSha256": "c33bbcb73f1d6f4eb62eec7dabf04b32b7f80fe87baaf3541365eba550bc8b2d",
-      "testAdaptations": [
-        "Windows readonly mode and project-directory junction in isolated fixtures",
-        "Await the durable retrying projection after the in-memory transition; retain recovery and single-dispatch checks",
-        "SDK collaboration helper locations"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/harness-runtime.test.ts",
-      "target": "tests/main-core/harness-runtime.test.ts",
-      "sha256": "d9f43794c42addb9172718bcc7a6fac44d564ae0abe46262094c4964018fd65c",
-      "sourceSha256": "d7f1e73e26147eb1771609ad8735d27ba3290e7bc04551a63dbcfc001a1a0415",
-      "testAdaptations": [
-        "Preserve SDK Hermes composition and Windows Inspire wrapper/mode expectations"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/official-event-bridge.test.ts",
-      "target": "tests/main-core/official-event-bridge.test.ts",
-      "sha256": "df7b5488e2a1e5ed4ff7fa1245045312d9c31b574090ca7f3f7923b4e26f1032",
-      "sourceSha256": "6b69aa5e1d5c4d24d00ee9a9d278e82d1c2fa83370cad2fc41453d08ff7323c9",
-      "testAdaptations": [
-        "Actual local Node executable for Windows adapter contract; no Harness or model invocation",
-        "SDK location for upstream official-event fixtures"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/harness-runtime-contract.ts",
-      "target": "tests/main-core/harness-runtime-contract.ts",
-      "sha256": "0782a87d464f3e5aa127cbd0329f73bf354e5075f9de4852c12b3efb66dcb7df",
-      "sourceSha256": "ca38f8d132b62d1a5bc6ce2bb7f328ce66995063bff61f480b8a7bd417eca2fb",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/orchestration-control-mcp.test.ts",
-      "target": "tests/main-core/orchestration-control-mcp.test.ts",
-      "sha256": "cd4d37a5d96bbfc4768aa4909db1be064492efc8342e24671761dc1054ad949f",
-      "sourceSha256": "f5d30912e0fec7df6bbda204121a88cee8edbb722ef6cdf76d86ea97966e7c9c",
-      "testAdaptations": [
-        "Portable file URL for the test-only tsx loader",
-        "SDK MCP entrypoint, Windows test pipe and explicit file-symlink privilege skip"
-      ],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/orchestration-control-pending.test.ts",
-      "target": "tests/main-core/orchestration-control-pending.test.ts",
-      "sha256": "07ee0a9d7083496308d7d616929c052d5f18f6094acb7c6fa070017edabab677",
-      "sourceSha256": "d80bce68a84554f87c7ab8c17be1ed93ab1c6878783ae42af15e47a02e8c7d37",
-      "testAdaptations": [
-        "Portable file URL for the test-only tsx loader",
-        "SDK source URL location",
-        "Windows named-pipe peer for the isolated control transport fixture"
-      ],
       "brandingEdits": []
     },
     {
@@ -2278,13 +2243,19 @@
       "brandingEdits": []
     },
     {
+      "source": "server/tests/push-supersession.test.ts",
+      "target": "tests/main-core/push-supersession.test.ts",
+      "sha256": "b2f0150b658b9be804a2a308ba7d7ab81f7c979399e2ce8f1cc9eba6b5311b9e",
+      "sourceSha256": "cfc7e036c51525879264f1470ef88f5620a21f03acef047e0a2f42271f16d0ca",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
       "source": "server/tests/resident-adapter-factory.test.ts",
       "target": "tests/main-core/resident-adapter-factory.test.ts",
-      "sha256": "26867577201330463eca344ad54dcdaf44badb1130daf66e802c2b4716da145c",
-      "sourceSha256": "d81fe897542f54444dc9c9fa3c5f5305d1f16fd7b1d6536b0abec7ffe183f1f8",
-      "testAdaptations": [
-        "Controlled Codex bundled model catalog response in the resident executable fixture"
-      ],
+      "sha256": "8d7b3002bcad42d1232cc768c1d051deee5cac6a0f176e0a409da5074d2cedd6",
+      "sourceSha256": "850d0fac772a4ccb350d5d943112d8f040a116e8d56401c97698b00776eea9f0",
+      "testAdaptations": [],
       "brandingEdits": []
     },
     {
@@ -2308,26 +2279,62 @@
     {
       "source": "server/tests/resident-native-driver.test.ts",
       "target": "tests/main-core/resident-native-driver.test.ts",
-      "sha256": "c5a17e77b58732edd8847c589df17f4ae97753c1131f8b45c9567de835dcf380",
-      "sourceSha256": "2d70d586d17bdfeae22390d7ad1542419ca70cac47ab2be4fb2a366b1abc4461",
+      "sha256": "2d67270e24018627375474b179baf75614d589d77c49dedcce849c9e2a83d267",
+      "sourceSha256": "a9b619986d3b44218df2b1868c710450e396e4e7d92aa7766cbeab837660b14e",
       "testAdaptations": [],
       "brandingEdits": []
     },
     {
-      "source": "server/tests/claude-stream-native.test.ts",
-      "target": "tests/main-core/claude-stream-native.test.ts",
-      "sha256": "45db47ae37d56521b3213189d6f98d15f586858e9e5bdbda056ab2cba3f26ec4",
-      "sourceSha256": "05de88970099acf100a38eb10acadd6dcbcf1b4d9a31c021d52532136b11301e",
+      "source": "server/tests/scoped-agent-execution.test.ts",
+      "target": "tests/main-core/scoped-agent-execution.test.ts",
+      "sha256": "400d03b732ca5bef3f1b97165a5fd6f63045ceaaa3c5f85ebad4de09b94ac1ec",
+      "sourceSha256": "618d89fb9e629ccca2b3a11353307f9a19e79614c44117f39f5f2c8740ecae4c",
       "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/scoped-collaboration-schema.test.ts",
+      "target": "tests/main-core/scoped-collaboration-schema.test.ts",
+      "sha256": "eeb1a4638d7d381ddadee539db65c591ebb9f53bbc5f8ed2d3e37d5236e3a763",
+      "sourceSha256": "07ae40772360c5de5001e6bed772ba36a60cf7603b206a082de8623713eae4b5",
+      "testAdaptations": [
+        "Canonical absolute paths for database-only scoped execution fixtures on every host"
+      ],
       "brandingEdits": []
     },
     {
       "source": "server/tests/scoped-project-runtime.test.ts",
       "target": "tests/main-core/scoped-project-runtime.test.ts",
-      "sha256": "3872c310ab01dd7e9103ec89d3ee13cdc112e81d6957089b34b640ae8f4b9ed6",
-      "sourceSha256": "ff5b0154497d91ee2c2d80e77894e04303a0a38f2989e7f2152fa71295beeefb",
+      "sha256": "a36c01d90ceacf5b0441861282f6d47d32ed1b378009a70da451c1b81ddd056a",
+      "sourceSha256": "a3e461e3d51478894b74656ff53ec56deac3b62aedeed58b8158cd7d0636c318",
       "testAdaptations": [
         "Preserve failing recovery event diagnostics"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/scoped-unopened-preparation.test.ts",
+      "target": "tests/main-core/scoped-unopened-preparation.test.ts",
+      "sha256": "6572952e0c1adae3574c4e6c69e8d9af582b117b99bab64a1c141e7715b2d9ae",
+      "sourceSha256": "002c6c50a2729e080faf26a64927f3ce1f5fac8952b7f2ac2dc7434ba8599ec3",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/scoped-workflow-contract.test.ts",
+      "target": "tests/main-core/scoped-workflow-contract.test.ts",
+      "sha256": "1b132ff2a0fc84a7f31bb53d7a464a1f7266706eddde55a3394c870f0ee5aec3",
+      "sourceSha256": "235f8e6a8fe222065c8f361ad470bb7acb87270c7ad55d15da426acc577d9908",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/scoped-worktree-closing-authorization.test.ts",
+      "target": "tests/main-core/scoped-worktree-closing-authorization.test.ts",
+      "sha256": "7354c390ee99bdb2fc38943904a9f5fb79067a4fde94c6326eb3ee786964e36e",
+      "sourceSha256": "53ccb6f87845c670fc208a088f5badab0545709d32c6492fd0abfe7946e3bc40",
+      "testAdaptations": [
+        "Bounded Windows real-Git checkpoint execution budget"
       ],
       "brandingEdits": []
     },
@@ -2342,10 +2349,20 @@
       "brandingEdits": []
     },
     {
+      "source": "server/tests/scoped-worktree-closing-delivery.test.ts",
+      "target": "tests/main-core/scoped-worktree-closing-delivery.test.ts",
+      "sha256": "fd5b275fa1b83232347ca185a0145941b5289763263b7b63f6e96c0ef98414e1",
+      "sourceSha256": "607f617b12d7e927da32805d3d97518093cc63ce25bffc8f6b6d6e6eb16a4196",
+      "testAdaptations": [
+        "Bounded Windows real-Git execution budget"
+      ],
+      "brandingEdits": []
+    },
+    {
       "source": "server/tests/scoped-worktree-closing-runtime.test.ts",
       "target": "tests/main-core/scoped-worktree-closing-runtime.test.ts",
-      "sha256": "aeae3f44ab9b8d9c77a46841e283cdb319777d766cee37518eab890fba65a1e6",
-      "sourceSha256": "0d82557b7da02c5e7ef73bfc45f50e1a2e37511495aa63058afb0a7f015e0647",
+      "sha256": "ec3b7d0d7ace232a9bf9017898d5d3437c1d2d6e400a0721b408c3a4ff5ad23a",
+      "sourceSha256": "ffcbe12c9ea8917fd453255b9dbe2152f0d2a1f1d8628960c374c52798628eae",
       "testAdaptations": [
         "Bounded Windows-only integration test deadlines (four times Unix); runtime unchanged",
         "Skip only file-symlink cases when Windows privilege is unavailable",
@@ -2354,22 +2371,66 @@
       "brandingEdits": []
     },
     {
-      "source": "server/tests/terminal-push-coordination-state.test.ts",
-      "target": "tests/main-core/terminal-push-coordination-state.test.ts",
-      "sha256": "a095ed7ca8c940d7a43c7ae304bf0c51aa87008aa3311cd356f6d59711ac806c",
-      "sourceSha256": "525bdc672984557eb3be63d1e15d20dc9def4939bed9b03755aabc515e70fdbd",
+      "source": "server/tests/scoped-worktree-closing-settlement.test.ts",
+      "target": "tests/main-core/scoped-worktree-closing-settlement.test.ts",
+      "sha256": "478a110c78c232e19d37a629df1eaf2badf2981ebee8fb6446e02b58bb3ce767",
+      "sourceSha256": "2585b9a539212c7f7a1e5b2b4840e5a9b6dfb74f6790634b087396ebad0d5676",
       "testAdaptations": [
-        "Portable file URL for the test-only tsx loader",
-        "SDK source URL location"
+        "Bounded Windows real-Git execution budget"
       ],
       "brandingEdits": []
     },
     {
-      "source": "server/tests/terminal-push-observation-runtime.test.ts",
-      "target": "tests/main-core/terminal-push-observation-runtime.test.ts",
-      "sha256": "d97a7e4789214c2d187e2e8f77df0993c31bb984e2c6bbbc1443869d25653a23",
-      "sourceSha256": "659cb91f2e44f0e05f1420c6d21047681b31bf6892fde8307cb225d3ee171779",
+      "source": "server/tests/serial-workflow-native-input.test.ts",
+      "target": "tests/main-core/serial-workflow-native-input.test.ts",
+      "sha256": "ae6de37f89bef739da9317c63b900287ab6f98e1ebb2896f0444b8fce8d04144",
+      "sourceSha256": "0308e8da05700bfef343afb4c68ee800629ed5dc13c36d3c2d3630033d0e369a",
       "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/session-coordinator.test.ts",
+      "target": "tests/main-core/session-coordinator.test.ts",
+      "sha256": "43579a2b803effc737cc642bd5dafab7d99909fc36c3a2917134cbe107715dc0",
+      "sourceSha256": "968ae2a26bde1e909857d97a2449bce73313b9a1a49e52e8b75746cb72ad041e",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/sii-experiments.test.ts",
+      "target": "tests/main-core/sii-experiments.test.ts",
+      "sha256": "aa4725dc81313b1c1298208182fd4661f56f1ca813286468437b9bbb4ee7af22",
+      "sourceSha256": "a60cd711a19c765bd45bf9bf4a44033a224cead574765ddb167cdca23d79b4fd",
+      "testAdaptations": [
+        "Explicit Node fixture launcher and Windows symlink privilege handling"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/skill-library.test.ts",
+      "target": "tests/main-core/skill-library.test.ts",
+      "sha256": "c6cd32d51694797081f4b9d60f75a0066136534005c328f622ffe9197d0a2ea5",
+      "sourceSha256": "31252dabe9f094214086f316e6214c2eb7c4fd006ebb8d29a8808354ea251e3c",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/skill-staging.test.ts",
+      "target": "tests/main-core/skill-staging.test.ts",
+      "sha256": "0e249e0110e8f38bd10081ecd66a644e28075efb79234fed5e0528790443f6e6",
+      "sourceSha256": "a16d0d5c33962baeb90d233ac17df09fb7881e22f60508651989e9702003ba9a",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/terminal-push-coordination-state.test.ts",
+      "target": "tests/main-core/terminal-push-coordination-state.test.ts",
+      "sha256": "f5328227595ddd450e8717bbacb00c72324f302e709baa17d9b990497ac65ee2",
+      "sourceSha256": "db820ca535d5aef014daca3f4726390c845fffaf69f56ee75b76c40deb965d02",
+      "testAdaptations": [
+        "Portable file URL for the test-only tsx loader",
+        "SDK source URL location"
+      ],
       "brandingEdits": []
     },
     {
@@ -2385,6 +2446,14 @@
       "brandingEdits": []
     },
     {
+      "source": "server/tests/terminal-push-observation-runtime.test.ts",
+      "target": "tests/main-core/terminal-push-observation-runtime.test.ts",
+      "sha256": "d30332f07960d6cc249839dd945f8005be12d3fe9091cd4dd2de23ad218ac18e",
+      "sourceSha256": "3f4f8f25d70118777356b8abaf9b5c4f64cda1f2811de596d7cd6b0629addc94",
+      "testAdaptations": [],
+      "brandingEdits": []
+    },
+    {
       "source": "server/tests/validation.test.ts",
       "target": "tests/main-core/validation.test.ts",
       "sha256": "78b029b22967820d7b301a856650f978e9263d8021fdbd58b80a5cdc78350981",
@@ -2395,66 +2464,46 @@
       "brandingEdits": []
     },
     {
-      "source": "server/tests/helpers/agent-git-native-fixture.ts",
-      "target": "tests/main-core/helpers/agent-git-native-fixture.ts",
-      "sha256": "c3652d84e4587fe009aa9b4d6f88b059bad38d1634642ba1c6f6945c01e3fe7c",
-      "sourceSha256": "d84560a7395e5e16255039cc0955d5f104c9762edac113faaa74b2748899bdd5",
+      "source": "server/tests/workflow-adjustment-notifications.test.ts",
+      "target": "tests/main-core/workflow-adjustment-notifications.test.ts",
+      "sha256": "79db6c55c979fc8c6006b5cdc52234f8e81ffc59608333165312f49c440bdead",
+      "sourceSha256": "14040f2596784e803aeaefe85860e4db33c7ce5e80f16682791e53486cacc34c",
       "testAdaptations": [],
       "brandingEdits": []
     },
     {
-      "source": "server/tests/helpers/scoped-runtime-git.ts",
-      "target": "tests/main-core/helpers/scoped-runtime-git.ts",
-      "sha256": "c0bb9d7d61da963ee9a87016a9de2df1ae71b6a03c5a8c38a4dc2e9797cdcfe1",
-      "sourceSha256": "9ea65b2379ffd03b700f23ff3563caaa9e21b4b96fee7ca76b7c24f0152637cb",
+      "source": "server/tests/workflow-adjustment-restart.test.ts",
+      "target": "tests/main-core/workflow-adjustment-restart.test.ts",
+      "sha256": "b27ede19b3ae2967571ff16c640dfcead15a6f879e869fbe01b119190ac3fd3d",
+      "sourceSha256": "b098c2e8bb7cfee77845e6a5abe0a376e5fe8824501037abd736c2b746e81800",
+      "testAdaptations": [
+        "SDK helper location"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/workflow-context.test.ts",
+      "target": "tests/main-core/workflow-context.test.ts",
+      "sha256": "c76ee55254fb1df8f84e8d385e033de1232990f1af6b7c82ae297f630965718c",
+      "sourceSha256": "80d0f7500eb6b0c7e5bd128c01bcbc04fa6e3e24975e48a81fd46027902b45cf",
+      "testAdaptations": [
+        "Windows readonly-bit assertion; Unix keeps the full 0400 permission check"
+      ],
+      "brandingEdits": []
+    },
+    {
+      "source": "server/tests/workflow-recovery.test.ts",
+      "target": "tests/main-core/workflow-recovery.test.ts",
+      "sha256": "2e5f00dbe820230e1cc654f682d56be28d19af551d01403519528e2ea5e54a33",
+      "sourceSha256": "026498f7d58e34c641264c3faaf457b63373dc823cd93071179b1bc84c74a97f",
       "testAdaptations": [],
       "brandingEdits": []
     },
     {
-      "source": "server/tests/helpers/workflow-projection-writer.ts",
-      "target": "tests/main-core/helpers/workflow-projection-writer.ts",
-      "sha256": "9eafc63657b6068914d0453c3ec954b0ad9d5307ee4c79f6eae5e67fe447b136",
-      "sourceSha256": "5846d60fccd9f7e9c022b721f33362839a1bb267c4057d8175847fa4fca0d962",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/helpers/pause-writer-crash.ts",
-      "target": "tests/main-core/helpers/pause-writer-crash.ts",
-      "sha256": "dcc264f6d32c3c8eb38faa09abc5f676b09ba35dc6b5885a4c9e615ba7482eb5",
-      "sourceSha256": "8631c695e4fc3efc996b5865020d504bee50d78e23db0ac1726d447d0dd9d6c4",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/fixtures/harness-events/codex.jsonl",
-      "target": "tests/main-core/fixtures/harness-events/codex.jsonl",
-      "sha256": "71ad8edc6086f30e0a38c6990a1c2257d23821cb020ee605c66b16d9c7669bb7",
-      "sourceSha256": "71ad8edc6086f30e0a38c6990a1c2257d23821cb020ee605c66b16d9c7669bb7",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/fixtures/harness-events/pi.jsonl",
-      "target": "tests/main-core/fixtures/harness-events/pi.jsonl",
-      "sha256": "f8f7a312074f1df851c900cf70b2f02cadebfc66da8d50ca9f890ac7883c226c",
-      "sourceSha256": "f8f7a312074f1df851c900cf70b2f02cadebfc66da8d50ca9f890ac7883c226c",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/fixtures/harness-events/claude-code.jsonl",
-      "target": "tests/main-core/fixtures/harness-events/claude-code.jsonl",
-      "sha256": "64dc41cf688449531d0fe659259a33f5475d7d6549b7d12275df3dc64ff0cb4c",
-      "sourceSha256": "64dc41cf688449531d0fe659259a33f5475d7d6549b7d12275df3dc64ff0cb4c",
-      "testAdaptations": [],
-      "brandingEdits": []
-    },
-    {
-      "source": "server/tests/fixtures/harness-events/dsh.jsonl",
-      "target": "tests/main-core/fixtures/harness-events/dsh.jsonl",
-      "sha256": "4cd6b0ddd0a3557b0095218d91432c4073b19d14fbed5c910d8931ddc3213ff0",
-      "sourceSha256": "4cd6b0ddd0a3557b0095218d91432c4073b19d14fbed5c910d8931ddc3213ff0",
+      "source": "server/tests/workflow-session-compatibility.test.ts",
+      "target": "tests/main-core/workflow-session-compatibility.test.ts",
+      "sha256": "83f7ae4317732a80e1e89c1e3cdb161fe3947ef6a6a490894b43b1d69f595366",
+      "sourceSha256": "a5305b73775f4fe7c7a2d949e98e3e7c46bd7e16c2d8638fa861438d38ed8be5",
       "testAdaptations": [],
       "brandingEdits": []
     }

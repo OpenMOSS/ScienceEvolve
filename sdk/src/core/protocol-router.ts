@@ -3,6 +3,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { redactTrace } from "./utils.js";
 import { configuredModelContextWindow, modelAutoCompactTokenLimit } from "./model-context.js";
+import { injectionTokenEstimate, type InjectionBudget } from "./context-injection-budget.js";
 import {
   validateGatewayNetworkTarget,
   validatePublicWebNetworkTarget
@@ -118,7 +119,7 @@ export interface ProtocolToolArgumentsValidation {
 /** A provider/tool-call protocol failure retained by one invocation-local proxy. */
 export interface ProtocolProxyFailure {
   code: "PROTOCOL_TOOL_ARGUMENTS_INVALID" | "MODEL_PROVIDER_FAILED" | "MODEL_CONTEXT_LIMIT_EXCEEDED" |
-    "MODEL_AUTHENTICATION_FAILED" | "MODEL_REQUEST_INVALID";
+    "MODEL_AUTHENTICATION_FAILED" | "MODEL_REQUEST_INVALID" | "CONTEXT_INJECTION_LIMIT_EXCEEDED";
   httpStatus?: number;
   requestedTokens?: number;
   limitTokens?: number;
@@ -646,6 +647,9 @@ function firstInvalidNormalizedToolCall(
 export type GatewayModelFetch = (url: string, init: RequestInit) => Promise<Response>;
 
 export interface ProtocolProxyOptions {
+  /** Only this turn's application injection, not the native conversation.
+   * Actual model-facing tool definitions are added at the provider boundary. */
+  getContextInjectionBudget?: () => InjectionBudget | undefined;
   /** Server-owned invocation transport seam for isolated acceptance faults.
    * Applies only to model POSTs; normal retry/fallback remains below. */
   modelFetch?: GatewayModelFetch;
@@ -1513,6 +1517,7 @@ async function handleProxyRequest(
   }
   let usageId = `usage_${randomUUID().replaceAll("-", "")}`;
   const normalized = normalizeIncomingRequest(sourceBody, state.options.sourceProtocol);
+  const injected = state.options.getContextInjectionBudget?.();
   const reportedErrors = reportedToolArgumentErrors(normalized.messages);
   normalized.messages = reportedErrors.messages;
   if (reportedErrors.count) trace("status", "Protocol proxy preserved reported tool argument errors for Agent correction", {
@@ -1580,6 +1585,16 @@ async function handleProxyRequest(
   const upstreamBody = bufferedDelivery
     ? withoutStreamingUsageOptions(routed.body)
     : routed.body;
+  const definitionTokens = injected ? injectionTokenEstimate(JSON.stringify(upstreamBody.tools ?? [])) : 0;
+  if (injected && injected.estimatedTokens + definitionTokens > injected.limitTokens) {
+    const failure: ProtocolProxyFailure = { code: "CONTEXT_INJECTION_LIMIT_EXCEEDED", httpStatus: 400,
+      requestedTokens: injected.estimatedTokens + definitionTokens, limitTokens: injected.limitTokens,
+      message: "System context injection plus actual tool definitions exceeds half of this model's context window. Reduce optional injected context or the selected tool definitions; do not resend the same oversized input.",
+      sourceProtocol: state.options.sourceProtocol, targetProtocol: state.options.targetProtocol, model: requestModel };
+    markProtocolFailure(state, failure, trace, providerRequestSequence);
+    writeProtocolFailureResponse(response, state.options.sourceProtocol, requestModel, sourceBody.stream === true, failure.message);
+    return;
+  }
   const expectedSentinelToolName = requiredToolName;
   const wantsStream = normalized.stream === true;
   const rotateProviderUsageId = async (retryReason: string): Promise<void> => {
@@ -1615,6 +1630,8 @@ async function handleProxyRequest(
     ...(state.options.upstreamModel ? { upstreamModel: state.options.upstreamModel } : {}),
     stream: normalized.stream === true,
     toolCount: routedTools?.length ?? 0,
+    ...(injected ? { contextInjection: { ...injected, toolDefinitionTokens: definitionTokens,
+      totalEstimatedTokens: injected.estimatedTokens + definitionTokens } } : {}),
     ...outgoingToolDiagnostics(state, upstreamBody.tools, (routedTools ?? []).map(tool => tool.name)),
     ...(requiredToolName ? { requiredToolName } : {}),
     deliveryMode: state.options.deliveryMode ?? "native-stream",

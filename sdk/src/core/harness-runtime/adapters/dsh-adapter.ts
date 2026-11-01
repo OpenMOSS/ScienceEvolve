@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -219,15 +219,7 @@ export class DshAdapter extends AdapterBase implements HarnessAdapter {
         }
       }
       observer.beginPrompt();
-      const prompt = explainer
-        ? [
-            spec.prompt,
-            runtime.mcpRows.length ? "The quoted context is below. Use only the injected Project Explainer MCP tools; native tools remain unavailable." : "The complete quoted evidence is below. Do not call tools or read any filesystem path; answer only from this evidence.",
-            "<quoted-project-evidence>",
-            await fs.readFile(spec.inputs.inboxPath, "utf8"),
-            "</quoted-project-evidence>"
-          ].join("\n\n")
-        : spec.prompt;
+      const prompt = spec.prompt;
       const nativePrompt = context.prepareNativeInput ? await context.prepareNativeInput(prompt) : prompt;
       await managed.write(rpcRequest(requestId, "session/prompt", {
         sessionId: spec.session!.nativeId,
@@ -308,6 +300,10 @@ export class DshAdapter extends AdapterBase implements HarnessAdapter {
         });
       }
       if (bridgeFailure) throw bridgeFailure;
+      if (/plugin tree failed to load/i.test(stderr) && /invalid config/i.test(stderr)) {
+        throw new HarnessRuntimeError("HARNESS_CONFIGURATION_INVALID", "DSH 插件配置校验失败，Agent 未能启动。请检查 MCP 配置后继续；详细诊断见本次调用的 dsh-stderr.log。",
+          { harnessId: this.descriptor.id, reason: "dsh-plugin-config-invalid" }, { source: "adapter", cause: error });
+      }
       if (error instanceof DshSessionIdentityError) {
         throw dshSessionIdentityError(this.descriptor.id, spec.session!, error);
       }
@@ -1007,6 +1003,14 @@ export function dshNativeSdkPatch(executable: string, sessionId: string): string
   ].join("\n") + "\n";
 }
 
+/** The installed MCP plugin limits serverName to 32 ASCII word characters.
+ * Preserve valid namespaces and hash normalized names to avoid collisions. */
+export function dshMcpServerName(namespace: string): string {
+  if (/^[A-Za-z0-9_-]{1,32}$/.test(namespace)) return namespace;
+  const prefix = namespace.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 19) || "mcp";
+  return `${prefix}_${createHash("sha256").update(namespace).digest("hex").slice(0, 12)}`;
+}
+
 export function dshMcpPatch(
   rows: readonly AdapterMcpRow[],
   _webSearch: boolean
@@ -1016,7 +1020,7 @@ export function dshMcpPatch(
       `    - id: openfars-mcp-${index}`,
       "      name: '@deepseek-ai/dsh-mcp-client'",
       "      config:",
-      `        serverName: ${JSON.stringify(row.namespace)}`,
+      `        serverName: ${JSON.stringify(dshMcpServerName(row.namespace))}`,
       `        transport: ${row.transport}`
     ];
     if (row.transport === "stdio") {

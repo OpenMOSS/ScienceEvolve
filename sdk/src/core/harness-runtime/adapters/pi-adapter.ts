@@ -136,15 +136,7 @@ export class PiAdapter extends AdapterBase implements HarnessAdapter {
     const explainer = spec.purpose === "explainer";
     const extension = explainer && !runtime.mcpRows.length ? undefined : await resolvePiExtension();
     const skills = [...new Set([...spec.policy.skillPaths, ...spec.policy.autoSkillPaths])];
-    const prompt = explainer
-      ? [
-          spec.prompt,
-          runtime.mcpRows.length ? "The quoted context is below. Use only the injected Project Explainer MCP tools; native tools remain unavailable." : "The complete quoted evidence is below. Do not call tools or read any filesystem path; answer only from this evidence.",
-          "<quoted-project-evidence>",
-          await fs.readFile(spec.inputs.inboxPath, "utf8"),
-          "</quoted-project-evidence>"
-        ].join("\n\n")
-      : spec.prompt;
+    const prompt = spec.prompt;
     const args = [
       "--provider", "openfars",
       "--model", spec.model,
@@ -154,7 +146,9 @@ export class PiAdapter extends AdapterBase implements HarnessAdapter {
         ? ["--session", spec.session.nativeId]
         : ["--no-session"]),
       "--no-extensions",
-      ...(explainer ? ["--no-tools", "--no-skills", ...(extension ? ["--extension", extension] : [])] : ["--extension", extension!]),
+      ...(explainer
+        ? [extension ? "--no-builtin-tools" : "--no-tools", "--no-skills", ...(extension ? ["--extension", extension] : [])]
+        : ["--extension", extension!]),
       "--no-prompt-templates",
       "--no-context-files",
       ...(explainer ? [] : skills.flatMap((skill) => ["--skill", skill])),

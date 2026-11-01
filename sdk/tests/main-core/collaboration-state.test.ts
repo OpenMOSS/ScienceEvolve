@@ -1245,6 +1245,29 @@ describe("CollaborationStateDatabase writer authority", () => {
 });
 
 describe("Writer lease acquisition errors", () => {
+  it.each(["renew", "release", "mutation"] as const)("preserves the original SQLite error after automatic rollback during %s", async operation => {
+    const fixture = await stateFixture();
+    const inspect = new DatabaseSync(fixture.databasePath);
+    try {
+      const before = inspect.prepare("SELECT * FROM writer_service_lease").get();
+      const table = operation === "mutation" ? "project_heads" : "writer_service_lease";
+      const event = operation === "mutation" ? "INSERT" : "UPDATE";
+      inspect.exec(`CREATE TRIGGER reject_transaction BEFORE ${event} ON ${table}
+        BEGIN SELECT RAISE(ROLLBACK, 'original SQLite transaction failure'); END`);
+      const invoke = () => operation === "renew" ? fixture.database.renewWriterLease()
+        : operation === "release" ? fixture.database.relinquishWriterLease() : createProject(fixture.database);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const error = (() => { try { invoke(); } catch (error) { return error; } })();
+        expect(error).toMatchObject({ message: "original SQLite transaction failure", code: "ERR_SQLITE_ERROR", errcode: 1811 });
+        expect(inspect.prepare("SELECT * FROM writer_service_lease").get()).toEqual(before);
+        expect(() => fixture.database.assertWriterLeaseHeld()).not.toThrow();
+      }
+      if (operation === "mutation") expect(inspect.prepare("SELECT count(*) AS count FROM project_heads").get()).toMatchObject({ count: 0 });
+      inspect.exec("DROP TRIGGER reject_transaction");
+      expect(() => invoke()).not.toThrow();
+    } finally { inspect.close(); }
+  });
+
   it("preserves the SQLite failure when lease acquisition has already rolled back its transaction", async () => {
     const fixture = await stateFixture();
     fixture.database.close();
@@ -1694,6 +1717,54 @@ describe("Additional standalone delivery facts", () => {
       executionId: "additional-execution", ownershipEpoch: epoch, pullRequest: pull });
     return { ...f, a, b, proof, observe };
   }
+
+  it("keeps the same Agent writable across repeated merged PRs and synchronizes each exact delivery after restart", async () => {
+    const f = await fixture();
+    let database = f.database;
+    const ownership = { projectId: "project-1", executionId: "additional-execution", ownershipEpoch: 1,
+      expectedBranch: "executions/additional-execution" };
+    for (const number of [2, 3, 4]) {
+      const operations = database.operationsForProject("project-1");
+      await expect(operations.assertExecutionOwnership({ ...ownership, operation: "checkpoint" })).resolves.toBeUndefined();
+      await expect(operations.assertExecutionOwnership({ ...ownership, operation: "provider.mutate" })).resolves.toBeUndefined();
+      const merged = pullRequest({ id: `additional-${number}`, number, executionId: ownership.executionId,
+        head: ownership.expectedBranch, base: "main", status: "merged", mergeCommitSha: number.toString(16).repeat(40) });
+      database.appendEvent({ ...ownership, agentId: "analyst", invocationId: `turn-${number}`,
+        type: "execution.agent_git.fact", payload: { facts: { pushedHeadSha: merged.headSha, pullRequest: merged } } });
+      database.observeStandaloneDeliveryPullRequest({ ...ownership, pullRequest: merged });
+      // The remote merge is retained while a failed local fetch is retried
+      // in the same execution and epoch after a server restart.
+      const lease = database.writerLease();
+      database.close();
+      database = (await stateFixture({ databasePath: f.databasePath, clock: f.clock, writerLease: lease })).database;
+      await expect(database.operationsForProject("project-1").assertExecutionOwnership({ ...ownership,
+        operation: "provider.reconcile_merged", providerNumber: number, expectedHeadSha: merged.headSha,
+        expectedBase: "main", expectedMergeCommitSha: merged.mergeCommitSha })).resolves.toBeUndefined();
+      recordLocalMergeSynchronization(database, { executionId: ownership.executionId, ownershipEpoch: 1,
+        providerNumber: number, targetBranch: "main", expectedSourceHead: merged.headSha!, mergeCommitSha: merged.mergeCommitSha! });
+      const projection = database.projectState("project-1");
+      expect(projection.executions[0]).toMatchObject({ status: "merged", ownershipEpoch: 1, pullRequestId: f.a.id });
+      expect(projection.pullRequests).toEqual([f.a]);
+      expect(projection.additionalPullRequests).toHaveLength(number - 1);
+    }
+    expect(database.eventsAfter("project-1", 0, 1000).filter(event => event.type === "execution.merged_local_sync.recorded")).toHaveLength(3);
+  });
+
+  it.each(["number", "head", "base", "merge", "epoch", "branch", "unmerged"] as const)(
+    "rejects mismatched %s during supplemental merge synchronization", async variant => {
+      const f = await fixture();
+      const merged = { ...f.b, status: variant === "unmerged" ? "open" as const : "merged" as const,
+        ...(variant === "unmerged" ? {} : { mergeCommitSha: "c".repeat(40) }) };
+      f.proof(merged); f.observe(merged);
+      await expect(f.database.operationsForProject("project-1").assertExecutionOwnership({ projectId: "project-1",
+        executionId: "additional-execution", ownershipEpoch: variant === "epoch" ? 2 : 1,
+        expectedBranch: variant === "branch" ? "executions/foreign" : f.b.head,
+        operation: "provider.reconcile_merged", providerNumber: variant === "number" ? 3 : f.b.providerNumber,
+        expectedHeadSha: variant === "head" ? f.a.headSha : f.b.headSha,
+        expectedBase: variant === "base" ? "groups/foreign" : "main",
+        expectedMergeCommitSha: variant === "merge" ? "d".repeat(40) : "c".repeat(40)
+      })).rejects.toMatchObject({ code: "GIT_OWNERSHIP_STALE" });
+    });
 
   it("persists independent B and keeps the original PR pointer through restart and history observation", async () => {
     const f = await fixture(), { database, a, b } = f;

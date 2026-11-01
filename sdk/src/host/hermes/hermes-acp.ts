@@ -1,8 +1,8 @@
-import type { SessionRef, ResidentProtocolObservation } from "../contracts.js";
-import type { ResidentProtocolCodec, ResidentProtocolConnection } from "../resident-native-driver.js";
-import { HarnessRuntimeError, SessionResumeError } from "../errors.js";
-import { boundedPreview, type OfficialEventMapper, type HarnessEventDraft } from "../official-event-bridge.js";
-import type { AdapterMcpRow } from "./adapter-utils.js";
+import type { SessionRef, ResidentProtocolObservation } from "../../core/harness-runtime/contracts.js";
+import type { ResidentProtocolCodec, ResidentProtocolConnection } from "../../core/harness-runtime/resident-native-driver.js";
+import { HarnessRuntimeError, SessionResumeError } from "../../core/harness-runtime/errors.js";
+import { boundedPreview, type OfficialEventMapper, type HarnessEventDraft } from "../../core/harness-runtime/official-event-bridge.js";
+import type { AdapterMcpRow } from "../../core/harness-runtime/adapters/adapter-utils.js";
 
 type Frame = Readonly<Record<string, unknown>>;
 const metadataUpdates = new Set(["available_commands_update", "usage_update", "session_info_update", "current_mode_update", "config_option_update"]);
@@ -162,6 +162,7 @@ export function hermesAcpCodec(options: HermesAcpOptions): ResidentProtocolCodec
   }
   return {
     protocol: "hermes-acp-json-rpc",
+    allocatesNativeSessionId: true,
     recoveryStrategy: "native-session-resume",
     observe(frame): ResidentProtocolObservation | undefined {
       const u = updateFor(frame, activeSession);

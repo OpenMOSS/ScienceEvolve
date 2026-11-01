@@ -2,23 +2,24 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentRunResult } from "../../types.js";
-import type { HarnessAdapter, HarnessAdapterContext, HarnessAdapterRequest, InvocationInputs, SessionRef } from "../contracts.js";
-import { HarnessRuntimeError } from "../errors.js";
-import { OfficialEventBridge } from "../official-event-bridge.js";
-import { JsonLineConnection, ResidentTurnActivityClock } from "../resident-native-driver.js";
-import { BUILTIN_HARNESS_DESCRIPTORS } from "../registry.js";
-import { compileFilesystemAuthority, filesystemAuthorityPrompt, prepareFilesystemAuthorityMcp } from "../filesystem-authority.js";
-import { DEFAULT_RAW_LOG_LIMIT_BYTES } from "../process-host.js";
+import type { AgentRunResult } from "../../core/types.js";
+import type { HarnessAdapter, HarnessAdapterContext, HarnessAdapterRequest, InvocationInputs, SessionRef } from "../../core/harness-runtime/contracts.js";
+import { HarnessRuntimeError } from "../../core/harness-runtime/errors.js";
+import { OfficialEventBridge } from "../../core/harness-runtime/official-event-bridge.js";
+import { JsonLineConnection, ResidentTurnActivityClock } from "../../core/harness-runtime/resident-native-driver.js";
+import { HERMES_DESCRIPTOR as descriptor } from "./descriptor.js";
+import { compileFilesystemAuthority, filesystemAuthorityPrompt, prepareFilesystemAuthorityMcp } from "../../core/harness-runtime/filesystem-authority.js";
+import { DEFAULT_RAW_LOG_LIMIT_BYTES } from "../../core/harness-runtime/process-host.js";
 import { AdapterBase, adapterResult, gatewayModelContextWindow, harnessExecutableLaunch,
-  prepareAdapterRuntime, settleAdapterCleanup, writeAdapterLogs, type AdapterRuntimeOptions } from "./adapter-utils.js";
+  prepareAdapterRuntime, settleAdapterCleanup, writeAdapterLogs, type AdapterRuntimeOptions } from "../../core/harness-runtime/adapters/adapter-utils.js";
 import { hermesAcpCodec, hermesOfficialEventMapper, validHermesSessionId } from "./hermes-acp.js";
 import { hermesSkillPrompt, prepareHermesSettings } from "./hermes-settings.js";
+import { buildHermesResidentLaunch } from "./resident-launch.js";
 
-const descriptor = BUILTIN_HARNESS_DESCRIPTORS.find(item => item.id === "hermes")!;
 export class HermesAdapter extends AdapterBase implements HarnessAdapter {
   readonly resident = { protocol: "hermes-acp-json-rpc", recoveryStrategy: "native-session-resume",
-    createOfficialEventMapper: hermesOfficialEventMapper } as const;
+    createOfficialEventMapper: hermesOfficialEventMapper,
+    buildLaunch: buildHermesResidentLaunch } as const;
   constructor(options: AdapterRuntimeOptions = {}) { super(descriptor, options); }
   createSession(_request: HarnessAdapterRequest, _inputs: InvocationInputs, generation: number, durable: boolean): SessionRef {
     return this.session(`pending:${randomUUID()}`, generation, durable);

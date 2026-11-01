@@ -67,7 +67,9 @@ const runner = {
     assert.deepEqual(await readFile(path.join(request.workspacePath, "user_inputs", "reference.png")), referenceImage);
     assert.deepEqual(request.project.inputFiles, ["reference.png"]);
     assert.equal(request.project.inputDescription, "Original package image");
-    assert.match(await readFile(request.inboxPath, "utf8"), /user_inputs\/reference\.png/);
+    const inbox = await readFile(request.inboxPath, "utf8");
+    assert.match(inbox, /Fixture only/);
+    assert.match(inbox, /Original package image/);
     await writeFile(path.join(request.workspacePath, "result.txt"), "compiled SDK workspace fixture");
     return { handoff: "Workspace fixture complete", controlActions: [{ projectId: request.project.id, agent: request.agent,
       invocationId: request.invocationId, callId: `${request.invocationId}-complete`, stateVersion: request.control.stateVersion,
@@ -94,7 +96,10 @@ try {
   const run = await workspaceSdk.start({ title: "Existing workspace", requirement: "Fixture only", workflow,
     gatewayBindings: { defaultGatewayId: gateway.id }, workspace });
   workspaceRunId = run.id;
-  const result = await run.wait();
+  const result = await run.wait({ signal: AbortSignal.timeout(20_000) }).catch(async error => {
+    const state = await run.snapshot();
+    throw new Error(`Package workspace did not complete: ${state.lastError ?? state.status}`, { cause: error });
+  });
   assert.equal(result.status, "completed");
   assert.deepEqual(result.inputFiles, ["reference.png"]);
   assert.equal(result.userInputsPath, path.join(await realpath(workspace), "user_inputs"));

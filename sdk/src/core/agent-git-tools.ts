@@ -252,7 +252,8 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     return result;
   }
   if (action.tool === "github_create_pr") {
-    if (action.base !== base || !facts.pushedHeadSha) throw new Error("Agent must use its confirmed pushed head and direct PR target");
+    if (action.base !== base) throw new Error(`Agent must use its direct PR target ${JSON.stringify(base)}; requested base ${JSON.stringify(action.base)} is not this task's direct target.`);
+    if (!facts.pushedHeadSha) throw new Error("Agent must use its confirmed pushed head before creating a PR. Inspect the original push with git_get_operation and reconcile its exact receipt with git_reconcile_push, or use git_push for the current task's pending publication. A local git_status head alone does not confirm a remote push; do not create unrelated changes just to retry publication.");
     const common = { repository, ownershipEpoch: execution.ownershipEpoch, operationId: operationId("create"),
       expectedHead: facts.pushedHeadSha, base, title: action.title, body: action.body, signal };
     if (final && !git.createGroupFinalPullRequest) throw new Error("Canonical PR tool is unavailable");

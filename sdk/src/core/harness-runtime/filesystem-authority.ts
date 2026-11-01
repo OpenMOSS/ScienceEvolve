@@ -23,9 +23,9 @@ export const DESCRIPTOR_BROKER_HELPER_SHA256 =
   "98d3cfcd2952fc07e8da25419030f1695796497bde6c2e28360562082dd92c8f";
 export const DESCRIPTOR_BROKER_WINDOWS_SHA256 = "2db9f05100aa658cd1fd813097526c4f9dc286732da6e762cbf73b7c530cbc32";
 export const DESCRIPTOR_BROKER_MCP_SHA256 =
-  "40161ef53b3f7120f4727b7cf43236cb01c15a3b28a12d154c15891bff429c59";
+  "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e";
 export const DESCRIPTOR_BROKER_MCP_COMPILED_SHA256 =
-  "1a78013982c3e50f40110e599b55156d69770fd14bbd7650d64f9b64631dab48";
+  "1332fcc5f1a83286f028753f41cfadb37fb9a62a9aa935c0ddcdb14ee1f903bc";
 
 export type GitCapability = "none" | "execution" | "project-service";
 
@@ -51,6 +51,7 @@ export interface FilesystemAuthority {
   rootBindings: ReadonlyArray<FilesystemRootBinding>;
   /** Trusted raw tools are only honest in yolo mode. */
   rawTools: "forbidden" | "trusted-yolo";
+  readShell?: boolean;
 }
 
 export interface CompileFilesystemAuthorityRequest {
@@ -183,6 +184,7 @@ export async function compileFilesystemAuthority(
   const rootBindings = bindOpaqueRoots(readRoots, writeRoots, writeFiles);
   return Object.freeze({
     serviceUserRoot,
+    readShell: !request.terminalPushObservation && !request.terminalPushCoordination && !request.restrictedWorktreeClosing,
     executionWorktree,
     ownedMemoryPath,
     readRoots,
@@ -213,7 +215,10 @@ export function filesystemAuthorityPrompt(
     "For large files, read only the needed pages with read_file {rootId, path, offset:0, maxBytes:65536}, then use the returned nextOffset for another page. offset/maxBytes count bytes. expectedVersion is optional: omit it on the first read and for live current-state files; null and an empty string also mean no version constraint. To verify an unchanged snapshot between pages, copy the exact 64-character version returned by a successful paged read and include offset. A concrete version mismatch remains an error; read the current file explicitly if you need a newer snapshot. Omit offset only when you need a bounded whole-file read. Do not repeatedly lower maxBytes on a whole-file size refusal. Tool errors retain structured error.code, invalidField and nextCall when available in both JSON text and structured content. Correct an invalid argument, inspect authority_matrix for a root ID error, and inspect the referenced parent directory for a missing file; do not repeat a guessed path or hash.",
     reference("Current workspace", inputs.workspacePath, true),
     reference("Invocation Inbox", inputs.inboxPath),
-    ...(inputs.contextIndex ? [reference("On-demand context index", inputs.contextIndex.indexPath)] : []),
+    ...(inputs.contextIndex ? [reference("On-demand context index", inputs.contextIndex.indexPath),
+      reference("On-demand context record paths (list.path and detail.path)", path.dirname(inputs.inboxPath), true),
+      "Context record paths already include context-records/. Use the complete listed path with the Inbox directory's rootId; a bare hash filename does not refer to the context-records directory."
+    ] : []),
     reference("Persistent memory", inputs.memoryPath),
     ...authority.rootBindings.filter(root => root.writeFiles).map(root =>
       `Restricted closing files: rootId="${root.id}", paths=${JSON.stringify(root.writeFiles)}. Only these exact files may be written or removed. Directories and all other paths remain read-only. Necessary Git delivery uses the separately authorized collaboration tools.`),
@@ -342,8 +347,21 @@ export async function prepareFilesystemAuthorityMcp(options: {
   }
   const authorityDocument = filesystemAuthorityDocument(options.authority);
   const authoritySha256 = digestJson(authorityDocument);
+  const readShellExecutables: Record<string, string> = {};
+  if (options.authority.readShell && process.platform === "linux") {
+    for (const command of ["ls", "cat", "rg"]) {
+      const candidates = [...new Set(["/usr/bin", "/bin", ...(process.env.PATH ?? "").split(path.delimiter)])].filter(Boolean);
+      for (const directory of candidates) {
+        try {
+          readShellExecutables[command] = await verifyTrustedExecutable(path.join(directory, command), options.authority.writeRoots, `Read Shell ${command}`);
+          break;
+        } catch { /* Try the next installed utility; absence is reported by the tool. */ }
+      }
+    }
+  }
   const document = {
     schemaVersion: 1,
+    readShellExecutables,
     helperPath,
     helperSha256: process.platform === "win32" ? DESCRIPTOR_BROKER_WINDOWS_SHA256 : DESCRIPTOR_BROKER_HELPER_SHA256,
     pythonExecutable,
@@ -425,6 +443,7 @@ function filesystemAuthorityDocument(authority: FilesystemAuthority) {
       write: root.write,
       ...(root.writeFiles ? { writeFiles: root.writeFiles } : {})
     })),
+    readShell: authority.readShell === true,
     gitCapability: authority.gitCapability,
     ...(authority.directBase ? { directBase: authority.directBase } : {}),
     executionWorktree: authority.executionWorktree,

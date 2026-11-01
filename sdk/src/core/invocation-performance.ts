@@ -13,6 +13,8 @@ export class InvocationPerformanceTracker {
   private readonly requests = new Map<string, { startedAt: number; firstTokenAt?: number; completedAt?: number; streaming: boolean }>();
   private readonly usageIds = new Set<string>();
   private readonly recentDeltas: Array<{ at: number; tokens: number }> = [];
+  private firstRequestAt?: number;
+  private lastCompletedRequestAt?: number;
   private firstTokenAt?: number;
   private firstTokenRequestStartedAt?: number;
   private latestFirstTokenLatencyMs?: number;
@@ -40,6 +42,8 @@ export class InvocationPerformanceTracker {
     this.requests.clear();
     this.usageIds.clear();
     this.recentDeltas.length = 0;
+    this.firstRequestAt = undefined;
+    this.lastCompletedRequestAt = undefined;
     this.firstTokenAt = undefined;
     this.firstTokenRequestStartedAt = undefined;
     this.latestFirstTokenLatencyMs = undefined;
@@ -58,7 +62,8 @@ export class InvocationPerformanceTracker {
     const at = Date.parse(event.timestamp);
     const observedAt = Number.isFinite(at) ? at : Date.now();
     if (event.phase === "started") {
-      if (![...this.requests.values()].some((request) => request.completedAt === undefined)) this.recentDeltas.length = 0;
+      if (this.requests.size === 0) this.recentDeltas.length = 0;
+      this.firstRequestAt = Math.min(this.firstRequestAt ?? observedAt, observedAt);
       this.requests.set(event.requestId, {
         startedAt: observedAt,
         streaming: event.streaming
@@ -95,7 +100,10 @@ export class InvocationPerformanceTracker {
         }
       }
     } else if (event.phase === "completed") {
-      if (request) request.completedAt = observedAt;
+      if (request) {
+        this.requests.delete(event.requestId);
+        this.lastCompletedRequestAt = Math.max(this.lastCompletedRequestAt ?? observedAt, observedAt);
+      }
       if (
         typeof event.estimatedOutputTokens === "number" &&
         Number.isSafeInteger(event.estimatedOutputTokens) &&
@@ -103,7 +111,7 @@ export class InvocationPerformanceTracker {
       ) {
         this.estimatedOutputTokens += event.estimatedOutputTokens;
       }
-      if (![...this.requests.values()].some((item) => item.completedAt === undefined)) {
+      if (this.requests.size === 0) {
         if (this.publishTimer) clearInterval(this.publishTimer);
         this.publishTimer = undefined;
       }
@@ -138,19 +146,11 @@ export class InvocationPerformanceTracker {
     now: number
   ): InvocationPerformance {
     this.trimWindow(now);
-    const requests = [...this.requests.values()];
-    const activeRequests = requests.filter((request) => request.completedAt === undefined);
+    const activeRequests = [...this.requests.values()];
     const requestActive = status === "active" && activeRequests.length > 0;
     const streaming = requestActive ? activeRequests.some((request) => request.streaming) : this.sawStreamingDelta;
-    const firstRequestAt = requests.length
-      ? Math.min(...requests.map((request) => request.startedAt))
-      : this.startedAt;
-    const completedRequestTimes = requests.flatMap((request) =>
-      request.completedAt === undefined ? [] : [request.completedAt]
-    );
-    const lastRequestAt = completedRequestTimes.length
-      ? Math.max(...completedRequestTimes)
-      : this.lastOutputAt ?? firstRequestAt;
+    const firstRequestAt = this.firstRequestAt ?? this.startedAt;
+    const lastRequestAt = this.lastCompletedRequestAt ?? this.lastOutputAt ?? firstRequestAt;
     const outputTokens = this.officialUsageObserved
       ? this.officialOutputTokens
       : this.estimatedOutputTokens;

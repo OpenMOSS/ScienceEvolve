@@ -36,6 +36,8 @@ export class ResidentScopedAgentTurnInvoker implements ScopedAgentTurnInvoker {
     try {
       open = await this.composition.prepare(input);
       this.assertOpenAuthority(input, open);
+      if (typeof open.initialTask !== "string")
+        throw new Error("Scoped task is missing its exact source-authored messages");
     } catch (error) {
       const diagnostic = nativeFailureDiagnostic(error);
       throw new ScopedAgentTurnFailure(`Scoped resident preparation failed before launch: ${diagnostic.reason}`, true, { cause: error }, {
@@ -74,12 +76,7 @@ export class ResidentScopedAgentTurnInvoker implements ScopedAgentTurnInvoker {
       // therefore share an attempt number, but must remain distinct inputs.
       const turn = { inputId: input.missingReportRepair ? `${inputIdBase}:missing-report-repair:${input.missingReportRepair.attempt}`
         : input.reportRepair ? `${inputIdBase}:report-repair:${input.reportRepair.attempt}` : inputIdBase,
-        invocationId: input.invocationId, prompt: input.reportRepair
-          ? `Continue the original task in its retained session and fixed directory; its existing business report and route are preserved. Missing formal mechanism facts: ${input.reportRepair.missing.join(", ")}. Inspect retained work and actual tool results, and use the assigned tools yourself. Do not repeat completed business work or replace its route; report a real blocker in the existing handoff if necessary.`
-          : input.missingReportRepair ? `Continue your original stopped task in the retained session and directory. Read the existing inbox instructions, ${input.missingReportRepair.interruptedOperationIds?.length
-            ? "query the exact interrupted operations and their real provider outcomes, preserving unknown requests and original ownership until your tools reconcile them"
-            : "inspect the existing PR with the exposed tools and complete any missing merge synchronization"}, and supply your own missing handoff/report. Preserve any existing completion and business work.`
-          : "Execute the current inbox assignment in your fixed Agent directory. Use the explicit Git/GitHub tools for checkpoint, push, pull request and conflict work when the task requires delivery." };
+        invocationId: input.invocationId, prompt: open.initialTask! };
       result = this.composition.submit ? await this.composition.submit(input, handle, turn) : await handle.submit(turn);
       await this.composition.retainTurnResult?.(input, result, turn.inputId);
       // Natural model exit does not discharge the task. Mechanism repair uses

@@ -229,6 +229,20 @@ function executionFromBody(body: unknown): string | undefined {
   return body.match(/<!-- openfars-execution:([A-Za-z0-9][A-Za-z0-9._-]{0,159}) -->/)?.[1];
 }
 
+/** The merged PRs from this exact head into this exact base, for a canonical
+ * group delivery whose execution marker is absent because the merge happened
+ * outside OpenFARS. More than one stays ambiguous and errors upstream. */
+function unmarkedMergedCanonicalFinal(data: unknown[], head: string, base: string): unknown[] {
+  return data.filter((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const row = item as Record<string, unknown>;
+    const headRef = row.head as Record<string, unknown> | undefined;
+    const baseRef = row.base as Record<string, unknown> | undefined;
+    const merged = row.merged === true || typeof row.merged_at === "string";
+    return merged && headRef?.ref === head && baseRef?.ref === base;
+  });
+}
+
 function cloneWithoutCredentials(value: string): string {
   let parsed: URL;
   try {
@@ -606,10 +620,19 @@ export class GitHubUserProvider {
     if (!Array.isArray(response.data)) {
       throw new GitHubProviderError("GitHub returned malformed pull request listing", false);
     }
-    const matches = response.data.filter((item) => {
+    const marked = response.data.filter((item) => {
       const row = object(item, "pull request listing item");
       return executionFromBody(row.body) === executionId;
     });
+    // A canonical group delivery can be published outside OpenFARS: a Leader or
+    // a human merges the group final PR on the provider, so its body carries no
+    // execution marker and no operation was ever journaled here. That group
+    // branch has exactly one direct target, so a single merged PR from this head
+    // into this base is unambiguous - adopt it and read its real provider facts.
+    // Member deliveries keep the strict marker requirement.
+    const matches = marked.length || !executionId.startsWith("group-final-")
+      ? marked
+      : unmarkedMergedCanonicalFinal(response.data, safeHead, safeBase);
     if (matches.length > 1) {
       throw new GitHubProviderError(
         "Multiple pull requests claim the same execution branch; recovery is ambiguous",

@@ -68,6 +68,53 @@ async function fixture() {
 }
 
 describe("main runtime baseline upgrade preserves verified installed sources", () => {
+  it.each(["sharedFixes", "brandingEdits", "derivedPinEdits"])("rejects %s in an exact shared core even when content hashes are unchanged", async field => {
+    const f = await fixture();
+    const upgraded = f.upgrade(); expect(upgraded, upgraded.output).toMatchObject({ status: 0 });
+    const manifest = JSON.parse(await fs.readFile(f.manifestFile, "utf8"));
+    const entry = manifest.files.find((entry: { source: string }) => entry.source === "server/src/entry.ts");
+    entry[field] = [{ before: "fixture-before", after: "fixture-after" }];
+    await fs.writeFile(f.manifestFile, JSON.stringify(manifest));
+    const result = f.run("--check");
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain("Shared core contains a source transformation");
+    expect(await f.read("src/core/entry.ts")).toBe(f.next);
+  });
+  it("rejects removal of the exact shared-core identity policy", async () => {
+    const f = await fixture(); expect(f.upgrade().status).toBe(0);
+    const manifest = JSON.parse(await fs.readFile(f.manifestFile, "utf8"));
+    delete manifest.coreIdentity;
+    await fs.writeFile(f.manifestFile, JSON.stringify(manifest));
+    expect(f.run("--check").output).toContain("Missing exact shared-core identity policy");
+  });
+
+  it("captures uncommitted source and new dependencies explicitly, verifies live parity and replays without the checkout", async () => {
+    const f = await fixture();
+    const indexFile = path.join(f.installed, "resources/main-runtime/shared-fixes.json");
+    const index = JSON.parse(await fs.readFile(indexFile, "utf8"));
+    index.sourceSnapshotKind = "working-tree";
+    await fs.writeFile(indexFile, JSON.stringify(index));
+    const current = "import './new.js';\nimport './uncommitted.js';\nexport const version = 3;\n";
+    await fs.writeFile(path.join(f.checkout, "server/src/entry.ts"), current);
+    await fs.writeFile(path.join(f.checkout, "server/src/uncommitted.ts"), "export const local = true;\n");
+    const upgrade = f.run("--source", f.checkout, "--worktree", "--upgrade");
+    expect(upgrade, upgrade.output).toMatchObject({ status: 0 });
+    expect(await f.read("src/core/entry.ts")).toBe(current);
+    expect(await f.read("src/core/uncommitted.ts")).toContain("local = true");
+    const manifest = JSON.parse(await fs.readFile(f.manifestFile, "utf8"));
+    expect(manifest).toMatchObject({ sourceSnapshotKind: "working-tree", sourceCommit: f.newCommit });
+    const snapshot = recordSnapshot(f.checkout, manifest);
+    await fs.mkdir(path.join(f.installed, "tests/fixtures"), { recursive: true });
+    await fs.writeFile(path.join(f.installed, "tests/fixtures/main-runtime-upstream.json.gz"), snapshot);
+    expect(f.run("--check-source", "--source", f.checkout).status).toBe(0);
+    await fs.writeFile(path.join(f.checkout, "server/src/entry.ts"), "changed after capture\n");
+    expect(f.run("--check-source", "--source", f.checkout).output).toContain("Current main source drift");
+    expect(() => recordSnapshot(f.checkout, manifest)).toThrow("snapshot drift");
+    await fs.rm(f.checkout, { recursive: true, force: true });
+    const replay = f.run("--verify-generation");
+    expect(replay, replay.output).toMatchObject({ status: 0 });
+  });
+
   it("regenerates from pinned original blobs after the historical checkout is removed", async () => {
     const f = await fixture();
     const upgrade = f.upgrade(); expect(upgrade, upgrade.output).toMatchObject({ status: 0 });

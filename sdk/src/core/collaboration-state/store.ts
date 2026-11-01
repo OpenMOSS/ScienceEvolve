@@ -1662,7 +1662,7 @@ export class CollaborationStateDatabase {
       this.lease = { ...this.lease, expiresAtMs };
       return this.writerLease();
     } catch (error) {
-      this.database.exec("ROLLBACK");
+      this.rollbackAfterFailure();
       throw error;
     }
   }
@@ -1689,7 +1689,7 @@ export class CollaborationStateDatabase {
       this.database.exec("COMMIT");
       this.lease = { ...this.lease, expiresAtMs: Math.max(0, now - 1) };
     } catch (error) {
-      this.database.exec("ROLLBACK");
+      this.rollbackAfterFailure();
       throw error;
     }
   }
@@ -1712,6 +1712,14 @@ export class CollaborationStateDatabase {
     if (this.closed) {
       throw new CollaborationStateError("UNSAFE_CONFIGURATION", "Collaboration state database is closed");
     }
+  }
+
+  /** Cleanup must not replace the original SQLite error (including errcode).
+   * SQLite can already have rolled back after IOERR/FULL/other write failures. */
+  private rollbackAfterFailure(): void {
+    try {
+      if (this.database.isTransaction) this.database.exec("ROLLBACK");
+    } catch { /* Preserve the transaction failure even if cleanup also fails. */ }
   }
 
   private assertLeaseHeld(): void {
@@ -1744,7 +1752,7 @@ export class CollaborationStateDatabase {
       this.database.exec("COMMIT");
       return value;
     } catch (error) {
-      this.database.exec("ROLLBACK");
+      this.rollbackAfterFailure();
       throw error;
     }
   }
@@ -5122,7 +5130,7 @@ export class CollaborationStateDatabase {
       const records = this.readWorkflowAdjustments(projectId);
       this.database.exec("COMMIT");
       return records;
-    } catch (error) { this.database.exec("ROLLBACK"); throw error; }
+    } catch (error) { this.rollbackAfterFailure(); throw error; }
   }
 
   /** Single-request and active-queue reads share the caller's SQLite snapshot.
@@ -5153,7 +5161,7 @@ export class CollaborationStateDatabase {
     if (this.database.isTransaction) return read();
     this.database.exec("BEGIN");
     try { const result = read(); this.database.exec("COMMIT"); return result; }
-    catch (error) { this.database.exec("ROLLBACK"); throw error; }
+    catch (error) { this.rollbackAfterFailure(); throw error; }
   }
 
   private readWorkflowAdjustments(projectId: string, initialConfiguration?: ScopedAgentConfiguration, requestIds?: string[]): WorkflowAdjustmentRecord[] {
@@ -16662,6 +16670,19 @@ export class CollaborationStateDatabase {
     return count;
   }
 
+  /** Current batch only: older completed handoffs remain in project records. */
+  latestGroupAssignmentTaskIds(projectId: string, groupRunId: string): string[] {
+    this.assertOpen();
+    const row = this.database.prepare(`SELECT payload_json FROM project_events
+      WHERE project_id = ? AND group_run_id = ? AND event_type = 'group.tasks.assigned'
+      ORDER BY seq DESC LIMIT 1`).get(projectId, groupRunId) as Row | undefined;
+    if (!row) return [];
+    const payload = parseJson<{ taskIds?: unknown }>(row.payload_json, {});
+    if (!Array.isArray(payload.taskIds) || !payload.taskIds.every(id => typeof id === "string"))
+      throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", "Current group assignment has invalid task identities");
+    return payload.taskIds;
+  }
+
   appendFailureAttempt(input: AppendFailureAttemptInput): {
     revision: number;
     attempt: FailureAttempt;
@@ -18553,7 +18574,22 @@ export class CollaborationStateDatabase {
   }
 
   terminalPushOwnerNodeRunId(projectId: string, executionId: string): string {
-    return requiredString(this.terminalPushOwnerRow(projectId, executionId).node_run_id, "original receipt node");
+    const owner = this.terminalPushOwnerRow(projectId, executionId);
+    if (owner.node_run_id) return requiredString(owner.node_run_id, "original receipt node");
+    // Scoped Agent arrivals need not allocate a node_runs row. Their retained
+    // execution belongs to the outer workflow node of the original root group,
+    // even if that group has completed and another workflow node is now active.
+    let group = this.scopedGroupRun(projectId, String(owner.group_run_id));
+    const ancestors = new Set<string>();
+    while (group?.parentGroupRunId) {
+      if (ancestors.has(group.id)) throw new OperationStoreViolationError("Original receipt group ancestry contains a cycle");
+      ancestors.add(group.id);
+      group = this.scopedGroupRun(projectId, group.parentGroupRunId);
+    }
+    const node = group ? this.database.prepare("SELECT node_run_id FROM node_runs WHERE project_id = ? AND activation_request_id = ?")
+      .get(projectId, group.activationRequestId) as Row | undefined : undefined;
+    if (!node?.node_run_id) throw new OperationStoreViolationError("Original receipt group lost its retained workflow node");
+    return requiredString(node.node_run_id, "original receipt node");
   }
 
   terminalPushObservationTurns(projectId: string): TerminalPushObservationTurn[] {
@@ -20277,9 +20313,29 @@ export class CollaborationStateDatabase {
       throw new GitOwnershipStaleError(executionId, ownershipEpoch);
     }
     const task = this.requiredTask(String(execution.task_id));
-    const pull = this.database.prepare(
+    const originalPull = this.database.prepare(
       "SELECT * FROM pull_requests WHERE owner_execution_id = ?"
     ).get(executionId) as Row | undefined;
+    const matches = (pull: PullRequestRecord | null | undefined) => Boolean(
+      pull && pull.ownerExecutionId === executionId && pull.status === "merged" && pull.mergeCommitSha &&
+      pull.head === execution.execution_branch &&
+      (expectedHead === undefined || pull.headSha === expectedHead) &&
+      (expectedBase === undefined || pull.base === expectedBase) &&
+      (providerNumber === undefined || pull.providerNumber === providerNumber) &&
+      (expectedMergeCommitSha === undefined || pull.mergeCommitSha === expectedMergeCommitSha)
+    );
+    let pull = originalPull ? rowToPullRequest(originalPull) : undefined;
+    if (!matches(pull) && originalPull?.status === "merged" && execution.purpose === "delivery" &&
+      !execution.group_run_id && expectedHead && expectedBase && providerNumber && expectedMergeCommitSha) {
+      // A PR merge is a delivery checkpoint, not the end of this Agent's
+      // ownership. Later commits have independent immutable PR records;
+      // synchronize the exact requested PR without replacing the original.
+      const additional = this.database.prepare(`SELECT record_json FROM standalone_delivery_pull_requests
+        WHERE project_id = ? AND owner_execution_id = ? AND ownership_epoch = ?
+          AND original_pull_request_id = ? AND head_sha = ?`)
+        .all(projectId, executionId, ownershipEpoch, originalPull.pull_request_id, expectedHead) as Row[];
+      pull = additional.map(row => parseJson<PullRequestRecord | null>(row.record_json, null)).find(matches) ?? undefined;
+    }
     const group = execution.group_run_id
       ? this.requiredGroup(String(execution.group_run_id), projectId)
       : undefined;
@@ -20292,12 +20348,7 @@ export class CollaborationStateDatabase {
       (!stoppedOwner && !liveOwner) ||
       execution.successor_execution_id !== null ||
       task.current_execution_id !== executionId ||
-      !pull || pull.status !== "merged" || !pull.merge_commit_sha ||
-      pull.head !== execution.execution_branch ||
-      (expectedHead !== undefined && pull.head_sha !== expectedHead) ||
-      (expectedBase !== undefined && pull.base !== expectedBase) ||
-      (providerNumber !== undefined && Number(pull.provider_number) !== providerNumber) ||
-      (expectedMergeCommitSha !== undefined && pull.merge_commit_sha !== expectedMergeCommitSha) ||
+      !matches(pull) ||
       (group && Number(group.cancellation_requested) !== 0) ||
       head.active_node_run_id !== execution.node_run_id
     ) {

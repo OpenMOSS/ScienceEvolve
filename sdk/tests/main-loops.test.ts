@@ -90,7 +90,7 @@ describe("main-kernel Git-off Loop/Evolver parity (actual kernel/SQLite; simulat
     const { sdk, runtime, root, gatewayBindings } = await fixture(async (request) => {
       if (request.agent !== "main") {
         if (request.agent === "revise" && decisions >= 2) {
-          revisedCalls++; expect(await fs.readFile(request.inboxPath, "utf8")).toContain("EVOLVED_WORKER");
+          revisedCalls++; expect(request.project.agents.revise.instructions).toContain("EVOLVED_WORKER");
         }
         return { handoff: "Measured evidence" };
       }
@@ -110,7 +110,7 @@ describe("main-kernel Git-off Loop/Evolver parity (actual kernel/SQLite; simulat
         await fs.writeFile(file, JSON.stringify(proposal));
         return acceptedAction({ tool: "apply_workflow", path: "workflow.json", rationale: "Improve method based on evidence" });
       }
-      expect(await fs.readFile(request.inboxPath, "utf8")).toContain("EVOLVED_MAIN");
+      expect(request.project.agents.main.instructions).toContain("EVOLVED_MAIN");
       if (decisions === 2) {
         expect(request.resumeThreadId).toBe(session.nativeId);
         expect(request.project.pendingMainDecision?.reason).toBe("workflow-reconfigured");

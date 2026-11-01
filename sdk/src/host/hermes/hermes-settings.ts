@@ -1,8 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { SessionResumeError } from "../errors.js";
-import type { SessionRef } from "../contracts.js";
+import { SessionResumeError } from "../../core/harness-runtime/errors.js";
+import type { SessionRef } from "../../core/harness-runtime/contracts.js";
 import { validHermesSessionId } from "./hermes-acp.js";
 
 /** Only SDK-owned homes are passed here; never a user's ~/.hermes. */

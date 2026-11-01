@@ -239,6 +239,51 @@ async function structuredGitStatus() {
     operations, currentOperation: operations[0] ?? null };
 }
 
+/** Read-only Shell commands run real host utilities with an inherited opened
+ * descriptor. No command string, redirection, hooks or arbitrary flags execute. */
+async function readShell(args) {
+  if (!config.readShell || process.platform !== "linux") throw new Error("Read Shell is unavailable for this invocation");
+  if (!["ls", "cat", "rg"].includes(args.command)) throw new Error("Shell supports ls, cat and rg only");
+  const command = config.readShellExecutables?.[args.command];
+  if (!command) throw new Error(`Read Shell utility ${args.command} is not installed`);
+  const candidate = path.resolve(config.executionWorktree || config.roots[0].path, text(args.path, "path"));
+  const real = await fs.realpath(candidate);
+  const authorized = target => config.roots.some(root => {
+    const relative = path.relative(root.path, target);
+    return relative === "" || relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  });
+  if (!authorized(real)) throw new Error("Read Shell path is outside authorized read roots");
+  const handle = await fs.open(real, constants.O_RDONLY | NO_FOLLOW | constants.O_NONBLOCK);
+  try {
+    const actual = await fs.realpath(`/proc/self/fd/${handle.fd}`);
+    if (!authorized(actual)) throw new Error("Read Shell target changed outside authorized roots");
+    const info = await handle.stat();
+    if (args.command === "ls" && !info.isDirectory() || args.command === "cat" && !info.isFile() ||
+      args.command === "rg" && !info.isDirectory() && !info.isFile()) throw new Error("Invalid Shell target type");
+    const target = `/proc/self/fd/3${info.isDirectory() ? "/" : ""}`;
+    const argv = args.command === "ls" ? ["-la", "--", target]
+      : args.command === "cat" ? ["--", target]
+      : ["--no-config", "--hidden", "--color", "never", "-n", "--glob", "!.git/**", "-e", text(args.pattern, "pattern"), "--", target];
+    return await new Promise((resolve, reject) => {
+      const child = spawn(command, argv, { shell: false, stdio: ["ignore", "pipe", "pipe", handle.fd],
+        env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8" } });
+      let stdout = "", stderr = "", truncated = false;
+      const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
+      child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+      child.stdout.on("data", chunk => {
+        stdout += chunk;
+        if (Buffer.byteLength(stdout) > 1024 * 1024) { truncated = true; stdout = stdout.slice(0, 1024 * 1024); child.kill("SIGKILL"); }
+      });
+      child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(0, 8192); });
+      child.once("error", error => { clearTimeout(timer); reject(error); });
+      child.once("close", (exitCode, signal) => {
+        clearTimeout(timer);
+        resolve({ command: args.command, path: actual, stdout, stderr, exitCode, signal, truncated });
+      });
+    });
+  } finally { await handle.close(); }
+}
+
 const tools = [
   {
     name: "read_file",
@@ -292,6 +337,13 @@ const tools = [
     inputSchema: { type: "object", additionalProperties: false, properties: {} }
   }
 ];
+
+if (config.readShell && process.platform === "linux") tools.push({
+  name: "shell",
+  description: "Read-only Shell: run real ls, cat or rg from the project entry or an authorized absolute path. command is ls/cat/rg; path is a directory for ls, a regular file for cat, or a file/directory for rg; pattern is required for rg. No writes, pipes, redirection or arbitrary flags. Outputs over 1 MiB are explicitly marked truncated; narrow the path/pattern to read the rest.",
+  inputSchema: { type: "object", additionalProperties: false, required: ["command", "path"],
+    properties: { command: { enum: ["ls", "cat", "rg"] }, path: { type: "string" }, pattern: { type: "string", maxLength: 4000 } } }
+});
 
 if (closingFiles) {
   tools.push({
@@ -382,7 +434,9 @@ async function handle(request) {
   const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
   try {
     let result;
-    if (params.name === "read_file") {
+    if (params.name === "shell") {
+      result = await readShell(args);
+    } else if (params.name === "read_file") {
       const rootId = text(args.rootId, "rootId"), relativePath = text(args.path, "path");
       if (!config.roots.some(root => root.id === rootId)) throw Object.assign(new Error("unknown opaque root id. Call authority_matrix and copy a current rootId; skill aliases and MCP server names are not root IDs."),
         { code: "FILESYSTEM_ROOT_UNKNOWN", invalidField: "rootId", nextCall: { tool: "authority_matrix", arguments: {} } });

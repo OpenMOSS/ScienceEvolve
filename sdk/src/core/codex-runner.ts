@@ -19,7 +19,6 @@ import { redactTrace } from "./utils.js";
 import { configuredModelContextWindow, modelAutoCompactTokenLimit } from "./model-context.js";
 import { loadCodexProviderSettings } from "./codex-provider-config.js";
 import { prepareCodexGatewayModelCatalog } from "./codex-gateway-model-catalog.js";
-import { harnessExecutableLaunch } from "./harness-runtime/adapters/adapter-utils.js";
 import { nativeSessionHome } from "./harness-runtime/native-input-history.js";
 import {
   FIXED_MCP_TOKEN_ENV_VAR,
@@ -38,11 +37,13 @@ type CodexDriverRequest = HarnessAdapterRequest & Pick<
 > & { prepareNativeInput?: (prompt: string) => Promise<string> };
 import {
   buildInvocationEnvironment,
+  harnessExecutableLaunch,
   type InvocationProcessHost,
   writeStreamWithBackpressure
 } from "./harness-runtime/process-host.js";
 import {
   agentEnvironment,
+  natureFigureWorkspaceConfigPath,
   readControlActions,
   resolveOrchestrationControlMcpCommand,
   resolveWorkspaceMcpCommand,
@@ -96,6 +97,7 @@ export interface CodexRunnerOptions extends HarnessHostOptions {
   harnessId: string;
   /** The Facade has already copied selected Skills into the Agent-scoped cache. */
   skillsAlreadyStaged?: boolean;
+  workflowPromptPrepared?: boolean;
   /** Resolved by trusted host authority, never read from an Agent prompt/config path. */
   nativeCodexProfileHome?: string;
   /** Invocation-local protocol proxy inactivity deadline. */
@@ -731,10 +733,9 @@ export class CodexRunner {
     try {
       if (!signal.aborted) {
         const configuredMandate = agentConfig.instructions.trim();
-        const nativePrompt =
-          explainer
-            ? `${configuredMandate}\n`
-            : `${configuredMandate ? `Use this Agent mandate as standing role guidance, and apply the inbox's requirement-precedence section to newer task/output updates: ${configuredMandate}\n` : ""}Read the complete agent inbox at ${request.inboxPath}, complete the assigned work, use the injected control tools for state-changing actions, and return a concise natural-language handoff.\n`;
+        const nativePrompt = explainer || this.options.workflowPromptPrepared
+          ? `${configuredMandate}\n`
+          : `${configuredMandate}\n\n项目入口：${request.projectPath}\n\n本轮直接消息：\n来源：OpenFARS\n内容：${await fs.readFile(request.inboxPath, "utf8")}\n`;
         const actualInput = request.prepareNativeInput ? await request.prepareNativeInput(nativePrompt) : nativePrompt;
         signal.throwIfAborted();
         child.stdin.end(actualInput);
@@ -907,11 +908,7 @@ async function hasSelectedSkillDirectory(
 async function prepareNatureFigureWorkspace(
   workspacePath: string
 ): Promise<string> {
-  const configPath = path.join(
-    workspacePath,
-    ".scienceevolve",
-    "nature-figure.json"
-  );
+  const configPath = natureFigureWorkspaceConfigPath(workspacePath);
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   await fs.writeFile(configPath, '{\n  "backend": "python"\n}\n', {
     encoding: "utf8",

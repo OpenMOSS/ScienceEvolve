@@ -26,8 +26,8 @@ describe("shared Harness transport recovery", () => {
     expect(transientHarnessFailure(new Error("502 Bad Gateway: invalid JSON tool arguments"))).toBeUndefined();
   });
 
-  it("continues deferred recovery after the native fast allowance with bounded backoff", () => {
-    expect(transientHarnessFailure(new ProtocolRecoveryExhaustedError("dsh"))?.code).toBe("PROTOCOL_RECOVERY_EXHAUSTED");
+  it("honors exhausted protocol correction while retaining bounded transport backoff", () => {
+    expect(transientHarnessFailure(new ProtocolRecoveryExhaustedError("dsh", {}, { cause: new ProtocolToolArgumentsError("dsh") }))).toBeUndefined();
     expect([1, 2, 3, 7, 100_000].map(harnessRecoveryDelayMs)).toEqual([1_000, 2_000, 4_000, 60_000, 60_000]);
   });
 });

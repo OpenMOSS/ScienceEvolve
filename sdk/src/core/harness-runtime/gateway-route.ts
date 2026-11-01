@@ -10,6 +10,7 @@ import {
 import type { AgentRunRequest, TraceSink } from "../types.js";
 import type { HarnessDescriptor } from "./contracts.js";
 import { HarnessRuntimeError } from "./errors.js";
+import { agentContextWindow, assertInjectionBudget, type InjectionBudget } from "../context-injection-budget.js";
 
 export interface GatewayRouteOptions {
   protocolProxyFactory?: typeof startProtocolProxy;
@@ -29,6 +30,7 @@ export interface InvocationGatewayRoute {
   proxy: ProtocolProxy;
   getFailure(): ProtocolProxyFailure | undefined;
   resetFailure(): void;
+  setInjectionBudget?(prompt: string, extra?: string): void;
   close(): Promise<void>;
 }
 
@@ -40,6 +42,9 @@ export interface NativeCodexProfileBinding {
 export type ModelRouteBinding = { baseUrl: string; token: string } | NativeCodexProfileBinding;
 export type AdapterModelRoute = (Pick<InvocationGatewayRoute, "baseUrl" | "token" | "sourceProtocol" | "targetProtocol">) | NativeCodexProfileBinding;
 export interface InvocationNativeCodexRoute extends NativeCodexProfileBinding {
+  /** Native profiles have neither a proxy secret nor a proxy injection hook. */
+  token?: never;
+  setInjectionBudget?: never;
   getFailure(): undefined;
   resetFailure(): void;
   close(): Promise<void>;
@@ -54,7 +59,7 @@ export async function openInvocationModelRoute(
   const config = request.project.agents[request.agent];
   if (!config.nativeCodexProfileId) return openInvocationGatewayRoute(descriptor, request, onTrace, signal, options);
   signal.throwIfAborted();
-  if (descriptor.id !== "codex" || request.purpose === "probe" || request.purpose === "explainer" ||
+  if (descriptor.route?.nativeProfileAuth !== true || request.purpose === "probe" || request.purpose === "explainer" ||
     config.gatewayId || config.gatewaySnapshot || !resolveNativeCodexProfile) {
     throw new HarnessRuntimeError("HARNESS_CONFIGURATION_INVALID", "Invalid native Codex profile route", { harnessId: descriptor.id });
   }
@@ -94,6 +99,7 @@ export async function openInvocationGatewayRoute(
   const sourceProtocol = descriptor.nativeProtocol as AgentProtocol;
   const targetProtocol = gateway.protocol;
   let proxy: ProtocolProxy;
+  let contextBudget: InjectionBudget | undefined;
   try {
     proxy = await (options.protocolProxyFactory ?? startProtocolProxy)({
       sourceProtocol,
@@ -105,6 +111,7 @@ export async function openInvocationGatewayRoute(
       webSearchEnabled: request.project.agents[request.agent].webSearch === true &&
         request.purpose !== "explainer",
       modelContextWindows: gateway.modelContextWindows,
+      getContextInjectionBudget: () => contextBudget,
       gatewayReasoning: gateway.reasoning,
       invocationSignal: signal,
       force: true,
@@ -186,6 +193,9 @@ export async function openInvocationGatewayRoute(
     proxy,
     getFailure: () => proxy.getFailure?.(),
     resetFailure: () => proxy.resetFailure?.(),
+    setInjectionBudget: (prompt, extra = "") => {
+      contextBudget = assertInjectionBudget(prompt, agentContextWindow(request.project.agents[request.agent]), extra);
+    },
     close: () => proxy.close()
   };
 }
