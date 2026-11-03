@@ -1,5 +1,6 @@
 import { beginWorkflowRecovery, checkpointWorkflowRecovery, finishWorkflowRecovery, hasUserWorkflowPause } from "./workflow-recovery.js";
 import { legacyContextBackground } from "./context-injection-budget.js";
+import { validateDisplayArtifacts } from "./display-artifact-validation.js";
 import { removedWorkflowAgentTaskReason } from "./workflow-session-archive.js";
 import { assertWorkflowSessionHarnesses } from "./workflow-session-compatibility.js";
 import type { WorkflowAdjustmentPageInput, WorkflowAdjustmentRecord, WorkflowAdjustmentSnapshot, WorkflowConfigurationVersion } from "./workflow-adjustments.js";
@@ -1423,6 +1424,10 @@ export class Orchestrator {
       delete config.reasoningEffort;
       delete config.legacyReasoningEffort;
       let reasoning: ReturnType<typeof resolveGatewayReasoning>;
+      // An explicit Agent choice wins; only previously confirmed defaults are
+      // used here. Project creation never probes the model or scans gateways.
+      if (!config.gatewayReasoningOption && gateway.autoReasoning !== false && gateway.modelReasoning?.[config.model]?.defaultOptionId)
+        config.gatewayReasoningOption = gateway.modelReasoning[config.model]!.defaultOptionId;
       try {
         reasoning = resolveGatewayReasoning(
           gateway.modelReasoning,
@@ -1650,18 +1655,19 @@ export class Orchestrator {
   }
 
   private listingProjectView(runtime: RuntimeProject): Promise<ProjectView> {
-    // Start each row on a separate event-loop turn across all list callers,
-    // so writer heartbeats and I/O run between expensive projections. Release
-    // this queue after starting the read; a project's own write barrier must
-    // not block other rows. Its snapshot callback still captures immediately
-    // at that independently committed boundary.
+    // Wait for each project's own writer independently. Queue the expensive
+    // projection after that barrier: several barriers can clear together,
+    // and must not release a burst of synchronous reads into one microtask turn.
+    if (runtime.state.phase === "storage-recovery-required") return this.captureListingProjectView(runtime);
+    return this.storage.withStableProjectSnapshot(runtime.state.id, () => this.captureListingProjectView(runtime));
+  }
+
+  private captureListingProjectView(runtime: RuntimeProject): Promise<ProjectView> {
     return new Promise<ProjectView>((resolve, reject) => {
       const start = this.listingViewTail.then(() => new Promise<void>(release => {
         setImmediate(() => {
           try {
-            if (runtime.state.phase === "storage-recovery-required") resolve(this.projectView(runtime.state));
-            else void this.storage.withStableProjectSnapshot(runtime.state.id, async () => this.projectView(runtime.state))
-              .then(resolve, reject);
+            resolve(this.projectView(runtime.state));
           } catch (error) { reject(error); }
           finally { release(); }
         });
@@ -3129,7 +3135,8 @@ export class Orchestrator {
     // never start AgentRunner for a Git-enabled project.
     if (runtime.state.git?.enabled) return;
     if (runtime.loop || this.shuttingDown) return;
-    runtime.loop = this.runLoop(runtime)
+    let canContinue = false;
+    const loop = this.runLoop(runtime)
       .catch(async (error) => {
         if (runtime.state.status === "cancelling") {
           await this.finishCancellation(runtime);
@@ -3144,12 +3151,14 @@ export class Orchestrator {
           error as Error
         );
       })
+      .then(() => { canContinue = true; })
       .finally(async () => {
         try {
           if (runtime.state.status === "cancelled") await this.markCancellationSettled(runtime);
         } finally {
-          runtime.loop = undefined;
+          if (runtime.loop === loop) runtime.loop = undefined;
         }
+        if (!canContinue) return;
         const refreshCanRun =
           runtime.mainInputRefresh !== undefined &&
           (runtime.state.status !== "paused" ||
@@ -3164,6 +3173,22 @@ export class Orchestrator {
           queueMicrotask(() => this.startLoop(runtime));
         }
       });
+    runtime.loop = loop;
+    // Observe failures while reporting an earlier error or persisting stop
+    // settlement. Awaiters keep the original rejection; no new loop is queued.
+    void loop.catch(error => {
+        runtime.controller?.abort();
+        runtime.queueController?.abort();
+        runtime.sleepController?.abort();
+        runtime.state.status = "interrupted";
+        runtime.state.phase = "storage-recovery-required";
+        runtime.state.lastError = redactTrace(error instanceof Error ? error.message : String(error));
+        try {
+          console.error("Project background execution stopped; failure reporting could not be persisted", {
+            projectId: runtime.state.id, error: runtime.state.lastError
+          });
+        } catch { /* Logging cannot create another detached rejection. */ }
+    });
   }
 
   private async restartMainWithUpdatedUserContext(
@@ -3792,9 +3817,11 @@ export class Orchestrator {
         })}\n`,
         { encoding: "utf8", mode: 0o600, flag: "wx" }
       );
+      if (formalSerialState) control.nativeBackgroundJobs = true;
       controlStateVersion = control.stateVersion;
       controlCapabilityHash = control.capabilityHash;
       const controlService = new ControlActionService({
+        nativeJobScope: { projectId: state.id, projectPath, workspacePath, agentId: agent, invocationId },
         projectId: state.id,
         agent,
         invocationId,
@@ -3839,6 +3866,11 @@ export class Orchestrator {
                     proposal: { orchestration: structuredClone(proposal.orchestration), ...credentialFreeAgentConfiguration(proposal) } });
                 }
               }
+            }
+            if (envelope.action.tool === "select_display") {
+              await validateDisplayArtifacts(this.storage, state, {
+                primary: envelope.action.primary, items: envelope.action.items ?? []
+              }, stagedActions);
             }
             validateCompletionDisplayContract(state, [
               ...stagedActions,
@@ -6074,6 +6106,7 @@ export class Orchestrator {
         continue;
       }
       if (action.tool === "select_display") {
+        await validateDisplayArtifacts(this.storage, state, { primary: action.primary, items: action.items ?? [] });
         const display = await this.applyDisplaySelection(runtime, {
           primary: action.primary,
           items: action.items ?? []
@@ -6149,6 +6182,7 @@ export class Orchestrator {
         message: `Main display selection was not applied because a file is unavailable: ${safeError}`,
         data: { display, preservedPreviousDisplay: Boolean(state.display) }
       });
+      if (requireRegistered) throw error;
       return null;
     }
   }

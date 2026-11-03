@@ -157,7 +157,7 @@ process.stdin.pipe(child.stdin);child.stdout.pipe(process.stdout);child.stderr.p
 const keeper=setInterval(()=>{},2147483647);
 let finishing=false;
 const groupHasOtherMembers=()=>{try{for(const entry of fs.readdirSync('/proc')){if(!/^[0-9]+$/.test(entry))continue;try{const candidate=fs.readFileSync('/proc/'+entry+'/stat','utf8');const close=candidate.lastIndexOf(')');const fields=candidate.slice(close+2).trim().split(/\s+/);const candidateProcPid=Number.parseInt(candidate.split(' ',1)[0],10);const candidateGroup=Number.parseInt(fields[2]||'',10);if(fields[0]!=='Z'&&candidateProcPid!==procPid&&candidateGroup===procPid)return true}catch(error){if(!error||!['ENOENT','ESRCH'].includes(error.code))return true}}return false}catch{return true}};
-const finish=(code,signal)=>{if(finishing)return;finishing=true;process.stdin.unpipe(child.stdin);process.stdin.pause();clearInterval(keeper);if(groupHasOtherMembers()){try{process.kill(-pid,'SIGKILL')}catch{process.exit(1)}return}if(signal){try{process.kill(process.pid,signal)}catch{process.exit(1)}}else{setImmediate(()=>process.exit(code))}};
+const finish=(code,signal)=>{if(finishing)return;finishing=true;process.stdin.unpipe(child.stdin);process.stdin.pause();clearInterval(keeper);/* CommonProcessHost confirms and closes the retained owned group after the supervisor exits; preserve the native exit status. */if(signal){try{process.kill(process.pid,signal)}catch{process.exit(1)}}else{setImmediate(()=>process.exit(code))}};
 child.once('error',(error)=>{process.stderr.write(String(error&&error.stack||error),()=>finish(1,null))});
 child.once('close',(code,signal)=>finish(code===null?1:code,signal));
 `;

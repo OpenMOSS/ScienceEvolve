@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { newId, nowIso, redactTrace } from "./utils.js";
 import { DEFAULT_MODEL_CONTEXT_WINDOW, MAX_MODEL_CONTEXT_WINDOW } from "./model-context.js";
 import {
@@ -37,9 +38,11 @@ import {
   applyGatewayReasoning,
   normalizeGatewayModelReasoningConfigs,
   resolveGatewayReasoning,
+  type GatewayReasoningDetection,
   type GatewayModelReasoningConfigs,
   type ResolvedGatewayReasoning
 } from "./gateway-reasoning.js";
+import { discoverGatewayReasoning, gatewayReasoningDiscoveryFingerprint } from "./gateway-reasoning-discovery.js";
 
 export { validateGatewayUrl } from "./gateway-security.js";
 
@@ -166,6 +169,11 @@ export interface GatewayRecord {
   modelContextWindows?: Record<string, number>;
   /** Per-model, allow-listed outbound string options. Absence means provider default. */
   modelReasoning?: GatewayModelReasoningConfigs;
+  /** Connection tests discover reasoning automatically unless explicitly disabled. */
+  autoReasoning?: boolean;
+  reasoningDetection?: Record<string, GatewayReasoningDetection>;
+  /** In-memory progress of save-triggered discovery; never written as a durable result. */
+  reasoningDiscovery?: Record<string, "queued" | "checking">;
   defaultModel: string;
   /** The single wire protocol enabled for this gateway. */
   protocol: AgentProtocol;
@@ -192,6 +200,7 @@ export interface GatewayInput {
   models: string[];
   modelContextWindows?: Record<string, number>;
   modelReasoning?: GatewayModelReasoningConfigs;
+  autoReasoning?: boolean;
   defaultModel: string;
   protocol: AgentProtocol;
 }
@@ -406,6 +415,8 @@ function skippedProbeStageResults(fromIndex: number): GatewayProbeStageResult[] 
 export const GATEWAY_ID_PATTERN = /^gwy_[a-f0-9]{32}$/;
 
 export function normalizeGatewayInput(input: GatewayInput): GatewayInput {
+  if (input.autoReasoning !== undefined && typeof input.autoReasoning !== "boolean")
+    throw new Error("自动探测思考参数必须是布尔值");
   const name = input.name.trim();
   if (!name || name.length > 160) throw new Error("网关名称不能为空且不能超过 160 个字符");
   const url = validateGatewayUrl(input.url);
@@ -436,6 +447,7 @@ export function normalizeGatewayInput(input: GatewayInput): GatewayInput {
     models,
     modelContextWindows,
     modelReasoning,
+    ...(input.autoReasoning !== undefined ? { autoReasoning: input.autoReasoning !== false } : {}),
     defaultModel,
     protocol: input.protocol
   };
@@ -448,12 +460,13 @@ export function publicGateway(record: GatewayRecord): PublicGatewayRecord {
 }
 
 export function gatewayCombinationPassed(
-  gateway: Pick<GatewayRecord, "test" | "tests"> & { revision?: number },
+  gateway: Pick<GatewayRecord, "test" | "tests"> & { revision?: number; modelReasoning?: GatewayModelReasoningConfigs; autoReasoning?: boolean },
   protocol: AgentProtocol,
   model: string,
   harness?: AgentHarness,
   reasoningOptionId?: string
 ): boolean {
+  reasoningOptionId ??= gateway.autoReasoning === false ? undefined : gateway.modelReasoning?.[model]?.defaultOptionId;
   const records = gateway.tests?.length ? gateway.tests : [gateway.test];
   const routeRecords = records.filter((test) =>
     (test.probeKind === undefined || test.probeKind === "route") &&
@@ -511,12 +524,28 @@ export interface GatewayStoreOptions {
   resolveHostname?: GatewayHostnameResolver;
   testTimeoutMs?: number;
   adapterSmokeProbe?: AdapterSmokeProbeRunner;
+  /** Allows controlled protocol-only fixtures to opt out of capability discovery. */
+  autoReasoning?: boolean;
 }
 
 interface GatewayFile {
   schemaVersion: 1;
   gateways: GatewayRecord[];
   defaultGatewayId?: string;
+}
+
+interface GatewayReasoningJob {
+  gateway: GatewayRecord;
+  model: string;
+  fingerprint: string;
+  force: boolean;
+  status: "queued" | "checking";
+  controller: AbortController;
+}
+
+function freshReasoningDetection(cached: GatewayReasoningDetection | undefined, fingerprint: string): boolean {
+  const ttlMs = cached?.status === "verified" ? 24 * 60 * 60_000 : cached?.status === "failed" ? 60_000 : 10 * 60_000;
+  return Boolean(cached?.fingerprint === fingerprint && Date.now() - Date.parse(cached.checkedAt) < ttlMs);
 }
 
 /** Durable global gateway library. Old/malformed files are ignored. */
@@ -526,6 +555,13 @@ export class GatewayStore {
   private readonly resolveHostname?: GatewayHostnameResolver;
   private readonly timeoutMs: number;
   private adapterSmokeProbe?: AdapterSmokeProbeRunner;
+  private readonly automaticReasoning: boolean;
+  private readonly reasoningDiscoveries = new Map<string, { task: Promise<GatewayReasoningDetection>; signal?: AbortSignal }>();
+  private readonly reasoningJobs = new Map<string, GatewayReasoningJob>();
+  private readonly reasoningQueue: GatewayReasoningJob[] = [];
+  private readonly reasoningTasks = new Set<Promise<void>>();
+  private activeReasoningJobs = 0;
+  private reasoningClosed = false;
 
   constructor(
     private readonly root: string,
@@ -535,6 +571,7 @@ export class GatewayStore {
     this.resolveHostname = options.resolveHostname;
     this.timeoutMs = Math.max(500, Math.min(options.testTimeoutMs ?? 60_000, 60_000));
     this.adapterSmokeProbe = options.adapterSmokeProbe;
+    this.automaticReasoning = options.autoReasoning !== false;
   }
 
   setAdapterSmokeProbe(probe: AdapterSmokeProbeRunner): void {
@@ -554,6 +591,7 @@ export class GatewayStore {
     reasoningOptionId?: string
   ): Promise<boolean> {
     const gateway = await this.get(id);
+    reasoningOptionId ??= gateway?.autoReasoning === false ? undefined : gateway?.modelReasoning?.[model]?.defaultOptionId;
     if (!gateway || !this.adapterSmokeProbe ||
       !gatewayCombinationPassed(gateway, gateway.protocol, model, harness, reasoningOptionId)) {
       return false;
@@ -601,13 +639,13 @@ export class GatewayStore {
 
   async list(): Promise<PublicGatewayRecord[]> {
     await this.mutationTail;
-    return (await this.read()).gateways.map(publicGateway);
+    return (await this.read()).gateways.map(gateway => publicGateway(this.withReasoningProgress(gateway)));
   }
 
   async get(id: string): Promise<GatewayRecord | undefined> {
     await this.mutationTail;
     const gateway = (await this.read()).gateways.find((item) => item.id === id);
-    return gateway ? structuredClone(gateway) : undefined;
+    return gateway ? this.withReasoningProgress(structuredClone(gateway)) : undefined;
   }
 
   async defaultGatewayId(): Promise<string | undefined> {
@@ -695,6 +733,18 @@ export class GatewayStore {
         revision: current.revision + 1,
         updatedAt: nowIso()
       };
+      // Never apply a previous endpoint/key's automatically discovered default
+      // to newly created projects. User-edited mappings remain authoritative.
+      for (const [model, detection] of Object.entries(updated.reasoningDetection ?? {})) {
+        if (updated.models.includes(model) && detection.fingerprint === gatewayReasoningDiscoveryFingerprint(updated, model)) {
+          if (detection.config && !isDeepStrictEqual(updated.modelReasoning?.[model], detection.config))
+            delete updated.reasoningDetection![model];
+          continue;
+        }
+        if (detection.config && isDeepStrictEqual(updated.modelReasoning?.[model], detection.config))
+          delete updated.modelReasoning![model];
+        delete updated.reasoningDetection![model];
+      }
       document.gateways[index] = updated;
       await this.write(document);
       return publicGateway(updated);
@@ -702,6 +752,7 @@ export class GatewayStore {
   }
 
   async delete(id: string): Promise<boolean> {
+    this.cancelReasoningJobs(id);
     return this.serialize(async () => {
       const document = await this.read();
       const gateway = document.gateways.find((item) => item.id === id);
@@ -733,7 +784,11 @@ export class GatewayStore {
     reasoningOptionId?: string
   ): Promise<GatewayTestResult> {
     throwIfProbeCancelled(signal);
-    const gateway = await this.get(id);
+    const prepared = await this.prepareReasoning(id, requestedModel, reasoningOptionId, signal, gateway => {
+      if (requestedProtocol && requestedProtocol !== gateway.protocol) throw new Error("该网关不支持所选协议");
+    });
+    const gateway = prepared.gateway;
+    reasoningOptionId = prepared.optionId;
     if (!gateway) throw new Error("Gateway not found");
     const protocol = requestedProtocol ?? gateway.protocol;
     if (protocol !== gateway.protocol) throw new Error("该网关不支持所选协议");
@@ -789,13 +844,15 @@ export class GatewayStore {
     reasoningOptionId?: string
   ): Promise<GatewayTestResult> {
     throwIfProbeCancelled(signal);
-    const gateway = await this.get(id);
+    const nativeProtocol = this.adapterSmokeProbe?.nativeProtocol(harness) ?? nativeProtocolForHarness(harness);
+    if (!nativeProtocol) throw new Error("不支持所选 harness");
+    const prepared = await this.prepareReasoning(id, requestedModel, reasoningOptionId, signal);
+    const gateway = prepared.gateway;
+    reasoningOptionId = prepared.optionId;
     if (!gateway) throw new Error("Gateway not found");
     const model = requestedModel?.trim() || gateway.defaultModel;
     if (!gateway.models.includes(model)) throw new Error("该 model 不在网关声明的模型列表中");
     const reasoning = resolveGatewayReasoning(gateway.modelReasoning, model, reasoningOptionId);
-    const nativeProtocol = this.adapterSmokeProbe?.nativeProtocol(harness) ?? nativeProtocolForHarness(harness);
-    if (!nativeProtocol) throw new Error("不支持所选 harness");
     const testedAt = nowIso();
     let result: GatewayTestResult;
     try {
@@ -843,13 +900,15 @@ export class GatewayStore {
     reasoningOptionId?: string
   ): Promise<GatewayTestResult> {
     throwIfProbeCancelled(signal);
-    const gateway = await this.get(id);
+    const nativeProtocol = this.adapterSmokeProbe?.nativeProtocol(harness) ?? nativeProtocolForHarness(harness);
+    if (!nativeProtocol) throw new Error("不支持所选 harness");
+    const prepared = await this.prepareReasoning(id, requestedModel, reasoningOptionId, signal);
+    const gateway = prepared.gateway;
+    reasoningOptionId = prepared.optionId;
     if (!gateway) throw new Error("Gateway not found");
     const model = requestedModel?.trim() || gateway.defaultModel;
     if (!gateway.models.includes(model)) throw new Error("该 model 不在网关声明的模型列表中");
     const reasoning = resolveGatewayReasoning(gateway.modelReasoning, model, reasoningOptionId);
-    const nativeProtocol = this.adapterSmokeProbe?.nativeProtocol(harness) ?? nativeProtocolForHarness(harness);
-    if (!nativeProtocol) throw new Error("不支持所选 harness");
     const routeResult = await this.testHarnessRoute(id, harness, model, signal, onStage, reasoningOptionId);
     if (routeResult.status !== "passed") {
       const skippedSmokeStage = probeStageSnapshot(HARNESS_SMOKE_PROBE_STAGE, "skipped", {
@@ -1024,6 +1083,9 @@ export class GatewayStore {
     if (models.length * harnesses.length > 800) {
       throw new Error("一次最多验证 800 个 harness/model 组合");
     }
+    // Settle the requested model mappings before recording compatibility.
+    for (const model of models)
+      await this.prepareReasoning(id, model, options.reasoningOptions?.[model] ?? undefined, signal);
     const resultGroups = await Promise.all(harnesses.map(async (harness) => {
       const harnessResults: GatewayTestResult[] = [];
       for (const model of models) {
@@ -1049,6 +1111,13 @@ export class GatewayStore {
       const document = await this.read();
       const current = document.gateways.find((item) => item.id === id);
       if (!current) return;
+      // A background refresh may have changed this model while its old probe
+      // was still running. Never cache that old result as current validation.
+      if (result.gatewayRevision !== undefined && result.gatewayRevision !== current.revision) return;
+      try {
+        const expected = resolveGatewayReasoning(current.modelReasoning, result.model, result.reasoningOptionId);
+        if (expected?.fingerprint !== result.reasoningFingerprint) return;
+      } catch { return; }
       const nextTest: GatewayTestState = {
         status: result.status,
         testedAt: result.testedAt,
@@ -1177,6 +1246,9 @@ export class GatewayStore {
       current.modelReasoning = Object.fromEntries(
         Object.entries(current.modelReasoning ?? {}).filter(([model]) => models.includes(model))
       );
+      if (current.reasoningDetection) current.reasoningDetection = Object.fromEntries(
+        Object.entries(current.reasoningDetection).filter(([model]) => models.includes(model))
+      );
       if (!models.includes(current.defaultModel)) current.defaultModel = models[0]!;
       current.revision += 1;
       current.tests = [];
@@ -1185,6 +1257,169 @@ export class GatewayStore {
       await this.write(document);
       return publicGateway(current);
     });
+  }
+
+  private withReasoningProgress(gateway: GatewayRecord): GatewayRecord {
+    const progress = Object.fromEntries([...this.reasoningJobs.values()]
+      .filter(job => job.gateway.id === gateway.id && !job.controller.signal.aborted)
+      .map(job => [job.model, job.status]));
+    return { ...gateway, ...(Object.keys(progress).length ? { reasoningDiscovery: progress } : {}) };
+  }
+
+  private cancelReasoningJobs(id: string, models?: string[]): void {
+    for (const [key, job] of this.reasoningJobs) {
+      if (job.gateway.id !== id || models && !models.includes(job.model)) continue;
+      job.controller.abort();
+      this.reasoningJobs.delete(key);
+    }
+  }
+
+  /** Product save handlers enqueue background work; ordinary reads and startup never probe. */
+  async scheduleReasoningDiscovery(id: string, options: { models?: string[]; force?: boolean } = {}): Promise<PublicGatewayRecord> {
+    const gateway = await this.get(id);
+    if (!gateway) throw new Error("Gateway not found");
+    const models = [...new Set(options.models ?? gateway.models)];
+    if (models.some(model => !gateway.models.includes(model))) throw new Error("所选 model 不在网关声明的模型列表中");
+    this.cancelReasoningJobs(id, options.models);
+    if (!this.reasoningClosed && this.automaticReasoning && gateway.autoReasoning !== false) {
+      // The default model gets the first available slot. At most two saved
+      // models are probed concurrently by this background queue.
+      models.sort((a, b) => Number(b === gateway.defaultModel) - Number(a === gateway.defaultModel));
+      for (const model of models) {
+        const cached = gateway.reasoningDetection?.[model], configured = gateway.modelReasoning?.[model];
+        if (configured?.options.length && !isDeepStrictEqual(cached?.config, configured)) continue;
+        const fingerprint = gatewayReasoningDiscoveryFingerprint(gateway, model);
+        if (!options.force && freshReasoningDetection(cached, fingerprint)) continue;
+        const job: GatewayReasoningJob = { gateway, model, fingerprint, force: options.force === true,
+          controller: new AbortController(), status: "queued" };
+        this.reasoningJobs.set(`${id}:${model}`, job);
+        this.reasoningQueue.push(job);
+      }
+      this.pumpReasoningQueue();
+    }
+    // Progress is ephemeral. Do not return a stale progress field captured by get().
+    delete gateway.reasoningDiscovery;
+    return publicGateway(this.withReasoningProgress(gateway));
+  }
+
+  private pumpReasoningQueue(): void {
+    while (!this.reasoningClosed && this.activeReasoningJobs < 2 && this.reasoningQueue.length) {
+      const job = this.reasoningQueue.shift()!;
+      const key = `${job.gateway.id}:${job.model}`;
+      if (job.controller.signal.aborted || this.reasoningJobs.get(key) !== job) continue;
+      job.status = "checking";
+      this.activeReasoningJobs += 1;
+      const task = this.runReasoningJob(job).catch(error => {
+        console.error("Unable to record gateway reasoning discovery:",
+          redactTrace(String(error).replaceAll(job.gateway.apiKey, "[REDACTED]")));
+      }).finally(() => {
+        if (this.reasoningJobs.get(key) === job) this.reasoningJobs.delete(key);
+        this.reasoningTasks.delete(task);
+        this.activeReasoningJobs -= 1;
+        this.pumpReasoningQueue();
+      });
+      this.reasoningTasks.add(task);
+    }
+  }
+
+  private async runReasoningJob(job: GatewayReasoningJob): Promise<void> {
+    try {
+      await this.discoverReasoning(job.gateway.id, job.model, job.controller.signal, job.force);
+    } catch (error) {
+      if (job.controller.signal.aborted) return;
+      await this.serialize(async () => {
+        if (job.controller.signal.aborted) return;
+        const document = await this.read();
+        const current = document.gateways.find(item => item.id === job.gateway.id);
+        if (!current || current.autoReasoning === false || !current.models.includes(job.model) ||
+          gatewayReasoningDiscoveryFingerprint(current, job.model) !== job.fingerprint ||
+          !isDeepStrictEqual(current.modelReasoning?.[job.model], job.gateway.modelReasoning?.[job.model])) return;
+        current.reasoningDetection = { ...current.reasoningDetection, [job.model]: {
+          status: "failed", checkedAt: nowIso(), fingerprint: job.fingerprint, attempts: [],
+          message: redactTrace(String(error).replaceAll(job.gateway.apiKey, "[REDACTED]")).slice(0, 500)
+        } };
+        current.updatedAt = nowIso();
+        await this.write(document);
+      });
+    }
+  }
+
+  /** Cancel save-triggered probes before the host releases its runtime directory. */
+  async close(): Promise<void> {
+    this.reasoningClosed = true;
+    for (const job of this.reasoningJobs.values()) job.controller.abort();
+    this.reasoningJobs.clear();
+    this.reasoningQueue.splice(0);
+    await Promise.allSettled([...this.reasoningTasks]);
+  }
+
+  /** Capability discovery is scoped to explicitly configured models, never GET/list/startup. */
+  async discoverReasoning(id: string, requestedModel?: string, signal?: AbortSignal, force = false): Promise<GatewayReasoningDetection> {
+    throwIfProbeCancelled(signal);
+    const gateway = await this.get(id);
+    if (!gateway) throw new Error("Gateway not found");
+    const model = requestedModel?.trim() || gateway.defaultModel;
+    if (!gateway.models.includes(model)) throw new Error("该 model 不在网关声明的模型列表中");
+    const fingerprint = gatewayReasoningDiscoveryFingerprint(gateway, model);
+    const cached = gateway.reasoningDetection?.[model];
+    const configured = gateway.modelReasoning?.[model];
+    const automaticConfig = Boolean(cached?.config && isDeepStrictEqual(cached.config, configured));
+    if (configured?.options.length && !automaticConfig) return {
+      status: "verified", checkedAt: nowIso(), fingerprint, config: configured,
+      message: "保留手动配置；自动探测不会覆盖自定义思考参数", attempts: [] };
+    if (!force && freshReasoningDetection(cached, fingerprint)) return structuredClone(cached!);
+    const key = `${id}:${model}:${fingerprint}`;
+    const pending = this.reasoningDiscoveries.get(key);
+    if (pending && !pending.signal?.aborted) return pending.task;
+    const task = (async () => {
+      await this.assertAllowedNetworkTarget(gateway.url);
+      const result = await discoverGatewayReasoning(gateway, model, { fetch: this.fetchImpl, timeoutMs: this.timeoutMs, signal });
+      throwIfProbeCancelled(signal);
+      await this.serialize(async () => {
+        throwIfProbeCancelled(signal);
+        const document = await this.read();
+        const current = document.gateways.find(item => item.id === id);
+        if (!current || !current.models.includes(model) || current.autoReasoning !== gateway.autoReasoning ||
+          gatewayReasoningDiscoveryFingerprint(current, model) !== fingerprint ||
+          !isDeepStrictEqual(current.modelReasoning?.[model], configured))
+          throw new Error("网关配置在思考参数探测期间已变化，请重新测试");
+        const next = { ...current.modelReasoning };
+        if (result.status === "verified" && result.config) next[model] = result.config;
+        else if (automaticConfig) delete next[model];
+        if (!isDeepStrictEqual(next, current.modelReasoning ?? {})) {
+          current.modelReasoning = next;
+          // Discovery changes only this model's options. Keep the transport
+          // revision and other models' real probe results intact.
+          if (current.test.model === model) current.test = { status: "untested" };
+          current.tests = (current.tests ?? []).filter(test => test.model !== model);
+        }
+        current.reasoningDetection = { ...current.reasoningDetection, [model]: result };
+        current.updatedAt = nowIso();
+        await this.write(document);
+      });
+      return result;
+    })().catch(error => {
+      if (signal?.aborted || error instanceof Error && error.name === "AbortError") throw new GatewayProbeCancelledError();
+      throw error;
+    });
+    const discovery = { task, signal };
+    this.reasoningDiscoveries.set(key, discovery);
+    try { return await task; }
+    finally { if (this.reasoningDiscoveries.get(key) === discovery) this.reasoningDiscoveries.delete(key); }
+  }
+
+  private async prepareReasoning(id: string, requestedModel: string | undefined, optionId: string | undefined, signal?: AbortSignal,
+    validate?: (gateway: GatewayRecord) => void) {
+    let gateway = await this.get(id);
+    if (!gateway) throw new Error("Gateway not found");
+    validate?.(gateway);
+    const model = requestedModel?.trim() || gateway.defaultModel;
+    if (!gateway.models.includes(model)) throw new Error("该 model 不在网关声明的模型列表中");
+    if (!optionId && this.automaticReasoning && gateway.autoReasoning !== false) {
+      await this.discoverReasoning(id, model, signal);
+      gateway = (await this.get(id))!;
+    }
+    return { gateway, optionId: optionId ?? (gateway.autoReasoning === false ? undefined : gateway.modelReasoning?.[model]?.defaultOptionId) };
   }
 
   private filePath(): string {
@@ -1217,6 +1452,7 @@ export class GatewayStore {
             models: item.models.filter((model): model is string => typeof model === "string"),
             modelContextWindows: item.modelContextWindows,
             modelReasoning: item.modelReasoning,
+            autoReasoning: item.autoReasoning,
             defaultModel: item.defaultModel,
             protocol: item.protocol as AgentProtocol
           });

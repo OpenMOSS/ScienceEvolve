@@ -815,6 +815,20 @@ describe("LocalCollaborationGitService", () => {
     expect(await git(main, ["branch", "--show-current"])).toBe("main");
   });
 
+  it("reports Main's exact pending entries and owner before a remote merge, preserving all work", async () => {
+    const { service } = await fixture(undefined, "agent");
+    const main = await service.prepareAgentManagementWorkspace("main");
+    await fs.writeFile(path.join(main, "final-manifest.json"), "retained process evidence\n");
+    const before = await git(main, ["status", "--porcelain=v1"]);
+    const error = await service.assertRemoteMergeTargetAvailable("main").catch(error => error);
+    expect(error).toBeInstanceOf(GitInputError);
+    expect(error).toMatchObject({ publicData: { blocker: "TARGET_WORKTREE_DIRTY", targetAgentId: "main", targetBranch: "main",
+      pendingEntries: ["?? final-manifest.json"] } });
+    expect(error.message).toContain("final-manifest.json");
+    expect(await git(main, ["status", "--porcelain=v1"])).toBe(before);
+    expect(await fs.readFile(path.join(main, "final-manifest.json"), "utf8")).toBe("retained process evidence\n");
+  });
+
   it("rejects an unregistered foreign or symlinked management checkout", async () => {
     const { service } = await fixture(undefined, "agent");
     const checkout = await service.prepareAgentManagementWorkspace("analyst");

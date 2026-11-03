@@ -150,7 +150,7 @@ const SCOPED_OPERATION_SCHEMA_SQL = `
     operation_id TEXT PRIMARY KEY CHECK (length(operation_id) > 0),
     project_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN (
-      'git.push','pull.create','pull.merge','pull.close','memory.commit','git.revert'
+      'git.push','pull.create','pull.merge','pull.close','pull.update','memory.commit','git.revert'
     )),
     payload_hash TEXT NOT NULL CHECK (length(payload_hash) > 0),
     status TEXT NOT NULL CHECK (status IN ('prepared','observed','finalized','uncertain','failed') OR (status = 'superseded' AND kind = 'git.push')),
@@ -218,7 +218,7 @@ const SCOPED_FINAL_INTEGRATION_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS scoped_final_operations (
     operation_id TEXT PRIMARY KEY CHECK (length(operation_id) > 0),
     project_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('pull.create','pull.merge','pull.close')),
+    kind TEXT NOT NULL CHECK (kind IN ('pull.create','pull.merge','pull.close','pull.update')),
     payload_hash TEXT NOT NULL CHECK (length(payload_hash) > 0),
     status TEXT NOT NULL CHECK (status IN ('prepared','observed','finalized','uncertain','failed')),
     owner_execution_id TEXT NOT NULL,
@@ -396,6 +396,30 @@ function migrateSchemaV26ToV27(database: DatabaseSync, authority?: SchemaMigrati
     database.exec("UPDATE collaboration_state_meta SET schema_version = 27 WHERE singleton = 1");
     database.exec("COMMIT");
   } catch (error) { database.exec("ROLLBACK"); throw error; }
+}
+
+/** Extend the existing journals without changing any historical outcome. */
+function migrateSchemaV27ToV28(database: DatabaseSync, authority?: SchemaMigrationAuthority): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    assertMigrationLease(database, authority);
+    for (const table of ["operations", "scoped_operations", "scoped_final_operations"] as const) {
+      const row = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | undefined;
+      if (!row?.sql.includes("'pull.close'")) throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", "Git journal kind constraint is missing");
+      if (row.sql.includes("'pull.update'")) continue;
+      const auxiliary = database.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger') AND sql IS NOT NULL").all(table) as Array<{ sql: string }>;
+      const sql = row.sql.replace(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?[\"\x60]?${table}[\"\x60]?`), `CREATE TABLE ${table}_v28`)
+        .replace("'pull.close'", "'pull.close','pull.update'");
+      database.exec(sql);
+      database.exec(`INSERT INTO ${table}_v28 SELECT * FROM ${table} ORDER BY rowid`);
+      database.exec(`DROP TABLE ${table}`);
+      database.exec(`ALTER TABLE ${table}_v28 RENAME TO ${table}`);
+      for (const item of auxiliary) database.exec(item.sql);
+    }
+    if (database.prepare("PRAGMA foreign_key_check").all().length) throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", "PR metadata journal migration left invalid foreign keys");
+    database.exec("UPDATE collaboration_state_meta SET schema_version = 28 WHERE singleton = 1");
+    database.exec("COMMIT");
+  } catch (error) { if (database.isTransaction) { try { database.exec("ROLLBACK"); } catch { /* Preserve the original migration failure. */ } } throw error; }
 }
 
 /** Extend the existing journals without changing any historical outcome. */
@@ -1269,6 +1293,8 @@ export function initializeCollaborationStateSchema(
     if (revertJournal?.schema_version === 25 && COLLABORATION_STATE_SCHEMA_VERSION >= 26) migrateSchemaV25ToV26(database, migrationAuthority);
     const eventTypeIndex = database.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton = 1").get() as { schema_version: number } | undefined;
     if (eventTypeIndex?.schema_version === 26 && COLLABORATION_STATE_SCHEMA_VERSION >= 27) migrateSchemaV26ToV27(database, migrationAuthority);
+    const metadataJournal = database.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton = 1").get() as { schema_version: number } | undefined;
+    if (metadataJournal?.schema_version === 27 && COLLABORATION_STATE_SCHEMA_VERSION >= 28) migrateSchemaV27ToV28(database, migrationAuthority);
   }
   database.exec(`
     CREATE TABLE IF NOT EXISTS collaboration_state_meta (
@@ -1543,7 +1569,7 @@ export function initializeCollaborationStateSchema(
       operation_id TEXT PRIMARY KEY CHECK (length(operation_id) > 0),
       project_id TEXT NOT NULL,
       kind TEXT NOT NULL CHECK (kind IN (
-        'repository.create','git.push','pull.create','pull.merge','pull.close','memory.commit','git.revert'
+        'repository.create','git.push','pull.create','pull.merge','pull.close','pull.update','memory.commit','git.revert'
       )),
       payload_hash TEXT NOT NULL CHECK (length(payload_hash) > 0),
       status TEXT NOT NULL CHECK (status IN ('prepared','observed','finalized','uncertain','failed') OR (status = 'superseded' AND kind = 'git.push')),

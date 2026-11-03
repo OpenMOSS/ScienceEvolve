@@ -1,3 +1,5 @@
+import { claudeNativeToolApprovals } from "./claude-native-policy.js";
+import { selectedSkillInstructions } from "../selected-skills.js";
 import { SLEEP_TOOL_TIMEOUT_SEC } from "../../sleep-tool-contract.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -27,7 +29,7 @@ import {
 import { modelFacingMcpNamespaceWildcard } from "../tool-catalog.js";
 import type { AdapterMcpRow } from "./adapter-utils.js";
 import { harnessExecutableLaunch, gatewayModelContextWindow, safeName, sleepMcpRow } from "./adapter-utils.js";
-import { assertDshSessionArtifact, dshMcpPatch, dshNativeSdkPatch, dshSessionArtifactPath, resolveDshSessionArtifactPath, prepareDshSettings } from "./dsh-adapter.js";
+import { assertDshSessionArtifact, dshSelectedSkillsPatch, dshMcpPatch, dshNativeSdkPatch, dshSessionArtifactPath, resolveDshSessionArtifactPath, prepareDshSettings } from "./dsh-adapter.js";
 import { piMcpConfig, readResumedPiSession } from "./pi-adapter.js";
 import { CONTROL_PROXY_TIMEOUT_MS } from "../../control-request-lifetime.js";
 import type {
@@ -143,17 +145,16 @@ async function buildCodexLaunch(input: ResidentAdapterLaunchRequest) {
     // older, harmless config fields; keep explicit route/capability overrides
     // without turning those legacy preferences into a launch failure.
     ...(!native ? ["--strict-config"] : []),
-    "--disable", "multi_agent",
-    "--disable", "plugins",
-    "--disable", "apps",
     "--disable", "skill_search",
+    "--enable", "skip_host_skill_discovery",
     "-a", "never",
-    "-s", yolo ? "danger-full-access" : "read-only",
+    "-s", "danger-full-access",
     "-C", spec.inputs.workspacePath,
     ...(routedGateway ? codexGatewayConfigOverrides(routedGateway, undefined, spec.model).flatMap((value) => ["-c", value])
       : ["-c", 'model_provider="openai"']),
     ...(gatewayModelCatalog ? ["-c", `model_catalog_json=${JSON.stringify(gatewayModelCatalog)}`] : []),
     "-c", "skills.bundled.enabled=false",
+    "-c", "skills.include_instructions=false",
     "-c", codexSkillConfig([...spec.policy.skillPaths, ...spec.policy.autoSkillPaths]),
     "-c", codexMcpConfig(await residentMcpRows(input), input.spec.policy.mcpServers, input.fixedMcpToken, {
       siiUrl: input.request.siiMcp?.url,
@@ -177,7 +178,7 @@ async function buildCodexLaunch(input: ResidentAdapterLaunchRequest) {
       cwd: spec.inputs.workspacePath,
       model: spec.model,
       modelProvider: native ? "openai" : "openfars_gateway",
-      sandbox: yolo ? "danger-full-access" : "read-only"
+      sandbox: "danger-full-access"
     })
   };
 }
@@ -192,12 +193,6 @@ async function buildClaudeLaunch(input: ResidentAdapterLaunchRequest) {
     encoding: "utf8",
     mode: 0o600
   });
-  const yolo = request.permission === "yolo";
-  const builtIns = yolo
-    ? ["Read", "Glob", "Grep", "Bash", "Write", "Edit", "NotebookEdit"]
-    : ["Read", "Glob", "Grep"];
-  if (spec.policy.webSearch) builtIns.push("WebSearch", "WebFetch");
-  const mcpTools = rows.map((row) => modelFacingMcpNamespaceWildcard(row.namespace));
   const args = [
     "--print",
     "--verbose",
@@ -206,9 +201,11 @@ async function buildClaudeLaunch(input: ResidentAdapterLaunchRequest) {
     "--replay-user-messages",
     "--include-partial-messages",
     "--bare",
-    ...(yolo ? [] : ["--restricted"]),
-    "--tools", builtIns.join(","),
-    "--allowedTools", ...builtIns, ...mcpTools,
+    "--disable-slash-commands",
+    "--setting-sources", "",
+    "--append-system-prompt", selectedSkillInstructions([...spec.policy.skillPaths, ...spec.policy.autoSkillPaths]),
+    "--tools", "default",
+    "--allowedTools", ...claudeNativeToolApprovals(rows.map(row => row.namespace)),
     "--strict-mcp-config",
     "--mcp-config", mcpPath,
     "--permission-mode", "dontAsk",
@@ -287,11 +284,11 @@ async function buildPiLaunch(input: ResidentAdapterLaunchRequest) {
     "--model", spec.model,
     "--mode", "rpc",
     ...(session.durable ? ["--session", session.nativeId] : ["--no-session"]),
-    ...(yolo ? [] : ["--no-builtin-tools"]),
     "--no-extensions",
     "--extension", extension,
     "--no-prompt-templates",
     "--no-context-files",
+    "--no-skills",
     ...[...new Set([...spec.policy.skillPaths, ...spec.policy.autoSkillPaths])]
       .flatMap((skill) => ["--skill", skill])
   ];
@@ -338,10 +335,8 @@ async function buildDshLaunch(input: ResidentAdapterLaunchRequest) {
   const rows = await residentMcpRows(input);
   const patchPath = path.join(input.executionRuntimePath, "dsh-resident.patch.yml");
   {
-    const disabled = yolo ? "" : DSH_DISABLED_TOOLS
-      .map((id) => `- id: ${id}\n  disabled: true`)
-      .join("\n");
-    const inserted = dshMcpPatch([...rows], false);
+    const disabled = "";
+    const inserted = dshSelectedSkillsPatch([...spec.policy.skillPaths, ...spec.policy.autoSkillPaths]) + dshMcpPatch([...rows], false);
     const resumePlugin = nativeSessionResume
       ? dshNativeSdkPatch(input.executable, input.session.nativeId) : "";
     await fs.writeFile(patchPath, `${disabled}\n${inserted}\n${resumePlugin}\n`, { encoding: "utf8", mode: 0o600 });
@@ -354,7 +349,7 @@ async function buildDshLaunch(input: ResidentAdapterLaunchRequest) {
   const environment = residentEnvironment(input, {
     HOME: input.filesystemAuthority.serviceUserRoot,
     DSH_HOME: home,
-    DSH_PERMISSION_MODE: yolo ? "danger-full-access" : "read-only",
+    DSH_PERMISSION_MODE: "danger-full-access",
     DSH_TELEMETRY_DISABLED: "1"
   });
   return {
@@ -442,9 +437,6 @@ async function assertResidentLaunchAuthority(input: ResidentAdapterLaunchRequest
   }
   const isLeader = context.role === "leader";
   if (isLeader) {
-    if (input.request.permission === "yolo") {
-      throw launchError("Leader resident cannot run with yolo delivery authority");
-    }
     const fixedManagement = input.spec.inputs.workspacePath ===
       path.join(input.spec.inputs.projectPath, "git-worktrees", "agents", input.request.agent);
     if (fixedManagement) {
@@ -459,8 +451,7 @@ async function assertResidentLaunchAuthority(input: ResidentAdapterLaunchRequest
       ? path.dirname(input.spec.inputs.workflowAuthoringPath) : undefined;
     const expectedWrites = proposalRoot ? [proposalRoot] : [];
     if (JSON.stringify(input.filesystemAuthority.writeRoots) !== JSON.stringify(expectedWrites) ||
-      input.filesystemAuthority.gitCapability !== "none" ||
-      input.filesystemAuthority.rawTools !== "forbidden") {
+      input.filesystemAuthority.gitCapability !== "none") {
       throw launchError("Leader resident cannot receive delivery write or Git authority");
     }
   } else if (context.executionWorktree !== input.spec.inputs.workspacePath) {
@@ -470,16 +461,11 @@ async function assertResidentLaunchAuthority(input: ResidentAdapterLaunchRequest
   if (!input.session.durable) {
     throw launchError("Resident collaboration requires a durable native SessionRef");
   }
-  if (input.request.permission !== "yolo") {
-    if (input.filesystemAuthority.rawTools !== "forbidden") {
-      throw launchError("Non-yolo resident launch received broad raw-tool authority");
-    }
-    if (!isLeader && !input.filesystemMcp) {
-      throw launchError("Non-yolo resident launch requires the descriptor filesystem broker");
-    }
+  if (input.filesystemAuthority.gitCapability !== "none" && !input.filesystemMcp) {
+    throw launchError("Resident Git capability requires an invocation-bound platform Git MCP");
   }
   if (input.mcpRows.some((row) =>
-    row.namespace === "openfars-filesystem-authority" ||
+    row.namespace === "openfars-filesystem-authority" || row.namespace === "openfars-git" ||
     row.namespace === "openfars-resident-control")) {
     throw launchError("Reserved resident MCP namespaces require trusted bindings");
   }
@@ -594,7 +580,7 @@ function codexMcpConfig(
       row.transport === "streamable-http" && row.url === authorization.webSearch?.url &&
       Object.keys(row.headers ?? {}).length === 1 &&
       row.headers?.Authorization === `Bearer ${authorization.webSearch?.token}`;
-    const approved = row.namespace === "openfars-filesystem-authority" ||
+    const approved = row.namespace === "openfars-filesystem-authority" || row.namespace === "openfars-git" ||
       row.namespace === "openfars-resident-control" || webSearch ||
       row.namespace === "scienceevolve-sleep" ||
       row.name === "scienceevolve-sii" && row.transport === "streamable-http" && row.url === authorization.siiUrl ||

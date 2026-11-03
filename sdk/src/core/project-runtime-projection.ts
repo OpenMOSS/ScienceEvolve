@@ -2,6 +2,7 @@ import { hasUserWorkflowPause } from "./workflow-recovery.js";
 import type { ProjectSchedulingProjection, RuntimeActivity } from "./collaboration-state/contracts.js";
 import type { ProjectRuntimeProjection, ProjectState } from "./types.js";
 import { scopedProjectWaiting } from "./project-runtime-waiting.js";
+import { githubAuthorizationWaiting } from "./internal/shared/project-runtime-status.js";
 
 function runtimeActivityPriority(activity: RuntimeActivity): number {
   return (activity.leaseState === "current" ? 4 : 0) +
@@ -15,8 +16,8 @@ function runtimeActivityPriority(activity: RuntimeActivity): number {
  * no mutable live field from it is consulted once SQLite S exists.
  */
 export function deriveProjectRuntimeProjection(
-  projection: ProjectSchedulingProjection,
-  fallback?: Pick<ProjectState, "status" | "phase" | "currentAgent" | "activeInvocationId" | "pauseRequest" | "workflowRecovery">
+  projection: ProjectSchedulingProjection & Partial<Pick<ProjectState, "failureSummary" | "failureAttempts">>,
+  fallback?: Pick<ProjectState, "status" | "phase" | "currentAgent" | "activeInvocationId" | "pauseRequest" | "workflowRecovery" | "lastError" | "failureAttempts" | "failureSummary">
 ): ProjectRuntimeProjection {
   const activities = structuredClone(projection.runtimeActivities);
   const primaryActivity = [...activities].sort((left, right) =>
@@ -88,6 +89,8 @@ export function deriveProjectRuntimeProjection(
   } else if (fallback?.phase === "user-intervention-required") {
     status = "retrying";
     phase = fallback.phase;
+  } else if (fallback?.status === "interrupted" && fallback.phase === "collaboration:repair-required") {
+    status = fallback.status; phase = fallback.phase;
   } else if (paused) {
     status = "retrying";
     phase = projection.freezeReason?.includes("waiting_user")
@@ -144,7 +147,17 @@ export function deriveProjectRuntimeProjection(
     status = fallback?.status ?? (latestNode?.status === "cancelled" ? "cancelled" : "queued");
     phase = fallback?.phase ?? (status === "cancelled" ? "cancelled" : "collaboration:ready");
   }
-  const waiting = phase === "user-intervention-required" ? undefined : !primaryActivity && activeScopedGroup && (
+  const recentFailure = fallback?.failureAttempts?.filter(item => item.status === "failed").at(-1);
+  const repairKind = recentFailure && /AUTH|CREDENTIAL|PERMISSION|FORBIDDEN|UNAUTHORIZED/i.test(recentFailure.errorCode ?? "")
+    ? "authorization" as const : "configuration" as const;
+  const authorizationWaiting = githubAuthorizationWaiting({ status, phase, git: projection.git,
+    lastError: fallback?.lastError, failureSummary: projection.failureSummary ?? fallback?.failureSummary,
+    failureAttempts: projection.failureAttempts ?? fallback?.failureAttempts,
+    runtime: { status, activities } });
+  const waiting = phase === "user-intervention-required" ? { kind: "user-input" as const, reason: "等待用户输入后继续原任务" }
+    : authorizationWaiting ? authorizationWaiting
+    : phase === "collaboration:repair-required" ? { kind: repairKind, reason: recentFailure?.redactedMessage ?? fallback?.lastError ?? "执行条件需要修复；修复后可恢复原任务" }
+    : !primaryActivity && activeScopedGroup && (
     status === "queued" || status === "retrying"
   ) ? phase === "collaboration:workflow-adjustment-waiting"
       ? { kind: "workflow-adjustment" as const, reason: "等待 Workflow 修改完成后继续调度", groupRunId: activeScopedGroup.id }
@@ -153,7 +166,7 @@ export function deriveProjectRuntimeProjection(
         ? { kind: "management" as const, reason: `等待协调：协作组 ${activeScopedGroup.groupId} 的后续流程尚未确认`, groupRunId: activeScopedGroup.id }
         : undefined)
     : status === "retrying" && fallback?.workflowRecovery
-      ? { kind: "recovery" as const, reason: fallback.workflowRecovery.reason,
+      ? { kind: "backoff" as const, reason: fallback.workflowRecovery.reason,
         ...(activeExecution ? { agentId: activeExecution.agentId, executionId: activeExecution.id } : {}) }
       : undefined;
   if (status === "queued" && waiting?.kind === "recovery") phase = "collaboration:scoped-recovery-waiting";

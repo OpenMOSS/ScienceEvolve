@@ -99,7 +99,7 @@ export function scopedWorktreeClosingControlAuthorityFactory(options: {
       if ((action.tool === "git_get_operation" || action.tool === "git_reconcile_push") && !ownOperation(action.operationId)) {
         throw new Error("Closing can inspect or reconcile only this invocation's separate Git operations");
       }
-      if (["github_create_pr", "github_merge_pr", "github_close_pr"].includes(action.tool)) {
+      if (["github_create_pr", "github_merge_pr", "github_close_pr", "github_update_pr"].includes(action.tool)) {
         const observed = await options.git.observeRestrictedWorktreeClosing(execution, closing.ownershipEpoch, scope, signal);
         await assertCurrent();
         if (!facts.pushedHeadSha || observed.head !== facts.pushedHeadSha || observed.pendingPaths.length || !observed.deliveryRequired) {
@@ -113,7 +113,7 @@ export function scopedWorktreeClosingControlAuthorityFactory(options: {
         recordRequest: input => {
           options.database.assertScopedWorktreeClosingControl(closing);
           if (input.action.tool === "git_revert") throw new Error("Closing cannot revert business history");
-          const suffix = ({ git_push: "push", github_create_pr: "create", github_merge_pr: "merge", github_close_pr: "close" } as const)[input.action.tool];
+          const suffix = ({ git_push: "push", github_create_pr: "create", github_merge_pr: "merge", github_close_pr: "close", github_update_pr: "update" } as const)[input.action.tool];
           if (input.invocationId !== closing.invocationId || input.executionId !== closing.executionId || input.agentId !== closing.agentId ||
             input.ownershipEpoch !== closing.ownershipEpoch || input.integrationTarget !== base || input.executionBranch !== closing.executionBranch ||
             input.operationId !== agentGitOperationId({ execution, envelope: {

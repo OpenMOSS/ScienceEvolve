@@ -58,7 +58,7 @@ async function fixture(run: AgentRunner["run"] = async (request) => complete(req
   } });
   const sdk = await createMainSdkClient(runtime); sdks.push(sdk);
   const gateway = (await sdk.gateways.list())[0] ?? await sdk.gateways.add({ name: "Workspace fixture", url: "https://93.184.216.34/v1",
-    apiKey: "opaque-workspace-fixture", models: ["fixture"], defaultModel: "fixture", protocol: "responses" });
+    apiKey: "opaque-workspace-fixture", models: ["fixture"], defaultModel: "fixture", protocol: "responses", autoReasoning: false });
   expect((await sdk.gateways.test(gateway.id, "codex", "fixture")).status).toBe("passed");
   return { root, runtime, sdk, input: { title: "In-place workspace", requirement: "Use original files", workflow: workflow(),
     gatewayBindings: { defaultGatewayId: gateway.id } } };
@@ -117,7 +117,7 @@ describe("main Git-off external workspace (actual kernel/SQLite, local child pro
         permission: "workspace", role: "legacy", gitEnabled: false, executionWorktree: staged.workspacePath,
         ownedMemoryPath: staged.memoryPath });
       const descriptor = filesystemAuthorityPrompt(filesystem, staged);
-      expect(descriptor).toContain(`path="${path.relative(staged.workspacePath, reference).split(path.sep).join("/")}"`);
+      expect(descriptor).toContain(reference);
       await expect(prepareInvocationInputs({ ...request, control: { ...request.control!,
         workflowAuthoringPath: path.join(workspace, "workflow.json") } }, id => runtime.projectWorkspaces.resolve(id)))
         .rejects.toThrow("Unable to validate or stage invocation inputs");

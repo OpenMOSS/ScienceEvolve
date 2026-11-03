@@ -92,7 +92,7 @@ export function inspectScopedWorktreeClosingDelivery(input: {
           binding.executionContext.role !== "delivery" || binding.executionContext.executionId !== c.executionId ||
           binding.executionContext.ownershipEpoch !== c.ownershipEpoch || binding.executionContext.groupRunId !== t.groupRunId ||
           binding.executionContext.nodeRunId !== t.nodeRunId || !sameDurableSession(binding.session, turn.originalSession) ||
-          ({ git_push: "git.push", github_create_pr: "pull.create", github_merge_pr: "pull.merge", github_close_pr: "pull.close" } as const)[request.action.tool] !== operation.kind ||
+          ({ git_push: "git.push", github_create_pr: "pull.create", github_merge_pr: "pull.merge", github_close_pr: "pull.close", github_update_pr: "pull.update" } as const)[request.action.tool] !== operation.kind ||
           "providerNumber" in request.action && request.action.providerNumber !== operation.remoteFact?.providerNumber ||
           request.action.tool === "github_create_pr" && request.action.base !== base) continue;
         const query = queryAgentGitOperation({ projectId: c.projectId, operationId: operation.id, repository,

@@ -244,6 +244,7 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
         closing = (async () => {
           clearInterval(deliverySweep);
           try {
+            await gatewayStore.close();
             await orchestrator.shutdown();
             await trackedResidents.stopRemaining();
           } finally { await siiExperiments?.stop(); }

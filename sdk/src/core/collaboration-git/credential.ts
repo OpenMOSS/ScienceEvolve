@@ -11,8 +11,11 @@ export async function resolveGitHubCredential(
     credential = await resolver(signal);
   } catch (error) {
     signal?.throwIfAborted();
+    // Account-store authorization errors already carry a safe, actionable
+    // reason. Preserve it instead of replacing it with a generic resolver error.
+    if (error instanceof GitHubAuthorizationError) throw error;
     throw new GitHubAuthorizationError(
-      error instanceof GitHubAuthorizationError && error.publicData.status === 403 ? 403 : 401,
+      401,
       "GitHub credential could not be resolved"
     );
   }

@@ -748,8 +748,10 @@ export class ResidentNativeDriver implements ResidentHarnessDriver {
     if (this.#processSignal?.aborted) return;
     if (shutdownFailure) throw shutdownFailure;
     if (exit.code !== 0 && exit.signal !== "SIGTERM") {
+      const cause = this.#connection.failure;
+      if (cause instanceof HarnessRuntimeError && cause.code !== "HARNESS_PROCESS_EXITED") throw cause;
       throw driverError(
-        `Resident native process exited with ${exit.code ?? exit.signal ?? "unknown status"}`
+        `Resident native process exited with ${exit.code ?? exit.signal ?? "unknown status"}`, cause
       );
     }
   }
@@ -852,6 +854,9 @@ export class JsonLineConnection implements ResidentProtocolConnection {
   }
 
   clearInputEcho(): void { this.#inputEcho = undefined; }
+
+  /** Preserve the protocol failure that required containment, rather than its later kill signal. */
+  get failure(): Error | undefined { return this.#failure; }
 
   bufferState(): ResidentProtocolBufferState {
     return {
@@ -1684,6 +1689,7 @@ export function codexAppServerCodec(options: {
         // MCP/config startup can complete after the thread-open response. These
         // exact notifications remain non-business protocol metadata even when
         // they race with turn one, so consume them without turn attribution.
+        if (codexGoalUpdatedNotification(frame, threadId, turnId)) { await connection.notify(frame, turn); continue; }
         if (codexBackgroundNotification(frame, threadId)) continue;
         if (codexTurnMetadataNotification(frame, threadId, turnId)) {
           await connection.notify(frame, turn);
@@ -1757,6 +1763,7 @@ const CODEX_INITIALIZATION_NOTIFICATIONS = new Set([
   "skills/changed",
   "thread/started",
   "thread/goal/cleared",
+  "thread/goal/updated",
   "thread/status/changed",
   "warning"
 ]);
@@ -1804,6 +1811,16 @@ function codexIdleNotification(
     codexThreadTokenUsageNotification(frame, threadId);
 }
 
+function codexGoalUpdatedNotification(frame: Readonly<Record<string, unknown>>, threadId: string, turnId?: string): boolean {
+  if (frame.id !== undefined || frame.method !== "thread/goal/updated" || !isRecord(frame.params) || frame.params.threadId !== threadId) return false;
+  const params = frame.params, goal = maybeRecord(params.goal);
+  if (params.turnId !== undefined && params.turnId !== null && params.turnId !== turnId) return false;
+  return !!goal && goal.threadId === threadId && typeof goal.objective === "string" &&
+    ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"].includes(String(goal.status)) &&
+    ["createdAt", "updatedAt", "timeUsedSeconds", "tokensUsed"].every(key => nonnegativeSafeInteger(goal[key])) &&
+    (goal.tokenBudget === undefined || goal.tokenBudget === null || nonnegativeSafeInteger(goal.tokenBudget));
+}
+
 function codexBackgroundNotification(
   frame: Readonly<Record<string, unknown>>,
   threadId: string
@@ -1818,6 +1835,7 @@ function codexBackgroundNotification(
   if (frame.method === "thread/status/changed") {
     return frame.params.threadId === threadId && codexThreadStatus(frame.params.status);
   }
+  if (frame.method === "thread/goal/updated") return codexGoalUpdatedNotification(frame, threadId);
   if (frame.method === "thread/goal/cleared") {
     return frame.params.threadId === threadId;
   }

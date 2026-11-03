@@ -49,6 +49,7 @@ const fakeSources: Record<string, string> = {
         send({method:'warning',params:{threadId:'codex-thread',message:'fixture warning'}});
         send({method:'thread/status/changed',params:{threadId:'codex-thread',status:{type:'idle'}}});
         send({method:'thread/goal/cleared',params:{threadId:'codex-thread'}});
+        send({method:'thread/goal/updated',params:{threadId:'codex-thread',turnId:null,goal:{threadId:'codex-thread',objective:'Bounded native goal',status:'active',createdAt:1,updatedAt:1,timeUsedSeconds:0,tokensUsed:0,tokenBudget:null}}});
         send({method:'account/rateLimits/updated',params:{rateLimits:{primary:{usedPercent:1}}}});
         send({method:'deprecationNotice',params:{summary:'fixture',details:'fixture details'}});
         send({id:q.id,result:{thread:{id:'codex-thread'}}});
@@ -1158,6 +1159,18 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
       turnAuthority: inertAuthority(),
       ownershipEpoch: 1
     })).rejects.toThrow(/unexpected frame after native session initialization/);
+  });
+
+  it("preserves a shutdown protocol failure instead of replacing it with the containment signal", async () => {
+    const child = await fakeNative("claude-stream-json", `
+      process.stdin.resume();
+      process.stdin.on('end', () => { process.stdout.write('malformed shutdown frame\\n'); });
+      setInterval(() => {}, 1000);
+    `);
+    const driver = await ResidentNativeDriver.open({ child, session: session("claude-code", "claude-session"),
+      codec: claudeStreamJsonCodec(), turnAuthority: inertAuthority(), ownershipEpoch: 1 });
+    await expect(driver.close()).rejects.toThrow("Resident native protocol emitted malformed JSON");
+    expect((await driver.probe()).alive).toBe(false);
   });
 
   it("allows close to be retried after graceful protocol shutdown fails", async () => {

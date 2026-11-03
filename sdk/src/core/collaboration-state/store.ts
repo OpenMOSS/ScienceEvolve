@@ -157,7 +157,8 @@ import type {
   StartStandaloneExecutionInput,
   StartRuntimeActivityInput,
   UsageRecord,
-  WriterLeaseToken
+  WriterLeaseToken,
+  WriterLeaseDiagnostics
 } from "./contracts.js";
 import type { BeginTerminalPushObservationInput, TerminalPushObservationIdentity, TerminalPushObservationTurn,
   AgentNativeSessionBinding,
@@ -754,7 +755,7 @@ function rowToScopedGroupFinalMerge(row: Row): ScopedGroupFinalMergeRecord {
  * A journal payload is not a merge/synchronization proof and must also match
  * the persisted owner's exact branch, epoch and direct target before publication. */
 function scopedPullFromOperation(operation: Row, execution: Row, group: Row): PullRequestRecord | undefined {
-  if (operation.status !== "finalized" || !["pull.create", "pull.merge", "pull.close"].includes(String(operation.kind))) return undefined;
+  if (operation.status !== "finalized" || !["pull.create", "pull.merge", "pull.close", "pull.update"].includes(String(operation.kind))) return undefined;
   const isFinal = execution.expected_head_sha !== undefined;
   const expectedBase = isFinal ? group.integration_target : group.group_branch;
   if (operation.owner_execution_id !== execution.execution_id ||
@@ -1301,6 +1302,8 @@ interface MutationResult<T> {
 export class CollaborationStateDatabase {
   readonly health: DatabaseHealth;
   private closed = false;
+  private lastSuccessfulRenewalAtMs: number | null = null;
+  private lastRenewalAttempt?: WriterLeaseDiagnostics["lastRenewalAttempt"];
   private readonly projectStateReadSnapshots = new ProjectStateReadSnapshots(() => this.options.now());
   private readonly schedulingProjectionCache = new Map<string, {
     revision: number;
@@ -1626,6 +1629,14 @@ export class CollaborationStateDatabase {
     return { ...this.lease };
   }
 
+  writerLeaseDiagnostics(): WriterLeaseDiagnostics {
+    return {
+      lease: this.writerLease(),
+      lastSuccessfulRenewalAtMs: this.lastSuccessfulRenewalAtMs,
+      ...(this.lastRenewalAttempt ? { lastRenewalAttempt: { ...this.lastRenewalAttempt } } : {})
+    };
+  }
+
   /** Fresh read-only fence for filesystem publication between asynchronous steps. */
   assertWriterLeaseHeld(): void {
     this.assertOpen();
@@ -1635,8 +1646,14 @@ export class CollaborationStateDatabase {
   renewWriterLease(): WriterLeaseToken {
     this.assertOpen();
     const now = Math.trunc(this.options.now());
-    this.database.exec("BEGIN IMMEDIATE");
+    const started = performance.now();
+    let stage: "begin" | "update" | "commit" = "begin";
+    let began = false;
+    let succeeded = false;
     try {
+      this.database.exec("BEGIN IMMEDIATE");
+      began = true;
+      stage = "update";
       const expiresAtMs = now + this.options.leaseDurationMs;
       const update = this.database.prepare(`
         UPDATE writer_service_lease
@@ -1658,12 +1675,24 @@ export class CollaborationStateDatabase {
           "The collaboration writer lease expired or was replaced"
         );
       }
+      stage = "commit";
       this.database.exec("COMMIT");
       this.lease = { ...this.lease, expiresAtMs };
+      // Match the confirmed row's renewed_at_ms; attempted or uncertain
+      // commits must never advance the last successful heartbeat.
+      this.lastSuccessfulRenewalAtMs = now;
+      succeeded = true;
       return this.writerLease();
     } catch (error) {
-      this.rollbackAfterFailure();
+      // BEGIN itself may fail while another transaction is active. Only
+      // clean up a transaction actually started by this renewal.
+      if (began) this.rollbackAfterFailure();
       throw error;
+    } finally {
+      try {
+        this.lastRenewalAttempt = { startedAtMs: now, durationMs: Math.max(0, performance.now() - started),
+          stage, outcome: succeeded ? "succeeded" : "failed", transactionActive: this.database.isTransaction };
+      } catch { /* Diagnostics must never replace the original renewal error. */ }
     }
   }
 
@@ -1738,7 +1767,11 @@ export class CollaborationStateDatabase {
     ) {
       throw new CollaborationStateError(
         "WRITER_LEASE_STALE",
-        "Collaboration mutation was rejected by the writer epoch/expiry fence"
+        "Collaboration mutation was rejected by the writer epoch/expiry fence",
+        { checkedAtMs: now, expectedLease: this.writerLease(), observedLease: row ? {
+          serviceId: String(row.service_id), instanceId: String(row.instance_id), hostId: String(row.host_id),
+          epoch: Number(row.epoch), expiresAtMs: Number(row.expires_at_ms)
+        } : null }
       );
     }
   }
@@ -1965,7 +1998,9 @@ export class CollaborationStateDatabase {
       WHERE project_id = ? AND owner_execution_id = ? AND ownership_epoch = ? AND expected_head = ?
       ORDER BY updated_at, CASE kind WHEN 'pull.create' THEN 0 WHEN 'pull.close' THEN 3 ELSE 2 END, operation_id`)
       .all(projectId, executionId, ownershipEpoch, headSha) as Row[]) retain(operation);
-    for (const row of this.database.prepare(`SELECT * FROM project_events WHERE project_id = ?
+    // ORDER BY seq otherwise makes SQLite prefer the project/seq key and scan
+    // every retained event for each execution. Sort only these rare PR facts.
+    for (const row of this.database.prepare(`SELECT * FROM project_events INDEXED BY project_events_project_type_seq WHERE project_id = ?
       AND event_type IN ('scoped.recovery.pull_observed','scoped.cancellation.pull_observed')
       AND json_extract(payload_json, '$.executionId') = ? AND json_extract(payload_json, '$.ownershipEpoch') = ?
       AND json_extract(payload_json, '$.pull.headSha') = ? ORDER BY seq`)
@@ -4616,7 +4651,7 @@ export class CollaborationStateDatabase {
     if (!checkpoint || record.expectedHead === turn.reportHeadSha ||
       (existing ? binding?.payload.headSha !== record.expectedHead : checkpoint.head !== record.expectedHead ||
         !Number.isFinite(checkpointAge) || checkpointAge < 0 || checkpointAge > 60_000) ||
-      !["git.push", "pull.create", "pull.merge", "pull.close"].includes(record.kind)) {
+      !["git.push", "pull.create", "pull.merge", "pull.close", "pull.update"].includes(record.kind)) {
       throw new OperationStoreViolationError("Closing provider journal requires its own observed exact B");
     }
   }
@@ -17649,7 +17684,7 @@ export class CollaborationStateDatabase {
       const repository = p.git.repository;
       const pull = source?.remoteFact;
       if (!execution || Boolean(scoped) === Boolean(legacy) || !repository || !source ||
-        !["pull.create", "pull.merge", "pull.close"].includes(source.kind) || !["observed", "finalized"].includes(source.status) ||
+        !["pull.create", "pull.merge", "pull.close", "pull.update"].includes(source.kind) || !["observed", "finalized"].includes(source.status) ||
         source.ownerExecutionId !== execution.id || source.ownershipEpoch !== execution.ownershipEpoch ||
         !/^[0-9a-f]{40}$/i.test(source.expectedHead ?? "") || !pull ||
         !Number.isSafeInteger(pull.providerNumber) || Number(pull.providerNumber) < 1 || typeof pull.id !== "string" || !pull.id ||
@@ -19983,11 +20018,11 @@ export class CollaborationStateDatabase {
         throw new OperationPayloadMismatchError(record.id);
       }
       if (table === "scoped_final_operations" &&
-        (!["pull.create", "pull.merge", "pull.close"].includes(record.kind) ||
+        (!["pull.create", "pull.merge", "pull.close", "pull.update"].includes(record.kind) ||
           record.expectedHead !== execution.expected_head_sha || record.expectedBase !== execution.integration_target)) {
         throw new OperationStoreViolationError("Scoped final Git operations require their exact frozen head and direct parent target");
       }
-      if (table === "scoped_operations" && ["pull.create", "pull.merge", "pull.close"].includes(record.kind)) {
+      if (table === "scoped_operations" && ["pull.create", "pull.merge", "pull.close", "pull.update"].includes(record.kind)) {
         const group = this.scopedGroupRun(projectId, String(execution.group_run_id));
         if (record.expectedBase !== group?.groupBranch || !/^[0-9a-f]{40}$/i.test(record.expectedHead ?? "")) {
           throw new OperationStoreViolationError("Scoped member PRs must target their direct group with an exact source head");

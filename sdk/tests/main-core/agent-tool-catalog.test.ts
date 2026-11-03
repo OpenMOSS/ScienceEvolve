@@ -60,7 +60,7 @@ describe("Agent resource discovery", () => {
     const directoryHint = "Available Agent Skill/MCP directory: use the agent-tool-catalog sources in the on-demand context index.";
     expect(prompt).not.toContain(directoryHint);
     expect(prompt).toContain(`项目入口：${root}`);
-    expect(prompt).not.toContain(`Context index: ${prepared.contextIndex!.indexPath}`);
+    expect(prompt).toContain(`Context index: ${prepared.contextIndex!.indexPath}`);
     expect(prompt).not.toContain(JSON.stringify(catalog));
     const directory = JSON.parse(await fs.readFile(prepared.contextIndex!.indexPath, "utf8"));
     const records = async (key: string) => {

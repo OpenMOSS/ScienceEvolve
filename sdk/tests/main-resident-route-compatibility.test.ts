@@ -40,7 +40,7 @@ it.each([false, true])("builds Codex resident web search with the selected model
     } } }, executionContext: { role: "delivery", executionId: "exec-fixture", ownershipEpoch: 7, executionWorktree: workspace } },
     spec: { model: "fixture-model", inputs: { projectPath: root, workspacePath: workspace },
       policy: { permission: "yolo", skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: true } },
-    filesystemAuthority: { rawTools: "trusted-yolo", serviceUserRoot: root }, mcpRows: [],
+    filesystemAuthority: { rawTools: "native", gitCapability: "none", serviceUserRoot: root }, mcpRows: [],
     processBinding: { scopeId: "exec-fixture", role: "delivery", route, workspacePath: workspace, signal,
       session: () => session, commonEnvironment: {}, authorityEnvironment: {
         SCIENCEEVOLVE_RESIDENT_SCOPE_ID: "exec-fixture", SCIENCEEVOLVE_RESIDENT_ROLE: "delivery",

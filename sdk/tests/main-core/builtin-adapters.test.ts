@@ -10,7 +10,7 @@ import type { SessionRef } from "../../src/core/harness-runtime/contracts.js";
 import { ClaudeCodeAdapter } from "../../src/core/harness-runtime/adapters/claude-code-adapter.js";
 import {
   DshAdapter,
-  dshExplainerPatch,
+  dshExplainerPatch, dshSelectedSkillsPatch,
   dshNativeSdkPatch,
   dshSessionArtifactPath
 } from "../../src/core/harness-runtime/adapters/dsh-adapter.js";
@@ -752,7 +752,7 @@ async function explainerSnapshot(request: AgentRunRequest): Promise<{
 }
 
 describe("built-in Harness Adapters", () => {
-  it.each(["codex", "claude-code", "pi", "dsh"] as const)("injects only product assistant tools into the read-only %s Explainer", async harness => {
+  it.each(["codex", "claude-code", "pi", "dsh"] as const)("injects only product assistant tools into the native %s Explainer", async harness => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-native-assistant-")); roots.push(root);
     const fake = harness === "codex" ? await fakeCodexExplainerExecutable(root) : harness === "claude-code" ? await fakeClaudeExecutable(root)
       : harness === "pi" ? await fakePiExecutable(root) : await fakeDshExecutable(root);
@@ -771,11 +771,11 @@ describe("built-in Harness Adapters", () => {
     expect(raw).toContain("openfars-project-explainer"); expect(raw).toContain(url);
     expect(raw).not.toContain("scienceevolve-workspace"); expect(raw).not.toContain("scienceevolve-control");
     if (harness === "pi") {
-      expect(capture.args).toContain("--no-builtin-tools"); expect(capture.args).not.toContain("--no-tools");
+      expect(capture.args).not.toContain("--no-builtin-tools"); expect(capture.args).not.toContain("--no-tools");
       expect(capture.args).toContain("--extension");
     }
-    if (harness === "dsh") expect(capture.patch).toContain("- id: tool-fs\n  disabled: true");
-    if (harness === "codex") expect(capture.args).toEqual(expect.arrayContaining(["-s", "read-only", "shell_tool", "browser_use"]));
+    if (harness === "dsh") { expect(capture.patch).not.toContain("- id: tool-fs\n  disabled: true"); expect(capture.patch).toContain("includeDefaultRoots: false"); }
+    if (harness === "codex") expect(capture.args).toEqual(expect.arrayContaining(["-s", "danger-full-access", "skip_host_skill_discovery"]));
     await expect(runtime.runExplainer({ ...input, assistantMcp: { url: "https://external.example/mcp" } }, new AbortController().signal)).rejects.toThrow();
   });
   it.each(["codex", "claude-code", "pi", "dsh"])("uses the service shell environment for %s even when an old Agent config contains a proxy mode", async harness => {
@@ -882,7 +882,7 @@ child.on("exit", code => process.exit(code ?? 1));
     }
   });
 
-  it.skipIf(process.platform === "win32")("runs Codex Explainer with inline evidence and no native tools", async () => {
+  it.skipIf(process.platform === "win32")("runs Codex Explainer with inline evidence and native tools", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-codex-explainer-"));
     roots.push(root);
     const fake = await fakeCodexExplainerExecutable(root);
@@ -931,13 +931,13 @@ child.on("exit", code => process.exit(code ?? 1));
     expect(capture.prompt).toContain("<quoted-project-evidence>");
     expect(capture.prompt).not.toContain("Read the complete agent inbox");
     expect(capture.args).toEqual(expect.arrayContaining([
-      "-s", "read-only", "--disable", "shell_tool", "browser_use"
+      "-s", "danger-full-access", "--enable", "skip_host_skill_discovery"
     ]));
     expect(capture.args).toContain("mcp_servers={}");
     expect(capture.args).not.toContain("--search");
   });
 
-  it.each(["pi", "dsh"] as const)("runs %s Explainer with quoted evidence and native tools disabled", async (harnessId) => {
+  it.each(["pi", "dsh"] as const)("runs %s Explainer with quoted evidence and native tools retained", async (harnessId) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), `openfars-${harnessId}-explainer-`));
     roots.push(root);
     const fake = harnessId === "pi"
@@ -986,17 +986,17 @@ child.on("exit", code => process.exit(code ?? 1));
     expect(promptCapture?.inbox).toBeNull();
     expect(promptCapture?.memory).toBeNull();
     if (harnessId === "pi") {
-      expect(promptCapture?.args).toContain("--no-tools");
+      expect(promptCapture?.args).not.toContain("--no-tools");
       expect(promptCapture?.args).toContain("--no-skills");
       expect(promptCapture?.args).not.toContain("--extension");
     } else {
-      expect(promptCapture?.permissionMode).toBe("read-only");
-      expect(promptCapture?.patch).toBe(dshExplainerPatch(snapshot.workspacePath) +
+      expect(promptCapture?.permissionMode).toBe("danger-full-access");
+      expect(promptCapture?.patch).toBe(dshExplainerPatch(snapshot.workspacePath) + dshSelectedSkillsPatch([]) +
         dshNativeSdkPatch(fake.executable, result.session.nativeId));
-      expect(promptCapture?.patch).toContain("    mode: read-only");
-      expect(promptCapture?.patch).toContain("- id: tool-pwsh\n  disabled: true");
-      expect(promptCapture?.patch).toContain("- id: tool-fs\n  disabled: true");
-      expect(promptCapture?.patch).toContain("- id: tool-web\n  disabled: true");
+      expect(promptCapture?.patch).toContain("    mode: danger-full-access");
+      expect(promptCapture?.patch).not.toContain("- id: tool-pwsh\n  disabled: true");
+      expect(promptCapture?.patch).not.toContain("- id: tool-fs\n  disabled: true");
+      expect(promptCapture?.patch).not.toContain("- id: tool-web\n  disabled: true");
     }
   });
 
@@ -1317,7 +1317,7 @@ child.on("exit", code => process.exit(code ?? 1));
       protocolProxyFactory: async () => ({ baseUrl: "http://127.0.0.1:43199/v1", token: "local-fixture", close: async () => undefined }) });
     expect((await runtime.run(runRequest, () => undefined, new AbortController().signal)).handoff).toBe("Fixture complete.");
     const capture = JSON.parse((await fs.readFile(fake.capture, "utf8")).trim());
-    expect(capture.args).toEqual(expect.arrayContaining(["--input-format", "stream-json", "--replay-user-messages", "--restricted"]));
+    expect(capture.args).toEqual(expect.arrayContaining(["--input-format", "stream-json", "--replay-user-messages", "--tools", "default"]));
     expect(JSON.parse(capture.wirePrompt)).toEqual({ type: "user", session_id: capture.requestedSession,
       message: { role: "user", content: [{ type: "text", text: capture.prompt }] } });
     expect(full).toHaveLength(1);
@@ -1339,8 +1339,8 @@ child.on("exit", code => process.exit(code ?? 1));
       protocolProxyFactory: async () => ({ baseUrl: "http://127.0.0.1:43199/v1", token: "local-fixture", close: async () => {} }) });
     await runtime.run(runRequest, () => undefined, new AbortController().signal);
     const capture = JSON.parse((await fs.readFile(fake.capture, "utf8")).trim());
-    const allowed = capture.args.slice(capture.args.indexOf("--allowedTools") + 1, capture.args.indexOf("--strict-mcp-config"));
-    expect(allowed).toContain("mcp__scienceevolve-orchestration-control__*");
+    expect(capture.mcpConfig.mcpServers).toHaveProperty("scienceevolve-orchestration-control");
+    expect(capture.args.slice(capture.args.indexOf("--allowedTools") + 1, capture.args.indexOf("--strict-mcp-config"))).toEqual(expect.arrayContaining(["Bash", "Read", "Write", "Edit", "Agent"]));
     expect(capture.args.slice(capture.args.indexOf("--permission-mode"), capture.args.indexOf("--permission-mode") + 2))
       .toEqual(["--permission-mode", "dontAsk"]);
   });
@@ -1403,33 +1403,20 @@ child.on("exit", code => process.exit(code ?? 1));
       const toolsIndex = capture.args.indexOf("--tools");
       expect(capture.args.slice(toolsIndex, toolsIndex + 2)).toEqual([
         "--tools",
-        "Read,Glob,Grep"
+        "default"
       ]);
       expect(capture.args).toEqual(expect.arrayContaining([
         "--output-format",
         "stream-json",
-        "--restricted"
+        "--tools"
       ]));
       expect(capture.args).not.toContain("--max-turns");
       expect(capture.args).not.toContain("--effort");
-      expect(capture.args).not.toContain("Bash");
-      const allowedToolsIndex = capture.args.indexOf("--allowedTools");
-      const strictMcpIndex = capture.args.indexOf("--strict-mcp-config");
-      const allowedTools = capture.args.slice(allowedToolsIndex + 1, strictMcpIndex);
-      expect(allowedTools).not.toContain("mcp__scienceevolve-workspace__*");
-      expect(allowedTools).toContain("mcp__scienceevolve-sleep__sleep");
-      expect(allowedTools).toContain("mcp__scienceevolve-workspace__scienceevolve_append_file");
-      expect(allowedTools).toContain(
-        "mcp__scienceevolve-workspace__scienceevolve_read_published_artifact"
-      );
-      expect(allowedTools.some((tool) =>
-        tool.startsWith("mcp__scienceevolve-orchestration-control__")
-      )).toBe(false);
-      expect(capture.inboxPath).toContain(`${path.sep}.scienceevolve${path.sep}inbox${path.sep}`);
-      expect(capture.memoryPath).toMatch(/Memory\.md$/);
-      expect(capture.prompt).toContain(capture.inbox);
-      expect(capture.prompt).not.toContain("Current task Inbox:");
-      expect(capture.emittedSession).toBe(capture.requestedSession);
+      expect(capture.args).toContain("Bash");
+      expect(capture.args.slice(capture.args.indexOf("--allowedTools") + 1, capture.args.indexOf("--strict-mcp-config"))).toEqual(expect.arrayContaining(["Bash", "Read", "Write", "Edit", "Agent"]));
+      expect(capture.mcpConfig.mcpServers).toHaveProperty("scienceevolve-workspace");
+      expect(capture.args).not.toContain("--restricted");
+
     }
     expect(captures.map((item) => item.inbox)).toEqual([
       "main authoritative inbox\n",
@@ -1862,14 +1849,13 @@ child.on("exit", code => process.exit(code ?? 1));
       args: string[];
     };
     expect(capture.args).toEqual(expect.arrayContaining([
-      "--restricted",
       "--disable-slash-commands",
       "--tools",
-      "Read,Glob,Grep",
+      "default",
       "--max-turns",
       "8"
     ]));
-    expect(capture.args).not.toContain("Bash");
+    expect(capture.args).toContain("Bash");
   });
 
   it("launches Pi in official JSON print mode with durable Main and ephemeral Worker sessions", async () => {

@@ -135,7 +135,7 @@ describe("SII Codex MCP approval at captured launch boundaries", () => {
         policy: { skillPaths: [], autoSkillPaths: [], mcpServers: [{ name: "scienceevolve-sii", url }], webSearch: false } },
       mcpRows: [{ name: "scienceevolve-sii", namespace: "scienceevolve-sii", transport: "streamable-http", url },
         { name: "untrusted-external", namespace: "untrusted-external", transport: "streamable-http", url }],
-      filesystemAuthority: { rawTools: "allowed", serviceUserRoot: f.root },
+      filesystemAuthority: { rawTools: "native", gitCapability: "none", serviceUserRoot: f.root },
       processBinding: { scopeId: "exec-sii", role: "delivery", route: launchRoute, workspacePath: f.request.workspacePath,
         session: () => f.session, signal, authorityEnvironment: { SCIENCEEVOLVE_RESIDENT_SCOPE_ID: "exec-sii",
           SCIENCEEVOLVE_RESIDENT_ROLE: "delivery", SCIENCEEVOLVE_EXECUTION_ID: "exec-sii", SCIENCEEVOLVE_OWNERSHIP_EPOCH: "1" } },

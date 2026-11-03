@@ -128,7 +128,7 @@ describe("invocation policy", () => {
       expect(policy.constraintPrompt).toContain(`permission mode: ${permission}`);
       expect(prompt).toContain("项目入口：/fixture/project");
       expect(prompt).not.toContain("Persistent project memory:");
-      expect(prompt).not.toContain("/fixture/project/workspaces/user_inputs");
+      expect(prompt).toContain("User-supplied files: /fixture/project/workspaces/user_inputs");
       expect(prompt).not.toContain("Session continuation safety");
     }
   );

@@ -1,3 +1,4 @@
+import { requestNativeBackgroundJob, type NativeJobScope } from "./harness-runtime/background-jobs.js";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
 import net, { type Server, type Socket } from "node:net";
@@ -246,13 +247,14 @@ export interface ControlActionRejection {
 
 /** A semantic rejection that is safe to return to the active Harness turn. */
 export class ControlActionRejectedError extends Error {
-  constructor(readonly rejection: ControlActionRejection) {
-    super(rejection.message);
+  constructor(readonly rejection: ControlActionRejection, options?: ErrorOptions) {
+    super(rejection.message, options);
     this.name = "ControlActionRejectedError";
   }
 }
 
 export interface ControlActionServiceOptions {
+  nativeJobScope?: NativeJobScope;
   projectId: string;
   agent: AgentName;
   invocationId: string;
@@ -442,6 +444,21 @@ export class ControlActionService {
     try { return await operation; } finally { this.activeRequests.delete(operation); }
   }
 
+  async requestBackgroundJob(capability: string, request: unknown): Promise<unknown> {
+    this.assertCapability(capability, true);
+    if (!this.options.nativeJobScope || !this.options.projectState) throw new Error("Native background job tracking is unavailable for this invocation");
+    const assertCurrent = async () => {
+      this.assertCapability(capability, true);
+      this.controller.signal.throwIfAborted(); this.options.signal?.throwIfAborted();
+      // The existing state channel rechecks writer lease, invocation and
+      // ownership epoch. A retained process record never supplies authority.
+      await this.options.projectState!({ operation: "list" });
+    };
+    const operation = requestNativeBackgroundJob(this.options.nativeJobScope, request, assertCurrent);
+    this.activeRequests.add(operation);
+    try { return await operation; } finally { this.activeRequests.delete(operation); }
+  }
+
   stageWithResult(
     capability: string,
     callId: string,
@@ -599,6 +616,7 @@ interface BridgeRequest {
   callId?: unknown;
   action?: unknown;
   stateRequest?: unknown;
+  backgroundJob?: unknown;
   progressProtocol?: unknown;
 }
 
@@ -713,6 +731,12 @@ async function handleBridgeLine(
   socket.once("close", clearPending);
   try {
     const request = JSON.parse(line) as BridgeRequest;
+    if (request.backgroundJob !== undefined) {
+      if (typeof request.capability !== "string" || request.action !== undefined || request.stateRequest !== undefined) throw new Error("Background job request requires its sole live capability");
+      const stateResult = await service.requestBackgroundJob(request.capability, request.backgroundJob);
+      if (!socket.destroyed && !socket.writableEnded) socket.write(`${JSON.stringify({ ok: true, stateResult })}\n`);
+      return;
+    }
     stateRequest = request.stateRequest !== undefined;
     if (request.stateRequest !== undefined) {
       if (typeof request.capability !== "string" || request.action !== undefined)
@@ -876,7 +900,7 @@ function isKnownControlAction(value: ControlAction): boolean {
     value.tool === "github_create_pr" ||
     value.tool === "github_get_pr" ||
     value.tool === "github_merge_pr" ||
-    value.tool === "github_close_pr" ||
+    value.tool === "github_close_pr" || value.tool === "github_update_pr" ||
     value.tool === "git_prepare_conflict" ||
     value.tool === "git_log" || value.tool === "git_show" || value.tool === "git_diff" || value.tool === "git_revert" ||
     value.tool === "route_to_agent" ||
@@ -896,6 +920,6 @@ function isKnownControlAction(value: ControlAction): boolean {
 
 function isAgentGitAction(value: ControlAction): boolean {
   return value.tool === "git_push" || value.tool === "git_get_operation" || value.tool === "git_reconcile_push" || value.tool === "github_create_pr" ||
-    value.tool === "github_get_pr" || value.tool === "github_merge_pr" || value.tool === "github_close_pr" ||
+    value.tool === "github_get_pr" || value.tool === "github_merge_pr" || value.tool === "github_close_pr" || value.tool === "github_update_pr" ||
     value.tool === "git_prepare_conflict" || value.tool === "git_log" || value.tool === "git_show" || value.tool === "git_diff" || value.tool === "git_revert";
 }

@@ -330,14 +330,22 @@ export async function createMainSdkClient(runtime: MainApplicationRuntime, redac
     harnesses: () => operation(async () => redactor.clean(await runtime.runner.harnessCatalog!())),
     gateways: {
       list: () => operation(async () => redactor.clean(await runtime.gatewayStore.list())),
-      add: (input) => operation(async () => { redactor.remember(input.apiKey); return redactor.clean(await runtime.gatewayStore.create(input)); }),
+      add: (input) => operation(async () => {
+        redactor.remember(input.apiKey);
+        const saved = await runtime.gatewayStore.create(input);
+        return redactor.clean(await runtime.gatewayStore.scheduleReasoningDiscovery(saved.id));
+      }),
       importHarness: (input) => operation(async () => {
         const gateway = await readMainHarnessGateway(input);
         redactor.remember(gateway.apiKey);
         stopped.signal.throwIfAborted();
         return redactor.clean(await runtime.gatewayStore.create(gateway));
       }),
-      update: (id, input) => operation(async () => { redactor.remember(input.apiKey); return redactor.clean(await runtime.gatewayStore.update(id, input)); }),
+      update: (id, input) => operation(async () => {
+        redactor.remember(input.apiKey);
+        const saved = await runtime.gatewayStore.update(id, input);
+        return saved ? redactor.clean(await runtime.gatewayStore.scheduleReasoningDiscovery(saved.id)) : undefined;
+      }),
       test: (id, harness, model, options = {}) => operation(async () => redactor.clean(await runtime.gatewayStore.testHarness(
         id, harness, model, AbortSignal.any([stopped.signal, ...(options.signal ? [options.signal] : [])]),
         (stage) => { try { options.onStage?.(redactor.clean(stage)); } catch { /* Observers do not control the probe. */ } },

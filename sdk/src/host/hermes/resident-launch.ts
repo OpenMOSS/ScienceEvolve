@@ -15,7 +15,7 @@ export async function buildHermesResidentLaunch(input: ResidentAdapterLaunchRequ
   const { spec } = input;
   const home = path.join(input.request.projectPath, "runtime", "harness-sessions",
     safeName(input.request.agent), "hermes");
-  const allowNativeTools = input.filesystemAuthority.rawTools === "trusted-yolo";
+  const allowNativeTools = input.filesystemAuthority.rawTools !== "forbidden";
   const prepared = await prepareHermesSettings({ home, cwd: spec.inputs.workspacePath,
     baseUrl: input.launchRoute.baseUrl, model: spec.model,
     contextWindow: gatewayModelContextWindow(input.request, spec.model),

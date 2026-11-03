@@ -68,7 +68,7 @@ describe("installed CLI format regression contracts (scripted native boundary, n
         model: "selected-model", harness: "dsh", permission: "workspace", proxy: { mode: "inherit" }, skills: [], autoSkills: [], mcpServers: [],
         gatewaySnapshot: { id: "fixture", name: "fixture", url: "https://upstream.example/v1", apiKey: "upstream-private-key", protocol: "chat-completions", models: ["selected-model"], modelContextWindows: { "selected-model": 123456 } }
       } } }, projectPath: root, runtimePath: runtime, workspacePath: workspace, agent: "probe", kind: "worker", permission: "workspace", invocationId: "fixture-turn" },
-      spec: { purpose: "probe", model: "selected-model", prompt: "Read sentinel", policy: { webSearch: false, permission: "workspace" },
+      spec: { purpose: "probe", model: "selected-model", prompt: "Read sentinel", policy: { webSearch: false, permission: "workspace", skillPaths: [], autoSkillPaths: [], mcpServers: [] },
         inputs: { projectPath: root, runtimePath: runtime, workspacePath: workspace, inboxPath: path.join(root, "inbox.md"), memoryPath: path.join(workspace, "Memory.md") },
         session: { nativeId: "fixture-session", generation: 0, durable: false } },
       route: { baseUrl: "http://127.0.0.1:12345/v1", token: "invocation-private-token" },
@@ -80,7 +80,7 @@ describe("installed CLI format regression contracts (scripted native boundary, n
     const args = launch.args;
     const patches = args.flatMap((value, i) => value === "--patch" ? [args[i + 1]] : []);
     expect(patches).toEqual([path.join(launch.env.DSH_HOME!, "gateway.patch.yml"), path.join(runtime, "dsh-openfars.patch.yml")]);
-    expect(launch.env.DSH_PERMISSION_MODE).toBe("workspace-write");
+    expect(launch.env.DSH_PERMISSION_MODE).toBe("danger-full-access");
     const text = await fs.readFile(patches[0], "utf8");
     expect(text).not.toContain("upstream-private-key"); expect(text).not.toContain("invocation-private-token");
     const rows = parse(text);

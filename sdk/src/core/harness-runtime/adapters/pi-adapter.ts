@@ -146,12 +146,11 @@ export class PiAdapter extends AdapterBase implements HarnessAdapter {
         ? ["--session", spec.session.nativeId]
         : ["--no-session"]),
       "--no-extensions",
-      ...(explainer
-        ? [extension ? "--no-builtin-tools" : "--no-tools", "--no-skills", ...(extension ? ["--extension", extension] : [])]
-        : ["--extension", extension!]),
+      "--no-skills",
+      ...(extension ? ["--extension", extension] : []),
       "--no-prompt-templates",
       "--no-context-files",
-      ...(explainer ? [] : skills.flatMap((skill) => ["--skill", skill])),
+      ...skills.flatMap((skill) => ["--skill", skill]),
       ...(context.prepareNativeInput ? [] : [prompt])
     ];
     let handoff: string | undefined;

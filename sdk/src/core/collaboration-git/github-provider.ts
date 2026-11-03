@@ -597,7 +597,8 @@ export class GitHubUserProvider {
     head: string,
     base: string,
     expectedExecutionId: ExecutionId,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    expectedHead?: string
   ): Promise<GitHubPullRequestFact | undefined> {
     const safeOwner = safeName(owner, "owner");
     const safeRepository = safeName(repository, "repository");
@@ -630,9 +631,13 @@ export class GitHubUserProvider {
     // branch has exactly one direct target, so a single merged PR from this head
     // into this base is unambiguous - adopt it and read its real provider facts.
     // Member deliveries keep the strict marker requirement.
-    const matches = marked.length || !executionId.startsWith("group-final-")
+    const owned = marked.length || !executionId.startsWith("group-final-")
       ? marked
       : unmarkedMergedCanonicalFinal(response.data, safeHead, safeBase);
+    const current = expectedHead ? owned.filter(item =>
+      object(object(item, "pull request").head, "pull head").sha === safeSha(expectedHead, "expectedHead"))
+      : owned.filter(item => object(item, "pull request").state === "open");
+    const matches = expectedHead || current.length ? current : owned;
     if (matches.length > 1) {
       throw new GitHubProviderError(
         "Multiple pull requests claim the same execution branch; recovery is ambiguous",
@@ -827,6 +832,44 @@ export class GitHubUserProvider {
 
   async mergePullRequest(request: PullMutationRequest): Promise<GitHubPullRequestFact> {
     return this.mutatePull(request, "pull.merge");
+  }
+
+  async updatePullRequest(request: PullMutationRequest & { title: string; body: string }): Promise<GitHubPullRequestFact> {
+    const owner = safeName(request.owner, "owner"), repository = safeName(request.repository, "repository");
+    const executionId = safeId(request.ownerExecutionId, "ownerExecutionId");
+    if (request.operation.ownerExecutionId !== executionId) throw new GitInputError("PR update owner differs from its execution");
+    const expectedHead = safeSha(request.operation.expectedHead ?? "", "expectedHead");
+    const expectedBase = safeBranch(request.operation.expectedBase ?? "");
+    if (!request.title.trim() || request.title.length > 250 || request.body.length > 60000 || /\0/.test(request.title + request.body)) throw new GitInputError("Invalid PR title or body");
+    const prepared = await prepareOperation(this.operationStore, { id: request.operation.operationId, kind: "pull.update",
+      ownerExecutionId: executionId, ownershipEpoch: request.operation.ownershipEpoch, expectedHead, expectedBase },
+      { owner, repository, providerNumber: request.providerNumber, expectedHead, expectedBase, title: request.title, bodySha256: sha256(request.body) });
+    const replay = this.pullFactFromOperation(prepared); if (replay) return replay;
+    this.throwIfFailedOperation(prepared);
+    const observe = () => this.observePullRequest(owner, repository, request.providerNumber, executionId, request.signal);
+    const before = await observe();
+    if (!before) throw new GitHubProviderError("PR no longer exists", false);
+    this.assertPullHead(before, expectedHead, expectedBase);
+    if (["merged", "closed"].includes(before.status)) throw new GitInputError("Only an open PR can be updated");
+    const body = [withoutReservedMarkers(request.body).trimEnd(), executionMarker(executionId),
+      ...(before.operationMarker ? [operationMarker(before.operationMarker)] : [])].filter(Boolean).join("\n\n");
+    const matches = (fact: GitHubPullRequestFact) => fact.title === request.title && fact.body === body;
+    if (matches(before)) return this.finalizePull(prepared, before);
+    const credential = await this.resolveCredential(request.signal);
+    try {
+      await this.request(credential, "PATCH", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/pulls/${request.providerNumber}`,
+        { signal: request.signal, mutation: true, expectedStatuses: [200], body: { title: request.title, body } });
+    } catch (error) {
+      if (!(error instanceof MutationRequestUncertainError)) throw error;
+      await this.markUncertain(prepared, "pull.update");
+      const actual = await observe();
+      if (actual) { this.assertPullHead(actual, expectedHead, expectedBase); if (matches(actual)) return this.finalizePull(prepared, actual); }
+      throw new GitHubUncertainResultError(request.operation.operationId, undefined, { cause: error });
+    }
+    const after = await observe();
+    if (after) { this.assertPullHead(after, expectedHead, expectedBase); if (matches(after)) return this.finalizePull(prepared, after); }
+    await this.markUncertain(prepared, "pull.update");
+    throw new GitHubUncertainResultError(request.operation.operationId);
   }
 
   async closePullRequest(request: PullMutationRequest): Promise<GitHubPullRequestFact> {
@@ -1221,6 +1264,8 @@ export class GitHubUserProvider {
       headSha,
       base: baseBranch,
       ownerExecutionId,
+      ...(typeof data.title === "string" ? { title: data.title } : {}),
+      ...(typeof data.body === "string" ? { body: data.body } : {}),
       status,
       ...(mergeable !== undefined ? { mergeable } : {}),
       ...(mergeCommitSha ? { mergeCommitSha } : {}),
@@ -1396,6 +1441,8 @@ export class GitHubUserProvider {
       base: safeBranch(fact.base),
       ownerExecutionId: safeId(fact.ownerExecutionId, "ownerExecutionId"),
       status: fact.status as GitHubPullRequestFact["status"],
+      ...(typeof fact.title === "string" ? { title: fact.title } : {}),
+      ...(typeof fact.body === "string" ? { body: fact.body } : {}),
       ...(typeof fact.mergeable === "boolean" ? { mergeable: fact.mergeable } : {}),
       ...(typeof fact.mergeCommitSha === "string"
         ? { mergeCommitSha: safeSha(fact.mergeCommitSha, "merge commit SHA") }

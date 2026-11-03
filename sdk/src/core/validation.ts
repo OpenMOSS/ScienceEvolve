@@ -160,7 +160,8 @@ const gatewayReasoningOptionSchema = z.object({
 }).strict();
 const gatewayModelReasoningSchema = z.record(z.object({
   parameter: z.enum(GATEWAY_REASONING_PARAMETER_PATHS),
-  options: z.array(gatewayReasoningOptionSchema).max(32)
+  options: z.array(gatewayReasoningOptionSchema).max(32),
+  defaultOptionId: gatewayReasoningOptionIdSchema.optional()
 }).strict());
 const resolvedGatewayReasoningSchema = z.object({
   mode: z.literal("option"),

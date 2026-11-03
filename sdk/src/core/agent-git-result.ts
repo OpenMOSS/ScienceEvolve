@@ -1,7 +1,7 @@
 import type { AgentGitDeliveryStatus } from "./agent-git-delivery.js";
 
 const gitTools = new Set(["git_push", "git_get_operation", "git_reconcile_push", "github_create_pr",
-  "github_get_pr", "github_merge_pr", "github_close_pr", "git_prepare_conflict"]);
+  "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr", "git_prepare_conflict"]);
 
 /** A successful MCP query is not a successful push or a completed task. */
 export function agentGitResultSummary(tool: string, result: unknown) {

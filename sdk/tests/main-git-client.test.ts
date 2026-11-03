@@ -47,7 +47,7 @@ async function client(runtime: MainApplicationRuntime) {
   const redactor = mainRedactor(); redactor.remember("opaque-git-fixture");
   const sdk = await createMainSdkClient(runtime, redactor); sdks.push(sdk);
   const gateway = await sdk.gateways.add({ name: "fixture", url: "https://93.184.216.34/v1", apiKey: "opaque-gateway-fixture",
-    models: ["fixture"], defaultModel: "fixture", protocol: "responses" });
+    models: ["fixture"], defaultModel: "fixture", protocol: "responses", autoReasoning: false });
   return { sdk, gateway, redactor };
 }
 

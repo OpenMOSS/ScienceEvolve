@@ -1568,8 +1568,13 @@ export class LocalCollaborationGitService {
     if (this.worktreeMode === "agent" && branch === MAIN_BRANCH &&
       path.resolve(checkedOutPath) === this.canonicalAgentWorktree("main") && !authority) {
       await this.prepareAgentManagementWorkspace("main", signal);
-      if ((await this.command(checkedOutPath, ["status", "--porcelain=v1", "--untracked-files=all"], signal)).stdout.trim()) {
-        throw new GitInputError("Main management worktree must be clean before synchronization");
+      const pending = (await this.command(checkedOutPath, ["status", "--porcelain=v1", "--untracked-files=all"], signal)).stdout.trimEnd();
+      if (pending.trim()) {
+        const entries = pending.split(/\r?\n/).slice(0, 100).map(line => line.slice(0, 1024));
+        throw new GitInputError(`Main management worktree must be clean before synchronization. Main must review and preserve its pending files before retrying this merge. Pending entries:\n${entries.join("\n")}`, {
+          blocker: "TARGET_WORKTREE_DIRTY", targetBranch: MAIN_BRANCH, targetAgentId: "main", pendingEntries: entries,
+          recovery: "Return this blocker to Main to handle its own uncommitted files; retain the original PR and do not discard files or repeat the merge unchanged."
+        });
       }
       return;
     }

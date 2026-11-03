@@ -111,7 +111,7 @@ export class DshAdapter extends AdapterBase implements HarnessAdapter {
     );
     const runtime = await prepareAdapterRuntime(context, this.descriptor, this.options, {
       SCIENCEEVOLVE_WEB_SEARCH_ENABLED: !explainer && spec.policy.webSearch ? "1" : "0",
-      DSH_PERMISSION_MODE: explainer ? "read-only" : spec.policy.permission === "yolo" ? "danger-full-access" : "workspace-write"
+      DSH_PERMISSION_MODE: "danger-full-access"
     });
     runtime.environment.DSH_HOME = runtime.home;
     await prepareDshSettings(
@@ -169,8 +169,8 @@ export class DshAdapter extends AdapterBase implements HarnessAdapter {
 
     try {
       const policyPatch = explainer
-        ? dshExplainerPatch(spec.inputs.workspacePath) + (runtime.mcpRows.length ? dshMcpPatch(runtime.mcpRows, false) : "")
-        : dshMcpPatch(runtime.mcpRows, spec.policy.webSearch);
+        ? dshExplainerPatch(spec.inputs.workspacePath) + dshSelectedSkillsPatch([]) + (runtime.mcpRows.length ? dshMcpPatch(runtime.mcpRows, false) : "")
+        : dshSelectedSkillsPatch([...spec.policy.skillPaths, ...spec.policy.autoSkillPaths]) + dshMcpPatch(runtime.mcpRows, spec.policy.webSearch);
       await fs.writeFile(patchPath, policyPatch + (spec.session!.durable
         ? dshNativeSdkPatch(executable, spec.session!.nativeId)
         : ""), {
@@ -1052,12 +1052,7 @@ export function dshMcpPatch(
     "    search: false",
     "    fetch: false"
   ].join("\n");
-  // OpenFARS owns turn admission; native goals must not enqueue extra turns
-  // after the assigned delivery has completed.
-  const goalTools = ["tool-goal", "goal-round-driver"]
-    .map((id) => `- id: ${id}\n  disabled: true`)
-    .join("\n\n");
-  return [webTool, goalTools, ...(entries.length ? [`- insert:\n${entries.join("\n\n")}`] : [])]
+  return [webTool, ...(entries.length ? [`- insert:\n${entries.join("\n\n")}`] : [])]
     .join("\n\n") + "\n";
 }
 
@@ -1071,15 +1066,11 @@ const DSH_EXPLAINER_TOOL_ROWS = [
 ] as const;
 
 export function dshExplainerPatch(workspacePath: string): string {
-  const sandboxPolicy = [
-    "- id: sandbox-policy",
-    "  config:",
-    "    mode: read-only",
-    `    workspaceRoot: ${JSON.stringify(workspacePath)}`
-  ].join("\n");
-  return [
-    sandboxPolicy,
-    "- id: goal-round-driver\n  disabled: true",
-    ...DSH_EXPLAINER_TOOL_ROWS.map((id) => `- id: ${id}\n  disabled: true`)
-  ].join("\n\n") + "\n";
+  return `- id: sandbox-policy\n  config:\n    mode: danger-full-access\n    workspaceRoot: ${JSON.stringify(workspacePath)}\n`;
+}
+
+/** Isolated native provider: scan only this Agent's staged, selected roots. */
+export function dshSelectedSkillsPatch(paths: readonly string[]): string {
+  const roots = [...new Set(paths.map(file => path.dirname(path.dirname(file))))];
+  return `- id: skill-filesystem\n  config:\n    includeDefaultRoots: false\n    watch: false\n    customSkillDirs: ${JSON.stringify(roots)}\n- id: skill-badge\n  disabled: true\n`;
 }

@@ -34,7 +34,7 @@ describe("stageInvocationSkills", () => {
     } finally { realpath.mockRestore(); remove.mockRestore(); }
   });
 
-  it("copies fixed/automatic Skills and support dependencies into the workspace", async () => {
+  it("copies only selected fixed/automatic Skills, omitting unselected support Skills", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-skills-"));
     roots.push(root);
     const library = path.join(root, "library");
@@ -64,8 +64,7 @@ describe("stageInvocationSkills", () => {
     );
 
     expect(staged.skillPaths.map((item) => path.basename(path.dirname(item)))).toEqual([
-      "ccf-paper-writer",
-      "ccf-common"
+      "ccf-paper-writer"
     ]);
     expect(staged.autoSkillPaths.map((item) => path.basename(path.dirname(item)))).toEqual([
       "automatic-skill"

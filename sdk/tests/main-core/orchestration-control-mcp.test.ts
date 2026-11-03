@@ -165,7 +165,7 @@ describe("orchestration control MCP", () => {
         { id: 4, method: "tools/call", params: { name: "finish_task", arguments: { callId: "closing-finish", summary: "My separate closing result", memory: "My supplemental memory" } } }
       ]);
       const tools = (responses[0].result as { tools: Array<{ name: string; inputSchema: Record<string, unknown> }> }).tools;
-      expect(tools.map(tool => tool.name)).toEqual(["finish_task", "git_get_operation", "git_reconcile_push", "git_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr"]);
+      expect(tools.map(tool => tool.name)).toEqual(["finish_task", "git_get_operation", "git_reconcile_push", "git_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr"]);
       expect(tools.find(tool => tool.name === "git_push")?.inputSchema).toMatchObject({ required: ["callId", "reason"] });
       expect(tools.find(tool => tool.name === "git_reconcile_push")?.inputSchema).toMatchObject({ properties: { historical: { const: false } } });
       for (const response of responses.slice(1)) expect(response.result).not.toMatchObject({ isError: true });
@@ -339,7 +339,7 @@ describe("orchestration control MCP", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "terminal-push-receipt-deny-")); roots.push(root);
     const settings = context(root, { terminalPushObservation: { operationId: "original-push" }, allowAgentGitActions: true,
       candidates: [], allowUserIntervention: false, requireBridge: true });
-    const forbidden = ["git_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr", "git_prepare_conflict",
+    const forbidden = ["git_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr", "git_prepare_conflict",
       "route_to_agent", "publish_artifact", "select_display", "request_user", "apply_workflow", "coordinate_group_task",
       "assign_group_tasks", "claim_group_task", "request_group_integration", "complete_group", "complete_project"];
     const attempts = [
@@ -672,11 +672,11 @@ describe("orchestration control MCP", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-git-tools-")); roots.push(root);
     const result = await runMcp(context(root, { allowAgentGitActions: true, candidates: [] }), [{ id: 1, method: "tools/list" }]);
     expect((result[0]!.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name))
-      .toEqual(["finish_task", "git_revert", "git_log", "git_show", "git_diff", "git_get_operation", "git_reconcile_push", "git_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr", "git_prepare_conflict", "publish_artifact"]);
+      .toEqual(["finish_task", "git_revert", "git_log", "git_show", "git_diff", "git_get_operation", "git_reconcile_push", "git_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr", "git_prepare_conflict", "publish_artifact"]);
     const push = (result[0]!.result as { tools: Array<{ name: string; description: string }> }).tools
       .find(tool => tool.name === "git_push")!;
     expect(push.description).toContain("Ordinary business pushes do not stage files or create a commit");
-    expect(push.description).toContain("git_stage and git_commit are provided by the filesystem-authority MCP");
+    expect(push.description).toContain("git_stage and git_commit are provided by the platform Git MCP");
     expect(push.description).toContain("existing tool discovery within current permissions");
     expect(push.description).toContain("already_published only when it exactly matches the local head");
     expect((result[0]!.result as { tools: Array<{ name: string; annotations: unknown }> }).tools
@@ -710,7 +710,7 @@ describe("orchestration control MCP", () => {
       { id: 3, method: "tools/call", params: { name: "git_reconcile_push", arguments: { callId: "forged-reconcile", operationId: "old-member-push", retry: true } } }
     ]);
     expect((result[0]!.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name))
-      .toEqual(["finish_task", "git_get_operation", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr"]);
+      .toEqual(["finish_task", "git_get_operation", "github_create_pr", "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr"]);
     expectRecoverableToolError(result.find((item) => item.id === 2));
     expectRecoverableToolError(result.find((item) => item.id === 3));
   });

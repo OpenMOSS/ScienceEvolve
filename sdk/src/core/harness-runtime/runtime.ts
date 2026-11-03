@@ -1,4 +1,5 @@
 import { proxyFailureError } from "./errors.js";
+import { resolveGatewayReasoning } from "../gateway-reasoning.js";
 import { redactTrace } from "../utils.js";
 import { createHash, randomUUID } from "node:crypto";
 import { EXPLAINER_MCP_NAME, isExplainerMcp } from "../internal/shared/explainer-tools.js";
@@ -130,7 +131,7 @@ import { type AdapterRuntimeOptions } from "./adapters/adapter-utils.js";
 import { openBuiltinResidentAdapter } from "./adapters/resident-adapter-factory.js";
 import {
   compileFilesystemAuthority,
-  prepareFilesystemAuthorityMcp
+  prepareGitWorktreeMcp
 } from "./filesystem-authority.js";
 import {
   ResidentLeaseManager,
@@ -605,8 +606,7 @@ async function traceInvocationCapabilities(
   }
   if (request.executionContext?.role === "leader") {
     deniedCapabilities.push(
-      { capability: "delivery-worktree-write", reason: "management-role-read-only" },
-      { capability: "git-mutation", reason: "management-role-read-only" },
+      { capability: "git-mutation", reason: "management-role" },
       { capability: "delivery-session", reason: "management-role-serialized" }
     );
   }
@@ -623,9 +623,7 @@ async function traceInvocationCapabilities(
         ? policy.mcpServers.map((server) => server.name)
         : [],
       webSearch: descriptor.capabilities.webSearch && policy.webSearch,
-      filesystem: request.executionContext?.role === "leader"
-        ? "management-read-only"
-        : policy.permission,
+      filesystem: "native",
       gitMutation: request.executionContext?.role !== "leader" &&
         request.project.git?.enabled === true
     },
@@ -1043,7 +1041,7 @@ const CONTROL_ACTION_TOOLS = new Set([
   "github_create_pr",
   "github_get_pr",
   "github_merge_pr",
-  "github_close_pr",
+  "github_close_pr", "github_update_pr",
   "git_prepare_conflict",
   "git_log", "git_show", "git_diff", "git_revert",
   "coordinate_group_task",
@@ -1072,6 +1070,7 @@ const CONTROL_ACTION_FIELDS: Readonly<Record<string, ReadonlySet<string>>> = {
   github_create_pr: new Set(["tool", "base", "title", "body"]),
   github_get_pr: new Set(["tool", "providerNumber", "sourceOperationId"]),
   github_merge_pr: new Set(["tool", "providerNumber", "reason"]),
+  github_update_pr: new Set(["tool", "providerNumber", "title", "body"]),
   github_close_pr: new Set(["tool", "providerNumber", "reason"]),
   git_prepare_conflict: new Set(["tool"]),
   git_log: new Set(["tool", "revision", "offset", "limit"]),
@@ -1144,6 +1143,7 @@ function validControlAction(action: Record<string, unknown>, tool: string): bool
   if (tool === "github_create_pr") return boundedControlString(action.base, true) && boundedControlString(action.title, true) && boundedControlString(action.body);
   if (tool === "github_get_pr") return (action.providerNumber === undefined || (Number.isSafeInteger(action.providerNumber) && Number(action.providerNumber) >= 1)) &&
     (action.sourceOperationId === undefined || typeof action.sourceOperationId === "string" && Boolean(action.sourceOperationId.trim()) && action.sourceOperationId.length <= 1024);
+  if (tool === "github_update_pr") return Number.isSafeInteger(action.providerNumber) && Number(action.providerNumber) >= 1 && boundedControlString(action.title, true) && boundedControlString(action.body);
   if (tool === "github_merge_pr" || tool === "github_close_pr") return Number.isSafeInteger(action.providerNumber) && Number(action.providerNumber) >= 1 && boundedControlString(action.reason);
   if (tool === "git_prepare_conflict") return true;
   if (tool === "git_log" || tool === "git_show" || tool === "git_diff") {
@@ -1279,7 +1279,7 @@ function validControlCollaborationScope(
         action.path === MAIN_AGENT_ORCHESTRATION_FILE;
     }
     if (tool === "complete_project") return control.canComplete;
-    if (["git_push", "git_get_operation", "git_reconcile_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr", "git_prepare_conflict", "git_log", "git_show", "git_diff", "git_revert"].includes(tool)) {
+    if (["git_push", "git_get_operation", "git_reconcile_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr", "github_update_pr", "git_prepare_conflict", "git_log", "git_show", "git_diff", "git_revert"].includes(tool)) {
       return control.allowAgentGitActions === true;
     }
     return true;
@@ -1731,7 +1731,8 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         request.skillPaths,
         request.autoSkillPaths ?? [],
         request.project.git?.enabled ? path.dirname(inputs.inboxPath) : inputs.workspacePath,
-        request.availableSkillPaths
+        request.availableSkillPaths,
+        request.agent
       );
     } catch (error) {
       throw new HarnessRuntimeError(
@@ -1871,9 +1872,9 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         ...(inputs.workflowReadDirectory ? [inputs.workflowReadDirectory] : []),
         ...(inputs.userInputsPath ? [inputs.userInputsPath] : [])]
     });
-    const filesystemMcp = input.filesystemMcp ?? (request.permission === "yolo"
+    const filesystemMcp = input.filesystemMcp ?? (filesystemAuthority.gitCapability === "none"
       ? undefined
-      : await prepareFilesystemAuthorityMcp({
+      : await prepareGitWorktreeMcp({
           authority: filesystemAuthority,
           executionRuntimePath: input.executionRuntimePath
         }));
@@ -3060,12 +3061,17 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     const assistantServers = input.assistantMcp ? [{ name: EXPLAINER_MCP_NAME, url: input.assistantMcp.url }] : [];
     if (assistantServers.some(server => !isExplainerMcp(server)) || assistantServers.length && !adapter.descriptor.capabilities.mcp)
       throw new Error("所选 Harness 无法提供 Project Explainer 交互工具。");
+    const reasoningOptionId = input.gateway.autoReasoning === false ? undefined
+      : input.gateway.modelReasoning?.[input.model]?.defaultOptionId;
+    const reasoning = resolveGatewayReasoning(input.gateway.modelReasoning, input.model, reasoningOptionId);
     const config = {
       model: input.model,
       harness: input.harnessId,
       gatewayId: input.gateway.id,
+      ...(reasoningOptionId ? { gatewayReasoningOption: reasoningOptionId } : {}),
       gatewaySnapshot: {
         ...input.gateway,
+        ...(reasoning ? { reasoning } : {}),
         nativeProtocol: adapter.descriptor.nativeProtocol,
         routeMode: adapter.descriptor.nativeProtocol === input.gateway.protocol ? "direct" as const : "proxy" as const
       },
@@ -3135,9 +3141,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     }
     const policy = {
       permission: "workspace" as const,
-      constraintPrompt: assistantServers.length
-        ? "Project Explainer: native filesystem, shell, writes, Skills and Web Search are unavailable. Use read_context for selected quoted index/detail files; resolve paths from its invocation root. Use other injected tools only within this turn's task and user-requested authority. Saving a draft never starts research."
-        : "Read-only Project Explainer. Never modify files, use Skills, use MCP, use Web Search, or change workflow state.",
+      constraintPrompt: "Project Explainer provides draft and project management. Use native Harness tools for general work and injected business tools within the user request. Read context on demand. Only Workflow-selected Skills may be loaded; this Explainer has none. Saving a draft never starts research; starting research requires an explicit business request.",
       skillPaths: [],
       autoSkillPaths: [],
       mcpServers: assistantServers,
@@ -3388,27 +3392,12 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     if (!descriptor.capabilities.readOnlyExplainer || !descriptor.explainerIsolation) {
       throw new HarnessRuntimeError(
         "HARNESS_CAPABILITY_UNSUPPORTED",
-        `${descriptor.label} cannot guarantee the read-only explainer purpose`,
+        `${descriptor.label} does not support the Explainer purpose`,
         { harnessId, purpose: "explainer" }
       );
     }
-    if (this.options.explainerSandboxMode === "danger-full-access") {
-      throw new HarnessRuntimeError(
-        "HARNESS_CONFIGURATION_INVALID",
-        "Project Explainer refuses danger-full-access configuration",
-        { harnessId, purpose: "explainer" }
-      );
-    }
-    if (descriptor.explainerIsolation === "host-read-only-sandbox" &&
-      (this.options.explainerSandboxMode !== "read-only" ||
-        this.options.explainerSandboxVerified !== true)) {
-      throw new HarnessRuntimeError(
-        "HARNESS_CAPABILITY_UNSUPPORTED",
-        this.options.explainerSandboxUnavailableReason ??
-          `${descriptor.label} requires a verified host read-only sandbox for Project Explainer`,
-        { harnessId, purpose: "explainer" }
-      );
-    }
+    // General native tools use the same policy for every role. The isolated
+    // product MCP still owns draft/start semantics and invocation identity.
   }
 
   async cleanupInterrupted(invocationId: string, runtimePath: string): Promise<void> {

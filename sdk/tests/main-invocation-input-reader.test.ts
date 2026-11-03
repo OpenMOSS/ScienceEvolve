@@ -19,7 +19,7 @@ const call = (id: number, args: object) => ({ jsonrpc: "2.0", id, method: "tools
 async function rpc(workspace: string, requests: object[], agent = "main") {
   const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../src/core/control-mcp.ts", import.meta.url))], {
     env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT,
-      SCIENCEEVOLVE_APPEND_ROOT: workspace, SCIENCEEVOLVE_AGENT_NAME: agent, SCIENCEEVOLVE_INVOCATION_ID: "inv_test" },
+      SCIENCEEVOLVE_LEGACY_FILE_TOOLS: "1", SCIENCEEVOLVE_APPEND_ROOT: workspace, SCIENCEEVOLVE_AGENT_NAME: agent, SCIENCEEVOLVE_INVOCATION_ID: "inv_test" },
     stdio: ["pipe", "pipe", "pipe"], windowsHide: true
   });
   let stdout = "", stderr = "";
@@ -34,7 +34,7 @@ async function rpc(workspace: string, requests: object[], agent = "main") {
 }
 const content = (message: any) => JSON.parse(message.result.content[0].text);
 
-it("reads only the two staged inputs in UTF-8 boundary-safe chunks without a shell", async () => {
+it("retains opt-in legacy reads of the two staged inputs in UTF-8 boundary-safe chunks without a shell", async () => {
   const { workspace } = await fixture();
   const replies = await rpc(workspace, [
     { jsonrpc: "2.0", id: 1, method: "tools/list" }, call(2, { input: "inbox", limit: 2 }),

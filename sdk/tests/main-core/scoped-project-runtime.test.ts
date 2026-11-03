@@ -29,6 +29,7 @@ import { prepareFilesystemAuthorityMcp } from "../../src/core/harness-runtime/fi
 import type { AgentRunRequest, ProjectState, ControlActionEnvelope, ControlAction } from "../../src/core/types.js";
 import type { CollaborationResidentOpenInput } from "../../src/core/collaboration-runtime.js";
 import { ProtocolToolArgumentsError } from "../../src/core/harness-runtime/errors.js";
+import { GitInputError } from "../../src/core/collaboration-git/errors.js";
 
 const id = "prj_12345678901234567890123456789012";
 const repository = { provider: "github" as const, providerId: 1, owner: "example", name: "openfars", private: true,
@@ -3550,6 +3551,65 @@ describe("scoped project native production composition", () => {
     expect(f.opened.filter((entry) => entry.controlScope?.role === "scoped-agent" && !entry.controlScope.executionId.startsWith("group-final-") && entry.request.agent === "execution")).toHaveLength(1);
     expect(f.database.projectState(id).executions).toEqual([]);
     expect(f.database.scopedGroupIssues(id)).toEqual([]);
+  });
+
+  it.each([false, true])("isolates real canonical final MCP receipts and returns a dirty-target blocker without unchanged supplements (blocked=%s)", async blocked => {
+    const f = await fixture(false, blocked ? { recovery: "user" } : {});
+    const open = f.launcher.open.getMockImplementation()!;
+    const paths: string[] = []; const archived: string[] = []; const invocations: string[] = [];
+    const blocker = new GitInputError("Main must preserve pending final-manifest.json before synchronization", {
+      blocker: "TARGET_WORKTREE_DIRTY", targetAgentId: "main", pendingEntries: ["?? final-manifest.json"]
+    });
+    if (blocked) f.git.mergeGroupFinalPullRequest.mockRejectedValue(blocker);
+    f.launcher.open.mockImplementation(async input => {
+      const handle = await open(input); const scope = input.controlScope;
+      if (scope?.role !== "scoped-agent" || !scope.executionId.startsWith("group-final-")) return handle;
+      handle.submit.mockImplementation(async turn => {
+        const authority = await input.controlAuthorityFactory!({ request: input.request, turn });
+        paths.push(authority.control.stagingPath);
+        invocations.push(turn.invocationId);
+        const service = new ControlActionService({ projectId: id, agent: input.request.agent, invocationId: turn.invocationId,
+          stateVersion: authority.control.stateVersion, capability: authority.control.capability,
+          capabilityHash: authority.control.capabilityHash, stagingPath: authority.control.stagingPath,
+          revalidate: authority.revalidate, execute: authority.execute });
+        const call = (name: string, action: ControlAction) => service.stageWithResult(authority.control.capability, name, action);
+        const final = f.database.scopedFinalIntegration(id, scope.groupRunId)!;
+        if (paths.length === 1) {
+          await call("canonical-create", { tool: "github_create_pr", base: final.integrationTarget, title: "Actual canonical delivery", body: "Retain the same PR" });
+        }
+        if (blocked || paths.length > 1) {
+          const merge = call("canonical-merge", { tool: "github_merge_pr", providerNumber: f.git.pulls.get(final.id)!.providerNumber, reason: "My actual assigned delivery" });
+          if (blocked) await expect(merge).rejects.toBe(blocker); else await merge;
+          await call("canonical-finish", { tool: "finish_task", summary: blocked ? "Target owner must handle pending files" : "My final delivery is complete" });
+        }
+        await service.drain(); service.revoke();
+        const actions = await readStagedControlActions(authority.control.stagingPath);
+        const result = { handoff: blocked ? blocker.message : "Original Agent supplied its next canonical action", controlActions: actions };
+        expect(new HarnessRuntimeFacade().validateResidentTurnResult(result, { ...input.request, control: authority.control })).toEqual(result);
+        for (let n = 0; n < archived.length; n++) expect(await readFile(paths[n], "utf8")).toBe(archived[n]);
+        archived.push(await readFile(authority.control.stagingPath, "utf8"));
+        return result;
+      });
+      return handle;
+    });
+    await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
+      outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
+    const outcome = await f.runtime.advance("run-G");
+    if (blocked) {
+      expect(outcome.status).not.toBe("completed");
+      // A Leader may explicitly assign a new recovery. The failed Agent
+      // turn itself must not receive unchanged automatic supplements.
+      expect(paths.length).toBeGreaterThan(0);
+      expect(new Set(invocations).size).toBe(paths.length);
+      expect(f.database.scopedGroupIssues(id).map(issue => issue.reason).join("\n"), JSON.stringify(outcome)).toContain("final-manifest.json");
+      expect(f.database.scopedGroupIssues(id).some(issue => issue.reason.includes("invalid orchestration control envelope"))).toBe(false);
+    } else {
+      expect(outcome.status).toBe("completed");
+      expect(paths).toHaveLength(2);
+      expect(new Set(paths).size).toBe(2);
+      expect((await readStagedControlActions(paths[1])).some(action => action.callId === "canonical-create")).toBe(false);
+    }
+    expect(f.git.closePullRequest).not.toHaveBeenCalled();
   });
   it("builds actual immutable inputs, accepts formal Leader planning and preserves cwd/session for FIFO arrivals", async () => {
     const { runtime, database, opened, submitted, state, handles, closed } = await fixture();

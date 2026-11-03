@@ -23,9 +23,9 @@ export const DESCRIPTOR_BROKER_HELPER_SHA256 =
   "98d3cfcd2952fc07e8da25419030f1695796497bde6c2e28360562082dd92c8f";
 export const DESCRIPTOR_BROKER_WINDOWS_SHA256 = "2db9f05100aa658cd1fd813097526c4f9dc286732da6e762cbf73b7c530cbc32";
 export const DESCRIPTOR_BROKER_MCP_SHA256 =
-  "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e";
+  "fad45634f057cb1bae7818846f0facace49c5c91a21c1b355e45f625530de594";
 export const DESCRIPTOR_BROKER_MCP_COMPILED_SHA256 =
-  "1332fcc5f1a83286f028753f41cfadb37fb9a62a9aa935c0ddcdb14ee1f903bc";
+  "9c4b16f0e35b2977c564811faa39ac7a7644b8165284b0634b03fbd92541e9db";
 
 export type GitCapability = "none" | "execution" | "project-service";
 
@@ -49,8 +49,8 @@ export interface FilesystemAuthority {
   directBase?: string;
   /** Opaque IDs are the only root selectors exposed by the broker tool. */
   rootBindings: ReadonlyArray<FilesystemRootBinding>;
-  /** Trusted raw tools are only honest in yolo mode. */
-  rawTools: "forbidden" | "trusted-yolo";
+  /** Native capabilities are available in every product role; forbidden is legacy broker compatibility only. */
+  rawTools: "native" | "forbidden" | "trusted-yolo";
   readShell?: boolean;
 }
 
@@ -194,14 +194,31 @@ export async function compileFilesystemAuthority(
     gitCapability,
     ...(request.directBase ? { directBase: request.directBase } : {}),
     rootBindings,
-    rawTools: request.permission === "yolo" && !request.terminalPushObservation && !request.terminalPushCoordination && !request.restrictedWorktreeClosing ? "trusted-yolo" : "forbidden"
+    rawTools: request.permission === "yolo" && !request.terminalPushObservation && !request.terminalPushCoordination && !request.restrictedWorktreeClosing ? "trusted-yolo" : "native"
   });
+}
+
+export function nativeInputReferences(inputs: Pick<InvocationInputs, "workspacePath" | "inboxPath" | "memoryPath" | "workflowAuthoringPath" | "workflowAuthoringInvocationId" | "workflowCurrentPath" | "workflowReadDirectory" | "workflowContext" | "contextIndex" | "userInputsPath">): string {
+  return [
+    `Workspace: ${inputs.workspacePath}`, `Inbox: ${inputs.inboxPath}`, `Memory: ${inputs.memoryPath}`,
+    inputs.contextIndex ? `Context index: ${inputs.contextIndex.indexPath}` : "",
+    inputs.userInputsPath ? `User-supplied files: ${inputs.userInputsPath}` : "",
+    inputs.workflowReadDirectory ? `Canonical Workflow evidence: ${inputs.workflowReadDirectory}\nDefinition: ${path.join(inputs.workflowReadDirectory, "definition.json")}\nCurrent state: ${path.join(inputs.workflowReadDirectory, "current-state.json")}` : "",
+    inputs.workflowCurrentPath ? `Current Workflow: ${inputs.workflowCurrentPath}` : "",
+    inputs.workflowAuthoringPath ? `Workflow proposal: ${inputs.workflowAuthoringPath}\nCurrent accepted workflow: ${mainWorkflowCurrentReferencePath(inputs)}` : "",
+    inputs.workflowContext ? `Agent / Skills / MCP details (read only what you need with native file tools): ${JSON.stringify({ definition: inputs.workflowContext.definitionPath, currentState: inputs.workflowContext.currentStatePath, details: inputs.workflowContext.agentsPath })}` : ""
+  ].filter(Boolean).join("\n");
 }
 
 export function filesystemAuthorityPrompt(
   authority: FilesystemAuthority,
   inputs: Pick<InvocationInputs, "workspacePath" | "inboxPath" | "memoryPath" | "workflowAuthoringPath" | "workflowAuthoringInvocationId" | "workflowCurrentPath" | "workflowReadDirectory" | "workflowContext" | "contextIndex" | "userInputsPath">
 ): string {
+  if (authority.rawTools !== "forbidden") return [
+    "Use your native file, edit, search and Shell tools. Read context on demand; only Workflow-selected Skills are loaded.",
+    nativeInputReferences(inputs),
+    "Perform Git and PR operations through platform Git tools; edit conflict contents with native tools. Native subagents and loops stay inside this parent node."
+  ].filter(Boolean).join("\n");
   const reference = (label: string, target: string, directory = false) => {
     const root = [...authority.rootBindings].filter((item) => isWithin(target, item.path))
       .sort((left, right) => right.path.length - left.path.length)[0];
@@ -305,15 +322,19 @@ export async function prepareFilesystemAuthorityMcp(options: {
   gitExecutable?: string;
   helperPath?: string;
   bridgePath?: string;
+  toolMode?: "git";
 }): Promise<PreparedFilesystemMcp> {
   const runtimePath = await realDirectory(options.executionRuntimePath, "resident runtime");
-  if (options.authority.writeRoots.some((root) => isWithin(runtimePath, root))) {
+  // Native tools are intentionally unsandboxed. Keep sealed binding/pin checks;
+  // advisory task scopes cannot prove OS-level write isolation in this mode.
+  const isolatedWriteRoots = options.toolMode === "git" && options.authority.rawTools !== "forbidden" ? [] : options.authority.writeRoots;
+  if (isolatedWriteRoots.some((root) => isWithin(runtimePath, root))) {
     throw authorityError("Filesystem MCP config is inside Agent-writable authority");
   }
   const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
   const helperPath = await verifyPinnedHelper(
     options.helperPath ?? path.join(moduleDirectory, process.platform === "win32" ? "descriptor-broker-windows.py" : "descriptor-broker-helper.py"),
-    options.authority.writeRoots
+    isolatedWriteRoots
   );
   const sourceBridge = path.join(moduleDirectory, "descriptor-broker-mcp.ts");
   const compiledBridge = path.join(moduleDirectory, "descriptor-broker-mcp.js");
@@ -324,7 +345,7 @@ export async function prepareFilesystemAuthorityMcp(options: {
   const bridgePath = await verifyPinnedExecutable(
     selectedBridge,
     bridgeSha256,
-    options.authority.writeRoots,
+    isolatedWriteRoots,
     "descriptor broker MCP bridge"
   );
   const pythonExecutable = await realRegularFile(
@@ -337,10 +358,10 @@ export async function prepareFilesystemAuthorityMcp(options: {
   );
   const gitExecutable = await verifyTrustedExecutable(
     options.gitExecutable ?? (process.platform === "win32" ? await windowsExecutable("git.exe") : "/usr/bin/git"),
-    options.authority.writeRoots,
+    isolatedWriteRoots,
     "Git executable"
   );
-  if (options.authority.writeRoots.some((root) =>
+  if (isolatedWriteRoots.some((root) =>
     isWithin(pythonExecutable, root) || isWithin(nodeExecutable, root) ||
     isWithin(gitExecutable, root))) {
     throw authorityError("Filesystem MCP executable is inside Agent-writable authority");
@@ -353,7 +374,7 @@ export async function prepareFilesystemAuthorityMcp(options: {
       const candidates = [...new Set(["/usr/bin", "/bin", ...(process.env.PATH ?? "").split(path.delimiter)])].filter(Boolean);
       for (const directory of candidates) {
         try {
-          readShellExecutables[command] = await verifyTrustedExecutable(path.join(directory, command), options.authority.writeRoots, `Read Shell ${command}`);
+          readShellExecutables[command] = await verifyTrustedExecutable(path.join(directory, command), isolatedWriteRoots, `Read Shell ${command}`);
           break;
         } catch { /* Try the next installed utility; absence is reported by the tool. */ }
       }
@@ -361,6 +382,7 @@ export async function prepareFilesystemAuthorityMcp(options: {
   }
   const document = {
     schemaVersion: 1,
+    ...(options.toolMode ? { toolMode: options.toolMode } : {}),
     readShellExecutables,
     helperPath,
     helperSha256: process.platform === "win32" ? DESCRIPTOR_BROKER_WINDOWS_SHA256 : DESCRIPTOR_BROKER_HELPER_SHA256,
@@ -371,12 +393,13 @@ export async function prepareFilesystemAuthorityMcp(options: {
   };
   const encoded = `${JSON.stringify(document)}\n`;
   const configSha256 = createHash("sha256").update(encoded).digest("hex");
-  const configPath = path.join(runtimePath, "descriptor-filesystem-mcp.json");
+  const namespace = options.toolMode === "git" ? "openfars-git" : "openfars-filesystem-authority";
+  const configPath = path.join(runtimePath, options.toolMode === "git" ? "platform-git-mcp.json" : "descriptor-filesystem-mcp.json");
   await atomicPrivateWrite(configPath, encoded);
   return Object.freeze({
     row: Object.freeze({
-      name: "openfars-filesystem-authority",
-      namespace: "openfars-filesystem-authority",
+      name: namespace,
+      namespace,
       transport: "stdio" as const,
       command: nodeExecutable,
       args: Object.freeze([bridgePath, configPath]) as unknown as string[]
@@ -391,15 +414,21 @@ export async function prepareFilesystemAuthorityMcp(options: {
   });
 }
 
+/** Git-only production binding. Generic files and Shell belong to the native Harness. */
+export function prepareGitWorktreeMcp(options: Omit<Parameters<typeof prepareFilesystemAuthorityMcp>[0], "toolMode">): Promise<PreparedFilesystemMcp> {
+  return prepareFilesystemAuthorityMcp({ ...options, toolMode: "git" });
+}
+
 export async function validatePreparedFilesystemMcp(
   prepared: PreparedFilesystemMcp,
   authority: FilesystemAuthority,
   executionRuntimePath: string
 ): Promise<void> {
   const runtimePath = await fs.realpath(executionRuntimePath);
+  const isolatedWriteRoots = prepared.row.namespace === "openfars-git" && authority.rawTools !== "forbidden" ? [] : authority.writeRoots;
   const configPath = await realRegularFile(prepared.configPath, "filesystem MCP config");
   if (!isWithin(configPath, runtimePath) ||
-    authority.writeRoots.some((root) => isWithin(configPath, root))) {
+    isolatedWriteRoots.some((root) => isWithin(configPath, root))) {
     throw authorityError("Filesystem MCP config is outside its trusted runtime boundary");
   }
   const bytes = await fs.readFile(configPath);
@@ -410,8 +439,8 @@ export async function validatePreparedFilesystemMcp(
   const authoritySha256 = digestJson(filesystemAuthorityDocument(authority));
   if (prepared.authoritySha256 !== authoritySha256 ||
     document.authoritySha256 !== authoritySha256 ||
-    prepared.row.namespace !== "openfars-filesystem-authority" ||
-    prepared.row.name !== "openfars-filesystem-authority" ||
+    prepared.row.namespace !== (document.toolMode === "git" ? "openfars-git" : "openfars-filesystem-authority") ||
+    prepared.row.name !== prepared.row.namespace ||
     prepared.row.command !== prepared.nodeExecutable ||
     document.gitExecutable !== prepared.gitExecutable ||
     prepared.row.args.length !== 2 ||
@@ -422,12 +451,12 @@ export async function validatePreparedFilesystemMcp(
   await verifyPinnedExecutable(
     prepared.bridgePath,
     prepared.bridgeSha256,
-    authority.writeRoots,
+    isolatedWriteRoots,
     "descriptor broker MCP bridge"
   );
   await verifyTrustedExecutable(
     prepared.gitExecutable,
-    authority.writeRoots,
+    isolatedWriteRoots,
     "Git executable"
   );
 }

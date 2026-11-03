@@ -1056,7 +1056,7 @@ describe("HarnessRuntimeFacade", () => {
     }]), scoped)).toThrow(/invalid orchestration control envelope/);
   });
 
-  it("rejects a dangerous Explainer sandbox configuration before an Adapter can run", async () => {
+  it("accepts native Explainer tools under the shared role policy", async () => {
     const adapter = new FixtureAdapter();
     const facade = new HarnessRuntimeFacade({
       adapters: [adapter],
@@ -1064,23 +1064,13 @@ describe("HarnessRuntimeFacade", () => {
       explainerSandboxVerified: false
     });
 
-    expect(() => facade.assertExplainerAvailable(descriptor.id)).toThrow(
-      expect.objectContaining({
-        code: "HARNESS_CONFIGURATION_INVALID",
-        message: "Project Explainer refuses danger-full-access configuration"
-      })
-    );
-    await expect(facade.harnessCatalog()).resolves.toEqual([
-      expect.objectContaining({
-        id: descriptor.id,
-        purposes: ["workflow", "probe"],
-        capabilities: expect.objectContaining({ readOnlyExplainer: false })
-      })
-    ]);
+    expect(() => facade.assertExplainerAvailable(descriptor.id)).not.toThrow();
+    const catalog = await facade.harnessCatalog();
+    expect(catalog[0]!.purposes).toContain("explainer");
     expect(adapter.contexts).toHaveLength(0);
   });
 
-  it("marks host-sandbox Explainers unavailable until read-only isolation is verified", () => {
+  it("does not require role-specific read-only isolation for Explainer", () => {
     const hostDescriptor: HarnessDescriptor = {
       ...descriptor,
       id: "fixture-host-sandbox",
@@ -1091,9 +1081,7 @@ describe("HarnessRuntimeFacade", () => {
     const adapter = new FixtureAdapter(hostDescriptor);
     const facade = new HarnessRuntimeFacade({ adapters: [adapter] });
 
-    expect(() => facade.assertExplainerAvailable(hostDescriptor.id)).toThrow(
-      expect.objectContaining({ code: "HARNESS_CAPABILITY_UNSUPPORTED" })
-    );
+    expect(() => facade.assertExplainerAvailable(hostDescriptor.id)).not.toThrow();
     expect(adapter.contexts).toHaveLength(0);
   });
 
@@ -2622,13 +2610,16 @@ describe("HarnessRuntimeFacade", () => {
     await fs.writeFile(memoryPath, "Independent summary task.");
     const adapter = new FixtureAdapter();
     let budget: ProtocolProxyOptions["getContextInjectionBudget"];
+    let reasoning: ProtocolProxyOptions["gatewayReasoning"];
     const facade = new HarnessRuntimeFacade({ adapters: [adapter], protocolProxyFactory: async options => {
       budget = options.getContextInjectionBudget;
+      reasoning = options.gatewayReasoning;
       return { baseUrl: "http://127.0.0.1:43199/v1", token: "fixture", close: async () => undefined };
     } });
     await facade.runExplainer({ invocationId: source.invocationId, projectId: source.project.id,
       projectPath: source.projectPath, workspacePath, runtimePath: source.runtimePath, inboxPath, memoryPath,
-      harnessId: descriptor.id, gateway: { ...source.project.agents.main!.gatewaySnapshot!, modelContextWindows: { "fixture-model": 8192 } },
+      harnessId: descriptor.id, gateway: { ...source.project.agents.main!.gatewaySnapshot!, modelContextWindows: { "fixture-model": 8192 },
+        modelReasoning: { "fixture-model": { parameter: "reasoning.effort", defaultOptionId: "high", options: [{ id: "high", label: "High", value: "high" }] } } },
       model: "fixture-model", reasoningEffort: "low", prompt: `Summarize the actual saved results.\n${output}`,
       evidenceInPrompt: true, contextBackgrounds: [{ text: output, alternatives: [`Read selected output at ${inboxPath}.`] }],
       onTrace: () => undefined, onEvent: () => undefined }, new AbortController().signal);
@@ -2636,6 +2627,7 @@ describe("HarnessRuntimeFacade", () => {
     expect(adapter.contexts[0]!.spec.prompt).toContain(inboxPath);
     expect(adapter.contexts[0]!.spec.prompt).not.toContain("OLD_OUTPUT_BODY");
     expect(budget!()!.estimatedTokens).toBeLessThanOrEqual(4096);
+    expect(reasoning).toMatchObject({ parameter: "reasoning.effort", optionId: "high", value: "high" });
     expect(await fs.readFile(inboxPath, "utf8")).toBe(output);
   });
 

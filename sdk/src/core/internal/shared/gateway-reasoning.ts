@@ -4,7 +4,8 @@ export const GATEWAY_REASONING_PARAMETER_PATHS = [
   "reasoning_effort",
   "reasoning.effort",
   "chat_template_kwargs.reasoning_effort",
-  "thinking.effort"
+  "thinking.effort",
+  "output_config.effort"
 ] as const;
 
 export type GatewayReasoningParameterPath =
@@ -19,6 +20,17 @@ export interface GatewayReasoningOption {
 export interface GatewayModelReasoningConfig {
   parameter: GatewayReasoningParameterPath;
   options: GatewayReasoningOption[];
+  /** Confirmed default discovered by the gateway probe; explicit Agent choices win. */
+  defaultOptionId?: string;
+}
+
+export interface GatewayReasoningDetection {
+  status: "verified" | "unconfirmed" | "failed";
+  checkedAt: string;
+  fingerprint: string;
+  message: string;
+  config?: GatewayModelReasoningConfig;
+  attempts: Array<{ parameter: GatewayReasoningParameterPath; value: string; httpStatus?: number; outcome: string }>;
 }
 
 export type GatewayModelReasoningConfigs = Record<
@@ -101,8 +113,13 @@ export function normalizeGatewayModelReasoningConfigs(
     });
     normalized[model] = {
       parameter: parameter as GatewayReasoningParameterPath,
-      options
+      options,
+      ...(typeof rawConfig.defaultOptionId === "string" ? { defaultOptionId: rawConfig.defaultOptionId.trim() } : {})
     };
+    if (rawConfig.defaultOptionId !== undefined && typeof rawConfig.defaultOptionId !== "string")
+      throw new Error(`model“${model}”的默认思考强度必须是选项 ID`);
+    if (normalized[model]!.defaultOptionId !== undefined && !options.some(option => option.id === normalized[model]!.defaultOptionId))
+      throw new Error(`model“${model}”的默认思考强度不属于已配置选项`);
   }
   return normalized;
 }
@@ -150,7 +167,7 @@ export function applyGatewayReasoning(
     return { ...body, reasoning_effort: reasoning.value };
   }
   const [container, field] = reasoning.parameter.split(".") as [
-    "reasoning" | "chat_template_kwargs" | "thinking",
+    "reasoning" | "chat_template_kwargs" | "thinking" | "output_config",
     "effort" | "reasoning_effort"
   ];
   const existing = isRecord(body[container]) ? body[container] : {};

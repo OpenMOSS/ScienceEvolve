@@ -351,7 +351,10 @@ class FakeGitHub {
     }
     if (pullMatch && method === "PATCH") {
       const pull = this.pull(Number(pullMatch[3]));
-      pull.state = "closed";
+      const body = this.body(init);
+      if (body.state === "closed") pull.state = "closed";
+      if (typeof body.title === "string") pull.title = body.title;
+      if (typeof body.body === "string") pull.body = body.body;
       if (fault === "lost") throw new TypeError(`response lost ${TOKEN}`);
       return this.response(pull, 200);
     }
@@ -2666,5 +2669,35 @@ describe("GitHub endpoint guard resource-name boundaries", () => {
     await expect(request(provider, "/repos/alice/demo/%zzctions/runs"))
       .rejects.toThrow("GitHub request path contains malformed encoding");
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("single-round PR observation and metadata", () => {
+  it("selects the exact current head among historical PRs on a retained branch", async () => {
+    const { provider, fake } = providerFixture(); fake.seedRepository(); fake.refs.set("executions/exec-1", HEAD);
+    await provider.openPullRequest(pullRequest("round-one"));
+    fake.pull(1).state = "closed"; fake.pull(1).merged = true;
+    fake.pull(1).merged_at = NOW; fake.pull(1).merge_commit_sha = MERGE;
+    fake.refs.set("executions/exec-1", UPDATED_HEAD);
+    await provider.openPullRequest(pullRequest("round-two", UPDATED_HEAD));
+    expect(await provider.observePullRequestForExecution("alice", "demo", "executions/exec-1", "main", "exec-1", undefined, UPDATED_HEAD))
+      .toMatchObject({ providerNumber: 2, headSha: UPDATED_HEAD });
+    expect(await provider.observePullRequestForExecution("alice", "demo", "executions/exec-1", "main", "exec-1"))
+      .toMatchObject({ providerNumber: 2 });
+  });
+  it.each([false, true])("updates the same PR and observes a lost response without another PATCH (lost=%s)", async lost => {
+    const { provider, fake, store } = providerFixture(); fake.seedRepository(); fake.refs.set("executions/exec-1", HEAD);
+    await provider.openPullRequest(pullRequest("one-round"));
+    if (lost) fake.failOnce("PATCH", "/repos/alice/demo/pulls/1", "lost");
+    const request = { ...pullRequest("update-same-pr"), providerNumber: 1, title: "Final verified delivery", body: "Validation and Memory included" };
+    const updated = await provider.updatePullRequest(request);
+    expect(updated).toMatchObject({ providerNumber: 1, title: request.title, status: "open", headSha: HEAD });
+    expect(updated.body).toContain("openfars-execution:exec-1");
+    expect(updated.body).toContain("openfars-operation:one-round");
+    expect(store.records.get("update-same-pr")).toMatchObject({ kind: "pull.update", status: "finalized", expectedHead: HEAD, expectedBase: "main" });
+    expect(await provider.updatePullRequest(request)).toMatchObject({ providerNumber: 1, title: request.title });
+    expect(fake.count("PATCH", "/repos/alice/demo/pulls/1")).toBe(1);
+    expect(fake.count("POST", "/repos/alice/demo/pulls")).toBe(1);
   });
 });

@@ -40,6 +40,7 @@ import { observeR04PendingFile, requestR04PendingFile } from "./acceptance-r04-p
 import { createR11GatewayFetch } from "./acceptance-r11.js";
 import type { WorkflowAdjustmentPublication } from "./workflow-adjustments.js";
 import { sameDurableSession } from "./control-result-receipts.js";
+import { GitInputError } from "./collaboration-git/errors.js";
 
 export interface ScopedProjectRuntimeDependencies {
   database: CollaborationStateDatabase;
@@ -351,6 +352,7 @@ export class ScopedProjectRuntime {
     let handle: CollaborationResidentHandle | undefined;
     let launchBegan = false;
     let stopped = false;
+    let targetWorktreeBlocker: GitInputError | undefined;
     try {
       const inbox = await d.storage.writeInbox(d.state, agentId, invocationId, assignment);
       const context: NonNullable<AgentRunRequest["executionContext"]> = { role: "delivery", nodeRunId: this.rootNode(group),
@@ -362,7 +364,7 @@ export class ScopedProjectRuntime {
         const capability = randomUUID();
         const capabilityHash = createHash("sha256").update(capability).digest("hex");
         const control: ControlMcpRequest = { capability, capabilityHash, stateVersion: integration.ownershipEpoch,
-          stagingPath: path.join(runtimePath, "controls", "actions.json"), candidates: [], decisionBy: "agent",
+          stagingPath: path.join(runtimePath, "controls", createHash("sha256").update(nativeTurn.inputId).digest("hex"), capabilityHash, "actions.json"), candidates: [], decisionBy: "agent",
           scopedAgentRouting: true, canComplete: false, allowUserIntervention: false,
           allowAgentGitActions: true, canonicalFinalIntegration: true, allowFinishRoute: true, requireBridge: true, workspacePath: workspace };
         return { control, revalidate: async (envelope) => {
@@ -376,12 +378,17 @@ export class ScopedProjectRuntime {
           if (envelope.action.tool === "finish_task") await d.storage.requestTaskCompletion(d.state, taskId, envelope);
           else if (!isAgentGitAction(envelope.action.tool)) throw new Error("Final delivery only has its task completion and canonical PR tools");
         }, execute: async (envelope, signal) => {
-          const result = await executeAgentGitTool({ git: d.git as CollaborationGitFacade, repository: d.repository,
+          let result;
+          try { result = await executeAgentGitTool({ git: d.git as CollaborationGitFacade, repository: d.repository,
             execution: { ...integration, purpose: "group-final-integration" }, base: integration.integrationTarget,
             facts, envelope, signal,
             ...agentGitOperationJournal(d.database, d.state.id),
             recordedOperation: id => d.database.recordedGitOperation(d.state.id, id),
             recordedSynchronization: query => d.database.scopedMergedSynchronization(query), deliveryStatus });
+          } catch (error) {
+            if (error instanceof GitInputError && error.publicData.blocker === "TARGET_WORKTREE_DIRTY") targetWorktreeBlocker = error;
+            throw error;
+          }
           if (facts.pullRequest) d.database.recordScopedFinalRecoveryPull(d.state.id, group.id, facts.pullRequest);
           return result;
         } };
@@ -407,6 +414,10 @@ export class ScopedProjectRuntime {
         d.signal.throwIfAborted();
         result = await d.submit(handle, { inputId: `scoped-final:${integration.id}:${invocationId}:${attempt}`, invocationId,
           prompt: attempt === 0 ? assignment : `Continue the same canonical delivery task. Missing actions: ${missing().join(", ")}. Existing provider facts: source=final-delivery-facts in the current context index. Inspect real results and report any blocker to the Leader.` });
+        if (targetWorktreeBlocker && deliveryStatus().missingActions.length) {
+          await d.storage.writeHandoff(d.state, agentId, invocationId, result.handoff ?? targetWorktreeBlocker.message);
+          throw targetWorktreeBlocker;
+        }
         if (!missing().length || facts.pullRequest && ["conflicted", "closed", "unknown"].includes(facts.pullRequest.status)) break;
       }
       await d.storage.writeHandoff(d.state, agentId, invocationId, result?.handoff ?? "Canonical delivery turn returned without a textual handoff.");
@@ -1297,7 +1308,7 @@ export class ScopedProjectRuntime {
     const bound = d.database.scopedRecoveryPull(d.state.id, execution.id, execution.ownershipEpoch);
     if (!bound && d.database.projectState(d.state.id).operations.some(operation =>
       operation.ownerExecutionId === execution.id && operation.ownershipEpoch === execution.ownershipEpoch &&
-      operation.status === "finalized" && ["pull.create", "pull.merge", "pull.close"].includes(operation.kind))) {
+      operation.status === "finalized" && ["pull.create", "pull.merge", "pull.close", "pull.update"].includes(operation.kind))) {
       // Several successive PRs on one branch can deliver the business result
       // and its later Memory commit. Use this stopped checkout's exact head
       // (or its immutable report head), never the newest PR in a branch list.

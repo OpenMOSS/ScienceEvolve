@@ -28,7 +28,7 @@ import type { SessionRef } from "../harness-runtime/contracts.js";
 import type { RemoteMergeSyncFact } from "../collaboration-git/contracts.js";
 import type { ScopedRoutePlan } from "../scoped-workflow-planner.js";
 
-export const COLLABORATION_STATE_SCHEMA_VERSION = 27 as const;
+export const COLLABORATION_STATE_SCHEMA_VERSION = 28 as const;
 
 /** Exact native launch fact written by the trusted launcher, independent of
  * mutable workflow roles. This is evidence, never an Agent wake authority. */
@@ -195,6 +195,20 @@ export interface WriterLeaseToken {
   hostId: string;
   epoch: number;
   expiresAtMs: number;
+}
+
+/** Local diagnostics only: reading these facts never queries a failing database
+ * or establishes permission to write. A successful renewal requires COMMIT. */
+export interface WriterLeaseDiagnostics {
+  lease: WriterLeaseToken;
+  lastSuccessfulRenewalAtMs: number | null;
+  lastRenewalAttempt?: {
+    startedAtMs: number;
+    durationMs: number;
+    stage: "begin" | "update" | "commit";
+    outcome: "succeeded" | "failed";
+    transactionActive: boolean;
+  };
 }
 
 export interface CollaborationStateOpenOptions {

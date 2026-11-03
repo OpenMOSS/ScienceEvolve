@@ -334,7 +334,7 @@ describe("management Workflow context", () => {
     const transport = new StdioClientTransport({ command: mcp.row.command, args: mcp.row.args, stderr: "pipe" });
     await client.connect(transport);
     try {
-      const references = filesystemAuthorityPrompt(authority, prepared);
+      const references = filesystemAuthorityPrompt({ ...authority, rawTools: "forbidden" }, prepared);
       expect(references).toContain("Read-only Agent / Skills / MCP details: rootId=");
       const root = authority.rootBindings.find(binding => binding.path === f.inputRoot)!;
       const relative = path.relative(root.path, prepared.workflowContext!.agentsPath);

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { deriveProjectRuntimeProjection } from "../../src/core/project-runtime-projection.js";
 import { buildAgentQueueSnapshot } from "../../src/core/agent-queue-view.js";
 import type { ProjectSchedulingProjection } from "../../src/core/collaboration-state/contracts.js";
-import type { ProjectState } from "../../src/core/types.js";
+import type { FailureAttempt, ProjectState } from "../../src/core/types.js";
 
-function fixture(): ProjectSchedulingProjection {
+function fixture(): ProjectSchedulingProjection & Partial<Pick<ProjectState, "failureSummary" | "failureAttempts">> {
   return {
     id: "project", stateRevision: 3, frozen: false, git: { enabled: true, status: "ready" },
     workflowSnapshot: {}, activeNodeRunId: "node-G", tasks: [], executions: [], groupRuns: [],
@@ -19,6 +19,51 @@ function fixture(): ProjectSchedulingProjection {
 const waiting = { status: "queued", phase: "collaboration:scoped-waiting" } as const;
 
 describe("project waiting reasons", () => {
+  function authorizationFailure(): FailureAttempt {
+    return { status: "failed", errorCode: "GITHUB_WAITING_FOR_AUTHORIZATION", redactedMessage: "项目绑定的 GitHub 账号需要重新授权",
+      attemptId: "auth-1", projectId: "project", scope: "git", operation: "workflow.recovery", retryable: true,
+      causeClass: "GitHubAuthorizationError", startedAt: "2026-11-03T08:00:00Z", finishedAt: "2026-11-03T08:00:00Z",
+      metadata: { provider: "github", status: 401 } };
+  }
+
+  it("prioritizes the current GitHub authorization blocker over an older final integration incident", () => {
+    const projection = fixture();
+    const failure = authorizationFailure();
+    projection.failureAttempts = [failure];
+    const state = { status: "retrying", phase: "collaboration:recovering", lastError: failure.redactedMessage } as const;
+    const before = structuredClone(projection);
+    expect(deriveProjectRuntimeProjection(projection, state).waiting).toEqual({ kind: "authorization",
+      reason: "GitHub 授权已失效或不可用，请重新登录项目绑定的 GitHub 账号。" });
+    expect(projection).toEqual(before);
+    projection.failureAttempts[0]!.metadata = { status: 403 };
+    expect(deriveProjectRuntimeProjection(projection, state).waiting?.reason).toContain("权限不足");
+  });
+
+  it("stops showing historical authorization failures once recovery advances or another blocker takes over", () => {
+    const projection = fixture();
+    const failure = authorizationFailure();
+    projection.failureAttempts = [failure];
+    for (const state of [
+      { status: "queued", phase: "collaboration:scoped-waiting" },
+      { status: "retrying", phase: "collaboration:recovering", lastError: "A different current failure" },
+      { status: "retrying", phase: "user-intervention-required", lastError: failure.redactedMessage },
+      { status: "paused", phase: "collaboration:user-paused", lastError: failure.redactedMessage },
+      { status: "completed", phase: "completed", lastError: failure.redactedMessage }
+    ] as const) {
+      expect(deriveProjectRuntimeProjection(projection, state).waiting?.kind).not.toBe("authorization");
+    }
+    projection.failureAttempts.push({ ...failure, status: "succeeded", errorCode: null });
+    expect(deriveProjectRuntimeProjection(projection, { status: "retrying", phase: "collaboration:recovering", lastError: failure.redactedMessage })
+      .waiting?.kind).not.toBe("authorization");
+  });
+
+  it("reports authorization waits during Git initialization without requiring an active group", () => {
+    const projection = fixture();
+    projection.git.status = "waiting_for_github";
+    projection.activeNodeRunId = undefined;
+    expect(deriveProjectRuntimeProjection(projection).waiting?.kind).toBe("authorization");
+  });
+
   it("explains the original unsettled operation without pretending it is resource contention or altering its outcome", () => {
     const projection = fixture();
     const before = structuredClone(projection);
@@ -52,9 +97,10 @@ describe("project waiting reasons", () => {
 
   it("does not let a retained incident override a live invocation, user Pause or Stop", () => {
     const projection = fixture();
-    for (const phase of ["collaboration:user-paused", "user-intervention-required", "collaboration:user-cancelled"]) {
+    for (const phase of ["collaboration:user-paused", "collaboration:user-cancelled"]) {
       expect(deriveProjectRuntimeProjection(projection, { status: "paused", phase }).waiting).toBeUndefined();
     }
+    expect(deriveProjectRuntimeProjection(projection, { status: "retrying", phase: "user-intervention-required" }).waiting).toMatchObject({ kind: "user-input" });
     expect(deriveProjectRuntimeProjection(projection, { status: "retrying", phase: "user-intervention-required" }))
       .toMatchObject({ status: "retrying", phase: "user-intervention-required" });
     projection.runtimeActivities.push({ activityId: "active", kind: "turn", agentId: "main", invocationId: "manager", startedAt: "2026-10-15T00:00:00Z",

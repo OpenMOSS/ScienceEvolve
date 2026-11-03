@@ -88,8 +88,8 @@ describe("DSH Adapter configuration", () => {
 
   it("leaves turn admission to OpenFARS even without project MCP rows", () => {
     for (const patch of [dshMcpPatch(rows, true), dshMcpPatch([], false)]) {
-      expect(patch).toContain("- id: tool-goal\n  disabled: true");
-      expect(patch).toContain("- id: goal-round-driver\n  disabled: true");
+      expect(patch).not.toContain("- id: tool-goal\n  disabled: true");
+      expect(patch).not.toContain("- id: goal-round-driver\n  disabled: true");
     }
   });
 });

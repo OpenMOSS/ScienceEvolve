@@ -1,4 +1,6 @@
-import { MAIN_SYSTEM_PROMPT } from "../prompt.js";
+import { selectedSkillInstructions } from "./selected-skills.js";
+import { nativeInputReferences } from "./filesystem-authority.js";
+import { MAIN_SYSTEM_PROMPT, normalizeNativeToolGuidance } from "../prompt.js";
 import type { AgentConfig, AgentRunRequest } from "../types.js";
 import type {
   HarnessDescriptor,
@@ -18,7 +20,7 @@ export function compileInvocationPolicy(
   if (request.worktreeClosing) {
     return {
       permission: "workspace",
-      constraintPrompt: "OpenFARS permission mode: workspace. This finite turn closes only the exact files in your original Leader's grant. Read evidence through the injected tools; write or remove only authorized regular files through the descriptor broker. Use the invocation-bound Git tools for necessary checkpoint/publication. Shell, native writes, independent Git, external MCP, experiments, Skills and Web Search are unavailable.",
+      constraintPrompt: "OpenFARS permission mode: workspace. This finite turn closes only the exact files in your original Leader's grant. Read evidence and edit the authorized files with native Harness tools. Use the invocation-bound Git tools for necessary checkpoint/publication. Keep this turn within the closing assignment; Git state changes use platform tools. No new research or experiment is authorized.",
       skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false,
       reasoningEffort: config.reasoningEffort
     };
@@ -26,7 +28,7 @@ export function compileInvocationPolicy(
   if (request.terminalPushCoordination) {
     return {
       permission: "workspace",
-      constraintPrompt: "OpenFARS permission mode: workspace. This invocation coordinates one assigned Agent receipt issue in the running workflow. Read its actual evidence, Inbox and persistent memory through the injected read tools. Submit only your own coordination decision, finish_task and memory through the assigned control tools. The system transports your decision; it must not perform another Agent's work or choose retry/escalation/user help for you.",
+      constraintPrompt: "OpenFARS permission mode: workspace. This invocation coordinates one assigned Agent receipt issue in the running workflow. Read its actual evidence, Inbox and persistent memory with native file tools. Submit only your own coordination decision, finish_task and memory through the assigned control tools. The system transports your decision; it must not perform another Agent's work or choose retry/escalation/user help for you.",
       skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false,
       reasoningEffort: config.reasoningEffort
     };
@@ -34,7 +36,7 @@ export function compileInvocationPolicy(
   if (request.terminalPushObservation) {
     return {
       permission: "workspace",
-      constraintPrompt: "OpenFARS permission mode: workspace. This is a completed-task historical push receipt turn. Read the original Inbox, persistent memory and workspace evidence through the injected read tools. Business files are read-only. Only the injected invocation-bound control tools may record this supplement's receipt and Agent-authored memory.",
+      constraintPrompt: "OpenFARS permission mode: workspace. This is a completed-task historical push receipt turn. Read the original Inbox, persistent memory and workspace evidence with native file tools. Business files are read-only. Only the injected invocation-bound control tools may record this supplement's receipt and Agent-authored memory.",
       skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false,
       reasoningEffort: config.reasoningEffort
     };
@@ -81,7 +83,7 @@ export function compileWorkflowPrompt(
   options: { inlineInbox?: string; recoveryNote?: string } = {}
 ): string {
   const mechanismTurn = Boolean(request.terminalPushObservation || request.terminalPushCoordination || request.worktreeClosing);
-  const mandate = mechanismTurn ? "" : request.project.agents[request.agent].instructions;
+  const mandate = mechanismTurn ? "" : normalizeNativeToolGuidance(request.project.agents[request.agent].instructions);
   const task = options.inlineInbox ?? "";
   const recovery = [
     options.recoveryNote,
@@ -93,6 +95,9 @@ export function compileWorkflowPrompt(
   return [
     request.agent === "main" && request.kind === "main" ? MAIN_SYSTEM_PROMPT : undefined,
     policy.constraintPrompt,
+    nativeInputReferences(inputs),
+    (request.project.agents[request.agent].harness ?? "codex") === "codex"
+      ? selectedSkillInstructions([...policy.skillPaths, ...policy.autoSkillPaths]) : undefined,
     mandate ? `用户 Prompt：\n${mandate}` : undefined,
     `项目入口：${inputs.projectPath}\n\n本轮直接消息：\n${task}`,
     recovery ? `来源：OpenFARS\n内容：${recovery}` : undefined,

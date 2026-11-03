@@ -17,9 +17,9 @@ export async function prepareHermesSettings(options: {
   const config = {
     model: { default: options.model, provider: "custom", base_url: options.baseUrl,
       api_mode: "chat_completions", context_length: options.contextWindow },
-    // Empty is authoritative in Hermes; do not use its broad 'hermes-acp' default.
-    platform_toolsets: { acp: options.allowNativeTools ? ["terminal", "file"] : [] },
-    agent: { disabled_toolsets: ["delegation", "cron", "memory", "skills", "code_execution"] },
+    // Preserve native ACP capabilities; Skill discovery remains explicitly disabled.
+    platform_toolsets: { acp: options.allowNativeTools ? ["hermes-acp"] : [] },
+    agent: { disabled_toolsets: ["skills"] },
     memory: { memory_enabled: false, user_profile_enabled: false },
     plugins: { enabled: [], auto_apply: false },
     mcp_servers: {},

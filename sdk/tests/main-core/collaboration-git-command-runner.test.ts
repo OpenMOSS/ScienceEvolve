@@ -1,7 +1,7 @@
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecFileGitCommandRunner } from "../../src/core/collaboration-git/command-runner.js";
-import { GitCommandError } from "../../src/core/collaboration-git/errors.js";
+import { GitCommandError, GitHubAuthorizationError } from "../../src/core/collaboration-git/errors.js";
 
 const { execFile } = vi.hoisted(() => ({ execFile: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile }));
@@ -107,6 +107,14 @@ describe("project-bound Git transport", () => {
     resolver.mockRejectedValue(new Error(`unavailable ${TOKEN}`));
     await expect(new ExecFileGitCommandRunner({ credentialResolver: resolver }).run({ cwd, args: PUSH }))
       .rejects.toThrow("credential could not be resolved");
+    expect(execFile).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the account store's actionable authorization reason and status", async () => {
+    reply(`${URL}\n`);
+    const error = new GitHubAuthorizationError(403, "项目绑定的 GitHub 账号缺少仓库权限");
+    resolver.mockRejectedValue(error);
+    await expect(new ExecFileGitCommandRunner({ credentialResolver: resolver }).run({ cwd, args: PUSH })).rejects.toBe(error);
     expect(execFile).toHaveBeenCalledOnce();
   });
 

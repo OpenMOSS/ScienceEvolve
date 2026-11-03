@@ -1,3 +1,4 @@
+import { nativeBackgroundJobLifecycle } from "./harness-runtime/background-jobs.js";
 import { workflowMessagesText } from "./workflow-input.js";
 import { beginWorkflowRecovery, canAutomaticallyRecoverWorkflow, checkpointWorkflowRecovery, finishWorkflowRecovery, hasUserWorkflowPause } from "./workflow-recovery.js";
 import { deriveProjectRuntimeProjection } from "./project-runtime-projection.js";
@@ -63,7 +64,7 @@ import type {
   TraceSink,
   WorkTask
 } from "./types.js";
-import { ProjectStorage } from "./storage.js";
+import { ProjectStorage, type ProjectEventDraft } from "./storage.js";
 import { executeAgentGitTool, isAgentGitAction, type AgentGitFacts } from "./agent-git-tools.js";
 import { agentGitDeliveryStatus, agentGitFactsSynchronized } from "./agent-git-delivery.js";
 import { agentGitOperationJournal } from "./agent-git-operation-journal.js";
@@ -739,6 +740,8 @@ export class ProductionCollaborationInvocationDispatcher
 implements CollaborationInvocationDispatcher {
   readonly #queues = new Map<string, Promise<void>>();
   readonly #performance = new Map<string, InvocationPerformanceTracker>();
+  readonly #eventBatches = new Map<string, { state: ProjectState; drafts: ProjectEventDraft[]; timer: ReturnType<typeof setTimeout> }>();
+  readonly #eventBatchFailures = new Map<string, unknown>();
 
   constructor(private readonly storage: ProjectStorage) {}
 
@@ -775,14 +778,19 @@ implements CollaborationInvocationDispatcher {
       await priorOfficial?.(event);
       this.publishLiveHarnessEvent(state.id, request.agent, event);
       const canonical = event as unknown as HarnessEvent;
+      const draft: ProjectEventDraft = { type: "agent.trace", agent: request.agent,
+        message: canonical.message ?? canonical.diagnostic?.message ?? canonical.tool?.name ?? "Resident Harness event",
+        invocationId: request.invocationId, data: { resident: true, canonicalEvent: canonical } };
+      // Native character/activity fragments are audit events, not scheduler
+      // transitions. Keep their original records but share durable writes.
+      // Tool/lifecycle/message boundaries below drain the preceding prefix.
+      if (canonical.kind === "assistant.delta" || canonical.kind === "activity") {
+        await this.bufferEvent(state, draft);
+        return;
+      }
+      await this.drainBufferedEvents(state.id);
       await this.enqueue(state.id, async () => {
-        await this.storage.appendEvent(state, {
-          type: "agent.trace",
-          agent: request.agent,
-          message: canonical.message ?? canonical.diagnostic?.message ?? canonical.tool?.name ?? "Resident Harness event",
-          invocationId: request.invocationId,
-          data: { resident: true, canonicalEvent: canonical }
-        });
+        await this.storage.appendEvent(state, draft);
       });
     };
     const priorLive = request.onLiveHarnessEvent;
@@ -795,6 +803,7 @@ implements CollaborationInvocationDispatcher {
       await priorStream?.(event);
       tracker().observe(event);
       if (event.phase === "delta") return;
+      await this.drainBufferedEvents(state.id);
       await this.enqueue(state.id, async () => {
         await this.storage.appendEvent(state, {
           type: "agent.trace",
@@ -807,6 +816,7 @@ implements CollaborationInvocationDispatcher {
     };
     const priorReset = request.onHarnessAttemptReset;
     request.onHarnessAttemptReset = async (attempt) => {
+      await this.drainBufferedEvents(state.id);
       await priorReset?.(attempt);
       this.storage.hub.resetInvocationAttempt(state.id, request.invocationId);
       const previous = this.#performance.get(performanceKey);
@@ -832,6 +842,7 @@ implements CollaborationInvocationDispatcher {
   }
 
   async finish(state: ProjectState, invocationId: string, status: "completed" | "incomplete"): Promise<void> {
+    await this.drainBufferedEvents(state.id);
     // Official Harness callbacks have committed before invocation settlement.
     // Retired resident sessions must not retain tools/output in live snapshots.
     this.storage.hub.clearInvocation(state.id, invocationId);
@@ -853,6 +864,7 @@ implements CollaborationInvocationDispatcher {
     invocationId: string;
   }): TraceSink {
     return async (kind, message, data) => {
+      await this.drainBufferedEvents(input.state.id);
       await this.enqueue(input.state.id, async () => {
         await this.storage.appendTrace(
           input.state,
@@ -871,6 +883,49 @@ implements CollaborationInvocationDispatcher {
         });
       });
     };
+  }
+
+  private async bufferEvent(state: ProjectState, draft: ProjectEventDraft): Promise<void> {
+    if (this.#eventBatchFailures.has(state.id)) await this.drainBufferedEvents(state.id);
+    let batch = this.#eventBatches.get(state.id);
+    if (!batch) {
+      const timer = setTimeout(() => {
+        // The next native boundary owns this failure. Never detach an
+        // unhandled rejection or silently acknowledge a failed audit write.
+        void this.flushBufferedEvents(state.id).catch(() => undefined);
+      }, 50);
+      batch = { state, drafts: [], timer };
+      this.#eventBatches.set(state.id, batch);
+    }
+    batch.drafts.push(structuredClone(draft));
+    if (batch.drafts.length >= 128) await this.drainBufferedEvents(state.id);
+  }
+
+  private async flushBufferedEvents(projectId: string): Promise<void> {
+    const batch = this.#eventBatches.get(projectId);
+    if (!batch) return;
+    clearTimeout(batch.timer);
+    this.#eventBatches.delete(projectId);
+    try {
+      await this.enqueue(projectId, async () => { await this.storage.appendEvents(batch.state, batch.drafts); });
+    } catch (error) {
+      if (!this.#eventBatchFailures.has(projectId)) this.#eventBatchFailures.set(projectId, error);
+      throw error;
+    }
+  }
+
+  private async drainBufferedEvents(projectId: string): Promise<void> {
+    try {
+      await this.flushBufferedEvents(projectId);
+      await this.#queues.get(projectId);
+    } catch (error) {
+      if (!this.#eventBatchFailures.has(projectId)) this.#eventBatchFailures.set(projectId, error);
+    }
+    if (this.#eventBatchFailures.has(projectId)) {
+      const failure = this.#eventBatchFailures.get(projectId);
+      this.#eventBatchFailures.delete(projectId);
+      throw failure;
+    }
   }
 
   private enqueue(projectId: string, task: () => Promise<void>): Promise<void> {
@@ -970,6 +1025,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   readonly #harnessRecoveryDelayMs: (attempt: number) => number;
   #database?: CollaborationStateDatabase;
   #leaseTimer?: NodeJS.Timeout;
+  #leaseHeartbeat?: { intervalMs: number; scheduledAtMs: number; startedAtMs: number; delayMs: number };
   #leaseError?: Error;
   #closed = false;
   readonly #runs = new Map<string, Promise<void>>();
@@ -1049,8 +1105,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       this.#database.close(); this.#database = undefined; throw error;
     }
     const intervalMs = Math.max(500, Math.floor(this.#leaseDurationMs / 3));
+    let scheduledAtMs = (this.#now?.() ?? Date.now()) + intervalMs;
     this.#leaseTimer = setInterval(() => {
       if (!this.#database || this.#leaseError) return;
+      const startedAtMs = this.#now?.() ?? Date.now();
+      this.#leaseHeartbeat = { intervalMs, scheduledAtMs, startedAtMs,
+        delayMs: Math.max(0, startedAtMs - scheduledAtMs) };
+      scheduledAtMs = startedAtMs + intervalMs;
       try {
         this.#database.renewWriterLease();
       } catch (error) {
@@ -1061,10 +1122,20 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           // Retry at the next heartbeat only while the original lease is still
           // held. An expired or replaced writer must never reacquire here.
           try {
+            if (this.#database.writerLeaseDiagnostics().lastRenewalAttempt?.transactionActive) {
+              this.loseWriterLease(error);
+              return;
+            }
             this.#database.assertWriterLeaseHeld();
+            try {
+              console.warn("Collaboration writer lease renewal delayed; original lease still held",
+                this.writerLeaseFailureDiagnostics(error));
+            } catch { /* Diagnostic sinks cannot change lease ownership. */ }
             return;
           } catch (leaseError) {
-            this.loseWriterLease(leaseError);
+            // Keep the first SQLite failure even if confirming the lease
+            // fails too. Report the fencing/check failure separately.
+            this.loseWriterLease(error, leaseError);
             return;
           }
         }
@@ -1106,6 +1177,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
   projectReadModel(state: ProjectState): ProjectState {
     if (!this.#database) return structuredClone(state);
+    if (state.phase === "storage-recovery-required") return structuredClone(state);
     if (!state.git?.enabled) {
       const formal = this.#database.projectStateDomain(state.id);
       if (!formal) return structuredClone(state);
@@ -1311,6 +1383,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
   async recoverProject(state: ProjectState): Promise<boolean> {
     if (!state.git?.enabled) return false;
+    if (state.status === "interrupted" && state.phase === "collaboration:repair-required") {
+      this.assertWritable();
+      this.clearWorkflowRecoveryTimer(state.id);
+      return true; // Conditions must be repaired and the original task explicitly resumed.
+    }
     const savedProjectPause = hasUserWorkflowPause(state);
     if (["paused", "pausing"].includes(state.status) && !savedProjectPause) state.status = "retrying";
     const database = this.database();
@@ -1529,13 +1606,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     this.assertWritable();
     this.appendFailureAttempt(state, {
       scope: "git", operation: "project.recovery.remote-ref", error,
-      retryable: true, metadata: { targetBranch: "main", remoteRefConfirmed: false,
+      metadata: { targetBranch: "main", remoteRefConfirmed: false,
         phase: state.phase, projectStatus: state.status }
     });
     await this.publishProjection(state, this.database().projectState(state.id));
     if (await this.cancellationIsDurable(state.id)) return;
-    state.status = "retrying";
-    state.phase = "collaboration:recovering";
+    const failure = classifyDurableFailure(error, {});
+    state.status = failure.retryable ? "retrying" : "interrupted";
+    state.phase = failure.retryable ? "collaboration:recovering" : "collaboration:repair-required";
+    if (!failure.retryable) { finishWorkflowRecovery(state); this.clearWorkflowRecoveryTimer(state.id); }
     state.lastError = safeRuntimeError(error);
     await this.saveState(state);
   }
@@ -1862,6 +1941,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     const residents = [...this.#residents.values()].filter((item) => item.projectId === state.id);
     await Promise.all(residents.map((item) => item.handle.pause()));
+    await nativeBackgroundJobLifecycle(this.#storage.projectDir(state.id), "pause", () => this.assertWritable());
     state.pauseRequest.settledAt ??= nowIso();
     state.status = "paused";
     state.phase = "collaboration:user-paused";
@@ -2301,14 +2381,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return this.withProjectLifecycle(state.id, async () => {
       this.assertWritable();
       if (state.archivedAt) return;
-      if (state.status === "paused") {
-        // Archiving is a user lifecycle operation. Prove native writers stopped
-        // through the existing resumable Stop; preserve Agent work and decisions.
+      const database = this.database();
+      const retainedStop = this.restoreConfirmedProjectStop(state);
+      if (!retainedStop && state.status === "paused") {
         await this.cancelProjectLocked(state, { actor: "user", reason: "user_cancelled" });
-        if (!this.database().projectState(state.id).resumableCancellation?.stoppedAt) {
-          throw new Error("Project archive requires confirmed native stop");
-        }
-      } else if (state.status !== "completed" && state.status !== "cancelled") {
+        database.confirmProjectCancellationStopped(state.id);
+      } else if (!retainedStop && state.status !== "completed" && state.status !== "cancelled") {
         throw new Error("Only completed, cancelled or paused Git projects can be archived");
       }
       state.archivedAt = nowIso();
@@ -2323,6 +2401,24 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         throw error;
       }
     });
+  }
+
+  private restoreConfirmedProjectStop(state: ProjectState): boolean {
+    if (state.status !== "paused" && state.status !== "cancelling") return false;
+    const database = this.database();
+    const intent = database.resumableProjectCancellationIntent(state.id);
+    if (!intent) return false;
+    const stopped = database.eventByRequestId(state.id,
+      `project-stop-confirmed:${state.id}:${intent.seq}`);
+    if (!stopped || stopped.type !== "project.cancellation.stop_confirmed" ||
+      stopped.payload.requestedEventSeq !== intent.seq || this.#runs.has(state.id) ||
+      [...this.#residents.values()].some(entry => entry.projectId === state.id)) return false;
+    // An exact Stop remains valid until explicit Resume. Revalidate native
+    // rows before reusing it, without scanning old sessions or replaying history.
+    database.confirmProjectCancellationStopped(state.id);
+    state.status = "paused";
+    state.phase = "collaboration:user-cancelled";
+    return true;
   }
 
   async cancelProject(
@@ -2354,6 +2450,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     input: { actor?: string; reason?: string }
   ): Promise<void> {
     this.assertWritable();
+    if (this.restoreConfirmedProjectStop(state)) {
+      await this.saveState(state);
+      return;
+    }
     const durableStatus = await this.durableProjectStatus(state.id);
     if (durableStatus === "completed" || durableStatus === "cancelled") return;
     const reason = input.reason?.trim() || "user_cancelled";
@@ -2383,6 +2483,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     state.status = "cancelling";
     state.phase = "collaboration:cancelling";
+    await nativeBackgroundJobLifecycle(this.#storage.projectDir(state.id), input.reason === "shutdown" ? "pause" : "stop", () => this.assertWritable());
     state.cancellationRequestedAt ??= new Date().toISOString();
     // An explicitly requested Stop supersedes Pause. Its own durable S
     // intent and physical-stop proof continue to govern recovery/resume.
@@ -3365,24 +3466,27 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (this.#shuttingDown || this.#runs.has(state.id) ||
       state.pauseRequest ||
       this.#cancellingProjects.has(state.id) ||
-      state.status === "paused" || state.status === "completed" ||
+      state.status === "paused" || state.status === "interrupted" || state.status === "completed" ||
       state.status === "cancelled" || state.status === "cancelling") return false;
     const controller = new AbortController();
     this.#workflowAdjustmentDeferredProjects.delete(state.id);
     this.#controllers.set(state.id, controller);
     const runStartedAt = nowIso();
+    let originalRunFailure: unknown;
     const run = this.runManagedProjectWithRecovery(state, controller.signal).then(async () => {
-      if (this.#shuttingDown || state.status === "paused" || state.status === "retrying" || state.status === "cancelled" ||
+      if (this.#shuttingDown || state.status === "paused" || state.status === "interrupted" || state.status === "retrying" || state.status === "cancelled" ||
         state.status === "cancelling") return;
-      if (this.resolveOperationFailures(
-        state,
-        "project.run",
-        runStartedAt,
-        "A later scheduled project run succeeded"
-      )) {
+      const resolvedRun = this.resolveOperationFailures(
+        state, "project.run", runStartedAt, "A later scheduled project run succeeded"
+      );
+      const resolvedRecovery = this.resolveOperationFailures(
+        state, "workflow.recovery", runStartedAt, "The original project continued successfully after recovery"
+      );
+      if (resolvedRun || resolvedRecovery) {
         await this.publishProjection(state, this.database().projectState(state.id));
       }
     }).catch(async (error: unknown) => {
+      originalRunFailure = error;
       if (this.#shuttingDown || this.#pausedProjects.has(state.id) ||
         await this.cancellationIsDurable(state.id)) return;
       if (error instanceof CollaborationStateError && error.code === "WORKFLOW_ADJUSTMENT_PENDING") {
@@ -3489,11 +3593,17 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           : {}),
         metadata: { phase: state.phase, projectStatus: state.status }
       });
-      state.status = "retrying";
-      state.phase = "collaboration:recovering";
-      state.lastError = safeRuntimeError(error);
       await this.publishProjection(state, this.database().projectState(state.id)).catch(() => undefined);
       if (await this.cancellationIsDurable(state.id)) return;
+      const failure = classifyDurableFailure(error, {});
+      state.status = failure.retryable ? "retrying" : "interrupted";
+      state.phase = failure.retryable ? "collaboration:recovering" : "collaboration:repair-required";
+      state.lastError = safeRuntimeError(error);
+      if (!failure.retryable) {
+        state.interruptedAt = nowIso();
+        finishWorkflowRecovery(state);
+        this.clearWorkflowRecoveryTimer(state.id);
+      }
       await this.saveState(state);
     }).catch(async (error: unknown) => {
       // Failure reporting itself needs the writer fence. An expired/replaced
@@ -3503,10 +3613,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         this.loseWriterLease(error);
       } else {
         controller.abort();
-        state.status = "retrying";
-        state.phase = "collaboration:failure-reporting-failed";
-        state.lastError = safeRuntimeError(error);
-        checkpointWorkflowRecovery(state, { delayMs: this.#harnessRecoveryDelayMs });
+        const primary = originalRunFailure ?? error;
+        const failure = classifyDurableFailure(primary, {});
+        state.status = failure.retryable ? "retrying" : "interrupted";
+        state.phase = failure.retryable ? "collaboration:failure-reporting-failed" : "collaboration:repair-required";
+        state.lastError = safeRuntimeError(primary);
+        console.warn("Collaboration failure reporting also failed", safeRuntimeError(error));
+        if (failure.retryable) checkpointWorkflowRecovery(state, { delayMs: this.#harnessRecoveryDelayMs });
+        else { state.interruptedAt = nowIso(); finishWorkflowRecovery(state); this.clearWorkflowRecoveryTimer(state.id); }
         try { await this.saveState(state); } catch { /* The retained checkpoint is retried when storage becomes available. */ }
       }
     }).finally(() => {
@@ -3568,6 +3682,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state.status = "queued";
           state.phase = "collaboration:recovering";
         }
+        await nativeBackgroundJobLifecycle(this.#storage.projectDir(state.id), "resume", () => this.assertWritable());
         await this.runManagedProject(state, signal);
         if (pending && !state.pauseRequest && state.status !== "paused") {
           this.database().appendEvent({ projectId: state.id, type: "runtime.harness_recovery.completed",
@@ -7682,7 +7797,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   ): Promise<AgentRunResult> {
     let status: "completed" | "incomplete" = "incomplete";
     try {
-      const result = await resident.submit(turn);
+      const notice = this.latestFailureNotice(state);
+      const result = await resident.submit(notice ? { ...turn, prompt: `${notice}\n\n${turn.prompt}` } : turn);
       status = "completed";
       return result;
     } finally {
@@ -7713,7 +7829,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       this.#activeResidentTurns.add(turnKey);
       let nativeStatus: "completed" | "incomplete" = "incomplete";
       try {
-        result = await resident.submit(input);
+        const notice = this.latestFailureNotice(state, authority);
+        result = await resident.submit(notice ? { ...input, prompt: `${notice}\n\n${input.prompt}` } : input);
         nativeStatus = "completed";
       } finally {
         // Metrics persistence must not extend a returned turn's tool authority.
@@ -10433,6 +10550,22 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
   /** Only mechanism checks belong here. Wake the original Agent to supply
    * missing actions; never push, create/merge a PR or resolve its conflicts. */
+  private latestFailureNotice(state: ProjectState, authority?: RuntimeActivityAuthority): string {
+    const attempts = this.database().failureAttempts(state.id).filter(item =>
+      (!authority || (!item.agentId || item.agentId === authority.agentId) &&
+        (!item.executionId || !authority.executionId || item.executionId === authority.executionId)));
+    const latest = new Map<string, FailureAttempt>();
+    for (const attempt of attempts) { const key = `${attempt.scope}\0${attempt.operation}`; latest.delete(key); latest.set(key, attempt); }
+    const failure = [...latest.values()].filter(item => item.status === "failed").at(-1);
+    if (!failure) return "";
+    return `Latest recorded failure for this retained task (historical evidence, not a new tool result): ${JSON.stringify({
+      attemptId: failure.attemptId, operation: failure.operation, code: failure.errorCode,
+      reason: boundedSharedText(failure.redactedMessage, 1800), retryableWithoutChangedConditions: failure.retryable,
+      invocationId: failure.invocationId, ...(typeof failure.metadata.diagnosticRef === "string"
+        ? { diagnosticRef: boundedSharedText(failure.metadata.diagnosticRef, 500) } : {})
+    })}. Inspect current tool results and correct the specific condition in the original Session. Confirmed effects stay completed; observe any unknown remote result before retrying it. Read further evidence on demand.`;
+  }
+
   private async completeAgentOwnedExecution(state: ProjectState, execution: MemberExecution,
     output: string, resident: CollaborationResidentHandle, signal: AbortSignal, base: string,
     routeDecision?: { targetNodeId: string; decisionRequestId: string }, retainedPull?: PullRequestRecord): Promise<{
@@ -10441,8 +10574,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const missing = async () => {
       const facts = this.standaloneGitFacts(state, execution);
       const receipt = state.taskCompletions?.[execution.id];
-      if (receipt && (execution.purpose !== "final-integration" || execution.executionBranch !== `groups/${execution.groupRunId}`))
-        await this.#storage.synchronizeGitTaskMemory(state, execution.id, execution.agentId, execution.worktreePath);
       const synchronized = agentGitFactsSynchronized(facts, base);
       const delivery = agentGitDeliveryStatus({ executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
         headSha: facts.pushedHeadSha, pull: facts.pullRequest, synchronized,
@@ -10465,7 +10596,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         this.database().appendEvent({ projectId: state.id, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
           agentId: execution.agentId, requestId, type: "execution.mechanism_repair.requested", payload: { missing: remaining, attempt } });
         const result = await this.submitResident(state, resident, signal, { inputId: requestId, invocationId: newId("inv"),
-          prompt: `Continue the same task in its retained session and directory. Missing formal mechanism actions: ${remaining.join(", ")}. Use your Git/GitHub tools and inspect their real results. A prior PR merge does not finish this active task. Verify the retained operation with current tool results before reporting the same blocker; a historical permission or transport error alone does not establish that the current turn is blocked. Ordinary business git_push does not stage files or create a commit. When changes need committing, git_stage and git_commit are provided by the filesystem-authority MCP; if not visible, use the Harness's existing tool discovery within current permissions. Follow the applicable publication or closing tool description; an unchanged publication needs no empty commit. Control-action recording or persistence does not prove Git success. Existing facts: ${JSON.stringify({ ...this.standaloneGitFacts(state, execution), taskInstructions: this.database().projectState(state.id).tasks.find((task) => task.id === execution.taskId)?.assignment, ...(retainedPull ? { retainedPull } : {}) })}. If blocked, report the actual result for coordination. Preserve business work and the existing PR.` },
+          prompt: `Continue the same task in its retained session and directory. Missing formal mechanism actions: ${remaining.join(", ")}. Use your Git/GitHub tools and inspect their real results. Prepare Memory with finish_task before the final commit and deliver this round through one PR. A prior successful merge needs observation/synchronization, not another PR for bookkeeping. Verify the retained operation with current tool results before reporting the same blocker; a historical permission or transport error alone does not establish that the current turn is blocked. Ordinary business git_push does not stage files or create a commit. When changes need committing, git_stage and git_commit are provided by the platform Git MCP; if not visible, use the Harness's existing tool discovery within current permissions. Follow the applicable publication or closing tool description; an unchanged publication needs no empty commit. Control-action recording or persistence does not prove Git success. Existing facts: ${JSON.stringify({ ...this.standaloneGitFacts(state, execution), taskInstructions: this.database().projectState(state.id).tasks.find((task) => task.id === execution.taskId)?.assignment, ...(retainedPull ? { retainedPull } : {}) })}. If blocked, report the actual result for coordination. Preserve business work and the existing PR.` },
           this.executionActivityAuthority(state.id, execution));
         await this.persistArtifactPublicationIntents(state, execution, result);
         routeDecision = this.persistStandaloneRouteDecision(state, execution, result) ?? routeDecision;
@@ -11345,10 +11476,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       ...(canComplete ? ["complete_project"] : [])
     ];
     const managementToolInstructions = (taskCompleted = false) => [
+      ...mainRouteTargetInstructions(sourceIsMain, routeCandidates),
       `Current authorized formal decision tools: ${JSON.stringify(currentFormalTools)}. Use the callable tool names exposed by this Harness, including their MCP namespace when present; choose the authorized action yourself. select_display alone is not a formal orchestration decision.`,
       "Earlier session text, memory and handoffs are historical context, not current tool receipts. Use the actual current tool returns to assess success or failure; do not report a remembered rejection as a newly executed call. Read the current Inbox and authoritative state when needed.",
       ...(allowWorkflowReconfiguration && inputs.workflowAuthoringPath ? [
-        `The original task's writable authoring proposal is ${inputs.workflowAuthoringPath}. If you choose to change it, use the assigned filesystem write_file tool with its listed writable rootId/path, preserve the proposal contract, and submit that proposal with apply_workflow. A text description does not edit or apply a file.`,
+        `The original task's writable authoring proposal is ${inputs.workflowAuthoringPath}. If you choose to change it, use the Harness native file/edit tools with this exact authoring path, preserve the proposal contract, and submit that proposal with apply_workflow. A text description does not edit or apply a file.`,
         "Historical proposal snapshots may exist under .scienceevolve/management in your current read-only workspace. They are unaccepted drafts, not applied configuration. If earlier unfinished edits matter, inspect them yourself with the assigned filesystem tools and reconcile them with the authoritative workflow and your current bound proposal; the system does not choose or transplant their business edits."
       ] : []),
       taskCompleted
@@ -12663,9 +12795,19 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }).catch(async (error: unknown) => {
         if (this.#shuttingDown || this.#leaseError || !canAutomaticallyRecoverWorkflow(state) ||
           this.#cancellingProjects.has(state.id)) return;
-        state.status = "retrying";
-        state.phase = "collaboration:recovering";
+        try { this.appendFailureAttempt(state, { operation: "workflow.recovery", error, metadata: { phase: state.phase } }); }
+        catch (auditError) {
+          if (auditError instanceof CollaborationStateError && auditError.code === "WRITER_LEASE_STALE") { this.loseWriterLease(auditError); return; }
+          console.warn("Workflow recovery failure audit also failed", safeRuntimeError(auditError));
+        }
+        const failure = classifyDurableFailure(error, {});
+        state.status = failure.retryable ? "retrying" : "interrupted";
+        state.phase = failure.retryable ? "collaboration:recovering" : "collaboration:repair-required";
         state.lastError = safeRuntimeError(error);
+        if (!failure.retryable) {
+          state.interruptedAt = nowIso();
+          finishWorkflowRecovery(state);
+        }
         try { await this.saveState(state); }
         catch { this.armWorkflowRecovery(state); }
       });
@@ -12681,24 +12823,53 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return event;
   }
 
-  private loseWriterLease(error: unknown): void {
+  private writerLeaseFailureDiagnostics(error: unknown, leaseCheckError?: unknown) {
+    const timestampMs = this.#now?.() ?? Date.now();
+    const diagnostics = this.#database?.writerLeaseDiagnostics();
+    const lease = diagnostics?.lease;
+    return {
+      timestamp: new Date(timestampMs).toISOString(),
+      ...(this.#leaseHeartbeat ? { heartbeat: { ...this.#leaseHeartbeat } } : {}),
+      ...writerLeaseFailureFields(error),
+      ...(lease ? { leaseEpoch: lease.epoch, leaseExpiresAt: new Date(lease.expiresAtMs).toISOString(),
+        leaseServiceId: boundedSharedText(lease.serviceId, 200),
+        leaseInstanceId: boundedSharedText(lease.instanceId, 200),
+        leaseHostId: boundedSharedText(lease.hostId, 200), leaseRemainingMs: lease.expiresAtMs - timestampMs } : {}),
+      lastSuccessfulRenewalAt: diagnostics?.lastSuccessfulRenewalAtMs != null
+        ? new Date(diagnostics.lastSuccessfulRenewalAtMs).toISOString() : null,
+      ...(diagnostics?.lastRenewalAttempt ? { lastRenewalAttempt: diagnostics.lastRenewalAttempt } : {}),
+      ...(leaseCheckError !== undefined ? { leaseCheckFailure: writerLeaseFailureFields(leaseCheckError) } : {})
+    };
+  }
+
+  private loseWriterLease(error: unknown, leaseCheckError?: unknown): void {
     if (this.#leaseError) return;
-    this.#leaseError = error instanceof Error ? error : new Error("Writer lease renewal failed");
-    const lease = this.#database?.writerLease();
-    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-    const sqliteCode = error && typeof error === "object" && "errcode" in error ? error.errcode : undefined;
-    console.error("Collaboration writer lease renewal failed; writer fenced", {
-      timestamp: new Date(this.#now?.() ?? Date.now()).toISOString(),
-      error: safeRuntimeError(this.#leaseError),
-      ...(typeof code === "string" ? { code: boundedSharedText(code, 200) } : {}),
-      ...(typeof sqliteCode === "number" ? { sqliteCode } : {}),
-      ...(lease ? { leaseEpoch: lease.epoch, leaseExpiresAt: new Date(lease.expiresAtMs).toISOString() } : {})
-    });
+    this.#leaseError = error instanceof Error ? error : new Error("Writer lease renewal failed", { cause: error });
+    try {
+      console.error("Collaboration writer lease renewal failed; writer fenced",
+        this.writerLeaseFailureDiagnostics(error, leaseCheckError));
+    } catch { /* A diagnostic failure must not prevent fencing/aborting work. */ }
     for (const controller of this.#controllers.values()) controller.abort();
     // Stop exact resident handles, without further database mutations or an
     // automatic lease reacquisition that could defeat a replacement writer.
     void Promise.allSettled([...this.#residents.values()].map(({ handle }) => handle.close()));
   }
+}
+
+function writerLeaseFailureFields(error: unknown) {
+  const fields = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  return {
+    error: safeRuntimeError(error),
+    ...(typeof fields.code === "string" ? { code: boundedSharedText(fields.code, 200) } : {}),
+    ...(typeof fields.errcode === "number" ? { sqliteCode: fields.errcode,
+      sqlitePrimaryCode: fields.errcode & 0xff } : {}),
+    ...(typeof fields.errstr === "string" ? { sqliteError: boundedSharedText(fields.errstr, 200) } : {}),
+    ...(error instanceof CollaborationStateError && error.code === "WRITER_LEASE_STALE" &&
+      error.details.expectedLease ? { leaseCheck: {
+        checkedAtMs: error.details.checkedAtMs, expectedLease: error.details.expectedLease,
+        observedLease: error.details.observedLease
+      } } : {})
+  };
 }
 
 export function safeRepositoryName(title: string, projectId: string): string {
@@ -13498,7 +13669,7 @@ export function managementMemoryDocument(
     )}`,
     "",
     "Coordination only; business worktrees are not available.",
-    "Authoritative workflow context (read-only): use this turn's Workflow overview and its definition.json, current-state.json and agents.json detail references. These inputs match your current management scope; use their filesystem rootId/path references instead of the legacy workflow symlink.",
+    "Authoritative workflow context (read-only): use this turn's Workflow overview and its definition.json, current-state.json and agents.json detail references. These inputs match your current management scope; use the exact native file paths supplied in this turn.",
     ...entrySections,
     ""
   ].join("\n");

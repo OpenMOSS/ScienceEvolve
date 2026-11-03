@@ -18,7 +18,7 @@ export function captureKnownAgentGitResults(database: CollaborationStateDatabase
   const journal = agentGitOperationJournal(database, projectId);
   const closingTurns = database.scopedWorktreeClosingTurns(projectId);
   for (const operation of projection.operations) {
-    if (!operation.ownerExecutionId || !["git.push", "git.revert", "pull.create", "pull.merge", "pull.close"].includes(operation.kind) ||
+    if (!operation.ownerExecutionId || !["git.push", "git.revert", "pull.create", "pull.merge", "pull.close", "pull.update"].includes(operation.kind) ||
       !["observed", "finalized", "superseded"].includes(operation.status)) continue;
     const request = journal.recordedRequest(operation.id);
     const binding = request?.nativeBinding;
@@ -68,7 +68,7 @@ export function captureKnownAgentGitResults(database: CollaborationStateDatabase
       recordedOperation: id => database.recordedGitOperation(projectId, id), recordedRequest: journal.recordedRequest,
       ...(scoped ? { recordedSynchronization: query => database.scopedMergedSynchronization(query, closing?.invocationId) } : {}) });
     if (({ git_push: "git.push", github_create_pr: "pull.create", github_merge_pr: "pull.merge",
-      github_close_pr: "pull.close", git_revert: "git.revert" } as const)[request.action.tool] !== operation.kind ||
+      github_close_pr: "pull.close", github_update_pr: "pull.update", git_revert: "git.revert" } as const)[request.action.tool] !== operation.kind ||
       "providerNumber" in request.action && request.action.providerNumber !== operation.remoteFact?.providerNumber ||
       request.action.tool === "github_create_pr" && request.action.base !== undefined && request.action.base !== base) {
       throw new OperationStoreViolationError("Late journal result differs from its original Agent Git action");

@@ -17,7 +17,7 @@ export interface AgentGitOperationRequest {
   callId: string;
   requestedAt: string;
   expectedHead?: string;
-  action: Extract<ControlAction, { tool: "git_push" | "github_create_pr" | "github_merge_pr" | "github_close_pr" | "git_revert" }>;
+  action: Extract<ControlAction, { tool: "git_push" | "github_create_pr" | "github_merge_pr" | "github_close_pr" | "github_update_pr" | "git_revert" }>;
 }
 
 export interface RecordedAgentGitOperationRequest extends AgentGitOperationRequest {
@@ -48,7 +48,7 @@ export function agentGitOperationJournal(database: Journal, projectId: string) {
     if (input.projectId !== projectId || !input.operationId || !input.executionId || !input.agentId ||
       !input.invocationId || !input.callId || !Number.isSafeInteger(input.ownershipEpoch) || input.ownershipEpoch < 1 ||
       !input.executionBranch || !input.integrationTarget || !Number.isFinite(Date.parse(input.requestedAt)) ||
-      !["git_push", "github_create_pr", "github_merge_pr", "github_close_pr", "git_revert"].includes(input.action.tool)) {
+      !["git_push", "github_create_pr", "github_merge_pr", "github_close_pr", "github_update_pr", "git_revert"].includes(input.action.tool)) {
       throw new OperationStoreViolationError("Agent Git request requires its exact task, caller and direct target");
     }
     const prior = recordedRequest(input.operationId);

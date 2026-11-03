@@ -1,25 +1,10 @@
 import { AGENT_PERMISSION_METADATA } from "./agent-permission-metadata.js";
 
-/** Exact fixed rules used by the workflow runtime and its read-only preview. */
+const NATIVE_TOOL_POLICY = "Use your Harness native Shell, file, edit, search, background jobs, planning and internal subagents when available. Native internal work stays within this parent Workflow node; formal parent routing and receipts advance the outer Workflow. Load only Skills explicitly selected in this Agent's Workflow configuration. Use platform tools for all Git/PR operations, including inspection, staging, commit, push and conflict Git state. For a Git delivery round, finish validation and prepare Memory with finish_task before the final commit/PR, then deliver through one PR; pre-merge corrections update that same PR. finish_task is a completion request and leaves tools open until the native turn returns; the host confirms completion only after real delivery. Settle native child agents and internal goals before the parent formal route/completion. Edit conflict contents with native tools. Record actual results; observe an uncertain remote operation before repeating it. Keep actions scoped to the assigned task, preserve process evidence, and do not expose credentials. Decide whether to wait for, stop or hand off background work; report real job identities and state in the handoff. When handing off a native background process beyond this Harness, register its isolated group using background_job when exposed; keep its leader alive until children finish. Registration preserves monitoring and project lifecycle control, and never asserts experiment success.";
+
+/** Scope is task guidance; native tools are not a filesystem security sandbox. */
 export const PERMISSION_PROMPTS: Record<keyof typeof AGENT_PERMISSION_METADATA, string> = {
-  workspace: [
-    "OpenFARS permission mode: workspace.",
-    `File modification scope: ${AGENT_PERMISSION_METADATA.workspace.label}.`,
-    "Writes are limited to the worktree assigned to this task; reads follow the injected authorized roots.",
-    "Use the available Shell for project reads (ls, cat, rg); write only inside your assigned worktree.",
-    "Perform state-changing workspace operations only through the injected OpenFARS MCP tools."
-  ].join(" "),
-  compute: [
-    "OpenFARS permission mode: compute.",
-    `File modification scope: ${AGENT_PERMISSION_METADATA.compute.label}.`,
-    "Host-authorized reads may use the service-user tree subject to operating-system access.",
-    "Writes are limited to explicitly registered worktrees for this project; other projects and OpenFARS state are forbidden.",
-    "Route filesystem writes through the descriptor-relative OpenFARS broker. Business tools are selected separately; this scope grants no experimental capability."
-  ].join(" "),
-  yolo: [
-    "OpenFARS permission mode: yolo.",
-    `File modification scope: ${AGENT_PERMISSION_METADATA.yolo.label}.`,
-    "The CLI's native permission mode remains authoritative.",
-    "Keep all actions scoped to this project and never expose credentials or hidden reasoning."
-  ].join(" ")
+  workspace: `OpenFARS permission mode: workspace. Work in the assigned task worktree. ${NATIVE_TOOL_POLICY}`,
+  compute: `OpenFARS permission mode: compute. Work in this project's registered worktrees. ${NATIVE_TOOL_POLICY}`,
+  yolo: `OpenFARS permission mode: yolo. ${NATIVE_TOOL_POLICY}`
 };

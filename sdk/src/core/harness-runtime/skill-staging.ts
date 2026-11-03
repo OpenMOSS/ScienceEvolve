@@ -3,20 +3,6 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentName } from "../types.js";
 
-const SKILL_SUPPORT_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = {
-  "nature-writing": ["nature-shared"],
-  "nature-polishing": ["nature-shared"],
-  "ccf-idea-optimizer": ["ccf-common"],
-  "ccf-idea-reviewer": ["ccf-common"],
-  "ccf-literature-monitor": ["ccf-common"],
-  "ccf-literature-searcher": ["ccf-common"],
-  "ccf-experiment-designer": ["ccf-common"],
-  "ccf-visual-composer": ["ccf-common"],
-  "ccf-paper-to-exemplar": ["ccf-common"],
-  "ccf-paper-writer": ["ccf-common"],
-  "ccf-paper-reviewer": ["ccf-common"]
-};
-
 export interface StagedInvocationSkills {
   skillPaths: string[];
   autoSkillPaths: string[];
@@ -40,9 +26,9 @@ export async function stageInvocationSkills(
   ) {
     throw new Error("Invalid Agent skill scope");
   }
-  const fixedSources = await expandSkillSupportDependencies(skillPaths);
+  const fixedSources = [...new Set(skillPaths)];
   const fixedSet = new Set(fixedSources);
-  const automaticSources = (await expandSkillSupportDependencies(autoSkillPaths))
+  const automaticSources = [...new Set(autoSkillPaths)]
     .filter((item) => !fixedSet.has(item));
   const selectedSources = [...fixedSources, ...automaticSources];
   for (const skillPath of selectedSources) {
@@ -138,39 +124,6 @@ export async function stageSelectedSkills(
     availableSkillPaths,
     agent
   )).skillPaths;
-}
-
-async function expandSkillSupportDependencies(skillPaths: readonly string[]): Promise<string[]> {
-  const expanded: string[] = [];
-  const seen = new Set<string>();
-  const resolvedSelections: string[] = [];
-  for (const skillPath of skillPaths) {
-    const realPath = await fs.realpath(skillPath);
-    if (seen.has(realPath)) continue;
-    seen.add(realPath);
-    resolvedSelections.push(realPath);
-    expanded.push(realPath);
-  }
-  for (const skillPath of resolvedSelections) {
-    const sourceDirectory = path.dirname(skillPath);
-    for (const dependencyName of SKILL_SUPPORT_DEPENDENCIES[path.basename(sourceDirectory)] ?? []) {
-      const dependencyPath = path.join(path.dirname(sourceDirectory), dependencyName, "SKILL.md");
-      let realDependencyPath: string;
-      try {
-        realDependencyPath = await fs.realpath(dependencyPath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          throw new Error(`${path.basename(sourceDirectory)} requires sibling skill ${dependencyName}`);
-        }
-        throw error;
-      }
-      if (!seen.has(realDependencyPath)) {
-        seen.add(realDependencyPath);
-        expanded.push(realDependencyPath);
-      }
-    }
-  }
-  return expanded;
 }
 
 async function readManagedSkillDirectories(manifestPath: string): Promise<string[]> {

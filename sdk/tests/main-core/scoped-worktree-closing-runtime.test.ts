@@ -503,7 +503,7 @@ describe("original-session production closing dispatcher", () => {
       turn: expect.objectContaining({ invocationId: old.invocationId, result: old.result })
     })]));
     expect(f.db.scopedWorktreeClosingOperations(P, old.invocationId)).toEqual(oldOperations);
-    expect(f.db.scopedWorktreeClosingOperations(P, second.invocationId)).toHaveLength(2);
+    expect(f.db.scopedWorktreeClosingOperations(P, second.invocationId).map(operation => operation.kind)).toEqual(["git.push"]);
     expect(second.result).toBeDefined(); expect(second.completion).toBeDefined();
     expect(() => f.db.assertScopedWorktreeClosingControl({ ...old, capabilityHash: old.capabilityHash })).toThrow();
     await f.runtime.advance(); expect(f.launcher.open).toHaveBeenCalledTimes(2); expect(f.snapshot()).toEqual(before);

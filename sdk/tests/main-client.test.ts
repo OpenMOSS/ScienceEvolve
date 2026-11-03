@@ -8,6 +8,7 @@ import { validateMainWorkflowConfig } from "../src/main-config.js";
 import { mainRedactor } from "../src/main-redaction.js";
 import type { AgentRunner, AgentRunRequest, AgentRunResult } from "../src/core/types.js";
 import { harnessCatalogRegistry, toPublicHarnessDescriptor } from "../src/core/harness-runtime/registry.js";
+import type { GatewayStoreOptions } from "../src/core/agent-runtime.js";
 
 const roots: string[] = [];
 const sdks: MainResearchSdk[] = [];
@@ -28,7 +29,7 @@ function mainOnly(git = false) {
       termination: { agent: "main", condition: "Fixture complete", decisionBy: "main", automatic: false },
       resultFormat: { presets: [], custom: "" } } });
 }
-async function fixture(run?: AgentRunner["run"]) {
+async function fixture(run?: AgentRunner["run"], gatewayOptions: GatewayStoreOptions = { autoReasoning: false }) {
   const root = await directory();
   const runner: AgentRunner = {
     harnessCatalog: async () => harnessCatalogRegistry.list().map((descriptor) => toPublicHarnessDescriptor(descriptor, { available: true })),
@@ -39,7 +40,7 @@ async function fixture(run?: AgentRunner["run"]) {
       action: { tool: "complete_project", rationale: "Fixture acceptance satisfied" }
     }] }))
   };
-  const runtime = await createMainApplicationRuntime({ dataDir: root, skillRoots: [], internal: {
+  const runtime = await createMainApplicationRuntime({ dataDir: root, skillRoots: [], gatewayOptions, internal: {
     runner, residentLauncher: { open: async () => { throw new Error("Git-off must not open resident"); } }
   } });
   runtimes.push(runtime);
@@ -49,6 +50,18 @@ async function fixture(run?: AgentRunner["run"]) {
   return { sdk, runtime, root, gateway };
 }
 describe("explicit main SDK facade (no real model/GitHub)", () => {
+  it("automatically detects model reasoning after saving a gateway through the SDK facade", async () => {
+    const modelFetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.reasoning?.effort && !["low", "medium", "high"].includes(body.reasoning.effort))
+        return Response.json({ error: { message: "Invalid reasoning.effort, expected 'low', 'medium', 'high'" } }, { status: 400 });
+      return Response.json({ output: [] });
+    }) as unknown as typeof fetch;
+    const { sdk, gateway } = await fixture(undefined, { fetch: modelFetch, resolveHostname: async () => ["93.184.216.34"] });
+    await vi.waitFor(async () => expect((await sdk.gateways.list())[0]?.reasoningDetection?.fixture?.status).toBe("verified"));
+    expect((await sdk.gateways.list())[0]?.modelReasoning?.fixture).toMatchObject({ parameter: "reasoning.effort", defaultOptionId: "high" });
+    expect(gateway.id).toBeDefined();
+  });
   it("delegates Git-off start/completion to main and retains terminal replay after reconnect", async () => {
     const { sdk, runtime, gateway } = await fixture();
     const run = await sdk.start({ title: "Main facade", requirement: "Bounded fixture", workflow: mainOnly(),

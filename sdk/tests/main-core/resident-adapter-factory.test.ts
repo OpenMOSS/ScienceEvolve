@@ -31,7 +31,7 @@ import type {
   SessionRef
 } from "../../src/core/harness-runtime/contracts.js";
 import {
-  prepareFilesystemAuthorityMcp,
+  prepareGitWorktreeMcp,
   filesystemAuthorityPrompt,
   type FilesystemAuthority
 } from "../../src/core/harness-runtime/filesystem-authority.js";
@@ -445,36 +445,17 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     const authority = prepared.filesystemAuthority;
     expect(authority.readRoots).toContain(fixture.projectPath);
     expect(authority.writeRoots).not.toContain(fixture.projectPath);
-    const workflowRoot = authority.rootBindings.find(root => root.path === workflowDirectory)!;
-    const workspaceRoot = authority.rootBindings.find(root => root.path === fixture.workspace)!;
-    expect(workflowRoot).toMatchObject({ write: false });
     const prompt = filesystemAuthorityPrompt(authority, prepared.spec.inputs);
-    for (const filename of ["definition.json", "current-state.json"]) {
-      expect(prompt).toContain(`rootId="${workflowRoot.id}", path="${filename}"; read-only`);
-    }
-    const mcp = prepared.filesystemMcp!;
-    const rpc = await openStdioRpc(mcp.row.command, mcp.row.args);
-    const call = (name: string, args: Record<string, unknown>) => rpc.request("tools/call", { name, arguments: args });
-    try {
-      await rpc.request("initialize");
-      for (const revision of [1, 2]) {
-        if (revision === 2) await publishAuthoritativeWorkflowFiles(fixture.projectPath, publication(2));
-        for (const filename of ["definition.json", "current-state.json"]) {
-          const response = await call("read_file", { rootId: workflowRoot.id, path: filename });
-          const result = response.result as { isError?: boolean; content: Array<{ text: string }> };
-          expect(result.isError).not.toBe(true);
-          const read = JSON.parse(result.content[0]!.text) as { content: string };
-          expect(JSON.parse(read.content)).toMatchObject({ projectId: "prj_fixture", workflowRevision: revision });
-          await expect(call("write_file", { rootId: workflowRoot.id, path: filename, content: "denied" }))
-            .resolves.toMatchObject({ result: { isError: true } });
-        }
+    expect(prompt).not.toContain("rootId");
+    if (role === "leader") expect(prepared.filesystemMcp).toBeUndefined();
+    else expect(prepared.filesystemMcp?.row.namespace).toBe("openfars-git");
+    for (const revision of [1, 2]) {
+      if (revision === 2) await publishAuthoritativeWorkflowFiles(fixture.projectPath, publication(2));
+      for (const filename of ["definition.json", "current-state.json"]) {
+        expect(JSON.parse(await fs.readFile(path.join(workflowDirectory, filename), "utf8")))
+          .toMatchObject({ projectId: "prj_fixture", workflowRevision: revision });
       }
-      await expect(call("read_file", { rootId: workspaceRoot.id, path: "workflow/definition.json" }))
-        .resolves.toMatchObject({ result: { isError: true } });
-      await expect(call("read_file", { rootId: workflowRoot.id, path: "../private-state.txt" }))
-        .resolves.toMatchObject({ result: { isError: true } });
-      expect(JSON.parse(await fs.readFile(path.join(workflowDirectory, "definition.json"), "utf8"))).toMatchObject({ workflowRevision: 2 });
-    } finally { await rpc.close(); }
+    }
     // A replaced publication directory must not become a read grant for another project.
     const foreign = path.join(fixture.root, "foreign-workflow");
     await fs.rename(workflowDirectory, foreign);
@@ -816,7 +797,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
           terminal = true; await service.mutate(fixture.projectPath, doc => { doc.experiments[0]!.nextCheckAt = 0; });
           await service.refreshNow();
           const result = await client.callTool({ name: "sii_get_experiment", arguments: { experiment_id: id } });
-          expect(result.isError).not.toBe(true);
+          expect(result.isError, JSON.stringify(result)).not.toBe(true);
           await expect(assertSiiControlAction(baseRequest.project.id, "writer", turn.invocationId, { tool: "finish_task" }))
             .rejects.toThrow("still needs experiment results");
           await fs.writeFile(resultPath, JSON.stringify(result));
@@ -892,9 +873,9 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       const prepared = await prepare.mock.results.at(-1)!.value;
       expect(prepared.spec.session).toMatchObject({ nativeId: originalSession.nativeId, generation: originalSession.generation, durable: true });
       expect(prepared.spec.policy).toMatchObject({ permission: "workspace", mcpServers: [], skillPaths: [], autoSkillPaths: [], webSearch: false });
-      expect(prepared.filesystemAuthority).toMatchObject({ writeRoots: [], gitCapability: "none", rawTools: "forbidden" });
+      expect(prepared.filesystemAuthority).toMatchObject({ writeRoots: [], gitCapability: "none", rawTools: "native" });
       const rows = JSON.parse(launchEnvironment!.SCIENCEEVOLVE_PI_MCP_CONFIG!) as Array<{ namespace: string; command: string; args: string[] }>;
-      expect(rows.map(item => item.namespace).sort()).toEqual(["openfars-filesystem-authority", "openfars-resident-control", "scienceevolve-sleep"]);
+      expect(rows.map(item => item.namespace).sort()).toEqual(["openfars-resident-control", "scienceevolve-sleep"]);
       const row = rows.find(item => item.namespace === "openfars-resident-control")!;
       rpc = await openStdioRpc(row.command, row.args);
       expect((await rpc.request("tools/list")).result).toMatchObject({ tools: [{ name: "finish_task" }, { name: "coordinate_agent_receipt" }] });
@@ -1006,23 +987,14 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       const prepared = await prepare.mock.results.at(-1)!.value;
       expect(prepared.spec.session).toMatchObject({ nativeId: originalSession!.nativeId, generation: originalSession!.generation, durable: true });
       expect(prepared.spec.policy).toMatchObject({ permission: "workspace", mcpServers: [], skillPaths: [], autoSkillPaths: [], webSearch: false });
-      expect(prepared.filesystemAuthority).toMatchObject({ rawTools: "forbidden", gitCapability: "none" });
+      expect(prepared.filesystemAuthority).toMatchObject({ rawTools: "native", gitCapability: "none" });
       expect(prepared.filesystemAuthority.rootBindings.filter(root => root.write)).toEqual([
         expect.objectContaining({ path: fixture.workspace, writeFiles: ["leftover.txt"] })
       ]);
       expect(prepared.spec.prompt).toContain('Authorized exact files: ["leftover.txt"]');
       expect(prepared.spec.prompt).not.toContain("Do my entire business mandate");
-      const fileRpc = await openStdioRpc(prepared.filesystemMcp.row.command, prepared.filesystemMcp.row.args);
-      try {
-        const config = JSON.parse(await fs.readFile(prepared.filesystemMcp.configPath, "utf8"));
-        const root = config.roots.find((item: { path: string }) => item.path === fixture.workspace);
-        expect((await fileRpc.request("tools/list")).result).toMatchObject({ tools: expect.arrayContaining([
-          expect.objectContaining({ name: "write_file" }), expect.objectContaining({ name: "remove_file" }) ]) });
-        expect((await fileRpc.request("tools/call", { name: "write_file", arguments: { rootId: root.id, path: "leftover.txt", content: "Agent correction" } })).result).not.toMatchObject({ isError: true });
-        for (const denied of ["new-business.txt", "agent-memory/writer/Memory.md"])
-          expect((await fileRpc.request("tools/call", { name: "write_file", arguments: { rootId: root.id, path: denied, content: "forbidden" } })).result).toMatchObject({ isError: true });
-        expect((await fileRpc.request("tools/call", { name: "git_stage", arguments: { paths: ["leftover.txt"] } })).result).toMatchObject({ isError: true });
-      } finally { await fileRpc.close(); }
+      expect(prepared.filesystemMcp).toBeUndefined();
+
       const result = await closing.submit({ inputId: "my-closing", invocationId, prompt: "Perform only the exact original Leader grant" });
       expect(result.controlActions).toContainEqual(expect.objectContaining({ action: { tool: "finish_task", summary: "My separate result" } }));
       await expect(services.at(-1)!.stage(capability, "escape", { tool: "git_prepare_conflict" })).rejects.toThrow(/exact closing scope|revoked/);
@@ -1166,28 +1138,16 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       const prepared = await prepare.mock.results.at(-1)!.value;
       expect(prepared.spec.policy).toMatchObject({ permission: "workspace", mcpServers: [], skillPaths: [], autoSkillPaths: [], webSearch: false });
       expect(prepared.spec.session).toMatchObject({ nativeId: originalSession!.nativeId, generation: originalSession!.generation, durable: true });
-      expect(prepared.filesystemAuthority).toMatchObject({ writeRoots: [], gitCapability: "none", rawTools: "forbidden" });
+      expect(prepared.filesystemAuthority).toMatchObject({ writeRoots: [], gitCapability: "none", rawTools: "native" });
       expect(prepared.spec.prompt).toContain('operationId="original-completed-push", historical=true');
       expect(prepared.spec.prompt).not.toContain("call git_push");
       expect(prepared.spec.prompt).not.toContain("Implement the whole business product");
       const rows = JSON.parse(launchEnvironment!.SCIENCEEVOLVE_PI_MCP_CONFIG!) as Array<{ namespace: string; command: string; args: string[] }>;
-      expect(rows.map((row) => row.namespace).sort()).toEqual(["openfars-filesystem-authority", "openfars-resident-control", "scienceevolve-sleep"]);
+      expect(rows.map((row) => row.namespace).sort()).toEqual(["openfars-resident-control", "scienceevolve-sleep"]);
       expect(launchEnvironment!.SCIENCEEVOLVE_AGENT_PERMISSION).toBe("workspace");
       expect(launchEnvironment!.SCIENCEEVOLVE_FIXED_MCP_TOKEN).toBeUndefined();
-      const fileRpc = await openStdioRpc(prepared.filesystemMcp.row.command, prepared.filesystemMcp.row.args);
-      try {
-        const listed = await fileRpc.request("tools/list");
-        expect((listed.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name))
-          .toEqual(["read_file", "list_directory", "authority_matrix"]);
-        const config = JSON.parse(await fs.readFile(prepared.filesystemMcp.configPath, "utf8"));
-        const root = config.roots.find((item: { path: string }) => item.path === fixture.workspace);
-        const read = await fileRpc.request("tools/call", { name: "read_file", arguments: { rootId: root.id, path: "agent-memory/writer/Memory.md" } });
-        expect(JSON.stringify(read.result)).toContain("Original Agent memory");
-        await expect(fileRpc.request("tools/call", { name: "write_file", arguments: { rootId: root.id, path: "business-denied.txt", content: "deny" } }))
-          .resolves.toMatchObject({ result: { isError: true } });
-        await expect(fileRpc.request("tools/call", { name: "git_stage", arguments: { paths: ["Memory.md"] } }))
-          .resolves.toMatchObject({ result: { isError: true } });
-      } finally { await fileRpc.close(); }
+      expect(prepared.filesystemMcp).toBeUndefined();
+
       const controlRow = rows.find((row) => row.namespace === "openfars-resident-control")!;
       rpc = await openStdioRpc(controlRow.command, controlRow.args);
       const tools = await rpc.request("tools/list");
@@ -1521,9 +1481,9 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
   });
 
   it.each([
-    { id: "codex", adapter: () => new CodexAdapter(), expected: ["app-server", "read-only"] },
-    { id: "claude-code", adapter: () => new ClaudeCodeAdapter(), expected: ["--input-format", "stream-json", "--restricted"] },
-    { id: "pi", adapter: () => new PiAdapter(), expected: ["--mode", "rpc", "--no-builtin-tools"] },
+    { id: "codex", adapter: () => new CodexAdapter(), expected: ["app-server", "danger-full-access", "skip_host_skill_discovery"] },
+    { id: "claude-code", adapter: () => new ClaudeCodeAdapter(), expected: ["--input-format", "stream-json", "default", "dontAsk"] },
+    { id: "pi", adapter: () => new PiAdapter(), expected: ["--mode", "rpc", "--no-skills"] },
     { id: "dsh", adapter: () => new DshAdapter(), expected: ["--profile", "sdk", "--patch"] }
   ])("launches the real $id resident argv through CommonProcessHost", async (row) => {
     const fixture = await createFixture(row.id, row.adapter());
@@ -1578,9 +1538,9 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     }
     if (row.id === "dsh") {
       const patch = await fs.readFile(path.join(fixture.executionRuntime, "dsh-resident.patch.yml"), "utf8");
-      expect(patch).toMatch(/tool-bash\n  disabled: true/);
-      expect(patch).toContain("- id: tool-goal\n  disabled: true");
-      expect(patch).toContain("- id: goal-round-driver\n  disabled: true");
+      expect(patch).not.toMatch(/tool-bash\n  disabled: true/);
+      expect(patch).not.toContain("- id: tool-goal\n  disabled: true");
+      expect(patch).not.toContain("- id: goal-round-driver\n  disabled: true");
       const settings = await fs.readFile(path.join(fixture.executionRuntime, "dsh-home", "settings.yaml"), "utf8");
       expect(settings).toContain("supportsReasoningEffort: false");
       expect(settings).not.toContain("reasoningEffort:");
@@ -2020,12 +1980,12 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     });
 
     expect(controlMcp.assertReady).toHaveBeenCalledOnce();
-    expect(adapterConfig).toContain('"openfars-filesystem-authority" = {');
+    expect(adapterConfig).toContain('"openfars-git" = {');
     expect(adapterConfig).toContain('"openfars-resident-control" = {');
     expect(adapterConfig.match(/default_tools_approval_mode = "approve"/g)).toHaveLength(4);
     expect(adapterConfig).toContain('"selected-fixture" = { url = "http://127.0.0.1:45991/mcp", default_tools_approval_mode = "approve" }');
     const filesystemEntry = adapterConfig.slice(
-      adapterConfig.indexOf('"openfars-filesystem-authority"'),
+      adapterConfig.indexOf('"openfars-git"'),
       adapterConfig.indexOf('"openfars-resident-control"')
     );
     const controlEntry = adapterConfig.slice(adapterConfig.indexOf('"openfars-resident-control"'));
@@ -2073,7 +2033,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     await expect(openBuiltinResidentAdapter({
       ...fixture.launch,
       filesystemMcp: undefined
-    })).rejects.toThrow(/descriptor filesystem broker/);
+    })).rejects.toThrow(/invocation-bound platform Git MCP/);
   });
 
   it.each([false, true])("launches fixed v3 management with proposal authority %s", async (editable) => {
@@ -2089,7 +2049,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
         ...fixture.launch.filesystemAuthority.rootBindings,
         { id: "write-proposal0000000", path: proposalRoot, write: true }
       ];
-      fixture.launch.filesystemMcp = await prepareFilesystemAuthorityMcp({
+      fixture.launch.filesystemMcp = await prepareGitWorktreeMcp({
         authority: fixture.launch.filesystemAuthority, executionRuntimePath: fixture.executionRuntime
       });
     }
@@ -2140,7 +2100,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     const prepared = await facade.prepareResidentScope(input);
     expect(prepared.spec.inputs).toMatchObject({ workflowAuthoringPath, workflowAuthoringInvocationId: "original-turn",
       inboxPath: inputs.inboxPath, memoryPath: inputs.memoryPath });
-    expect(prepared.filesystemAuthority).toMatchObject({ writeRoots: [proposalRoot], gitCapability: "none", rawTools: "forbidden" });
+    expect(prepared.filesystemAuthority).toMatchObject({ writeRoots: [proposalRoot], gitCapability: "none", rawTools: "native" });
     const opened = await facade.openResidentScope(prepared);
     try {
       expect(opened.evidence.cwd).toBe(fixture.workspace);
@@ -2265,20 +2225,19 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       launchPlan!
     );
     expect(rendered).toContain("readonly-evidence");
-    expect(rendered).toContain("openfars-filesystem-authority");
+    expect(rendered).not.toContain("openfars-git");
     if (row.id === "codex") {
       expect(launchPlan?.args).toContain("--search");
       expect(launchPlan?.args.join(" ")).toContain(skillPath);
     } else if (row.id === "claude-code") {
       const toolsIndex = launchPlan!.args.indexOf("--tools");
-      expect(launchPlan!.args[toolsIndex + 1]).toContain("WebSearch");
-      expect(launchPlan!.args[toolsIndex + 1]).toContain("WebFetch");
+      expect(launchPlan!.args[toolsIndex + 1]).toBe("default");
     } else {
       expect(rendered).toContain("openfars-web");
       if (row.id === "pi") expect(launchPlan?.args).toContain(skillPath);
     }
     expect(fixture.launch.filesystemAuthority).toMatchObject({
-      writeRoots: [], gitCapability: "none", rawTools: "forbidden"
+      writeRoots: [], gitCapability: "none", rawTools: "native"
     });
     expect(fixture.launch.processBinding.authorityEnvironment).toMatchObject({
       SCIENCEEVOLVE_RESIDENT_ROLE: "leader",
@@ -2369,9 +2328,9 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       name: "readonly-evidence",
       transport: "streamable-http"
     })]);
-    expect(prepared.filesystemMcp).toBeDefined();
+    expect(prepared.filesystemMcp).toBeUndefined();
     expect(prepared.filesystemAuthority).toMatchObject({
-      writeRoots: [], gitCapability: "none", rawTools: "forbidden"
+      writeRoots: [], gitCapability: "none", rawTools: "native"
     });
     expect(prepared.spec.prompt).toContain("leader management snapshot");
     expect(await fs.readFile(prepared.spec.inputs.inboxPath, "utf8")).toContain("leader management snapshot");
@@ -2384,12 +2343,11 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
         effectiveCapabilities: expect.objectContaining({
           mcpServers: ["readonly-evidence"],
           webSearch: true,
-          filesystem: "management-read-only",
+          filesystem: "native",
           gitMutation: false
         }),
         deniedCapabilities: expect.arrayContaining([
-          { capability: "delivery-worktree-write", reason: "management-role-read-only" },
-          { capability: "git-mutation", reason: "management-role-read-only" }
+          { capability: "git-mutation", reason: "management-role" }
         ])
       })
     }));
@@ -3895,12 +3853,12 @@ async function createFixture(
           { id: "read-fixture0000000", path: root, write: false },
           { id: "write-fixture000000", path: workspace, write: true }
         ],
-    rawTools: permission === "yolo" ? "trusted-yolo" : "forbidden"
+    rawTools: permission === "yolo" ? "trusted-yolo" : "native"
   };
   const processHost = new CommonProcessHost();
-  const filesystemMcp = permission === "yolo"
+  const filesystemMcp = authority.gitCapability === "none"
     ? undefined
-    : await prepareFilesystemAuthorityMcp({
+    : await prepareGitWorktreeMcp({
         authority,
         executionRuntimePath: executionRuntime
       });
@@ -4004,165 +3962,27 @@ async function highLevelInput(
 }
 
 async function exerciseFilesystemMcp(
-  prepared: NonNullable<Awaited<ReturnType<typeof createFixture>>["launch"]["filesystemMcp"]>,
-  label: string
+  prepared: NonNullable<Awaited<ReturnType<typeof createFixture>>["launch"]["filesystemMcp"]>, label: string
 ): Promise<void> {
-  const config = JSON.parse(await fs.readFile(prepared.configPath, "utf8")) as {
-    roots: Array<{ id: string; path: string; write: boolean }>;
-    executionWorktree: string;
-  };
-  await execFileAsync("/usr/bin/git", ["init", "--initial-branch=main"], {
-    cwd: config.executionWorktree
-  });
-  await execFileAsync("/usr/bin/git", ["config", "user.name", "Harness Fixture"], {
-    cwd: config.executionWorktree
-  });
-  await execFileAsync("/usr/bin/git", ["config", "user.email", "harness@localhost"], {
-    cwd: config.executionWorktree
-  });
-  const child = spawn(prepared.row.command, prepared.row.args, {
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  const lines = readline.createInterface({ input: child.stdout });
-  const pending: Array<(value: Record<string, unknown>) => void> = [];
-  lines.on("line", (line) => pending.shift()?.(JSON.parse(line) as Record<string, unknown>));
-  let id = 0;
-  const request = async (method: string, params: Record<string, unknown> = {}) => {
-    const response = new Promise<Record<string, unknown>>((resolve) => pending.push(resolve));
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params })}\n`);
-    return response;
-  };
-  await expect(request("initialize")).resolves.toMatchObject({
-    result: { serverInfo: { name: "openfars-descriptor-filesystem" } }
-  });
-  await expect(request("tools/list")).resolves.toMatchObject({
-    result: { tools: expect.arrayContaining([
-      expect.objectContaining({ name: "write_file" }),
-      expect.objectContaining({ name: "list_directory" }),
-      expect.objectContaining({ name: "make_directory" }),
-      expect.objectContaining({ name: "git_status" }),
-      expect.objectContaining({ name: "git_stage" }),
-      expect.objectContaining({ name: "git_unstage" }),
-      expect.objectContaining({ name: "git_commit" })
-    ]) }
-  });
-  const writable = config.roots.find((root) => root.write);
-  expect(writable).toBeTruthy();
-  const rootId = writable!.id;
-  const directory = `mcp-${label}`;
-  await expect(request("tools/call", {
-    name: "make_directory",
-    arguments: { rootId, path: `${directory}/nested` }
-  })).resolves.toMatchObject({ result: { content: expect.any(Array) } });
-  const listed = await request("tools/call", {
-    name: "list_directory",
-    arguments: { rootId, path: directory }
-  });
-  expect(JSON.stringify(listed)).toContain("nested");
-  const target = `${directory}/nested/result.txt`;
-  const rootPage = await request("tools/call", { name: "list_directory", arguments: { rootId, path: "." } });
-  expect((rootPage.result as { isError?: boolean }).isError).not.toBe(true);
-  const rootListing = JSON.parse((rootPage.result as { content: Array<{ text: string }> }).content[0]!.text) as { entries: Array<{ name: string }> };
-  expect(rootListing.entries.map(entry => entry.name)).toContain(directory);
-  expect(rootListing.entries.map(entry => entry.name)).not.toContain(".git");
-  const traversal = await request("tools/call", { name: "list_directory", arguments: { rootId, path: `${directory}/..` } });
-  expect((traversal.result as { isError?: boolean }).isError).toBe(true);
-  const pagedTarget = `${directory}/nested/large-state.txt`;
-  const pagedText = "实验α".repeat(20);
-  await request("tools/call", { name: "write_file", arguments: { rootId, path: pagedTarget, content: pagedText } });
-  const tooSmall = await request("tools/call", { name: "read_file", arguments: { rootId, path: pagedTarget, maxBytes: 11 } });
-  expect(JSON.stringify(tooSmall)).toContain("offset=0");
-  // Actual retained Leader calls used "" and "0". The tool must reject
-  // those values and let the Agent perform the indicated first-page read.
-  for (const expectedVersion of ["", null]) {
-    const unpinned = await request("tools/call", { name: "read_file", arguments: {
-      rootId, path: pagedTarget, offset: 0, maxBytes: 11, expectedVersion
-    } });
-    expect((unpinned.result as { isError?: boolean }).isError).not.toBe(true);
-  }
-  for (const expectedVersion of ["0", " ", false]) {
-    const invalidVersion = await request("tools/call", { name: "read_file", arguments: {
-      rootId, path: pagedTarget, offset: 0, maxBytes: 11, expectedVersion
-    } });
-    expect((invalidVersion.result as { isError?: boolean }).isError).toBe(true);
-    expect(JSON.stringify(invalidVersion)).toContain("64-character version");
-  }
-  let nextOffset = 0;
-  let pageVersion: string | undefined;
-  let combined = "";
-  do {
-    const response = await request("tools/call", { name: "read_file", arguments: { rootId, path: pagedTarget,
-      offset: nextOffset, maxBytes: 11, ...(pageVersion ? { expectedVersion: pageVersion } : {}) } });
-    const result = response.result as { isError?: boolean; content: Array<{ text: string }> };
-    expect(result.isError).not.toBe(true);
-    const page = JSON.parse(result.content[0]!.text) as { content: string; bytes: number; nextOffset: number; eof: boolean; version: string; totalBytes: number };
-    expect(Buffer.byteLength(page.content)).toBe(page.bytes);
-    expect(page.content).not.toContain("�");
-    expect(page.nextOffset).toBeGreaterThan(nextOffset);
-    combined += page.content;
-    nextOffset = page.nextOffset;
-    pageVersion = page.version;
-    if (page.eof) break;
-  } while (nextOffset < Buffer.byteLength(pagedText));
-  expect(combined).toBe(pagedText);
-  const binary = await request("tools/call", { name: "read_file", arguments: { rootId, path: pagedTarget, offset: 1, maxBytes: 3, encoding: "base64" } });
-  const binaryResult = JSON.parse((binary.result as { content: Array<{ text: string }> }).content[0]!.text) as { content: string; encoding: string };
-  expect(binaryResult.encoding).toBe("base64");
-  expect(Buffer.from(binaryResult.content, "base64")).toEqual(Buffer.from(pagedText).subarray(1, 4));
-  await request("tools/call", { name: "write_file", arguments: { rootId, path: pagedTarget, content: `${pagedText}\nchanged` } });
-  const staleVersion = await request("tools/call", { name: "read_file", arguments: {
-    rootId, path: pagedTarget, offset: 0, maxBytes: 11, expectedVersion: pageVersion
-  } });
-  expect((staleVersion.result as { isError?: boolean }).isError).toBe(true);
-  expect(JSON.stringify(staleVersion)).toContain("version changed");
-  await expect(request("tools/call", {
-    name: "write_file",
-    arguments: { rootId, path: target, content: `bridge-${label}` }
-  })).resolves.toMatchObject({ result: { content: expect.any(Array) } });
-  const read = await request("tools/call", {
-    name: "read_file", arguments: { rootId, path: target }
-  });
-  expect(JSON.stringify(read)).toContain(`bridge-${label}`);
-  const status = await request("tools/call", {
-    name: "git_status", arguments: {}
-  });
-  expect((status.result as { isError?: boolean }).isError).not.toBe(true);
-  const statusFact = JSON.parse((status.result as { content: Array<{ text: string }> }).content[0]!.text);
-  expect(statusFact).toMatchObject({ branch: "main", head: null, unborn: true,
-    entries: expect.arrayContaining([expect.objectContaining({ path: target, untracked: true })]), currentOperation: null });
-  expect(JSON.stringify(status)).toContain(target);
-  await expect(request("tools/call", {
-    name: "git_stage", arguments: { paths: [target] }
-  })).resolves.toMatchObject({ result: { content: expect.any(Array) } });
-  const committed = await request("tools/call", {
-    name: "git_commit", arguments: { message: `Harness ${label} delivery` }
-  });
-  expect(JSON.stringify(committed)).toMatch(/[0-9a-f]{40}/);
-  const current = await request("tools/call", { name: "git_status", arguments: {} });
-  expect((current.result as { isError?: boolean }).isError).not.toBe(true);
-  const currentFact = JSON.parse((current.result as { content: Array<{ text: string }> }).content[0]!.text);
-  expect(currentFact).toMatchObject({ branch: "main", head: expect.stringMatching(/^[a-f0-9]{40}$/), unborn: false,
-    staged: [], conflicts: [], currentOperation: null });
-  await expect(request("tools/call", {
-    name: "git_stage", arguments: { paths: ["agent-memory/writer/Memory.md"] }
-  })).resolves.toMatchObject({ result: { isError: true } });
-  await expect(request("tools/call", {
-    name: "write_file",
-    arguments: { rootId, path: "../escape", content: "denied" }
-  })).resolves.toMatchObject({ result: { isError: true } });
-  const outside = path.join(path.dirname(writable!.path), `mcp-outside-${label}`);
-  await fs.mkdir(outside, { recursive: true });
-  const symlink = path.join(writable!.path, `mcp-link-${label}`);
-  await fs.symlink(outside, symlink);
-  await expect(request("tools/call", {
-    name: "list_directory",
-    arguments: { rootId, path: path.basename(symlink) }
-  })).resolves.toMatchObject({ result: { isError: true } });
-  child.stdin.end();
-  await new Promise<void>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => code === 0 ? resolve() : reject(new Error(`MCP exited ${code}`)));
-  });
+  const config = JSON.parse(await fs.readFile(prepared.configPath, "utf8"));
+  await execFileAsync("/usr/bin/git", ["init", "--initial-branch=main"], { cwd: config.executionWorktree });
+  await execFileAsync("/usr/bin/git", ["config", "user.name", "Harness Fixture"], { cwd: config.executionWorktree });
+  await execFileAsync("/usr/bin/git", ["config", "user.email", "harness@localhost"], { cwd: config.executionWorktree });
+  const rpc = await openStdioRpc(prepared.row.command, prepared.row.args);
+  try {
+    expect((await rpc.request("initialize")).result).toMatchObject({ serverInfo: { name: "openfars-git" } });
+    const listed = (await rpc.request("tools/list")).result as { tools: Array<{ name: string }> };
+    expect(listed.tools.map(tool => tool.name)).toEqual(["git_status", "git_stage", "git_unstage", "git_commit"]);
+    await expect(rpc.request("tools/call", { name: "write_file", arguments: { path: "denied", content: "duplicate API" } }))
+      .resolves.toMatchObject({ result: { isError: true } });
+    const file = `native-${label}.txt`;
+    await fs.writeFile(path.join(config.executionWorktree, file), "native contents\n");
+    for (const [name, args] of [["git_stage", { paths: [file] }], ["git_commit", { message: "Agent fixture delivery" }], ["git_status", {}]] as const) {
+      const result = (await rpc.request("tools/call", { name, arguments: args })).result as { isError?: boolean };
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    }
+    expect((await execFileAsync("/usr/bin/git", ["show", `HEAD:${file}`], { cwd: config.executionWorktree })).stdout).toBe("native contents\n");
+  } finally { await rpc.close(); }
 }
 
 function turn(index: number): ResidentTurn {

@@ -1,4 +1,37 @@
 /** Browser/server shared read-only projection. No runtime or database dependencies. */
+interface AuthorizationAttempt {
+  status: string;
+  errorCode: string | null;
+  redactedMessage: string;
+  metadata?: Readonly<Record<string, unknown>>;
+}
+
+/** Only a current blocker may override a retained orchestration incident.
+ * Historical authorization failures remain auditable after recovery. */
+export function githubAuthorizationWaiting(project: {
+  status: string;
+  phase?: string;
+  lastError?: string;
+  error?: string;
+  git?: { enabled: boolean; status: string };
+  runtime?: { status: string; activities: readonly unknown[] };
+  failureSummary?: { latestAttempt?: AuthorizationAttempt };
+  failureAttempts?: readonly AuthorizationAttempt[];
+}): { kind: "authorization"; reason: string } | undefined {
+  if (!project.git?.enabled || !["queued", "retrying", "interrupted"].includes(project.status) ||
+    project.phase === "user-intervention-required" ||
+    project.phase === "collaboration:workflow-adjustment-waiting" ||
+    project.runtime?.status === project.status && project.runtime.activities.length > 0) return undefined;
+  const latest = project.failureSummary?.latestAttempt ?? project.failureAttempts?.at(-1);
+  const currentError = project.lastError ?? project.error;
+  if (project.git.status !== "waiting_for_github" && !(latest?.status === "failed" &&
+    latest.errorCode === "GITHUB_WAITING_FOR_AUTHORIZATION" && currentError &&
+    currentError === latest.redactedMessage)) return undefined;
+  return { kind: "authorization", reason: latest?.metadata?.status === 403
+    ? "GitHub 权限不足或访问被拒绝，请检查绑定账号的仓库权限。"
+    : "GitHub 授权已失效或不可用，请重新登录项目绑定的 GitHub 账号。" };
+}
+
 export type RuntimeDisplayState =
   | "waiting" | "queued" | "running" | "completed" | "retrying" | "paused"
   | "stopping" | "stopped" | "superseded" | "failed" | "interrupted" | "skipped";

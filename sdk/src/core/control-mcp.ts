@@ -28,6 +28,7 @@ const appendRecoveryGuard = process.env.SCIENCEEVOLVE_APPEND_RECOVERY_GUARD === 
 const publishedArtifactManifestPath =
   process.env[PUBLISHED_ARTIFACT_MANIFEST_ENV];
 
+const legacyFileTools = process.env.SCIENCEEVOLVE_LEGACY_FILE_TOOLS === "1";
 const APPEND_FILE_TOOL = "scienceevolve_append_file";
 const READ_INVOCATION_INPUT_TOOL = "scienceevolve_read_invocation_input";
 const invocationId = process.env.SCIENCEEVOLVE_INVOCATION_ID;
@@ -449,7 +450,7 @@ async function handle(
         properties: {}
       }
     }] : [])];
-    response(request.id, { tools });
+    response(request.id, { tools: tools.filter(tool => legacyFileTools || ![APPEND_FILE_TOOL, READ_INVOCATION_INPUT_TOOL].includes(tool.name)) });
     return;
   }
   if (request.method !== "tools/call") {
@@ -462,6 +463,7 @@ async function handle(
     params.arguments && typeof params.arguments === "object"
       ? (params.arguments as Record<string, unknown>)
       : {};
+  if (!legacyFileTools && [APPEND_FILE_TOOL, READ_INVOCATION_INPUT_TOOL].includes(name)) { error(request.id, -32601, `Unknown tool: ${name}. Use native file tools.`); return; }
   if (name === READ_INVOCATION_INPUT_TOOL) {
     if (!invocationInputAvailable) { error(request.id, -32601, `Unknown tool: ${name}`); return; }
     const offset = args.offset ?? 0, limit = args.limit ?? 16_384;

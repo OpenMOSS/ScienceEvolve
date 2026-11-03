@@ -19,7 +19,7 @@ export function queryAgentGitOperation(input: AgentGitOperationQueryInput) {
   if (operation.id !== input.operationId || operation.ownerExecutionId !== execution.id ||
     !Number.isSafeInteger(operation.ownershipEpoch) || (operation.ownershipEpoch ?? 0) < 1 ||
     operation.ownershipEpoch! > execution.ownershipEpoch ||
-    !["git.push", "git.revert", "pull.create", "pull.merge", "pull.close"].includes(operation.kind) ||
+    !["git.push", "git.revert", "pull.create", "pull.merge", "pull.close", "pull.update"].includes(operation.kind) ||
     !/^[0-9a-f]{40}$/i.test(operation.expectedHead ?? "") ||
     operation.expectedBase !== (["git.push", "git.revert"].includes(operation.kind) ? execution.executionBranch : base)) {
     throw new Error("The requested Git operation differs from this original task's ownership, branch or direct target");
@@ -57,7 +57,7 @@ export function queryAgentGitOperation(input: AgentGitOperationQueryInput) {
   // check finishes. "unknown" here describes that PR's mergeability, not
   // whether the exact numbered PR was created. Keep the observed state;
   // never infer a successful merge or close from it.
-  const pendingMergeability = operation.kind === "pull.create" && remote?.status === "unknown";
+  const pendingMergeability = ["pull.create", "pull.update"].includes(operation.kind) && remote?.status === "unknown";
   if (known && (!remote || remote.owner !== repository.owner || remote.repository !== repository.name ||
     (operation.kind === "git.push"
       ? remote.status !== "present" || remote.ref !== execution.executionBranch || remote.sha !== operation.expectedHead

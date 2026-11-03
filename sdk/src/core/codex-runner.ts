@@ -1,3 +1,4 @@
+import { selectedSkillInstructions } from "./harness-runtime/selected-skills.js";
 import { SLEEP_TOOL_TIMEOUT_SEC } from "./sleep-tool-contract.js";
 import { isExplainerMcp } from "./internal/shared/explainer-tools.js";
 import { createWriteStream, promises as fs } from "node:fs";
@@ -155,7 +156,7 @@ export class CodexRunner {
       !agentConfig.sessionPersistence
     )) {
       throw new AgentRequestConfigurationError(
-        "Codex Project Explainer requires an isolated, tool-free read-only invocation"
+        "Codex Project Explainer requires an isolated draft-management invocation"
       );
     }
     const canCompute = permission === "compute";
@@ -185,11 +186,7 @@ export class CodexRunner {
         "Agent workspace resolves outside the current project root"
       );
     }
-    const effectiveSandbox = explainer
-      ? "read-only"
-      : executionYolo
-      ? "danger-full-access"
-      : "workspace-write";
+    const effectiveSandbox = "danger-full-access";
     const configuredSkillPaths = [
       ...request.skillPaths,
       ...(request.autoSkillPaths ?? [])
@@ -308,21 +305,8 @@ export class CodexRunner {
     const args = [
       "--strict-config",
       ...(nativeProfileHome ? ["-c", 'model_provider="openai"'] : []),
-      "--disable",
-      "multi_agent",
-      "--disable",
-      "plugins",
-      // A host Codex installation may expose connector/app MCP resources even
-      // with user config ignored.  Workflow Agents must only see the
-      // invocation-scoped workspace/control servers; app discovery otherwise
-      // makes the model call external resources and can also trigger a
-      // sandbox mount outside the project.
-      "--disable",
-      "apps",
-      "--disable",
-      "skill_search",
-      ...(sessionPolicy.disableCodexGoals ? ["--disable", "goals"] : []),
-      ...(explainer ? ["--disable", "shell_tool", "--disable", "browser_use"] : []),
+      "--disable", "skill_search",
+    "--enable", "skip_host_skill_discovery",
       ...(executionYolo
         ? ["--dangerously-bypass-approvals-and-sandbox"]
         : ["-a", "never", "-s", effectiveSandbox]),
@@ -348,6 +332,7 @@ export class CodexRunner {
       ...(gatewayModelCatalog ? ["-c", `model_catalog_json=${JSON.stringify(gatewayModelCatalog)}`] : []),
       "-c",
       "skills.bundled.enabled=false",
+    "-c", "skills.include_instructions=false",
       "-c",
       tomlSkillConfig(skillConfig),
       "-c",
@@ -732,7 +717,8 @@ export class CodexRunner {
 
     try {
       if (!signal.aborted) {
-        const configuredMandate = agentConfig.instructions.trim();
+        const configuredMandate = agentConfig.instructions.trim() +
+          (!explainer && !this.options.workflowPromptPrepared ? `\n\n${selectedSkillInstructions(stagedSkillPaths)}` : "");
         const nativePrompt = explainer || this.options.workflowPromptPrepared
           ? `${configuredMandate}\n`
           : `${configuredMandate}\n\n项目入口：${request.projectPath}\n\n本轮直接消息：\n来源：OpenFARS\n内容：${await fs.readFile(request.inboxPath, "utf8")}\n`;

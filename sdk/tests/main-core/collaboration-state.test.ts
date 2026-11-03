@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectGitState, PullRequestRecord } from "../../src/core/types.js";
 import { initializeCollaborationStateSchema } from "../../src/core/collaboration-state/schema.js";
 import {
@@ -1245,6 +1245,89 @@ describe("CollaborationStateDatabase writer authority", () => {
 });
 
 describe("Writer lease acquisition errors", () => {
+  it.each(["ROLLBACK", "ABORT", "cleanup-failure"] as const)(
+    "preserves the original in-memory renewal error with %s cleanup", failure => {
+      const raw = new DatabaseSync(":memory:");
+      raw.exec(`CREATE TABLE writer_service_lease (
+        singleton INTEGER PRIMARY KEY, service_id TEXT, instance_id TEXT,
+        host_id TEXT, epoch INTEGER, expires_at_ms INTEGER, renewed_at_ms INTEGER);
+        INSERT INTO writer_service_lease VALUES (1, 's', 'i', 'h', 1, 120000, 90000);
+        CREATE TRIGGER probe BEFORE UPDATE ON writer_service_lease
+        BEGIN SELECT RAISE(${failure === "ROLLBACK" ? "ROLLBACK" : "ABORT"}, 'original_failure'); END;`);
+      const lease = { serviceId: "s", instanceId: "i", hostId: "h", epoch: 1, expiresAtMs: 120000 };
+      const state = Reflect.construct(CollaborationStateDatabase, [raw,
+        { now: () => 100000, leaseDurationMs: 30000 }, lease, {}]) as CollaborationStateDatabase;
+      const exec = raw.exec.bind(raw);
+      const calls = vi.spyOn(raw, "exec").mockImplementation(sql => {
+        if (sql === "ROLLBACK" && failure === "cleanup-failure") throw Error("secondary cleanup failure");
+        return exec(sql);
+      });
+      try {
+        expect(() => state.renewWriterLease()).toThrow(expect.objectContaining({
+          message: "original_failure", code: "ERR_SQLITE_ERROR", errcode: 1811
+        }));
+        expect(calls.mock.calls.filter(([sql]) => sql === "ROLLBACK")).toHaveLength(failure === "ROLLBACK" ? 0 : 1);
+        expect(state.writerLease()).toEqual(lease);
+        expect(state.writerLeaseDiagnostics()).toEqual({ lease, lastSuccessfulRenewalAtMs: null,
+          lastRenewalAttempt: { startedAtMs: 100000, durationMs: expect.any(Number), stage: "update",
+            outcome: "failed", transactionActive: failure === "cleanup-failure" } });
+        expect(raw.prepare("SELECT expires_at_ms, renewed_at_ms FROM writer_service_lease").get())
+          .toMatchObject({ expires_at_ms: 120000, renewed_at_ms: 90000 });
+      } finally {
+        calls.mockRestore();
+        if (raw.isTransaction) raw.exec("ROLLBACK");
+        state.close();
+      }
+    });
+
+  it("records confirmed renewals without advancing them on a failed heartbeat", async () => {
+    const fixture = await stateFixture();
+    const inspect = new DatabaseSync(fixture.databasePath);
+    try {
+      expect(fixture.database.writerLeaseDiagnostics().lastSuccessfulRenewalAtMs).toBeNull();
+      fixture.clock.value += 100;
+      const renewedAt = fixture.clock.value;
+      const lease = fixture.database.renewWriterLease();
+      const copy = fixture.database.writerLeaseDiagnostics();
+      expect(copy).toMatchObject({ lease, lastSuccessfulRenewalAtMs: renewedAt,
+        lastRenewalAttempt: { stage: "commit", outcome: "succeeded", transactionActive: false } });
+      copy.lease.epoch = 999; copy.lastRenewalAttempt!.stage = "begin";
+      expect(fixture.database.writerLeaseDiagnostics()).toMatchObject({ lease,
+        lastRenewalAttempt: { stage: "commit" } });
+      inspect.exec(`CREATE TRIGGER reject_heartbeat BEFORE UPDATE ON writer_service_lease
+        BEGIN SELECT RAISE(ROLLBACK, 'heartbeat_failed'); END;`);
+      fixture.clock.value += 100;
+      expect(() => fixture.database.renewWriterLease()).toThrow("heartbeat_failed");
+      expect(fixture.database.writerLeaseDiagnostics()).toMatchObject({ lease,
+        lastSuccessfulRenewalAtMs: renewedAt,
+        lastRenewalAttempt: { startedAtMs: fixture.clock.value, stage: "update", outcome: "failed", transactionActive: false } });
+      inspect.exec("DROP TRIGGER reject_heartbeat");
+      fixture.database.renewWriterLease();
+      expect(fixture.database.writerLeaseDiagnostics().lastSuccessfulRenewalAtMs).toBe(fixture.clock.value);
+    } finally { inspect.close(); }
+  });
+
+  it("reports a failed BEGIN without rolling back another transaction or extending the lease", async () => {
+    const fixture = await stateFixture();
+    const raw = Reflect.get(fixture.database, "database") as DatabaseSync;
+    const blocker = new DatabaseSync(fixture.databasePath);
+    const lease = fixture.database.writerLease();
+    raw.exec("PRAGMA busy_timeout=1");
+    blocker.exec("BEGIN IMMEDIATE");
+    try {
+      expect(() => fixture.database.renewWriterLease()).toThrow(expect.objectContaining({ errcode: 5 }));
+      expect(fixture.database.writerLeaseDiagnostics()).toMatchObject({ lease, lastSuccessfulRenewalAtMs: null,
+        lastRenewalAttempt: { stage: "begin", outcome: "failed", transactionActive: false } });
+    } finally { blocker.exec("ROLLBACK"); blocker.close(); }
+    raw.exec("BEGIN IMMEDIATE");
+    try {
+      expect(() => fixture.database.renewWriterLease()).toThrow("within a transaction");
+      expect(raw.isTransaction).toBe(true);
+      expect(fixture.database.writerLease()).toEqual(lease);
+    } finally { raw.exec("ROLLBACK"); }
+    expect(() => fixture.database.renewWriterLease()).not.toThrow();
+  });
+
   it.each(["renew", "release", "mutation"] as const)("preserves the original SQLite error after automatic rollback during %s", async operation => {
     const fixture = await stateFixture();
     const inspect = new DatabaseSync(fixture.databasePath);

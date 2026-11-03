@@ -113,7 +113,7 @@ describe("prepareInvocationInputs", () => {
       expect(authority.readRoots).not.toContain(await fsRealpath(projectRoot));
       expect(authority.writeRoots).not.toContain(userInputsPath);
       expect(filesystemAuthorityPrompt(authority, { workspacePath: executionWorktree, inboxPath: memory, memoryPath: memory, userInputsPath }))
-        .toContain("User-supplied files: rootId=");
+        .toContain("User-supplied files: ");
       await writeFile(path.join(userInputs, "later.txt"), "added after invocation preparation");
       expect(await readFile(path.join(userInputsPath!, "later.txt"), "utf8")).toBe("added after invocation preparation");
     } finally { await rm(root, { recursive: true, force: true }); }

@@ -35,7 +35,8 @@ describe("Hermes isolated native home and resume route binding", () => {
     expect(config.platform_toolsets.acp).toEqual([]);
     expect(config.model).toMatchObject({ provider: "custom", default: "fixture-model", context_length: 256000 });
     expect(config.model.api_key).toBeUndefined();
-    expect(config.agent.disabled_toolsets).toContain("delegation");
+    expect(config.agent.disabled_toolsets).not.toContain("delegation");
+    expect(config.agent.disabled_toolsets).toEqual(["skills"]);
     expect(config.auxiliary.title_generation).toEqual({ enabled: false, model_upgrade_enabled: false });
     expect(await fs.readdir(args.home)).toEqual(["config.yaml"]);
   });
@@ -56,9 +57,11 @@ describe("Hermes isolated native home and resume route binding", () => {
     database(args.home, { cwd: path.join(args.home, "other") });
     await expect(prepareHermesSettings(args)).rejects.toMatchObject({ code: "SESSION_RESUME_FAILED" });
   });
-  it("only yolo enables native terminal and file tools", async () => {
+  it("keeps the complete native ACP collection when the adapter enables native tools", async () => {
     const args = await input(); delete (args.session as { resumedAt?: string }).resumedAt;
     await prepareHermesSettings({ ...args, allowNativeTools: true });
-    expect(JSON.parse(await fs.readFile(path.join(args.home, "config.yaml"), "utf8")).platform_toolsets.acp).toEqual(["terminal", "file"]);
+    const config = JSON.parse(await fs.readFile(path.join(args.home, "config.yaml"), "utf8"));
+    expect(config.platform_toolsets.acp).toEqual(["hermes-acp"]);
+    expect(config.agent.disabled_toolsets).toEqual(["skills"]);
   });
 });

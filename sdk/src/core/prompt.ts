@@ -38,10 +38,18 @@ ${SHARED_WORKSPACE_MEMORY}
 `;
 
 const APPEND_TOOL_INSTRUCTION =
-  "When this invocation has the injected `scienceevolve_append_file` tool, use `scienceevolve_append_file(path, content)` for additions to shared files without reconstructing their prior contents. The path is relative to the project workspace, content is appended verbatim, and exact-match patches must not be used to simulate appends. Process and whole-invocation retries reuse the same workspace: before creating a formal deliverable, check whether its target already exists; never append a second full document or another H1 to an existing deliverable. Reuse and publish a complete existing file, or report that an explicit versioned replacement is needed. Memory.md remains the append-only exception for incremental notes.";
+  "Use native file tools for project files. Before creating a deliverable, check whether it already exists in this retained workspace. Preserve other Agents' work and process evidence; do not append a duplicate complete document during retries. Append incremental Memory notes with native tools. Prepare your finish_task Memory before the final commit and deliver the complete round in one PR; pre-merge corrections update that PR.";
 
 const FILE_EDIT_INSTRUCTION =
-  "Before editing any file with `apply_patch` or another write tool, re-read the target file's current contents (including the exact region to change) in this turn; do not rely on stale earlier output. Use a valid minimal patch whose context is copied verbatim from that fresh read. If a patch reports verification failure, re-read the file and generate a new patch instead of retrying the same hunk. Never use a patch or another writer to bypass a user requirement that a deliverable be produced by one append: validate the complete content before that append. `Memory.md` is append-only: use `scienceevolve_append_file` for durable notes and never rewrite it with `apply_patch`.";
+  "Before editing any file with `apply_patch` or another write tool, re-read the target file's current contents, including the exact region to change, and copy its context. On verification failure, re-read and generate a new patch. Preserve existing evidence and other Agents' changes. Use native tools to append durable Memory notes, and platform tools for every Git/PR operation.";
+
+/** Update only exact retired platform defaults; preserve user-authored instructions. */
+export function normalizeNativeToolGuidance(text: string): string {
+  return text
+    .replace("When this invocation has the injected `scienceevolve_append_file` tool, use `scienceevolve_append_file(path, content)` for additions to shared files without reconstructing their prior contents. The path is relative to the project workspace, content is appended verbatim, and exact-match patches must not be used to simulate appends. Process and whole-invocation retries reuse the same workspace: before creating a formal deliverable, check whether its target already exists; never append a second full document or another H1 to an existing deliverable. Reuse and publish a complete existing file, or report that an explicit versioned replacement is needed. Memory.md remains the append-only exception for incremental notes.", APPEND_TOOL_INSTRUCTION)
+    .replace("Before editing any file with `apply_patch` or another write tool, re-read the target file's current contents (including the exact region to change) in this turn; do not rely on stale earlier output. Use a valid minimal patch whose context is copied verbatim from that fresh read. If a patch reports verification failure, re-read the file and generate a new patch instead of retrying the same hunk. Never use a patch or another writer to bypass a user requirement that a deliverable be produced by one append: validate the complete content before that append. `Memory.md` is append-only: use `scienceevolve_append_file` for durable notes and never rewrite it with `apply_patch`.", FILE_EDIT_INSTRUCTION)
+    ;
+}
 
 const EXECUTION_EVIDENCE_INSTRUCTION =
   "Claim an independent computation, executable check, or script result only when an active tool actually ran it in this invocation or the inbox contains the exact durable execution evidence. If the assignment requires execution but the active permission/tool set cannot perform it, report that evidence gap instead of inventing a result. Execution alone does not validate the prose: before publishing or returning, mechanically check every checkable number, aggregate, ordering/tie-break, and acceptance fact stated in the deliverable against the actual output. When citing multiple validators as agreeing, compare their material fields exactly and disclose every mismatch; never infer agreement merely because both commands exited successfully.";
@@ -91,14 +99,14 @@ export function effectiveAgentInstructions(
   agent: AgentName,
   instructions: string
 ): string {
-  const text = instructions.trimEnd().replace(
+  const text = normalizeNativeToolGuidance(instructions.trimEnd().replace(
     LEGACY_WORKSPACE_MEMORY,
     SHARED_WORKSPACE_MEMORY
-  );
+  ));
   const additions = [
     text.includes("Persistent workspace and memory:") ? "" : WORKSPACE_MEMORY.trim(),
     text.includes(USER_INPUT_FILES_INSTRUCTION) ? "" : USER_INPUT_FILES_INSTRUCTION,
-    text.includes("scienceevolve_append_file(path, content)")
+    text.includes(APPEND_TOOL_INSTRUCTION)
       ? ""
       : APPEND_TOOL_INSTRUCTION,
     text.includes("Before editing any file with `apply_patch`")

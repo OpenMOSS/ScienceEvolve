@@ -358,6 +358,7 @@ export class CollaborationGitFacade {
     repository: GitHubRepositoryFact;
     execution: PullRequestAuthority;
     expectedBase: string;
+    expectedHead?: string;
     signal?: AbortSignal;
   }): Promise<GitHubPullRequestFact | undefined> {
     return this.options.provider.observePullRequestForExecution(
@@ -366,7 +367,8 @@ export class CollaborationGitFacade {
       request.execution.executionBranch,
       request.expectedBase,
       request.execution.id,
-      request.signal
+      request.signal,
+      request.expectedHead
     );
   }
 
@@ -1065,6 +1067,40 @@ export class CollaborationGitFacade {
       signal: request.signal
     });
     return { ...pullRequest, localSynchronization };
+  }
+
+  async updatePullRequest(request: {
+    repository: GitHubRepositoryFact;
+    execution: PullRequestAuthority;
+    ownershipEpoch: number;
+    operationId: OperationId;
+    providerNumber: number;
+    expectedHead: string;
+    expectedBase: string;
+    title: string;
+    body: string;
+    signal?: AbortSignal;
+  }): Promise<GitHubPullRequestFact> {
+    if (request.execution.ownershipEpoch !== request.ownershipEpoch) {
+      throw new GitInputError("Remote mutation ownership epoch is stale");
+    }
+    await this.assertClosingPublication(request.execution, request.ownershipEpoch, request.expectedHead, request.signal);
+    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, request.execution.executionBranch, "provider.mutate");
+    return this.options.provider.updatePullRequest({
+      owner: request.repository.owner,
+      repository: request.repository.name,
+      providerNumber: request.providerNumber,
+      ownerExecutionId: request.execution.id,
+      operation: {
+        operationId: request.operationId,
+        ownerExecutionId: request.execution.id,
+        ownershipEpoch: request.ownershipEpoch,
+        expectedHead: request.expectedHead,
+        expectedBase: request.expectedBase
+      },
+      title: request.title, body: request.body,
+      signal: request.signal
+    });
   }
 
   async closePullRequest(request: {

@@ -52,7 +52,7 @@ async function fixture(run: AgentRunner["run"], existing?: string) {
   const sdk = await createMainSdkClient(runtime); clients.push(sdk);
   const gateway = (await sdk.gateways.list())[0] ?? await sdk.gateways.add({ name: "Input fixture",
     url: "https://93.184.216.34/v1", apiKey: "opaque-input-fixture", models: ["fixture"],
-    defaultModel: "fixture", protocol: "responses" });
+    defaultModel: "fixture", protocol: "responses", autoReasoning: false });
   expect((await sdk.gateways.test(gateway.id, "codex", "fixture")).status).toBe("passed");
   const workflow = validateMainWorkflowConfig({ git: { enabled: false },
     agents: { main: { model: "fixture", skills: [], autoSkills: [] } },
@@ -175,7 +175,7 @@ describe("SDK shared inputs with actual local kernel and SQLite, simulated Agent
     expect(authority.readRoots).not.toContain(await fs.realpath(project));
     expect(authority.writeRoots).not.toContain(canonical);
     expect(filesystemAuthorityPrompt(authority, { workspacePath: worktree, inboxPath: memory, memoryPath: memory, userInputsPath: canonical }))
-      .toContain("User-supplied files: rootId=");
+      .toContain("User-supplied files: ");
     await expect(fs.access(path.join(worktree, "user_inputs"))).rejects.toMatchObject({ code: "ENOENT" });
     await fs.writeFile(path.join(inputs, "later.txt"), "Live shared input");
     expect(await fs.readFile(path.join(canonical!, "later.txt"), "utf8")).toBe("Live shared input");

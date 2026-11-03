@@ -400,6 +400,8 @@ export interface ExplainerInvocationRequest {
   harnessId: HarnessId;
   gateway: {
     modelContextWindows?: Record<string, number>;
+    modelReasoning?: import("../gateway-reasoning.js").GatewayModelReasoningConfigs;
+    autoReasoning?: boolean;
     id: string;
     name: string;
     url: string;

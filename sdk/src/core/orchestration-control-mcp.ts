@@ -24,6 +24,7 @@ import { CollaborationStateError } from "./collaboration-state/errors.js";
 type JsonRpcRequest = { id?: string | number | null; method?: string; params?: Record<string, unknown> };
 export type CapabilityContext = {
   projectState?: boolean;
+  nativeBackgroundJobs?: boolean;
   projectStateReconciliation?: boolean;
   workflowAuthoringPath?: string;
   scopedAgentRouting?: boolean;
@@ -69,7 +70,7 @@ const TOOL_NAMES = [
   "github_create_pr",
   "github_get_pr",
   "github_merge_pr",
-  "github_close_pr",
+  "github_close_pr", "github_update_pr",
   "git_prepare_conflict",
   "git_log",
   "git_show",
@@ -95,7 +96,7 @@ const GIT_TOOL_NAMES = new Set<typeof TOOL_NAMES[number]>([
   "github_create_pr",
   "github_get_pr",
   "github_merge_pr",
-  "github_close_pr",
+  "github_close_pr", "github_update_pr",
   "git_prepare_conflict",
   "git_log", "git_show", "git_diff", "git_revert"
 ]);
@@ -349,8 +350,16 @@ export function toolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[]
   const currentMain = context.terminalPushCoordination ? context.terminalPushCoordination.role === "main"
     : context.collaboration ? context.collaboration.role === "scoped-main"
       : context.kind === "main" && !context.worktreeClosing && !context.terminalPushObservation;
-  return [...controlToolsFor(context), ...(context.projectState ? projectStateTools(currentMain && context.projectStateReconciliation !== false,
+  return [...(context.nativeBackgroundJobs && context.projectState ? [nativeBackgroundJobTool()] : []), ...controlToolsFor(context), ...(context.projectState ? projectStateTools(currentMain && context.projectStateReconciliation !== false,
     context.collaboration?.role === "scoped-leader") : [])];
+}
+
+function nativeBackgroundJobTool(): RuntimeMcpToolDefinition {
+  return { name: "background_job", description: "Retain and observe a native background process you started with the Harness. For handoff, start an isolated group (setsid), keep its leader alive while children run, and register its real PID and a stable jobId. This never starts commands or finishes your Workflow node. Status reports observed process state, not experiment success. Decide whether to wait, explicitly stop, or leave a registered job running for monitoring after your Harness returns. User project Pause/Resume/Stop controls registered jobs; ordinary return preserves them.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["operation", "jobId"], properties: {
+      operation: { enum: ["register", "status", "pause", "resume", "stop"] }, jobId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$" },
+      pid: { type: "integer", minimum: 2 }, reason: { type: "string", maxLength: 2000 }
+    } } };
 }
 
 function controlToolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[] {
@@ -495,7 +504,7 @@ function controlToolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[]
   // These controls are confined to the invocation's validated capability and
   // project workspace; explicit hints avoid an impossible headless prompt.
   return tools.filter((tool) => !context.canonicalFinalIntegration ||
-    ["finish_task", "git_get_operation", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr"].includes(tool.name)).map((tool) => ({
+    ["finish_task", "git_get_operation", "github_create_pr", "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr"].includes(tool.name)).map((tool) => ({
     ...tool,
     ...(context.canonicalFinalIntegration && tool.name === "github_get_pr" ? {
       description: "Observe only this canonical delivery's exact owned PR; historical repair sources belong to a new business task.",
@@ -556,7 +565,7 @@ function agentGitTools(): RuntimeMcpToolDefinition[] {
     },
     {
       name: "git_push",
-      description: "Push the current Agent execution branch. Ordinary business pushes do not stage files or create a commit; without a business commit the result is not_committed. When changes need committing, git_stage and git_commit are provided by the filesystem-authority MCP; if not visible, use the Harness's existing tool discovery within current permissions. For a canonical group publication with no new commit, observe its already-published remote head and return already_published only when it exactly matches the local head; no extra commit or push is created. Repository, branch and ownership are bound to this invocation; inspect the actual returned result.",
+      description: "Push the current Agent execution branch. Ordinary business pushes do not stage files or create a commit; without a business commit the result is not_committed. When changes need committing, git_stage and git_commit are provided by the platform Git MCP; if not visible, use the Harness's existing tool discovery within current permissions. For a canonical group publication with no new commit, observe its already-published remote head and return already_published only when it exactly matches the local head; no extra commit or push is created. Repository, branch and ownership are bound to this invocation; inspect the actual returned result.",
       inputSchema: { type: "object", additionalProperties: false, required: ["callId"], properties: {
         callId: CALL_ID_SCHEMA, reason: { type: "string", maxLength: MAX_TEXT }
       } }
@@ -578,9 +587,17 @@ function agentGitTools(): RuntimeMcpToolDefinition[] {
     },
     {
       name: "github_merge_pr",
-      description: "Merge your exact pull request after checking its head and direct base, and synchronize its confirmed merged target. Merging a PR does not finish your active task: you may continue editing, then commit and push each new head and deliver it through its own matching PR. To recover an unfinished merge whose response was lost, reuse that original callId and the same arguments, including reason. This reconciles your original operation even if GitHub already merged, without another remote merge. Inspect actual results and decide the next action yourself.",
+      description: "Merge your exact pull request after checking its head and direct base, and synchronize its confirmed merged target. Prepare this round completely, including validation and your Agent-authored Memory, before its final delivery. Use one PR for this round; push pre-merge corrections to that same PR. Merging confirms Git delivery, while task completion still requires its separate receipt. Do not create another PR merely for internal bookkeeping or a lost response. To recover an unfinished merge whose response was lost, reuse that original callId and the same arguments, including reason. This reconciles your original operation even if GitHub already merged, without another remote merge. Inspect actual results and decide the next action yourself.",
       inputSchema: { type: "object", additionalProperties: false, required: ["callId", "providerNumber"], properties: {
         callId: CALL_ID_SCHEMA, providerNumber: { type: "integer", minimum: 1 }, reason: { type: "string", maxLength: MAX_TEXT }
+      } }
+    },
+    {
+      name: "github_update_pr",
+      description: "Update the title and body of your existing exact PR. Code corrections use platform staging/commit/push and keep that same open PR. Retains provider ownership markers, expected head/base, original request identity and observed result; no new PR, merge or task completion is performed.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["callId", "providerNumber", "title", "body"], properties: {
+        callId: CALL_ID_SCHEMA, providerNumber: { type: "integer", minimum: 1 },
+        title: { type: "string", minLength: 1, maxLength: 250 }, body: { type: "string", maxLength: 60000 }
       } }
     },
     {
@@ -599,7 +616,7 @@ function agentGitTools(): RuntimeMcpToolDefinition[] {
 }
 
 function finishTaskTool(): RuntimeMcpToolDefinition {
-  return { name: "finish_task", description: "Request completion of your current logical task, preserving its existing handoff and Agent-authored memory. For a new Git business task supply memory or summary: it is appended once to your actual Git worktree's agent-memory/<agent>/Memory.md. Inspect git_status and commit/push/integrate this work record and every other workspace change before returning. Other tasks may omit summary when a handoff already exists or will be returned by this turn. If the current inbox already supplies an accepted receipt for this same task, preserve its immutable summary/memory and supplement only the missing actions; a new physical invocation does not require a replacement receipt. This does not complete a group/project, release successors, or close your tools; continue any authorized completion or workflow actions. Saving failures are returned to you.",
+  return { name: "finish_task", description: "Request completion of your current logical task, preserving its existing handoff and Agent-authored memory. For a new Git business task supply memory or summary before your final commit/PR: this call appends that Agent-authored record once to agent-memory/<agent>/Memory.md in your actual worktree. This is a completion request; it leaves your tools open. Inspect git_status, then stage, commit, push and deliver all chosen business changes and this Memory together through one PR. Complete validation and corrections before merging; update the same open PR when needed. The system confirms completion only after the real delivery checks pass. Other tasks may omit summary when a handoff already exists or will be returned by this turn. If the current inbox already supplies an accepted receipt for this same task, preserve its immutable summary/memory and supplement only the missing actions; a new physical invocation does not require a replacement receipt. This does not complete a group/project, release successors, or close your tools; continue any authorized completion or workflow actions. Saving failures are returned to you.",
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     inputSchema: { type: "object", additionalProperties: false, required: ["callId"], properties: {
       callId: CALL_ID_SCHEMA, summary: { type: "string", minLength: 1, maxLength: MAX_TEXT },
@@ -859,6 +876,10 @@ function agentGitAction(name: typeof TOOL_NAMES[number], args: Record<string, un
       ...(args.sourceOperationId === undefined ? {} : { sourceOperationId: text(args.sourceOperationId, "sourceOperationId", 1024) }),
       ...(args.providerNumber === undefined ? {} : { providerNumber: positiveInteger(args.providerNumber, "providerNumber") }) };
   }
+  if (name === "github_update_pr") return { tool: name,
+    providerNumber: positiveInteger(args.providerNumber, "providerNumber"),
+    title: text(args.title, "title", 250), body: args.body === "" ? "" : text(args.body, "body", 60_000)
+  };
   if (name === "github_merge_pr" || name === "github_close_pr") return {
     tool: name,
     providerNumber: positiveInteger(args.providerNumber, "providerNumber"),
@@ -1233,6 +1254,16 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
   }
   const params = request.params ?? {};
   const name = typeof params.name === "string" ? params.name : "";
+  if (name === "background_job") {
+    try {
+      if (!context.nativeBackgroundJobs || !context.projectState || !(context.bridgePath || context.bridgePort !== undefined)) throw new Error("Background job tools are unavailable for this invocation");
+      const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
+      const response = await requestBridge(context, { backgroundJob: args }, `job:${request.id}`);
+      if (response.ok !== true || response.stateResult === undefined) throw new BridgeActionRejectedError(bridgeActionRejection(response.error, context.stateVersion, true));
+      rpcResult(request.id, { content: [{ type: "text", text: JSON.stringify(response.stateResult) }], structuredContent: response.stateResult });
+    } catch (error) { rpcToolError(request.id, rejectionForError(error, context.stateVersion, true)); }
+    return;
+  }
   if (PROJECT_STATE_TOOL_NAMES.includes(name as typeof PROJECT_STATE_TOOL_NAMES[number])) {
     try {
       if (!context.projectState || !toolsFor(context).some(tool => tool.name === name) || !(context.bridgePath || context.bridgePort !== undefined))
@@ -1380,7 +1411,8 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
     rpcResult(request.id, { content: [{
       type: "text",
       text: controlResultDisplayText(staged.envelope, staged.result, staged.receiptId)
-    }], ...(gitResult ? { structuredContent: { actionAccepted: true, git: gitResult, result: staged.result ?? null } } : {}) });
+    }], ...(gitResult ? { structuredContent: { actionAccepted: true, git: gitResult, result: staged.result ?? null } }
+      : ["publish_artifact", "select_display"].includes(action.tool) ? { structuredContent: { actionAccepted: true, status: "staged", committed: false } } : {}) });
   } catch (error) {
     const rejection = rejectionForError(error, context.stateVersion);
     rpcToolError(request.id, rejection);

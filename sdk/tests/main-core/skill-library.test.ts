@@ -120,7 +120,7 @@ describe("categorized builtin Skills", () => {
     const workspace = path.join(f.root, "workspace");
     await fs.mkdir(workspace);
     const staged = await stageInvocationSkills([writer], [method], workspace, [writer, common, method], "main");
-    expect(staged.skillPaths.map(p => path.basename(path.dirname(p)))).toEqual(["ccf-paper-writer", "ccf-common"]);
+    expect(staged.skillPaths.map(p => path.basename(path.dirname(p)))).toEqual(["ccf-paper-writer"]);
     expect(staged.autoSkillPaths.map(p => path.basename(path.dirname(p)))).toEqual(["method"]);
     for (const p of [...staged.skillPaths, ...staged.autoSkillPaths]) {
       expect(path.dirname(path.dirname(p))).toBe(path.join(workspace, ".scienceevolve", "agent-skills", "main", "skills"));

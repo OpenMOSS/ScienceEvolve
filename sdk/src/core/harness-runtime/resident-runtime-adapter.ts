@@ -1116,6 +1116,8 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
     const stagingDirectory = path.dirname(stagingPath);
     await fs.mkdir(stagingDirectory, { recursive: true, mode: 0o700 });
     const service = this.#options.controlServiceFactory({
+      nativeJobScope: { projectId: request.project.id, projectPath: request.projectPath, agentId: request.agent, invocationId: turn.invocationId,
+        workspacePath: request.workspacePath, ...(request.executionContext && "executionId" in request.executionContext ? { executionId: request.executionContext.executionId } : {}) },
       projectId: request.project.id,
       agent: request.agent,
       invocationId: turn.invocationId,
@@ -1157,7 +1159,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       bridge = await this.#options.controlBridgeFactory(service, stagingDirectory);
       const control: ControlMcpRequest = {
         ...stripControlAuthority(template),
-        ...(request.onProjectStateRequest ? { projectState: true } : {}),
+        ...(request.onProjectStateRequest ? { projectState: true, nativeBackgroundJobs: true } : {}),
         stagingPath,
         capability,
         capabilityHash: template.capabilityHash,
@@ -2156,6 +2158,7 @@ function discoveryCapabilityContext(
     invocationId: request.invocationId,
     stateVersion: control.stateVersion,
     ...(request.onProjectStateRequest || control.projectState ? { projectState: true } : {}),
+    ...(request.onProjectStateRequest || control.nativeBackgroundJobs ? { nativeBackgroundJobs: true } : {}),
     ...(control.capabilityHash ? { capabilityHash: control.capabilityHash } : {}),
     kind: request.kind,
     candidates: [...control.candidates],

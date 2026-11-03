@@ -19,7 +19,8 @@ describe("canonical workflow evidence roots", () => {
     expect(reference.write).toBe(false); expect(authority.writeRoots).toEqual([proposal]); expect(authority.gitCapability).toBe("none");
     const prompt = filesystemAuthorityPrompt(authority, { workspacePath: workspace, workflowReadDirectory: workflow,
       inboxPath: path.join(workspace, "Inbox.md"), memoryPath: path.join(workspace, "Memory.md"), workflowAuthoringPath: path.join(proposal, "workflow.json") });
-    expect(prompt).toContain(`Authoritative workflow definition (${AUTHORITATIVE_WORKFLOW_REFERENCES.definition}): rootId="${reference.id}", path="definition.json"; read-only.`);
-    expect(prompt).toContain(`Authoritative workflow current state (${AUTHORITATIVE_WORKFLOW_REFERENCES.currentState}): rootId="${reference.id}", path="current-state.json"; read-only.`);
+    expect(prompt).toContain(path.join(workflow, "definition.json"));
+    expect(prompt).toContain(path.join(workflow, "current-state.json"));
+    expect(prompt).not.toContain("rootId");
   });
 });

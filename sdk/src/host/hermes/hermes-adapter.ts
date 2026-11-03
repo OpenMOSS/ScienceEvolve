@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { AgentRunResult } from "../../core/types.js";
 import type { HarnessAdapter, HarnessAdapterContext, HarnessAdapterRequest, InvocationInputs, SessionRef } from "../../core/harness-runtime/contracts.js";
@@ -8,7 +7,6 @@ import { HarnessRuntimeError } from "../../core/harness-runtime/errors.js";
 import { OfficialEventBridge } from "../../core/harness-runtime/official-event-bridge.js";
 import { JsonLineConnection, ResidentTurnActivityClock } from "../../core/harness-runtime/resident-native-driver.js";
 import { HERMES_DESCRIPTOR as descriptor } from "./descriptor.js";
-import { compileFilesystemAuthority, filesystemAuthorityPrompt, prepareFilesystemAuthorityMcp } from "../../core/harness-runtime/filesystem-authority.js";
 import { DEFAULT_RAW_LOG_LIMIT_BYTES } from "../../core/harness-runtime/process-host.js";
 import { AdapterBase, adapterResult, gatewayModelContextWindow, harnessExecutableLaunch,
   prepareAdapterRuntime, settleAdapterCleanup, writeAdapterLogs, type AdapterRuntimeOptions } from "../../core/harness-runtime/adapters/adapter-utils.js";
@@ -37,27 +35,13 @@ export class HermesAdapter extends AdapterBase implements HarnessAdapter {
     const { request, spec } = context;
     const explainer = spec.purpose === "explainer";
     const probe = spec.purpose === "probe";
-    const allowNativeTools = !explainer && !probe && spec.policy.permission === "yolo";
+    const allowNativeTools = true;
     const runtime = await prepareAdapterRuntime(context, descriptor, this.options, {}, {
       OPENAI_API_KEY: context.route.token, OPENAI_BASE_URL: context.route.baseUrl
     });
     let prompt = spec.prompt;
     const skills = explainer ? [] : [...spec.policy.skillPaths, ...spec.policy.autoSkillPaths];
-    if (!explainer && !probe && !allowNativeTools) {
-      const authority = await compileFilesystemAuthority({
-        role: "legacy", permission: request.permission, gitEnabled: false, serviceUserRoot: os.homedir(),
-        executionWorktree: spec.inputs.workspacePath, ownedMemoryPath: spec.inputs.memoryPath,
-        projectWorktreeRoot: spec.inputs.workspacePath, projectWorktrees: [spec.inputs.workspacePath],
-        protectedRoots: [runtime.home, spec.inputs.runtimePath],
-        inputReadRoots: [...(spec.inputs.userInputsPath ? [spec.inputs.userInputsPath] : []),
-          ...await Promise.all(skills.map(async selected => (await fs.stat(selected)).isDirectory() ? selected : path.dirname(selected)))]
-      });
-      const mcp = await prepareFilesystemAuthorityMcp({ authority, executionRuntimePath: spec.inputs.runtimePath });
-      runtime.mcpRows.push(mcp.row);
-      prompt += `\n\n${filesystemAuthorityPrompt(authority, spec.inputs)}`;
-    }
-    if (explainer) prompt += `\n\nAnswer only from this quoted evidence; no tools are provided:\n${await fs.readFile(spec.inputs.inboxPath, "utf8")}`;
-    else prompt += `\n\n${await hermesSkillPrompt(skills)}`;
+    prompt += `\n\n${await hermesSkillPrompt(skills)}`;
     const prepared = await prepareHermesSettings({ home: runtime.home, cwd: spec.inputs.workspacePath,
       baseUrl: context.route.baseUrl, model: spec.model, contextWindow: gatewayModelContextWindow(request, spec.model),
       allowNativeTools, session: spec.session! });

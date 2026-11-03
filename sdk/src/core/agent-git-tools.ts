@@ -11,7 +11,7 @@ import type { GitExecutionAuthority, GitGroupFinalAuthority, GitHubPullRequestFa
   GitHubRefFact, LocalCheckpointFact, RemoteMergeSyncFact } from "./collaboration-git/contracts.js";
 
 export function isAgentGitAction(tool: string): boolean {
-  return ["git_push", "git_get_operation", "git_reconcile_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr", "git_prepare_conflict", "git_log", "git_show", "git_diff", "git_revert"].includes(tool);
+  return ["git_push", "git_get_operation", "git_reconcile_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr", "github_update_pr", "git_prepare_conflict", "git_log", "git_show", "git_diff", "git_revert"].includes(tool);
 }
 
 export interface AgentGitFacts {
@@ -29,7 +29,7 @@ export interface AgentGitFacts {
  * decisions, conflict repair and provider retries belong to the Agent. */
 export interface AgentGitToolInput {
   git: Pick<CollaborationGitFacade, "checkpointAndPush" | "createPullRequest" | "mergePullRequest"> &
-    Partial<Pick<CollaborationGitFacade, "revertExecution" | "observeHistoricalPullSource" | "inspectExecution" | "reconcilePushOperation" | "prepareConflictResolution" | "closePullRequest" | "observePullRequest" | "observePullRequestForExecution" | "createGroupFinalPullRequest" | "mergeGroupFinalPullRequest" | "refreshRecoveryBase" | "reconcileGroupFinalPullRequest" | "reconcileMergedPullRequest">>;
+    Partial<Pick<CollaborationGitFacade, "revertExecution" | "observeHistoricalPullSource" | "inspectExecution" | "reconcilePushOperation" | "prepareConflictResolution" | "closePullRequest" | "updatePullRequest" | "observePullRequest" | "observePullRequestForExecution" | "createGroupFinalPullRequest" | "mergeGroupFinalPullRequest" | "refreshRecoveryBase" | "reconcileGroupFinalPullRequest" | "reconcileMergedPullRequest">>;
   repository: GitHubRepositoryFact;
   execution: GitExecutionAuthority | GitGroupFinalAuthority;
   base: string;
@@ -56,7 +56,7 @@ export interface AgentGitToolInput {
  * need a bounded provider marker; the journal retains their full authority. */
 export function agentGitOperationId(input: Pick<AgentGitToolInput, "execution" | "recordedOperation" | "recordedRequest"> & {
   envelope: Pick<ControlActionEnvelope, "projectId" | "invocationId" | "callId">;
-}, suffix: "push" | "create" | "merge" | "close"): string {
+}, suffix: "push" | "create" | "merge" | "close" | "update"): string {
   const { execution, envelope } = input;
   const closing = "restrictedClosing" in execution ? execution.restrictedClosing : undefined;
   const legacy = closing
@@ -138,7 +138,7 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
   }
   // Closing retains the original execution/epoch. Its callId may legitimately
   // match an old business call; keep every original operation/request immutable.
-  const operationId = (suffix: "push" | "create" | "merge" | "close") => agentGitOperationId(input, suffix);
+  const operationId = (suffix: "push" | "create" | "merge" | "close" | "update") => agentGitOperationId(input, suffix);
   if (action.tool === "git_get_operation") {
     return queryAgentGitOperation({ ...input, projectId: envelope.projectId, operationId: action.operationId });
   }
@@ -149,7 +149,7 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
       invocationId: envelope.invocationId, callId: envelope.callId, requestedAt: envelope.receivedAt, action,
       ...(expectedHead ? { expectedHead } : {}) });
     onOperationDispatched?.(id, ({ git_push: "git.push", github_create_pr: "pull.create",
-      github_merge_pr: "pull.merge", github_close_pr: "pull.close", git_revert: "git.revert" } as const)[action.tool]);
+      github_merge_pr: "pull.merge", github_close_pr: "pull.close", github_update_pr: "pull.update", git_revert: "git.revert" } as const)[action.tool]);
   };
   const assertPullIdentity = (pull: GitHubPullRequestFact) => {
     if (pull.ownerExecutionId !== execution.id || pull.head !== execution.executionBranch || pull.base !== base ||
@@ -256,6 +256,23 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     if (!facts.pushedHeadSha) throw new Error("Agent must use its confirmed pushed head before creating a PR. Inspect the original push with git_get_operation and reconcile its exact receipt with git_reconcile_push, or use git_push for the current task's pending publication. A local git_status head alone does not confirm a remote push; do not create unrelated changes just to retry publication.");
     const common = { repository, ownershipEpoch: execution.ownershipEpoch, operationId: operationId("create"),
       expectedHead: facts.pushedHeadSha, base, title: action.title, body: action.body, signal };
+    // New requests first observe the current delivery. An original retained
+    // request still goes through its own journal to settle an uncertain POST.
+    if (!input.recordedOperation?.(common.operationId) && !input.recordedRequest?.(common.operationId)) {
+      const existing = facts.pullRequest && git.observePullRequest
+        ? await git.observePullRequest({ repository, providerNumber: facts.pullRequest.providerNumber,
+            ownerExecutionId: execution.id, signal })
+        : await git.observePullRequestForExecution?.({ repository, execution, expectedBase: base,
+            expectedHead: common.expectedHead, signal });
+      if (existing && existing.headSha === common.expectedHead && existing.status !== "closed") {
+        assertPull(existing);
+        facts.pullRequest = existing;
+        return existing;
+      }
+      if (existing && ["open", "unknown", "conflicting"].includes(existing.status)) {
+        throw new Error(`PR #${existing.providerNumber} already exists for this task. Inspect its current head and update that same PR; do not create another PR for a pre-merge correction.`);
+      }
+    }
     if (final && !git.createGroupFinalPullRequest) throw new Error("Canonical PR tool is unavailable");
     recordRequest(common.operationId, action, common.expectedHead);
     const pull = final
@@ -263,11 +280,13 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
       : await git.createPullRequest({ ...common, execution: execution as GitExecutionAuthority });
     assertPull(pull); facts.pullRequest = pull; return pull;
   }
-  if (action.tool === "github_get_pr" || action.tool === "github_merge_pr" || action.tool === "github_close_pr") {
+  if (action.tool === "github_get_pr" || action.tool === "github_merge_pr" || action.tool === "github_close_pr" || action.tool === "github_update_pr") {
     if (!git.observePullRequest || !git.observePullRequestForExecution) throw new Error("PR observation tool is unavailable");
-    const pull = action.providerNumber !== undefined
-      ? await git.observePullRequest({ repository, providerNumber: action.providerNumber, ownerExecutionId: execution.id, signal })
-      : await git.observePullRequestForExecution({ repository, execution, expectedBase: base, signal });
+    const providerNumber = action.providerNumber ?? facts.pullRequest?.providerNumber;
+    const pull = providerNumber !== undefined
+      ? await git.observePullRequest({ repository, providerNumber, ownerExecutionId: execution.id, signal })
+      : await git.observePullRequestForExecution({ repository, execution, expectedBase: base,
+          ...(facts.pushedHeadSha ? { expectedHead: facts.pushedHeadSha } : {}), signal });
     if (!pull) {
       if (action.tool === "github_merge_pr") throw new Error("Agent PR is missing; inspect its real provider result");
       return { status: "missing" };
@@ -293,6 +312,14 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     // current task's publishable head; explicit merge/close actions may bind
     // the observed PR they intentionally act on.
     facts.pushedHeadSha ??= pull.headSha!;
+    if (action.tool === "github_update_pr") {
+      if (!git.updatePullRequest) throw new Error("Platform PR metadata update is unavailable");
+      recordRequest(operationId("update"), action, pull.headSha!);
+      const updated = await git.updatePullRequest({ repository, execution, ownershipEpoch: execution.ownershipEpoch,
+        operationId: operationId("update"), providerNumber: action.providerNumber, expectedHead: pull.headSha!,
+        expectedBase: base, title: action.title, body: action.body, signal });
+      assertPull(updated); facts.pullRequest = updated; return updated;
+    }
     if (action.tool === "github_close_pr") {
       // Only the owning Agent chooses closure. Do not run this on failure,
       // return, cancellation or recovery; preserve the actual provider result.

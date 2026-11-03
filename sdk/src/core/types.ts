@@ -980,6 +980,7 @@ export interface OperationRecord {
     | "pull.create"
     | "pull.merge"
     | "pull.close"
+    | "pull.update"
     | "memory.commit";
   payloadHash: string;
   status: "prepared" | "observed" | "finalized" | "uncertain" | "failed" | "superseded";
@@ -1087,7 +1088,7 @@ export interface ProjectRuntimeProjection {
   status: ProjectStatus;
   phase: string;
   waiting?: {
-    kind: "recovery" | "management" | "workflow-adjustment";
+    kind: "recovery" | "management" | "workflow-adjustment" | "configuration" | "authorization" | "user-input" | "backoff";
     reason: string;
     agentId?: AgentName;
     groupRunId?: string;
@@ -1922,6 +1923,7 @@ export type ControlAction =
   | { tool: "github_create_pr"; base: string; title: string; body: string }
   | { tool: "github_get_pr"; providerNumber?: number; sourceOperationId?: OperationId }
   | { tool: "github_merge_pr"; providerNumber: number; reason?: string }
+  | { tool: "github_update_pr"; providerNumber: number; title: string; body: string }
   | { tool: "github_close_pr"; providerNumber: number; reason?: string }
   | { tool: "git_prepare_conflict" }
   | { tool: "git_log"; revision?: string; offset?: number; limit?: number }
@@ -1990,6 +1992,7 @@ export interface ControlActionEnvelope {
 export interface ControlMcpRequest {
   /** Built-in collaboration capability, independent of business tool selection. */
   projectState?: boolean;
+  nativeBackgroundJobs?: boolean;
   projectStateReconciliation?: boolean;
   /** Server-pinned physical proposal; apply_workflow still uses workflow.json. */
   workflowAuthoringPath?: string;

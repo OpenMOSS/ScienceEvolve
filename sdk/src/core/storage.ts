@@ -301,6 +301,11 @@ export interface ProjectStorageOptions {
   workspaceResolver?: (projectId: string) => Promise<string | undefined>;
 }
 
+export class PublishedArtifactIntegrityError extends Error {
+  constructor(readonly code: "ARTIFACT_INTEGRITY_MISSING" | "ARTIFACT_VERSION_MISMATCH", message: string,
+    readonly expected: { size: number; sha256?: string }, readonly actual?: { size: number; sha256: string }) { super(message); }
+}
+
 export class ProjectStorage {
   private contextIndexPublisher?: (input: { projectId: string; projectPath: string; inboxPath: string; sources: readonly AgentContextSource[] }) => Promise<AgentContextIndex | undefined>;
 
@@ -844,16 +849,22 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   }
 
   async appendEvent(state: ProjectState, draft: ProjectEventDraft, beforeCommit?: () => void): Promise<TimelineEvent> {
-    return this.mutateProject(state.id, () =>
-      this.appendEventUntracked(state, draft, beforeCommit)
-    );
+    return (await this.appendEvents(state, [draft], beforeCommit))[0]!;
   }
 
-  private async appendEventUntracked(
+  /** Preserve every original event and sequence, sharing log appends and the
+   * checkpoint write across a bounded batch. Publication follows persistence. */
+  async appendEvents(state: ProjectState, drafts: readonly ProjectEventDraft[], beforeCommit?: () => void): Promise<TimelineEvent[]> {
+    if (!drafts.length) return [];
+    if (drafts.length > 128) throw new Error("Project event batch exceeds 128 events");
+    return this.mutateProject(state.id, () => this.appendEventsUntracked(state, drafts, beforeCommit));
+  }
+
+  private async appendEventsUntracked(
     state: ProjectState,
-    draft: ProjectEventDraft,
+    drafts: readonly ProjectEventDraft[],
     beforeCommit?: () => void
-  ): Promise<TimelineEvent> {
+  ): Promise<TimelineEvent[]> {
     beforeCommit?.();
     const projectDir = this.projectDir(state.id);
     const eventsPath = path.join(projectDir, "events.jsonl");
@@ -861,13 +872,12 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     // repair+append ordering explicit, callers cannot observe the in-memory
     // "agent started" transition before the matching event append is issued.
     this.trimResidualJsonlTailSync(eventsPath);
-    state.eventSeq += 1;
     state.updatedAt = nowIso();
-    const event: TimelineEvent = {
+    const events = drafts.map((draft): TimelineEvent => ({
       id: newId("evt"),
       ...(draft.eventId ? { eventId: draft.eventId } : {}),
       ...(draft.requestId ? { requestId: draft.requestId } : {}),
-      seq: state.eventSeq,
+      seq: ++state.eventSeq,
       projectId: state.id,
       ...(draft.workflowRevision !== undefined
         ? { workflowRevision: draft.workflowRevision }
@@ -891,25 +901,23 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       agent: draft.agent,
       message: draft.message,
       data: { cycle: state.cycle, ...draft.data }
-    };
+    }));
     beforeCommit?.();
     await fs.appendFile(
       eventsPath,
-      `${JSON.stringify(event)}\n`,
+      events.map(event => `${JSON.stringify(event)}\n`).join(""),
       "utf8"
     );
     beforeCommit?.();
-    const agentLabel = event.agent ? ` · ${event.agent}` : "";
     await fs.appendFile(
       path.join(projectDir, "timeline.md"),
-      `- ${event.ts} · **${event.type}**${agentLabel} · ${event.message.replaceAll("\n", " ")}\n`,
+      events.map(event => `- ${event.ts} · **${event.type}**${event.agent ? ` · ${event.agent}` : ""} · ${event.message.replaceAll("\n", " ")}\n`).join(""),
       "utf8"
     );
     beforeCommit?.();
     await this.atomicJson(path.join(projectDir, "state.json"), state, beforeCommit);
     if (
-      draft.type === "project.config.updated" ||
-      draft.type === "workflow.reconfigured"
+      drafts.some(draft => draft.type === "project.config.updated" || draft.type === "workflow.reconfigured")
     ) {
       await this.atomicText(
         path.join(projectDir, "request.md"),
@@ -920,11 +928,11 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     beforeCommit?.();
     const activeCommit = this.activeCommits.get(state.id);
     if (activeCommit) {
-      activeCommit.bufferedEvents.push(event);
+      activeCommit.bufferedEvents.push(...events);
     } else {
-      this.hub.publish(event);
+      for (const event of events) this.hub.publish(event);
     }
-    return event;
+    return events;
   }
 
   async readEvents(
@@ -2004,16 +2012,15 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     // Historical records can predate the additional SHA-256 field.
     if (artifact.gitSource && !artifact.sha256 && (await this.loadState(projectId)).git?.enabled) return source;
     if (!artifact.sha256) {
-      throw new Error(
-        `Published artifact has no integrity identity and must be republished: ${artifact.id}`
-      );
+      throw new PublishedArtifactIntegrityError("ARTIFACT_INTEGRITY_MISSING",
+        `Published artifact has no integrity identity and must be republished: ${artifact.id}`, { size: artifact.size });
     }
     const content = await fs.readFile(source.sourcePath);
     const sha256 = createHash("sha256").update(content).digest("hex");
     if (content.length !== artifact.size || sha256 !== artifact.sha256) {
-      throw new Error(
-        `Published artifact changed after publication: ${artifact.id}`
-      );
+      throw new PublishedArtifactIntegrityError("ARTIFACT_VERSION_MISMATCH",
+        `Published artifact changed after publication: ${artifact.id}`,
+        { size: artifact.size, sha256: artifact.sha256 }, { size: content.length, sha256 });
     }
     return source;
   }

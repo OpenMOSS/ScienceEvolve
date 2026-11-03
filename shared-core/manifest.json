@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "coreIdentity": "exact-source-v1",
-  "baselineSha256": "085bbcf0696911fc83440ec4d19e881d24f27dde54a5089b188186395969035f",
+  "baselineSha256": "85e33e27ed51b849c22fa46a49489b266e937fe60a422bf75ad9518f38485406",
   "files": [
     {
       "id": "scripts/sync-shared-core.mjs",
@@ -120,24 +120,24 @@
       "kind": "source",
       "mainPath": "server/src/agent-git-operation-journal.ts",
       "sdkPath": "sdk/src/core/agent-git-operation-journal.ts",
-      "mainSha256": "5c464436fb3448e18662700c5448c4adb6cc3abf5f2a54e6564a5bf60d73a189",
-      "sdkSha256": "5c464436fb3448e18662700c5448c4adb6cc3abf5f2a54e6564a5bf60d73a189"
+      "mainSha256": "40640330194dd4bf2ae714dfab7858e68a396aab37f8fe4163f9cfed059bbe48",
+      "sdkSha256": "40640330194dd4bf2ae714dfab7858e68a396aab37f8fe4163f9cfed059bbe48"
     },
     {
       "id": "server/src/agent-git-operation-query.ts",
       "kind": "source",
       "mainPath": "server/src/agent-git-operation-query.ts",
       "sdkPath": "sdk/src/core/agent-git-operation-query.ts",
-      "mainSha256": "d86f3821af5db64b76cbb6a186ce73475dc2fc121cbab6f38ebe4a37034b2680",
-      "sdkSha256": "d86f3821af5db64b76cbb6a186ce73475dc2fc121cbab6f38ebe4a37034b2680"
+      "mainSha256": "ee38e27fa7bc5559d8181de08f62f34fd8979394b18429b7b78c2ad4df4b5e83",
+      "sdkSha256": "ee38e27fa7bc5559d8181de08f62f34fd8979394b18429b7b78c2ad4df4b5e83"
     },
     {
       "id": "server/src/agent-git-result-observations.ts",
       "kind": "source",
       "mainPath": "server/src/agent-git-result-observations.ts",
       "sdkPath": "sdk/src/core/agent-git-result-observations.ts",
-      "mainSha256": "f12b8e4d8dc6a430c5c4cdb3acd8ff13128551adeeba7dcc83d6d97574c1e6ef",
-      "sdkSha256": "f12b8e4d8dc6a430c5c4cdb3acd8ff13128551adeeba7dcc83d6d97574c1e6ef"
+      "mainSha256": "453d39a0e448f6ca18797ff428eae1c6d3937f78f855559b51c0901b935002d6",
+      "sdkSha256": "453d39a0e448f6ca18797ff428eae1c6d3937f78f855559b51c0901b935002d6"
     },
     {
       "id": "server/src/agent-git-result-proof.ts",
@@ -152,16 +152,16 @@
       "kind": "source",
       "mainPath": "server/src/agent-git-result.ts",
       "sdkPath": "sdk/src/core/agent-git-result.ts",
-      "mainSha256": "9963242137945964209e487a3364ca0dc28d7b686e9e0d9f4a3dbf3cd744a75d",
-      "sdkSha256": "9963242137945964209e487a3364ca0dc28d7b686e9e0d9f4a3dbf3cd744a75d"
+      "mainSha256": "865890086e6132d35fbb5d1be95a538feab8cec505f679b70f337c2e52f76df1",
+      "sdkSha256": "865890086e6132d35fbb5d1be95a538feab8cec505f679b70f337c2e52f76df1"
     },
     {
       "id": "server/src/agent-git-tools.ts",
       "kind": "source",
       "mainPath": "server/src/agent-git-tools.ts",
       "sdkPath": "sdk/src/core/agent-git-tools.ts",
-      "mainSha256": "f056a4a797b0d9361ab46acc4b0e7c7a503f6d914458371ed8a7e0243cdda186",
-      "sdkSha256": "f056a4a797b0d9361ab46acc4b0e7c7a503f6d914458371ed8a7e0243cdda186"
+      "mainSha256": "6844fb2c229c55994f64ab66cf6e118dae89355d2f5a3c38dece7c68c0463e29",
+      "sdkSha256": "6844fb2c229c55994f64ab66cf6e118dae89355d2f5a3c38dece7c68c0463e29"
     },
     {
       "id": "server/src/agent-orchestration-reconfiguration.ts",
@@ -192,8 +192,8 @@
       "kind": "source",
       "mainPath": "server/src/agent-runtime.ts",
       "sdkPath": "sdk/src/core/agent-runtime.ts",
-      "mainSha256": "81a598b4113b6e2131eb6e707b8d772effdcdb46d7a24019a827931c778470af",
-      "sdkSha256": "81a598b4113b6e2131eb6e707b8d772effdcdb46d7a24019a827931c778470af"
+      "mainSha256": "94b196bf50cf414758514f115c230e451aa1d536d1bfd773010615233bf40a2e",
+      "sdkSha256": "94b196bf50cf414758514f115c230e451aa1d536d1bfd773010615233bf40a2e"
     },
     {
       "id": "server/src/agent-scheduler.ts",
@@ -240,8 +240,8 @@
       "kind": "source",
       "mainPath": "server/src/codex-runner.ts",
       "sdkPath": "sdk/src/core/codex-runner.ts",
-      "mainSha256": "2a68aa8d9753be23d58e12dfd419e410d3b80912ddd645a8293f5a113f6cc48e",
-      "sdkSha256": "2a68aa8d9753be23d58e12dfd419e410d3b80912ddd645a8293f5a113f6cc48e"
+      "mainSha256": "c26e751b80eec810f0baf284d47ea15594234f2c0f611d5d0b508f74d4fb2dac",
+      "sdkSha256": "c26e751b80eec810f0baf284d47ea15594234f2c0f611d5d0b508f74d4fb2dac"
     },
     {
       "id": "server/src/collaboration-dissolution.ts",
@@ -264,8 +264,8 @@
       "kind": "source",
       "mainPath": "server/src/collaboration-git/contracts.ts",
       "sdkPath": "sdk/src/core/collaboration-git/contracts.ts",
-      "mainSha256": "958aeb042b7446b4b5bb46b63f6734c10812046be63dab79113a4fedcbd1e16c",
-      "sdkSha256": "958aeb042b7446b4b5bb46b63f6734c10812046be63dab79113a4fedcbd1e16c"
+      "mainSha256": "829b97222855ff1c4571a0d1f5528d91a75a6435473c0cd1295bf8b9aad8dc57",
+      "sdkSha256": "829b97222855ff1c4571a0d1f5528d91a75a6435473c0cd1295bf8b9aad8dc57"
     },
     {
       "id": "server/src/collaboration-git/credential-helper.ts",
@@ -280,8 +280,8 @@
       "kind": "source",
       "mainPath": "server/src/collaboration-git/credential.ts",
       "sdkPath": "sdk/src/core/collaboration-git/credential.ts",
-      "mainSha256": "40961260a4310512099891d463b993dddc9a6fbb9fade87a3c5a73e381637bf0",
-      "sdkSha256": "40961260a4310512099891d463b993dddc9a6fbb9fade87a3c5a73e381637bf0"
+      "mainSha256": "4215b80612966373c070cb5c02ea378f1aef113a2caef84ed9a637a1a32ae5d0",
+      "sdkSha256": "4215b80612966373c070cb5c02ea378f1aef113a2caef84ed9a637a1a32ae5d0"
     },
     {
       "id": "server/src/collaboration-git/errors.ts",
@@ -296,8 +296,8 @@
       "kind": "source",
       "mainPath": "server/src/collaboration-git/facade.ts",
       "sdkPath": "sdk/src/core/collaboration-git/facade.ts",
-      "mainSha256": "9f9ebccf9fb05d964229e975f56d7c832e3b8dfd41d1dbd6cdab26e6ac472204",
-      "sdkSha256": "9f9ebccf9fb05d964229e975f56d7c832e3b8dfd41d1dbd6cdab26e6ac472204"
+      "mainSha256": "b5e33a2ec35216d2857bfba379c45693125746d2bc884775a264a94b6a917f65",
+      "sdkSha256": "b5e33a2ec35216d2857bfba379c45693125746d2bc884775a264a94b6a917f65"
     },
     {
       "id": "server/src/collaboration-git/factory.ts",
@@ -312,8 +312,8 @@
       "kind": "source",
       "mainPath": "server/src/collaboration-git/github-provider.ts",
       "sdkPath": "sdk/src/core/collaboration-git/github-provider.ts",
-      "mainSha256": "3fb90adb0024317606eaade34156ba3357e776f1d0a9994bc0193fc5ebd8fbcc",
-      "sdkSha256": "3fb90adb0024317606eaade34156ba3357e776f1d0a9994bc0193fc5ebd8fbcc"
+      "mainSha256": "00373dc478888e274834acb7f876320dfe101022d4ccd63ea8e862063e882798",
+      "sdkSha256": "00373dc478888e274834acb7f876320dfe101022d4ccd63ea8e862063e882798"
     },
     {
       "id": "server/src/collaboration-git/index.ts",
@@ -344,8 +344,8 @@
       "kind": "source",
       "mainPath": "server/src/collaboration-git/local-git.ts",
       "sdkPath": "sdk/src/core/collaboration-git/local-git.ts",
-      "mainSha256": "d8a7853840c07f3f78fd5aab755a83d3fccb2145faef1b656d96dab0c9c387bd",
-      "sdkSha256": "d8a7853840c07f3f78fd5aab755a83d3fccb2145faef1b656d96dab0c9c387bd"
+      "mainSha256": "67396694a1c0b04dfbf9a9011233b6467e97d753ca7ba5f29b9ba352cc0d0efc",
+      "sdkSha256": "67396694a1c0b04dfbf9a9011233b6467e97d753ca7ba5f29b9ba352cc0d0efc"
     },
     {
       "id": "server/src/collaboration-git/operation.ts",
@@ -392,16 +392,16 @@
       "kind": "source",
       "mainPath": "server/src/collaboration-runtime.ts",
       "sdkPath": "sdk/src/core/collaboration-runtime.ts",
-      "mainSha256": "c27b9694f0bc66d12daad98132644f10b0144daa7cf539669dd56ac1780f742e",
-      "sdkSha256": "c27b9694f0bc66d12daad98132644f10b0144daa7cf539669dd56ac1780f742e"
+      "mainSha256": "ab5faa3a4c39fe1e4b0c00db8fba92457385428d6aaddda22e11714a16ed2c4d",
+      "sdkSha256": "ab5faa3a4c39fe1e4b0c00db8fba92457385428d6aaddda22e11714a16ed2c4d"
     },
     {
       "id": "server/src/collaboration-state/contracts.ts",
       "kind": "source",
       "mainPath": "server/src/collaboration-state/contracts.ts",
       "sdkPath": "sdk/src/core/collaboration-state/contracts.ts",
-      "mainSha256": "9649bb96b31f2f0285190836519aa1a34ea304b9edb163ec4052a5560d483e35",
-      "sdkSha256": "9649bb96b31f2f0285190836519aa1a34ea304b9edb163ec4052a5560d483e35"
+      "mainSha256": "cbb220334621009eb8d76e7fcad5f14fb5e2905d9442fb030fd6af7d293c3d47",
+      "sdkSha256": "cbb220334621009eb8d76e7fcad5f14fb5e2905d9442fb030fd6af7d293c3d47"
     },
     {
       "id": "server/src/collaboration-state/errors.ts",
@@ -432,16 +432,16 @@
       "kind": "source",
       "mainPath": "server/src/collaboration-state/schema.ts",
       "sdkPath": "sdk/src/core/collaboration-state/schema.ts",
-      "mainSha256": "73284eb565b09a59cae5b63bd4e846c551c0a5c8d9f197ceb431c3ae59d05622",
-      "sdkSha256": "73284eb565b09a59cae5b63bd4e846c551c0a5c8d9f197ceb431c3ae59d05622"
+      "mainSha256": "ce875a64e34d4af4146fa2f4abefa03a730a3aa21f64f572a3982cec78bb7dd2",
+      "sdkSha256": "ce875a64e34d4af4146fa2f4abefa03a730a3aa21f64f572a3982cec78bb7dd2"
     },
     {
       "id": "server/src/collaboration-state/store.ts",
       "kind": "source",
       "mainPath": "server/src/collaboration-state/store.ts",
       "sdkPath": "sdk/src/core/collaboration-state/store.ts",
-      "mainSha256": "15fc181c87a6a9c969fae396ce3aa72315efdbb2192ec45927e085332c3ed71d",
-      "sdkSha256": "15fc181c87a6a9c969fae396ce3aa72315efdbb2192ec45927e085332c3ed71d"
+      "mainSha256": "d9fcd195c5bfc25d6154a3918356a180a18b9f334a54ff73d3886b6ad9ed30f5",
+      "sdkSha256": "d9fcd195c5bfc25d6154a3918356a180a18b9f334a54ff73d3886b6ad9ed30f5"
     },
     {
       "id": "server/src/config.ts",
@@ -496,8 +496,8 @@
       "kind": "source",
       "mainPath": "server/src/control-mcp.ts",
       "sdkPath": "sdk/src/core/control-mcp.ts",
-      "mainSha256": "e6a462264e6684fecf93a22e8899c5405b62f7fe3d4b5a1bfe307c46b3e626e7",
-      "sdkSha256": "e6a462264e6684fecf93a22e8899c5405b62f7fe3d4b5a1bfe307c46b3e626e7"
+      "mainSha256": "08b1ecb0d3b17691d9f3ad931649b00ee644c6a24c51a4ae362b325878cc9696",
+      "sdkSha256": "08b1ecb0d3b17691d9f3ad931649b00ee644c6a24c51a4ae362b325878cc9696"
     },
     {
       "id": "server/src/control-request-lifetime.ts",
@@ -516,6 +516,14 @@
       "sdkSha256": "fd6be06934303f504f639a6cfd2e41c9650d1d276b068cc314574fd2c6822829"
     },
     {
+      "id": "server/src/display-artifact-validation.ts",
+      "kind": "source",
+      "mainPath": "server/src/display-artifact-validation.ts",
+      "sdkPath": "sdk/src/core/display-artifact-validation.ts",
+      "mainSha256": "d165926f87cb9f619933331a5dabefd5198ba0e1af806a95e2a11cec94ce1a50",
+      "sdkSha256": "d165926f87cb9f619933331a5dabefd5198ba0e1af806a95e2a11cec94ce1a50"
+    },
+    {
       "id": "server/src/event-hub.ts",
       "kind": "source",
       "mainPath": "server/src/event-hub.ts",
@@ -530,6 +538,14 @@
       "sdkPath": "sdk/src/core/execution-worktree-closing.ts",
       "mainSha256": "3ac7b38caf656ab6b516a48514022f293d5c53d3fba0967cdc1fee29244fe139",
       "sdkSha256": "3ac7b38caf656ab6b516a48514022f293d5c53d3fba0967cdc1fee29244fe139"
+    },
+    {
+      "id": "server/src/gateway-reasoning-discovery.ts",
+      "kind": "source",
+      "mainPath": "server/src/gateway-reasoning-discovery.ts",
+      "sdkPath": "sdk/src/core/gateway-reasoning-discovery.ts",
+      "mainSha256": "b9242ad5486814c23e08a223b46aa5db3d0dec9282386ababadc6a6986e0b368",
+      "sdkSha256": "b9242ad5486814c23e08a223b46aa5db3d0dec9282386ababadc6a6986e0b368"
     },
     {
       "id": "server/src/gateway-reasoning.ts",
@@ -592,8 +608,8 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/adapters/claude-code-adapter.ts",
       "sdkPath": "sdk/src/core/harness-runtime/adapters/claude-code-adapter.ts",
-      "mainSha256": "2be0fa2c6330859634d26a23bddd555f1a2cec9aaeb32cbc01b9fc62096317a8",
-      "sdkSha256": "2be0fa2c6330859634d26a23bddd555f1a2cec9aaeb32cbc01b9fc62096317a8"
+      "mainSha256": "3880f4cd7aba24a2973466b894bd5f8d7fdf0198437557d64027aef109a0df89",
+      "sdkSha256": "3880f4cd7aba24a2973466b894bd5f8d7fdf0198437557d64027aef109a0df89"
     },
     {
       "id": "server/src/harness-runtime/adapters/claude-code-event-mapper.ts",
@@ -602,6 +618,14 @@
       "sdkPath": "sdk/src/core/harness-runtime/adapters/claude-code-event-mapper.ts",
       "mainSha256": "18431df4e47bb0ad34ef15e59cb2f4a4da1484fb70d4966dcd8f56f5d8652b65",
       "sdkSha256": "18431df4e47bb0ad34ef15e59cb2f4a4da1484fb70d4966dcd8f56f5d8652b65"
+    },
+    {
+      "id": "server/src/harness-runtime/adapters/claude-native-policy.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/adapters/claude-native-policy.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/adapters/claude-native-policy.ts",
+      "mainSha256": "37c8fcac30e2a0b4fe401a0e913caa30c9af983a92e26821563c146ea9b7103e",
+      "sdkSha256": "37c8fcac30e2a0b4fe401a0e913caa30c9af983a92e26821563c146ea9b7103e"
     },
     {
       "id": "server/src/harness-runtime/adapters/codex-adapter.ts",
@@ -632,8 +656,8 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/adapters/dsh-adapter.ts",
       "sdkPath": "sdk/src/core/harness-runtime/adapters/dsh-adapter.ts",
-      "mainSha256": "abc929e558e7f21077bab022a5a7c0c4b315b3dd3755630bc9df6a20677df61b",
-      "sdkSha256": "abc929e558e7f21077bab022a5a7c0c4b315b3dd3755630bc9df6a20677df61b"
+      "mainSha256": "04e8ec0e0f241a13020a8c89aa86f60ac674a91ce663f637020aee91e9c191e1",
+      "sdkSha256": "04e8ec0e0f241a13020a8c89aa86f60ac674a91ce663f637020aee91e9c191e1"
     },
     {
       "id": "server/src/harness-runtime/adapters/dsh-event-mapper.ts",
@@ -656,8 +680,8 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/adapters/pi-adapter.ts",
       "sdkPath": "sdk/src/core/harness-runtime/adapters/pi-adapter.ts",
-      "mainSha256": "becb9ca046e5b002a283c65d086c8dcd0167504569805406e7fbdbd5992157c8",
-      "sdkSha256": "becb9ca046e5b002a283c65d086c8dcd0167504569805406e7fbdbd5992157c8"
+      "mainSha256": "a6fb84e38fb32aa0f69c50603bf96cffc4a790f0ba9c1745b0b676b7a9ee7676",
+      "sdkSha256": "a6fb84e38fb32aa0f69c50603bf96cffc4a790f0ba9c1745b0b676b7a9ee7676"
     },
     {
       "id": "server/src/harness-runtime/adapters/pi-event-mapper.ts",
@@ -688,8 +712,16 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/adapters/resident-adapter-factory.ts",
       "sdkPath": "sdk/src/core/harness-runtime/adapters/resident-adapter-factory.ts",
-      "mainSha256": "dbe7386cfe5420324f9bacc0a86c6588953caecf9c990be10f9d2abbb69ada0e",
-      "sdkSha256": "dbe7386cfe5420324f9bacc0a86c6588953caecf9c990be10f9d2abbb69ada0e"
+      "mainSha256": "c07170364b2c1995d2144ddad0ecb81dc619fe2da56df23426604d81168d4b2a",
+      "sdkSha256": "c07170364b2c1995d2144ddad0ecb81dc619fe2da56df23426604d81168d4b2a"
+    },
+    {
+      "id": "server/src/harness-runtime/background-jobs.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/background-jobs.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/background-jobs.ts",
+      "mainSha256": "44159d4e05493eef7b5213bd736fcea99b6dc82c17aae3c2ba7cea241714d326",
+      "sdkSha256": "44159d4e05493eef7b5213bd736fcea99b6dc82c17aae3c2ba7cea241714d326"
     },
     {
       "id": "server/src/harness-runtime/claude-tool-progress.ts",
@@ -704,8 +736,8 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/contracts.ts",
       "sdkPath": "sdk/src/core/harness-runtime/contracts.ts",
-      "mainSha256": "def8b57e6b3f2b0f52df07a1b3f74dbd3626effbf5749c7905f55d45ab73965f",
-      "sdkSha256": "def8b57e6b3f2b0f52df07a1b3f74dbd3626effbf5749c7905f55d45ab73965f"
+      "mainSha256": "4e2c5647db967bd5415d14ba6446144e7fefbbd8c8a6665b35d27ea8ddad9453",
+      "sdkSha256": "4e2c5647db967bd5415d14ba6446144e7fefbbd8c8a6665b35d27ea8ddad9453"
     },
     {
       "id": "server/src/harness-runtime/descriptor-broker-helper.py",
@@ -720,8 +752,8 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/descriptor-broker-mcp.ts",
       "sdkPath": "sdk/src/core/harness-runtime/descriptor-broker-mcp.ts",
-      "mainSha256": "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e",
-      "sdkSha256": "f4cdeab0ffb43c466d6eb1605ee56cb730a0ab50f3b76af0738d78002e72d21e"
+      "mainSha256": "fad45634f057cb1bae7818846f0facace49c5c91a21c1b355e45f625530de594",
+      "sdkSha256": "fad45634f057cb1bae7818846f0facace49c5c91a21c1b355e45f625530de594"
     },
     {
       "id": "server/src/harness-runtime/descriptor-broker-windows.py",
@@ -760,8 +792,8 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/filesystem-authority.ts",
       "sdkPath": "sdk/src/core/harness-runtime/filesystem-authority.ts",
-      "mainSha256": "b232abe0280a7b5f3d247671ad2b7456e0ddea5e838389224815495f9ccbc1eb",
-      "sdkSha256": "b232abe0280a7b5f3d247671ad2b7456e0ddea5e838389224815495f9ccbc1eb"
+      "mainSha256": "ebf930f866678cb6fe2cbb59e503cd4237d215312a5af8b430c1e0299c3ac613",
+      "sdkSha256": "ebf930f866678cb6fe2cbb59e503cd4237d215312a5af8b430c1e0299c3ac613"
     },
     {
       "id": "server/src/harness-runtime/gateway-route.ts",
@@ -784,8 +816,8 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/invocation-policy.ts",
       "sdkPath": "sdk/src/core/harness-runtime/invocation-policy.ts",
-      "mainSha256": "56f059673794c319871482774953ff6d81dacead0ec66b6f89fbfce28e4122bf",
-      "sdkSha256": "56f059673794c319871482774953ff6d81dacead0ec66b6f89fbfce28e4122bf"
+      "mainSha256": "a36a11e84c925fb74957aab57b1acac28fbd10c6b67368376965266d3ae524e9",
+      "sdkSha256": "a36a11e84c925fb74957aab57b1acac28fbd10c6b67368376965266d3ae524e9"
     },
     {
       "id": "server/src/harness-runtime/invocation-recovery.ts",
@@ -816,8 +848,8 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/process-host.ts",
       "sdkPath": "sdk/src/core/harness-runtime/process-host.ts",
-      "mainSha256": "c342d5e7bb02b9f51d04cd63f605f8fc2c3e3f801c04743d3d0a3d2bb0fc8d5c",
-      "sdkSha256": "c342d5e7bb02b9f51d04cd63f605f8fc2c3e3f801c04743d3d0a3d2bb0fc8d5c"
+      "mainSha256": "f326057e6e1732c88937f3c1ba93a6e4266633b4437fbd65bc826ffcc63890f3",
+      "sdkSha256": "f326057e6e1732c88937f3c1ba93a6e4266633b4437fbd65bc826ffcc63890f3"
     },
     {
       "id": "server/src/harness-runtime/prompt-catalog.ts",
@@ -848,16 +880,16 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/resident-native-driver.ts",
       "sdkPath": "sdk/src/core/harness-runtime/resident-native-driver.ts",
-      "mainSha256": "dc6e178d46fa6b7ea80220d2b6e9395c9171896908b4cd9f571f84d0b767ba1b",
-      "sdkSha256": "dc6e178d46fa6b7ea80220d2b6e9395c9171896908b4cd9f571f84d0b767ba1b"
+      "mainSha256": "5cc7d36b3ff520e81904d9549c739cd6e171e09eb8dd784bfa5970f4bafc499d",
+      "sdkSha256": "5cc7d36b3ff520e81904d9549c739cd6e171e09eb8dd784bfa5970f4bafc499d"
     },
     {
       "id": "server/src/harness-runtime/resident-runtime-adapter.ts",
       "kind": "source",
       "mainPath": "server/src/harness-runtime/resident-runtime-adapter.ts",
       "sdkPath": "sdk/src/core/harness-runtime/resident-runtime-adapter.ts",
-      "mainSha256": "8c0c0229476bb1390105548c14ee4ba8bf554fb5ca85996dd89cb37d43ec9508",
-      "sdkSha256": "8c0c0229476bb1390105548c14ee4ba8bf554fb5ca85996dd89cb37d43ec9508"
+      "mainSha256": "290db0783b02eb22d212ab5c3d8e402cd06590d89a13ee2d2f193146d1a573f1",
+      "sdkSha256": "290db0783b02eb22d212ab5c3d8e402cd06590d89a13ee2d2f193146d1a573f1"
     },
     {
       "id": "server/src/harness-runtime/runtime-support.ts",
@@ -872,8 +904,16 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/runtime.ts",
       "sdkPath": "sdk/src/core/harness-runtime/runtime.ts",
-      "mainSha256": "87b9b52fdb0c25e995c9e58033564de8f63e9ee39a99c53bd55077ae70d46f12",
-      "sdkSha256": "87b9b52fdb0c25e995c9e58033564de8f63e9ee39a99c53bd55077ae70d46f12"
+      "mainSha256": "3ad4fe48fb10ffe7978ef600e6dab926143836281c4de47a6c46f33763ad5bbd",
+      "sdkSha256": "3ad4fe48fb10ffe7978ef600e6dab926143836281c4de47a6c46f33763ad5bbd"
+    },
+    {
+      "id": "server/src/harness-runtime/selected-skills.ts",
+      "kind": "source",
+      "mainPath": "server/src/harness-runtime/selected-skills.ts",
+      "sdkPath": "sdk/src/core/harness-runtime/selected-skills.ts",
+      "mainSha256": "2dab24ac1422722b2a8ad99bf6bdec23dd99e8c816a2819b9e3412ce908cb712",
+      "sdkSha256": "2dab24ac1422722b2a8ad99bf6bdec23dd99e8c816a2819b9e3412ce908cb712"
     },
     {
       "id": "server/src/harness-runtime/session-coordinator.ts",
@@ -896,8 +936,8 @@
       "kind": "source",
       "mainPath": "server/src/harness-runtime/skill-staging.ts",
       "sdkPath": "sdk/src/core/harness-runtime/skill-staging.ts",
-      "mainSha256": "3560b6164c9b87bb79b4e8654ecbb23597d0517006a58916edabcbb372e5561c",
-      "sdkSha256": "3560b6164c9b87bb79b4e8654ecbb23597d0517006a58916edabcbb372e5561c"
+      "mainSha256": "29234a625b1281d79fc778062c1dec395ecb06328b4828ad8bd350edf4babbdb",
+      "sdkSha256": "29234a625b1281d79fc778062c1dec395ecb06328b4828ad8bd350edf4babbdb"
     },
     {
       "id": "server/src/harness-runtime/tool-catalog.ts",
@@ -968,8 +1008,8 @@
       "kind": "source",
       "mainPath": "server/src/internal/shared/agent-permission-prompts.ts",
       "sdkPath": "sdk/src/core/internal/shared/agent-permission-prompts.ts",
-      "mainSha256": "bc62f58e2dd74637913fac12d90d778b44f7fc12f35baaa5cfce258125918ed9",
-      "sdkSha256": "bc62f58e2dd74637913fac12d90d778b44f7fc12f35baaa5cfce258125918ed9"
+      "mainSha256": "55b2ca969044f9b8444eb08c95eb54eefdaffb51323a517130f1ff9caa91e115",
+      "sdkSha256": "55b2ca969044f9b8444eb08c95eb54eefdaffb51323a517130f1ff9caa91e115"
     },
     {
       "id": "server/src/internal/shared/collaboration-session-key.ts",
@@ -1000,8 +1040,8 @@
       "kind": "source",
       "mainPath": "server/src/internal/shared/gateway-reasoning.ts",
       "sdkPath": "sdk/src/core/internal/shared/gateway-reasoning.ts",
-      "mainSha256": "74bd1c0515f41eb73dbc8644192b7d3ef44ff8659803e1650b2ce8664799c50b",
-      "sdkSha256": "74bd1c0515f41eb73dbc8644192b7d3ef44ff8659803e1650b2ce8664799c50b"
+      "mainSha256": "0dfef08ce03ce9c9b07e9f2dbf033c8dcbe30d5283bf77f78a45f50b32671c8a",
+      "sdkSha256": "0dfef08ce03ce9c9b07e9f2dbf033c8dcbe30d5283bf77f78a45f50b32671c8a"
     },
     {
       "id": "server/src/internal/shared/harness-prompt-contract.ts",
@@ -1040,8 +1080,8 @@
       "kind": "source",
       "mainPath": "server/src/internal/shared/project-runtime-status.ts",
       "sdkPath": "sdk/src/core/internal/shared/project-runtime-status.ts",
-      "mainSha256": "6aa30c9eee5598a13c2228b282739f4bfa24870261e2c0ba29c3e7d581997613",
-      "sdkSha256": "6aa30c9eee5598a13c2228b282739f4bfa24870261e2c0ba29c3e7d581997613"
+      "mainSha256": "96800be8dc1a73a2bc4c9326e7d22160c661e4cf507e98f75171deb240108d20",
+      "sdkSha256": "96800be8dc1a73a2bc4c9326e7d22160c661e4cf507e98f75171deb240108d20"
     },
     {
       "id": "server/src/internal/shared/project-state-policy.ts",
@@ -1160,8 +1200,8 @@
       "kind": "source",
       "mainPath": "server/src/orchestration-control-bridge.ts",
       "sdkPath": "sdk/src/core/orchestration-control-bridge.ts",
-      "mainSha256": "9055ddad6035fbab0aff2ba922e36d0c57eee478badf11b373674f6a3062fff9",
-      "sdkSha256": "9055ddad6035fbab0aff2ba922e36d0c57eee478badf11b373674f6a3062fff9"
+      "mainSha256": "35533fdc641450f32a935fb0481e730bc41cc7b196bf2453de256989fe544c0a",
+      "sdkSha256": "35533fdc641450f32a935fb0481e730bc41cc7b196bf2453de256989fe544c0a"
     },
     {
       "id": "server/src/orchestration-control-decisions.ts",
@@ -1176,16 +1216,16 @@
       "kind": "source",
       "mainPath": "server/src/orchestration-control-mcp.ts",
       "sdkPath": "sdk/src/core/orchestration-control-mcp.ts",
-      "mainSha256": "240fafb5ac8ecec8051b7a595d2af4fd1059b7df55d357c2b2f231f0be06c168",
-      "sdkSha256": "240fafb5ac8ecec8051b7a595d2af4fd1059b7df55d357c2b2f231f0be06c168"
+      "mainSha256": "bba26d0f71454d93cb3eb6e84f33d7b9aa1dfceb7b3f9122a875ac153bf3d055",
+      "sdkSha256": "bba26d0f71454d93cb3eb6e84f33d7b9aa1dfceb7b3f9122a875ac153bf3d055"
     },
     {
       "id": "server/src/orchestrator.ts",
       "kind": "source",
       "mainPath": "server/src/orchestrator.ts",
       "sdkPath": "sdk/src/core/orchestrator.ts",
-      "mainSha256": "945347d99ef408169202ab633d7594f24dc41cf4b993ef2053a736b09a82f951",
-      "sdkSha256": "945347d99ef408169202ab633d7594f24dc41cf4b993ef2053a736b09a82f951"
+      "mainSha256": "f20808b2d6b3d81d45aafb84b3623b1f5e27a1e03af2f68f69000c1695dfcc36",
+      "sdkSha256": "f20808b2d6b3d81d45aafb84b3623b1f5e27a1e03af2f68f69000c1695dfcc36"
     },
     {
       "id": "server/src/project-directory-aliases.ts",
@@ -1232,8 +1272,8 @@
       "kind": "source",
       "mainPath": "server/src/project-runtime-projection.ts",
       "sdkPath": "sdk/src/core/project-runtime-projection.ts",
-      "mainSha256": "5a3b5585edd9abb70505b61e7cf43ddc046b213419330bb1559d92a73b37bf83",
-      "sdkSha256": "5a3b5585edd9abb70505b61e7cf43ddc046b213419330bb1559d92a73b37bf83"
+      "mainSha256": "222d6da164091a6ed757b475497bd249f4bd54199c8fa7ce566c3e77c74230d4",
+      "sdkSha256": "222d6da164091a6ed757b475497bd249f4bd54199c8fa7ce566c3e77c74230d4"
     },
     {
       "id": "server/src/project-runtime-waiting.ts",
@@ -1296,8 +1336,8 @@
       "kind": "source",
       "mainPath": "server/src/prompt.ts",
       "sdkPath": "sdk/src/core/prompt.ts",
-      "mainSha256": "1e005164fa17c4e5eabfe29a7db6e822ab566fd7ace754393ed537696a684bf8",
-      "sdkSha256": "1e005164fa17c4e5eabfe29a7db6e822ab566fd7ace754393ed537696a684bf8"
+      "mainSha256": "af70b98949117fdb24f8056ef6d68da3efdaa94b417d779514a203d56260863c",
+      "sdkSha256": "af70b98949117fdb24f8056ef6d68da3efdaa94b417d779514a203d56260863c"
     },
     {
       "id": "server/src/protocol-router.ts",
@@ -1384,8 +1424,8 @@
       "kind": "source",
       "mainPath": "server/src/scoped-project-runtime.ts",
       "sdkPath": "sdk/src/core/scoped-project-runtime.ts",
-      "mainSha256": "35c1638a1747aa1746d5d057b9c68e769643e47505617bf4ad06d03c7df2b187",
-      "sdkSha256": "35c1638a1747aa1746d5d057b9c68e769643e47505617bf4ad06d03c7df2b187"
+      "mainSha256": "f6bd02156971a1dd4fed1b02c72dfa4dfcaa3b791e802a80ab9a83842c0b54f0",
+      "sdkSha256": "f6bd02156971a1dd4fed1b02c72dfa4dfcaa3b791e802a80ab9a83842c0b54f0"
     },
     {
       "id": "server/src/scoped-workflow-capacity.ts",
@@ -1432,16 +1472,16 @@
       "kind": "source",
       "mainPath": "server/src/scoped-worktree-closing-control.ts",
       "sdkPath": "sdk/src/core/scoped-worktree-closing-control.ts",
-      "mainSha256": "51a155dd0424dd99030e651c49e2e147a04dc73b7fe14be00a79af9d2ca065bb",
-      "sdkSha256": "51a155dd0424dd99030e651c49e2e147a04dc73b7fe14be00a79af9d2ca065bb"
+      "mainSha256": "4208b3722c6335b90b33137f7936b2bab71b2a92f13a8fd1eb3281d68c9c79c2",
+      "sdkSha256": "4208b3722c6335b90b33137f7936b2bab71b2a92f13a8fd1eb3281d68c9c79c2"
     },
     {
       "id": "server/src/scoped-worktree-closing-delivery.ts",
       "kind": "source",
       "mainPath": "server/src/scoped-worktree-closing-delivery.ts",
       "sdkPath": "sdk/src/core/scoped-worktree-closing-delivery.ts",
-      "mainSha256": "5df1bc0db2bdce6fe6df173f2531f0961cf87f8a0ad61023ffe346bfa66aaea6",
-      "sdkSha256": "5df1bc0db2bdce6fe6df173f2531f0961cf87f8a0ad61023ffe346bfa66aaea6"
+      "mainSha256": "99f7787a917d6072f82f955cd9d116416b919bbc161f8466dfef38fc56f713fd",
+      "sdkSha256": "99f7787a917d6072f82f955cd9d116416b919bbc161f8466dfef38fc56f713fd"
     },
     {
       "id": "server/src/scoped-worktree-closing-runtime.ts",
@@ -1528,8 +1568,8 @@
       "kind": "source",
       "mainPath": "server/src/storage.ts",
       "sdkPath": "sdk/src/core/storage.ts",
-      "mainSha256": "419e4c69375378c1ee736404d63c57a17f025263985c46f2d437be0815da8d89",
-      "sdkSha256": "419e4c69375378c1ee736404d63c57a17f025263985c46f2d437be0815da8d89"
+      "mainSha256": "0a8909b5e72776be74b583ff93cf3b58a9bb50c2fc7c5873a56897f6e1bce1f9",
+      "sdkSha256": "0a8909b5e72776be74b583ff93cf3b58a9bb50c2fc7c5873a56897f6e1bce1f9"
     },
     {
       "id": "server/src/system-controller.ts",
@@ -1568,8 +1608,8 @@
       "kind": "source",
       "mainPath": "server/src/types.ts",
       "sdkPath": "sdk/src/core/types.ts",
-      "mainSha256": "38bb0db5afb02ac78d385e682e187b0a56089d25659e71827950844d6c5e37b5",
-      "sdkSha256": "38bb0db5afb02ac78d385e682e187b0a56089d25659e71827950844d6c5e37b5"
+      "mainSha256": "6de2dfe9bf4872c08a49112f6b5ce4583b5f144c48490e58f7c3cc5f740ac204",
+      "sdkSha256": "6de2dfe9bf4872c08a49112f6b5ce4583b5f144c48490e58f7c3cc5f740ac204"
     },
     {
       "id": "server/src/utils.ts",
@@ -1584,8 +1624,8 @@
       "kind": "source",
       "mainPath": "server/src/validation.ts",
       "sdkPath": "sdk/src/core/validation.ts",
-      "mainSha256": "cf80a471d8cf23a6800d86fbcc26b18c07a380ce63362f3a35ea49c9705ca2c4",
-      "sdkSha256": "cf80a471d8cf23a6800d86fbcc26b18c07a380ce63362f3a35ea49c9705ca2c4"
+      "mainSha256": "f744507afa72392ad9392ca08167dfb820000199b4a912bc3a997799593b031f",
+      "sdkSha256": "f744507afa72392ad9392ca08167dfb820000199b4a912bc3a997799593b031f"
     },
     {
       "id": "server/src/workflow-adjustment-impact.ts",
@@ -1740,20 +1780,36 @@
       "sdkSha256": "4f24171b3c74cd5a671837766ada8f0969224a64e0b5c9bd772e0895d2b830c1"
     },
     {
+      "id": "server/tests/agent-runtime.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/agent-runtime.test.ts",
+      "sdkPath": "sdk/tests/main-core/agent-runtime.test.ts",
+      "mainSha256": "e5a54ccce97248404d4ae59a370b519b287ad4f992fa4cba58631a78038d56eb",
+      "sdkSha256": "55f5c861c00784c9a775e868e02065889c0094c14d2b1eaaa8c8567615d1364f"
+    },
+    {
       "id": "server/tests/agent-tool-catalog.test.ts",
       "kind": "test",
       "mainPath": "server/tests/agent-tool-catalog.test.ts",
       "sdkPath": "sdk/tests/main-core/agent-tool-catalog.test.ts",
-      "mainSha256": "eb3a8250035e09c0034a22e8efb771fd746b6985003cac4172f5fd81474756f0",
-      "sdkSha256": "2cc8de61258d3e6e0451588d802280e579982d811c1827996c974ad72e0428e9"
+      "mainSha256": "5439d2ccfbcf85ee27e161acac1fb5a76e6436b08062ded8e1c500a64beaaa29",
+      "sdkSha256": "72947a0f60c9c98bdab8e8b98a13d04590cfc3c5c104d6608817e087df0f0367"
+    },
+    {
+      "id": "server/tests/background-jobs.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/background-jobs.test.ts",
+      "sdkPath": "sdk/tests/main-core/background-jobs.test.ts",
+      "mainSha256": "cbd4c8ac3323f94a56a24a6a43ab1a28ea98a07969d6fd969ee9eb1322c83a2a",
+      "sdkSha256": "e0e8d6e72a6b977bed85611f1c509a964334f2fb5d1cc7b4d40e767a8a1b02c3"
     },
     {
       "id": "server/tests/builtin-adapters.test.ts",
       "kind": "test",
       "mainPath": "server/tests/builtin-adapters.test.ts",
       "sdkPath": "sdk/tests/main-core/builtin-adapters.test.ts",
-      "mainSha256": "a862317695e5c598a149e2e3f7a1f429da42f885852791d76658cd32687f00f3",
-      "sdkSha256": "27affbe11dcaf17896757094c6b439c980851098a3737b352e315bb0005b2265"
+      "mainSha256": "b0f091b488cf26552da302818bc83e6d02a899242b601ec9c4c09baf40eef174",
+      "sdkSha256": "6b43725169cb8d6f841703f8704b73230275119bb20a11020b864c455f4e58ce"
     },
     {
       "id": "server/tests/claude-stream-native.test.ts",
@@ -1788,44 +1844,52 @@
       "sdkSha256": "452baed592f67937380dff01a20752df453448a4100045b0a6770b8ea8558e02"
     },
     {
+      "id": "server/tests/collaboration-event-batching.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/collaboration-event-batching.test.ts",
+      "sdkPath": "sdk/tests/main-core/collaboration-event-batching.test.ts",
+      "mainSha256": "aa9228781952e35fa9449288a554e6c813964cb4c8184fff2d752a7062628753",
+      "sdkSha256": "3dc5ecd748d459cabb9b80d8aa2225d74c85b3ff619e110b2c10c7cdab1d72c6"
+    },
+    {
       "id": "server/tests/collaboration-git-command-runner.test.ts",
       "kind": "test",
       "mainPath": "server/tests/collaboration-git-command-runner.test.ts",
       "sdkPath": "sdk/tests/main-core/collaboration-git-command-runner.test.ts",
-      "mainSha256": "c4e2dbad91f02591a449c8e7f1f48d3ba884d0eb710ec9fdfc75b9c4a16ccf5b",
-      "sdkSha256": "ebca14aa78c8cc6c7564752b29dc49d58c05cc0f91e65901cf2583d97e513c63"
+      "mainSha256": "77243d38fc0eaa2e8b08d828fe75a1281874b220f9d8ae1aa9f9e814dd5c79f7",
+      "sdkSha256": "f120a2ea77a6d2fa4b26ad17897103f647ae3f875c7dd6b8d4ee5535f8daf2ce"
     },
     {
       "id": "server/tests/collaboration-git-local.test.ts",
       "kind": "test",
       "mainPath": "server/tests/collaboration-git-local.test.ts",
       "sdkPath": "sdk/tests/main-core/collaboration-git-local.test.ts",
-      "mainSha256": "41f00d2ff8c36c702a05f25f4a6e98fb652cf6a1858b07dec2a6bec0aeb3b761",
-      "sdkSha256": "663b07362c8028748219fc70b1a0efb6039f2ad31c79524161fb6a6f32275f7d"
+      "mainSha256": "e1773117e4ae59db26a73a7b7242bf7aacbda8e04ecf772bb6795dbfbc9ee464",
+      "sdkSha256": "2f782164e679ccd11162fb71137274c7a981b7e9ef301ce108b54fd14edf972b"
     },
     {
       "id": "server/tests/collaboration-git-provider.test.ts",
       "kind": "test",
       "mainPath": "server/tests/collaboration-git-provider.test.ts",
       "sdkPath": "sdk/tests/main-core/collaboration-git-provider.test.ts",
-      "mainSha256": "b23730f16d18d298a361a14e4f13199ba5060fef489ee92eab50932ab0498544",
-      "sdkSha256": "91d0ac3074d2511ed673c5acba9baa066a1567ddbaee92611b8e82be22e43e1e"
+      "mainSha256": "0ad2899ba2fcaed1429fa09f9019245c85ffa5278f07d297201ffdf701729fbe",
+      "sdkSha256": "fd0af0849c48a80c1ab0c79a632a070fc2e7531dc6965b4e3c93ffa868e8d7a6"
     },
     {
       "id": "server/tests/collaboration-runtime-integration.test.ts",
       "kind": "test",
       "mainPath": "server/tests/collaboration-runtime-integration.test.ts",
       "sdkPath": "sdk/tests/main-core/collaboration-runtime-integration.test.ts",
-      "mainSha256": "867ef77eb9d8ee3884ea417ab34434a49233020b354419d0c75a3a2b79f5ce4d",
-      "sdkSha256": "e0af05a2bf9442f0249e6f5177e4a229f49ee389975af9b02688bcecf67a4eff"
+      "mainSha256": "7b0302e682a71f55d84416f80721b4b252eff8ae4a5a8bd513a5fc2e4048c35c",
+      "sdkSha256": "8f8460a40901b4e41597a4765d370cc0ed8b92100881ff3aac6d0df922befa01"
     },
     {
       "id": "server/tests/collaboration-state.test.ts",
       "kind": "test",
       "mainPath": "server/tests/collaboration-state.test.ts",
       "sdkPath": "sdk/tests/main-core/collaboration-state.test.ts",
-      "mainSha256": "aa3c120595ae80561a97660bca6da0b7591fdad38f4228c3811fafe3e7895f80",
-      "sdkSha256": "f06ba3aecd24857c5ee0eecc88ae44f774dd71895622c731b065f079e5dedd66"
+      "mainSha256": "77d3cc9ce11d42570851c21097930a3310f11d70af79e3f8382059298529969f",
+      "sdkSha256": "ff781c08596c60c3c25982eed88b05193914e76b2901a127a1cdd9c7d7ad1326"
     },
     {
       "id": "server/tests/control-result-receipts.test.ts",
@@ -1844,12 +1908,20 @@
       "sdkSha256": "58fe9e10cb1e540b6162baf897c1fc6dd940700081d538b884c6098f485894ef"
     },
     {
+      "id": "server/tests/display-artifact-validation.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/display-artifact-validation.test.ts",
+      "sdkPath": "sdk/tests/main-core/display-artifact-validation.test.ts",
+      "mainSha256": "20338e680323f77d91c7008077b11b03ba6370f169eb27d3477d4c18470ae6f3",
+      "sdkSha256": "4d6b68601047370bd594c2ab123074c2dbd5b34942ed122c8edc283f004ecb1f"
+    },
+    {
       "id": "server/tests/dsh-adapter-config.test.ts",
       "kind": "test",
       "mainPath": "server/tests/dsh-adapter-config.test.ts",
       "sdkPath": "sdk/tests/main-core/dsh-adapter-config.test.ts",
-      "mainSha256": "e53ee91fac02e777ee2c44055dfd0e0fc3fe92b0dc09cc77d994c4c10ad69a2f",
-      "sdkSha256": "f2e431a4edecbe9d274d415878412516328137f0dc79aab67f803b00d61ae5e9"
+      "mainSha256": "2b301c97309bd81d4d12da047589008182dd3e9b8acc260ac17b231c7639b199",
+      "sdkSha256": "d481b347902aaa71b437ecbbb90e64c7f301e3e8421bc37dda267773d3bc528b"
     },
     {
       "id": "server/tests/dsh-protocol-recovery.test.ts",
@@ -1900,6 +1972,22 @@
       "sdkSha256": "f8f7a312074f1df851c900cf70b2f02cadebfc66da8d50ca9f890ac7883c226c"
     },
     {
+      "id": "server/tests/gateway-reasoning-discovery.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/gateway-reasoning-discovery.test.ts",
+      "sdkPath": "sdk/tests/main-core/gateway-reasoning-discovery.test.ts",
+      "mainSha256": "e2a73a9aa89a0c7f05a8f2f9b9f7c996ddf2fad28ff49738c1a5cda9c7cfc4f2",
+      "sdkSha256": "9a95e0d4ead62e602783b92a8579400d8f6feb4d6010a02e3d144ab6533cd46b"
+    },
+    {
+      "id": "server/tests/gateway-reasoning-shared.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/gateway-reasoning-shared.test.ts",
+      "sdkPath": "sdk/tests/main-core/gateway-reasoning-shared.test.ts",
+      "mainSha256": "4a85496d436e736b000142563c16f7425e5d53a4009737e7f2b8031d994315a2",
+      "sdkSha256": "a7e12f90873a2d869fcea536e77ae96d2b45d8531962008b2b6322000c510b90"
+    },
+    {
       "id": "server/tests/harness-prompt-catalog.test.ts",
       "kind": "test",
       "mainPath": "server/tests/harness-prompt-catalog.test.ts",
@@ -1928,8 +2016,8 @@
       "kind": "test",
       "mainPath": "server/tests/harness-runtime.test.ts",
       "sdkPath": "sdk/tests/main-core/harness-runtime.test.ts",
-      "mainSha256": "5d133b4fda5295dc632cdbd591e11a47edd26aee44d2e42f07faa8b287f259c4",
-      "sdkSha256": "29a32dbbefd2d981f19bdea5dd1727e8f836041de395c3a22a51a6e29a6dea82"
+      "mainSha256": "da4c929c7f701754ff12eea9ade95c6593904448c61a87b9a4a400d4c25b8389",
+      "sdkSha256": "f44e6c001e9bc8e197bdde55d53eceec6dcfbf3bc28dd4140e02120429bd22ce"
     },
     {
       "id": "server/tests/helpers/agent-git-native-fixture.ts",
@@ -1996,20 +2084,28 @@
       "sdkSha256": "9eafc63657b6068914d0453c3ec954b0ad9d5307ee4c79f6eae5e67fe447b136"
     },
     {
+      "id": "server/tests/installed-native-tools.test.ts",
+      "kind": "test",
+      "mainPath": "server/tests/installed-native-tools.test.ts",
+      "sdkPath": "sdk/tests/main-core/installed-native-tools.test.ts",
+      "mainSha256": "e2aa965d63943d9982d9b1e15e0760ad39e6e5536fed4e48abea05fc88322a5e",
+      "sdkSha256": "30acd0388ef99e46e3e6b007088395106c12e4eec578614546c958569f8a2544"
+    },
+    {
       "id": "server/tests/invocation-inputs.test.ts",
       "kind": "test",
       "mainPath": "server/tests/invocation-inputs.test.ts",
       "sdkPath": "sdk/tests/main-core/invocation-inputs.test.ts",
-      "mainSha256": "e685089d48698f8ab1dcfc27790f0bd7e546db929a3cc8a6d6578727eb952e9f",
-      "sdkSha256": "c6f64d9309540c2a26f87c4aa5cfd581888f1fbfb6beac59a6e95e4d0387d92a"
+      "mainSha256": "624ab3dca04e2c86b4e857f9466666c9f307ebcdf43f452d4b644cbfd318c624",
+      "sdkSha256": "d59e65c02e5eda0ee677e01c45143ee44afc43c28874ae9fe035b446e9e90371"
     },
     {
       "id": "server/tests/invocation-policy.test.ts",
       "kind": "test",
       "mainPath": "server/tests/invocation-policy.test.ts",
       "sdkPath": "sdk/tests/main-core/invocation-policy.test.ts",
-      "mainSha256": "1d605c01d9682402df1fb72535c72bb7ccbe80f60326850d7f6a75c916bfdcdc",
-      "sdkSha256": "650103c3a4cb501905d2a5a86bf4462086b604f6f66085e0d8af5377a0942514"
+      "mainSha256": "1082d48d49cca320c618b96d9ea8ce2cba847ad2c3780c4aecf2495cc173af60",
+      "sdkSha256": "07fd82beb8a2da9e7cab8f93000fbafdf18c99374dabcabeab1afe5eca7d97d6"
     },
     {
       "id": "server/tests/main-workflow-draft-storage.test.ts",
@@ -2032,8 +2128,8 @@
       "kind": "test",
       "mainPath": "server/tests/orchestration-control-mcp.test.ts",
       "sdkPath": "sdk/tests/main-core/orchestration-control-mcp.test.ts",
-      "mainSha256": "29e9cea101dd1c18f9a58894a587280d36b40ac2486c2049ca9d14ba4aa1c0d6",
-      "sdkSha256": "d01ed6810b5e4a4cb6812985e4337b199db01d9c7a4644493cc76df31c5e301e"
+      "mainSha256": "e2556fc196d8c5864664ca03a9fc229dde8fd822421cf07430001bb1115e6fd0",
+      "sdkSha256": "64d531bb2173372d42ebeffc986a61357edeee89ebd22a6db4b71b0c140ea4a1"
     },
     {
       "id": "server/tests/orchestration-control-pending.test.ts",
@@ -2056,8 +2152,8 @@
       "kind": "test",
       "mainPath": "server/tests/orchestrator-main.test.ts",
       "sdkPath": "sdk/tests/main-core/orchestrator-main.test.ts",
-      "mainSha256": "ebe830d85d9a6d8d989fa44c27f1af0c72c465ed3ac7f133a26809e7996f04db",
-      "sdkSha256": "fbf4c8dd765b485f380caf26418d473f4516d472463c4711c2ccffd3b91ff652"
+      "mainSha256": "9fa8cbb1b8c341840eb8ee2047e38c95d3655e5e04f51c7d8d996c92b108a3b1",
+      "sdkSha256": "506d0716ee0dca6c1906adae53ccab7e110ecf775b0f673a49c10afa7e4abfe0"
     },
     {
       "id": "server/tests/pi-mcp-extension.test.ts",
@@ -2080,8 +2176,8 @@
       "kind": "test",
       "mainPath": "server/tests/project-runtime-waiting.test.ts",
       "sdkPath": "sdk/tests/main-core/project-runtime-waiting.test.ts",
-      "mainSha256": "7909c187cb4009ff87b93ba7e6033045b5f46555297f494b72ecf43086a1e2f9",
-      "sdkSha256": "9392f031063e7c64fc53b56da1b7a06af185b77ba415ebade7fd7d8d748775fa"
+      "mainSha256": "62837cd9a14cc90300d6c834f9b1c1778e5913268bc09b98776654da481138f7",
+      "sdkSha256": "87fa59a4f82666ef98478eca5f6a9b29ac1d6b7368ebef693e186f1743312547"
     },
     {
       "id": "server/tests/project-state-documents.test.ts",
@@ -2120,8 +2216,8 @@
       "kind": "test",
       "mainPath": "server/tests/resident-adapter-factory.test.ts",
       "sdkPath": "sdk/tests/main-core/resident-adapter-factory.test.ts",
-      "mainSha256": "850d0fac772a4ccb350d5d943112d8f040a116e8d56401c97698b00776eea9f0",
-      "sdkSha256": "8d7b3002bcad42d1232cc768c1d051deee5cac6a0f176e0a409da5074d2cedd6"
+      "mainSha256": "4436efb40fa72cde5e5bfdb93bfd0ffd823c100ffb7e1f2eb4f9a7398b7465be",
+      "sdkSha256": "6ea230b4c659b60ab13b3df1100979c5c2f903a98d3628c9ae2e19a994735a43"
     },
     {
       "id": "server/tests/resident-initialization-quiet.test.ts",
@@ -2144,16 +2240,16 @@
       "kind": "test",
       "mainPath": "server/tests/resident-native-driver.test.ts",
       "sdkPath": "sdk/tests/main-core/resident-native-driver.test.ts",
-      "mainSha256": "a9b619986d3b44218df2b1868c710450e396e4e7d92aa7766cbeab837660b14e",
-      "sdkSha256": "2d67270e24018627375474b179baf75614d589d77c49dedcce849c9e2a83d267"
+      "mainSha256": "dd1c10a378ea28c8de1db368ac06c07b3a1fe62b608ee7c7bd020a75f61d2813",
+      "sdkSha256": "ddd43771b8d338eba5ca02a976f3a4d5085958338f0bdf0a19b3c1a3b9ef8e84"
     },
     {
       "id": "server/tests/scoped-agent-execution.test.ts",
       "kind": "test",
       "mainPath": "server/tests/scoped-agent-execution.test.ts",
       "sdkPath": "sdk/tests/main-core/scoped-agent-execution.test.ts",
-      "mainSha256": "618d89fb9e629ccca2b3a11353307f9a19e79614c44117f39f5f2c8740ecae4c",
-      "sdkSha256": "400d03b732ca5bef3f1b97165a5fd6f63045ceaaa3c5f85ebad4de09b94ac1ec"
+      "mainSha256": "d7a0da95c145849ef3a0188299be152d997d3467495988c5e038540151900ecf",
+      "sdkSha256": "79dd0fa2bee9aa6791daf458e952b68235c99aefab416fa2f0e70f709ce1024c"
     },
     {
       "id": "server/tests/scoped-collaboration-schema.test.ts",
@@ -2168,8 +2264,8 @@
       "kind": "test",
       "mainPath": "server/tests/scoped-project-runtime.test.ts",
       "sdkPath": "sdk/tests/main-core/scoped-project-runtime.test.ts",
-      "mainSha256": "a3e461e3d51478894b74656ff53ec56deac3b62aedeed58b8158cd7d0636c318",
-      "sdkSha256": "a36c01d90ceacf5b0441861282f6d47d32ed1b378009a70da451c1b81ddd056a"
+      "mainSha256": "7faef3ee4fc667f83b202a3b3aaf92aa3b14ba39d65d069059fbf7eaef333f36",
+      "sdkSha256": "b556730722a585101a5f0cacb8255fa53e969d6eac621709143e143066e98649"
     },
     {
       "id": "server/tests/scoped-unopened-preparation.test.ts",
@@ -2216,8 +2312,8 @@
       "kind": "test",
       "mainPath": "server/tests/scoped-worktree-closing-runtime.test.ts",
       "sdkPath": "sdk/tests/main-core/scoped-worktree-closing-runtime.test.ts",
-      "mainSha256": "ffcbe12c9ea8917fd453255b9dbe2152f0d2a1f1d8628960c374c52798628eae",
-      "sdkSha256": "ec3b7d0d7ace232a9bf9017898d5d3437c1d2d6e400a0721b408c3a4ff5ad23a"
+      "mainSha256": "62c892d3d81c91750f68250907043676efe3c7437dccddac6a74656503aba817",
+      "sdkSha256": "b669c74d9f071d0e266d6d638c0753a52066d591a43effbbd8e520b755edee5b"
     },
     {
       "id": "server/tests/scoped-worktree-closing-settlement.test.ts",
@@ -2256,16 +2352,16 @@
       "kind": "test",
       "mainPath": "server/tests/skill-library.test.ts",
       "sdkPath": "sdk/tests/main-core/skill-library.test.ts",
-      "mainSha256": "31252dabe9f094214086f316e6214c2eb7c4fd006ebb8d29a8808354ea251e3c",
-      "sdkSha256": "c6cd32d51694797081f4b9d60f75a0066136534005c328f622ffe9197d0a2ea5"
+      "mainSha256": "8e3bf6906230d6fb2fee4091cf446cc94dd79046177bebe8a4004f051b3f6a82",
+      "sdkSha256": "42222050e78ad4ee683fe6476fe8ac500d06331c72806b61a4d17b5bff73403c"
     },
     {
       "id": "server/tests/skill-staging.test.ts",
       "kind": "test",
       "mainPath": "server/tests/skill-staging.test.ts",
       "sdkPath": "sdk/tests/main-core/skill-staging.test.ts",
-      "mainSha256": "a16d0d5c33962baeb90d233ac17df09fb7881e22f60508651989e9702003ba9a",
-      "sdkSha256": "0e249e0110e8f38bd10081ecd66a644e28075efb79234fed5e0528790443f6e6"
+      "mainSha256": "f3d2e1399b2645687dcec95ab51377f6d73cb91b3d8b15a7c45bd65e95c3d5c1",
+      "sdkSha256": "072dc6f1fb03401d01ab42620eb85df7e9cf0af224531a06d2a31815299d44ab"
     },
     {
       "id": "server/tests/terminal-push-coordination-state.test.ts",
@@ -2320,8 +2416,8 @@
       "kind": "test",
       "mainPath": "server/tests/workflow-context.test.ts",
       "sdkPath": "sdk/tests/main-core/workflow-context.test.ts",
-      "mainSha256": "80d0f7500eb6b0c7e5bd128c01bcbc04fa6e3e24975e48a81fd46027902b45cf",
-      "sdkSha256": "c76ee55254fb1df8f84e8d385e033de1232990f1af6b7c82ae297f630965718c"
+      "mainSha256": "27e4c3618c9a0ee5d2f00508b35e8c73796f38d0c487ec98439d5d4d32bf8fff",
+      "sdkSha256": "3956f5940b5940627ad03812104f486aef3e6b9ce8e3f9427c2bdd86845f8d21"
     },
     {
       "id": "server/tests/workflow-recovery.test.ts",

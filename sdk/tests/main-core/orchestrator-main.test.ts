@@ -230,12 +230,20 @@ describe("public Main orchestration state machine", () => {
     const database = CollaborationStateDatabase.open({ databasePath: path.join(root, "listing-heartbeat.sqlite"),
       serviceId: "listing-heartbeat", hostId: "single-test-host", topology: "single-host", leaseDurationMs: 1000 });
     const originalLease = database.writerLease();
+    const storage = (orchestrator as unknown as { storage: ProjectStorage }).storage;
+    const barrier = vi.spyOn(storage, "waitForProjectReadBarrier");
+    const releases = [project.id, ...cloneIds].map(id => storage.reserveProjectMutation(id));
     let renewalError: unknown, renewals = 0;
     const timer = setInterval(() => {
       try { database.renewWriterLease(); renewals++; } catch (error) { renewalError = error; }
     }, 100);
     try {
-      const lists = await Promise.all([orchestrator.listProjects(), orchestrator.listProjects()]);
+      const pendingLists = Promise.all([orchestrator.listProjects(), orchestrator.listProjects()]);
+      await vi.waitFor(() => expect(barrier.mock.calls.length).toBeGreaterThanOrEqual(50), { interval: 5 });
+      // Writer commits may finish in the same turn. Projection work must
+      // still yield to heartbeats after these independent barriers release.
+      releases.forEach(release => release());
+      const lists = await pendingLists;
       await new Promise<void>(resolve => setTimeout(resolve, 1));
       expect(renewalError).toBeUndefined();
       expect(renewals).toBeGreaterThan(0);
@@ -246,11 +254,51 @@ describe("public Main orchestration state machine", () => {
       expect(lists).toEqual([expect.arrayContaining([expect.objectContaining({ id: project.id, status: "completed" })]),
         expect.arrayContaining([expect.objectContaining({ id: project.id, status: "completed" })])]);
     } finally {
+      releases.forEach(release => release()); barrier.mockRestore();
       clearInterval(timer); database.close(); slowView.mockRestore();
       for (const id of cloneIds) runtimes.delete(id);
       await orchestrator.shutdown();
     }
   });
+
+  it.each(["failure reporting", "stop settlement"] as const)(
+    "owns a detached loop rejection during %s and stops retrying without claiming durable success", async mode => {
+      const { orchestrator } = await harness(async request => mainResult(request, decision("finish", "Complete")));
+      const project = await orchestrator.createProject(projectInput(mainOnlyOrchestration()));
+      await orchestrator.waitForIdle(project.id);
+      const internals = orchestrator as unknown as {
+        runtimes: Map<string, { state: ProjectState; loop?: Promise<void> }>;
+        runLoop(runtime: unknown): Promise<void>;
+        handleInvocationFailure(...args: unknown[]): Promise<void>;
+        markCancellationSettled(runtime: unknown): Promise<void>;
+        startLoop(runtime: unknown): void;
+      };
+      const runtime = internals.runtimes.get(project.id)!;
+      runtime.state.status = "queued";
+      const failure = new Error("Collaboration writer lease was lost");
+      const run = vi.spyOn(internals, "runLoop").mockImplementation(async () => {
+        if (mode === "failure reporting") throw new Error("Original invocation failed");
+        runtime.state.status = "cancelled";
+      });
+      const report = vi.spyOn(internals, "handleInvocationFailure").mockRejectedValue(failure);
+      const settle = vi.spyOn(internals, "markCancellationSettled").mockRejectedValue(failure);
+      const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        internals.startLoop(runtime);
+        // Deliberately do not catch runtime.loop: the detached owner must
+        // prevent a process-level unhandled rejection without an API waiter.
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(runtime.loop).toBeUndefined();
+        expect(await orchestrator.getProject(project.id)).toMatchObject({ status: "interrupted",
+          phase: "storage-recovery-required", lastError: failure.message });
+        expect(log).toHaveBeenCalledWith("Project background execution stopped; failure reporting could not be persisted",
+          { projectId: project.id, error: failure.message });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(run).toHaveBeenCalledTimes(1);
+      } finally { run.mockRestore(); report.mockRestore(); settle.mockRestore(); log.mockRestore(); }
+    }
+  );
 
   it("lists each committed project without requiring independent writers to become idle together", async () => {
     const { orchestrator } = await harness(async request => mainResult(request, decision("finish", "Task complete.")));
@@ -258,12 +306,16 @@ describe("public Main orchestration state machine", () => {
     const second = await orchestrator.createProject({ ...projectInput(mainOnlyOrchestration()), title: "Second committed project" });
     await Promise.all([orchestrator.waitForIdle(first.id), orchestrator.waitForIdle(second.id)]);
     const storage = (orchestrator as unknown as { storage: ProjectStorage }).storage;
-    const waitForBarrier = storage.waitForProjectReadBarrier.bind(storage);
     let secondReady!: () => void;
     const secondRead = new Promise<void>(resolve => { secondReady = resolve; });
-    vi.spyOn(storage, "waitForProjectReadBarrier").mockImplementation(async (projectId, signal) => {
-      await waitForBarrier(projectId, signal);
-      if (projectId === second.id) secondReady();
+    const views = orchestrator as unknown as {
+      listingProjectView(runtime: { state: ProjectState }): Promise<ProjectView>;
+    };
+    const capture = views.listingProjectView.bind(orchestrator);
+    vi.spyOn(views, "listingProjectView").mockImplementation(async runtime => {
+      const project = await capture(runtime);
+      if (project.id === second.id) secondReady();
+      return project;
     });
     const releaseFirst = storage.reserveProjectMutation(first.id);
     let releaseSecond: () => void = () => undefined;
@@ -271,7 +323,6 @@ describe("public Main orchestration state machine", () => {
     const listing = orchestrator.listProjects().then(value => { settled = true; return value; });
     try {
       await secondRead;
-      await new Promise<void>(resolve => setImmediate(resolve));
       expect(settled).toBe(false);
       releaseSecond = storage.reserveProjectMutation(second.id);
       releaseFirst();
@@ -1303,6 +1354,34 @@ describe("public Main orchestration state machine", () => {
     await orchestrator.shutdown();
   });
 
+  it.each([
+    { autoReasoning: true, choice: undefined, expected: "high" },
+    { autoReasoning: true, choice: "low", expected: "low" },
+    { autoReasoning: false, choice: undefined, expected: undefined }
+  ])("captures confirmed reasoning defaults in new projects, respecting explicit choices: %j", async ({ autoReasoning, choice, expected }) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-reasoning-default-"));
+    temporaryRoots.push(root);
+    const modelFetch = vi.fn(async () => new Response("unexpected model request", { status: 500 }));
+    const gatewayStore = new GatewayStore(root, { resolveHostname: async () => ["93.184.216.34"], fetch: modelFetch });
+    const gateway = await gatewayStore.create({ name: "Reasoning default", url: "https://gateway.example/v1", apiKey: "test-key",
+      protocol: "responses", models: ["test-model"], defaultModel: "test-model", autoReasoning,
+      modelReasoning: { "test-model": { parameter: "reasoning.effort", defaultOptionId: "high",
+        options: ["low", "high"].map(value => ({ id: value, label: value, value })) } } });
+    const runner = new ScriptedRunner(async request => mainResult(request, decision("finish", "Done.")));
+    const orchestrator = new Orchestrator(new ProjectStorage(root, new EventHub()), new SkillCatalog([builtinSkillRoot]),
+      runner, { retryBaseMs: 1, retryMaxMs: 1, agentConcurrency: 1 }, gatewayStore);
+    liveOrchestrators.push(orchestrator);
+    await orchestrator.initialize();
+    const project = await orchestrator.createProject({ title: "Default reasoning", requirement: "Use the confirmed Gateway default.",
+      orchestration: mainOnlyOrchestration(), agents: { main: { model: "test-model", gatewayId: gateway.id, harness: "codex",
+        skills: [], autoSkills: [], ...(choice ? { gatewayReasoningOption: choice } : {}) } } });
+    await orchestrator.waitForIdle(project.id);
+    expect(runner.calls[0]?.project.agents.main.gatewayReasoningOption).toBe(expected);
+    expect(runner.calls[0]?.project.agents.main.gatewaySnapshot?.reasoning?.value).toBe(expected);
+    expect(modelFetch).not.toHaveBeenCalled();
+    await orchestrator.shutdown();
+  });
+
   it("creates and runs a project when the selected gateway connection test failed", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-failed-gateway-start-"));
     temporaryRoots.push(root);
@@ -2283,7 +2362,7 @@ describe("public Main orchestration state machine", () => {
     const events = await storage.readEvents(project.id);
     expect(events.some((event) =>
       event.type === "invocation.failed" &&
-      String(event.data?.error).includes("select_display referenced an unreadable workspace file")
+      String(event.data?.error).includes("Published artifact changed after publication")
     )).toBe(true);
     await orchestrator.shutdown();
   });

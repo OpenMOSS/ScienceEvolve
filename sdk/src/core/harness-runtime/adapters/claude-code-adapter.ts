@@ -1,3 +1,5 @@
+import { claudeNativeToolApprovals } from "./claude-native-policy.js";
+import { selectedSkillInstructions } from "../selected-skills.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -119,37 +121,6 @@ export class ClaudeCodeAdapter extends AdapterBase implements HarnessAdapter {
       modelOverrides: { "claude-sonnet-4-5": spec.model }
     });
     const explainer = spec.purpose === "explainer";
-    const yolo = request.permission === "yolo";
-    const builtInTools = [
-      // Main and Worker receive exactly the same baseline read capability.
-      "Read", "Glob", "Grep",
-      ...(yolo
-        ? ["Bash", "Write", "Edit", "NotebookEdit"]
-        : request.permission === "compute" ? ["Bash"] : []),
-      ...(spec.policy.webSearch ? ["WebSearch", "WebFetch"] : [])
-    ];
-    const mcpNamespaces = new Set(runtime.mcpRows.map((row) => row.namespace));
-    const allowedMcpTools = explainer ? runtime.mcpRows.map(row => `mcp__${row.namespace}__*`) : [
-      "mcp__scienceevolve-sleep__sleep",
-      ...(mcpNamespaces.has("scienceevolve-workspace")
-        ? [
-            "mcp__scienceevolve-workspace__scienceevolve_append_file",
-            `mcp__scienceevolve-workspace__${READ_PUBLISHED_ARTIFACT_TOOL}`,
-            ...(spec.purpose === "probe"
-              ? ["mcp__scienceevolve-workspace__scienceevolve_read_smoke_sentinel"]
-              : [])
-          ]
-        : []),
-      ...(mcpNamespaces.has("scienceevolve-orchestration-control")
-        // tools/list and live backend revalidation already bind every control
-        // tool to this invocation's role. A second hand-maintained allowlist
-        // omitted finish_task and state tools, causing dontAsk to deny them.
-        ? [modelFacingMcpNamespaceWildcard("scienceevolve-orchestration-control")]
-        : []),
-      ...runtime.mcpRows
-        .filter((row) => row.transport === "streamable-http")
-        .map((row) => `mcp__${row.namespace}__*`)
-    ];
     const resumed = Boolean(session.resumedAt);
     const nativeInputReceipt = Boolean(request.siiMcp || context.prepareNativeInput);
     const args = [
@@ -159,12 +130,11 @@ export class ClaudeCodeAdapter extends AdapterBase implements HarnessAdapter {
       "--include-partial-messages",
       ...(nativeInputReceipt ? ["--input-format", "stream-json", "--replay-user-messages"] : []),
       "--bare",
-      ...(explainer ? ["--disable-slash-commands"] : []),
-      ...(yolo ? [] : ["--restricted"]),
-      "--tools", builtInTools.join(","),
-      "--allowedTools",
-      ...builtInTools,
-      ...allowedMcpTools,
+      "--disable-slash-commands",
+      "--setting-sources", "",
+      "--append-system-prompt", selectedSkillInstructions([...spec.policy.skillPaths, ...spec.policy.autoSkillPaths]),
+      "--tools", "default",
+    "--allowedTools", ...claudeNativeToolApprovals(runtime.mcpRows.map(row => row.namespace)),
       "--strict-mcp-config",
       "--mcp-config", mcpPath,
       "--settings", modelMapping,

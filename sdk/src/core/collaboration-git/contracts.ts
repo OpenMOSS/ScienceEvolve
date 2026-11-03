@@ -365,6 +365,8 @@ export interface GitHubCheckFact {
 }
 
 export interface GitHubPullRequestFact {
+  title?: string;
+  body?: string;
   id: PullRequestId;
   providerNumber: number;
   owner: string;

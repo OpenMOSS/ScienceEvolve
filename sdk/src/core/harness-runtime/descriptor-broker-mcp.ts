@@ -27,6 +27,8 @@ async function privateJson(file) {
 }
 
 const config = await privateJson(configPath);
+if (config.toolMode !== undefined && config.toolMode !== "git") throw new Error("Unsupported platform tool mode");
+const gitOnly = config.toolMode === "git";
 if (config.schemaVersion !== 1 || !Array.isArray(config.roots) ||
   typeof config.helperPath !== "string" || typeof config.pythonExecutable !== "string" ||
   typeof config.gitExecutable !== "string" ||
@@ -417,14 +419,14 @@ async function handle(request) {
     rpcResult(request.id, {
       protocolVersion: "2025-06-18",
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "openfars-descriptor-filesystem", version: "1" }
+      serverInfo: { name: gitOnly ? "openfars-git" : "openfars-descriptor-filesystem", version: "1" }
     });
     return;
   }
   if (request.method === "tools/list") {
     // Advertise the authority actually allocated for this invocation. A
     // retained receipt turn may read its old memory but has no writable root.
-    const exposed = closingFiles ? tools.filter(tool => tool.name !== "make_directory")
+    const exposed = gitOnly ? tools.filter(tool => tool.name.startsWith("git_")) : closingFiles ? tools.filter(tool => tool.name !== "make_directory")
       : config.roots.some((root) => root.write) ? tools
       : tools.filter((tool) => !["write_file", "make_directory"].includes(tool.name));
     rpcResult(request.id, { tools: exposed }); return;
@@ -433,6 +435,7 @@ async function handle(request) {
   const params = request.params && typeof request.params === "object" ? request.params : {};
   const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
   try {
+    if (gitOnly && !tools.some(tool => tool.name === params.name && tool.name.startsWith("git_"))) throw Object.assign(new Error(`Unknown platform Git tool: ${params.name}`), { code: "TOOL_NOT_AVAILABLE", invalidField: "name" });
     let result;
     if (params.name === "shell") {
       result = await readShell(args);

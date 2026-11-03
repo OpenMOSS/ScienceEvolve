@@ -95,6 +95,37 @@ async function fixture(weak = false, fixtureOptions: { complete?: boolean } = {}
 }
 
 describe("scoped native execution and report checkpoint", () => {
+  it("reads scoped delivery observations through the event-type index while preserving exact ownership and event order", async () => {
+    const f = await fixture();
+    for (let i = 0; i < 20; i++) f.database.appendEvent({ projectId: "p", requestId: `unrelated-${i}`,
+      type: "diagnostic.retained", payload: { output: "Retained audit detail. ".repeat(400) } });
+    const observe = (requestId: string, type: string, status: "open" | "closed", overrides: Record<string, unknown> = {}) =>
+      f.database.appendEvent({ projectId: "p", requestId, type, payload: {
+        executionId: f.execution.id, ownershipEpoch: 1,
+        pull: { id: "delivery-pull", providerNumber: 7, ownerExecutionId: f.execution.id,
+          head: f.execution.executionBranch, headSha: HEAD, base: f.group.groupRun.groupBranch,
+          status, htmlUrl: `${repository.htmlUrl}/pull/7`, observedAt: NOW }, ...overrides } });
+    observe("recovered-open", "scoped.recovery.pull_observed", "open");
+    observe("cancelled-closed", "scoped.cancellation.pull_observed", "closed");
+    observe("wrong-owner", "scoped.recovery.pull_observed", "open", { executionId: "other-execution" });
+    observe("wrong-epoch", "scoped.recovery.pull_observed", "open", { ownershipEpoch: 2 });
+    const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+    let sql: string | undefined;
+    try {
+      expect(f.database.scopedAgentRecordedDeliveryPull("p", f.execution.id, 1, HEAD, { requireUniqueProvider: true }))
+        .toMatchObject({ providerNumber: 7, status: "closed", headSha: HEAD, ownerExecutionId: f.execution.id });
+      expect(f.database.scopedAgentRecordedDeliveryPull("p", f.execution.id, 1, BASE)).toBeUndefined();
+      sql = prepare.mock.calls.map(([query]) => query).find(query => query.includes("'$.pull.headSha'"));
+    } finally { prepare.mockRestore(); }
+    expect(sql).toBeDefined();
+    const raw = new DatabaseSync(f.options.databasePath, { readOnly: true });
+    try {
+      const plan = raw.prepare(`EXPLAIN QUERY PLAN ${sql!}`).all("p", f.execution.id, 1, HEAD) as { detail: string }[];
+      expect(plan.some(row => row.detail.includes("project_events_project_type_seq") && row.detail.includes("event_type=?")))
+        .toBe(true);
+    } finally { raw.close(); }
+  });
+
   it("archives ordered native text idempotently without accepting completion or delivery, and survives writer reopen", async () => {
     const f = await fixture(false, { complete: false });
     const identity = { ...f.input, invocationId: "inv_" + "8".repeat(32) };
