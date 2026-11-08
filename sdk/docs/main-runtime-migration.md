@@ -47,7 +47,7 @@ Use absolute Windows paths such as D:/runs/main-core-test and Node.js 24+ with n
 ## Data, shutdown, and recovery
 
 - New hosts require an empty independent dataDir and record engine/pinned-source/runtimeRevision markers. They do not take over old projects, repositories, or SDK/Web data.
-- .scienceevolve-runtime.lock excludes concurrent hosts; old engines also reject new-engine data.
+- .scienceevolve-runtime.lock excludes concurrent hosts; old engines also reject new-engine data. The lock file contains `{ pid, engine, startedAt }`. When opening fails with "Data directory is in use (or has a stale .scienceevolve-runtime.lock)", confirm the owner first: check whether the recorded pid is still running (e.g. `ps -p <pid>`, or `tasklist /FI "PID eq <pid>"` on Windows). If the process no longer exists, the lock is stale and can be removed from the data directory before retrying; if it is still running, stop it first.
 - Reopening follows main initialization/recovery and may resume runnable projects. It is not read-only inspection.
 - close waits for orchestration/database shutdown and confirms all opened residents closed. Unconfirmed native Stop retains the directory lock; close can be retried. Remove crash locks only after confirming the original process stopped.
 - Other revisions, including previews marked only by sourceCommit, do not auto-upgrade. Explicit migration/recovery acceptance is required; never edit markers just to open them.

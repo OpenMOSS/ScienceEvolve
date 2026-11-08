@@ -71,7 +71,7 @@ Windows 使用绝对路径，例如 `D:/runs/main-core-test`。要求 Node >=24�
 ## 数据、停机与恢复
 
 - 新宿主要求空的独立 dataDir，写入引擎/固定提交/runtimeRevision 标记。不会接管已有项目、Git 仓库或旧 SDK/Web 数据。
-- 同一 `.scienceevolve-runtime.lock` 防止两个 SDK 宿主同时打开目录；旧引擎也拒绝打开新引擎标记的数据。
+- 同一 `.scienceevolve-runtime.lock` 防止两个 SDK 宿主同时打开目录；旧引擎也拒绝打开新引擎标记的数据。锁文件内容为 `{ pid, engine, startedAt }`。打开数据目录报 "Data directory is in use (or has a stale .scienceevolve-runtime.lock)" 时，先确认持有者：检查锁内 pid 是否仍在运行（`ps -p <pid>`；Windows 用 `tasklist /FI "PID eq <pid>"`）。进程已不存在即陈旧锁，删除后重试；进程仍在运行则先停止它。
 - 重新打开遵循 main 的 initialize/recover 行为，可能恢复可运行项目；它不是只读查看操作。
 - close 等待 Orchestrator 停机、数据库关闭，并额外确认所有已打开 resident 的 close 成功。
   未确认原生 Stop 时保留目录锁；可重试 close。崩溃残留锁只能在确认原进程已停止后人工恢复。
