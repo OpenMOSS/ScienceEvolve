@@ -6,7 +6,7 @@
 
 ScienceEvolve 的 Web/Server（下文称 `main`）与默认 `@scienceevolve/sdk` 使用共同的工作流核心规则，分别提供网页与 Node API/CLI 宿主。SDK 保存明确的 main Git 基线及共同源码工作树快照，不能仅凭引擎名推断两边全部功能和版本相同。旧 `/legacy` 引擎不属于本页的当前入口。
 
-共同核心现已按实际文件逐字节一致；SDK Hermes 实现在共同核心目录外，通过可选宿主接口接入。Git 基线和工作树文件哈希共同记录来源。
+共同核心现已按实际文件逐字节一致。Git 基线和工作树文件哈希共同记录来源。
 
 ## 宿主差异
 
@@ -18,7 +18,7 @@ ScienceEvolve 的 Web/Server（下文称 `main`）与默认 `@scienceevolve/sdk`
 | 选择已保存的 `gatewayId` | 网关库与显式 `gatewayBindings`，或部署提供的原生 Codex 别名 | 调用前解析并锁定模型路线 |
 | 服务端分配项目目录与 Git worktree | 调用方可传 `workspace`；Git-on 隔离执行并交付回原目录 | 工作目录、输入与交付由宿主验证 |
 | 可视化 Workflow 画布 | JSON、API、CLI | 同一 Workflow schema 与校验规则 |
-| Codex、pi、DSH、Claude Code | 另有 SDK 宿主扩展 Hermes Harness | 共同调度与每轮能力校验 |
+| Codex、pi、DSH | Codex、pi、DSH | 共同调度与每轮能力校验 |
 
 SDK 不包含 Web 页面，`main` 也不会接受调用方提供的任意服务器绝对路径。凭据、Gateway 快照、宿主路径和 `dataDir` 都不是通用 Workflow 字段。SDK 的 API-key env/profile 配置通过显式导入保存到部署网关库，不使用旧 workflow 的 `gatewaySource` 活绑定；当前入口见 [SDK CLI/API 手册](main-cli-zh.md)。
 

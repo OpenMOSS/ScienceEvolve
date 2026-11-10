@@ -36,6 +36,11 @@ it.each(Object.keys(baseline.workflows))("preserves research semantics and main 
     // Restore that exact deployment sentence for the original semantic hash;
     // keep every other prompt byte, model, method stage and graph protected.
     const semanticAgent = semanticAgents[name] as Record<string, unknown>;
+    // Pin the ARIS author deployment while checking the fixed method digest.
+    if (file === "example/aris/workflow.json" && !["reviewer", "paper_reviewer"].includes(name)) {
+      expect(agent.harness).toBe("pi");
+      semanticAgent.harness = "claude-code";
+    }
     if (typeof semanticAgent.instructions === "string") semanticAgent.instructions = semanticAgent.instructions.replace(
       "All Agents in this Git-off project use the same persistent workspace selected by the SDK host. Use the actual workspace path supplied in this invocation rather than assuming a dataDir subdirectory.",
       "All Agents in this project use the same persistent workspace: <dataDir>/projects/<projectId>/workspaces/."

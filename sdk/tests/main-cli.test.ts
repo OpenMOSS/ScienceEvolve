@@ -45,6 +45,18 @@ function actualKernelApi(onRun?: (request: Parameters<AgentRunner["run"]>[0]) =>
 }
 
 describe("main CLI transport with actual main Git-off kernel/SQLite, simulated Agent (no network)", () => {
+  it("rejects removed Hermes inputs before opening a runtime or importing a gateway", async () => {
+    const root = await directory(), create = vi.fn();
+    const services = { api: { ...mainApi, createMainResearchSdk: create }, ...output() };
+    await expect(runMainCli(["gateway", "import"], options(root, { harness: "hermes", model: "fixture", source: "env" }), services))
+      .rejects.toThrow("--harness must be one of: codex, pi, dsh");
+    await expect(runMainCli(["gateway", "test", "gwy_" + "a".repeat(32)], options(root, { harness: "hermes", model: "fixture" }), services))
+      .rejects.toThrow("--harness must be one of: codex, pi, dsh");
+    expect(() => mainApi.validateMainWorkflowConfig({ ...workflow(), agents: { main: { model: "fixture", harness: "hermes", skills: [], autoSkills: [] } } }))
+      .toThrow(/harness|Harness|hermes/);
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it.each(["inputs", "inputs-file", "workflow"])("copies text and image inputs before the first Agent via %s", async (flag) => {
     const root = await directory(), dataDir = path.join(root, "data"), workspace = path.join(root, "workspace");
     const assets = path.join(root, "assets"), manifests = path.join(root, "manifests");
@@ -162,7 +174,7 @@ describe("main CLI transport with actual main Git-off kernel/SQLite, simulated A
     await expect(runMainCli(args, options(root, { gateway: "g", workspace: root, "source-workspace": root }), services)).rejects.toThrow(/mutually exclusive/);
     expect(create).not.toHaveBeenCalled();
   });
-  it.each(["codex", "hermes"])("imports %s API-key env configuration through the main host without testing a model", async (harness) => {
+  it.each(["codex"])("imports %s API-key env configuration through the main host without testing a model", async (harness) => {
     const root = await directory(); const out = output();
     vi.stubEnv("SDK_CODEX_BASE_URL", "https://93.184.216.34/v1");
     vi.stubEnv("SDK_CODEX_API_KEY", "opaque-main-import-cli");

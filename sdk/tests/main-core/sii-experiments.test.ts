@@ -80,6 +80,48 @@ async function fixture(nativeSession: SessionRef = session) {
 }
 
 describe("SII asynchronous experiments", () => {
+  it("returns explicit platform rejections as MCP errors while preserving submission and observation facts", async () => {
+    const f = await fixture();
+    f.runJson.mockImplementation(async args => args.includes("--large") ? { success: false, message: "quota rejected".repeat(10000) }
+      : args.includes("create") || args.includes("list")
+      ? { success: false, message: "quota rejected", data: { sub_code: 1 } }
+      : { success: true, data: { job: { status: "job_failed", exit_code: 2 } } });
+    const client = new Client({ name: "rejected-result-client", version: "1" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(f.binding.url)));
+    try {
+      const command = await client.callTool({ name: "sii_command", arguments: { args: ["job", "list"] } });
+      expect(command.isError).toBe(true);
+      expect(command.structuredContent).toMatchObject({ result: { success: false, message: "quota rejected" } });
+      const large = await client.callTool({ name: "sii_command", arguments: { args: ["job", "list", "--large"] } });
+      expect(large.isError).toBe(true);
+      expect(large.structuredContent).toMatchObject({ result: { success: false, truncated: true } });
+      const args = ["job", "create", "--name", "rejected-job", "--workspace", "compute-space", "--project", "具有能动性的科学大模型"];
+      const rejected = await client.callTool({ name: "sii_submit_experiment", arguments: { args, request_id: "rejected" } });
+      expect(rejected.isError).toBe(true);
+      const experiment = (rejected.structuredContent as any).experiment;
+      expect(experiment.status).toBe("failed");
+      const observation = await client.callTool({ name: "sii_get_experiment", arguments: { experiment_id: experiment.id } });
+      expect(observation.isError).not.toBe(true);
+      expect(observation.structuredContent).toMatchObject({ experiment: { status: "failed" } });
+      const batch = await client.callTool({ name: "sii_submit_batch", arguments: { experiments: [
+        { args: args.map(value => value === "rejected-job" ? "batch-rejected" : value), request_id: "batch-rejected" },
+        { args: ["job", "create"], request_id: "invalid" }
+      ] } });
+      expect(batch.isError).toBe(true);
+      expect(batch.structuredContent).toMatchObject({ results: [
+        { experiment: { status: "failed" } }, { request_id: "invalid", error: expect.any(String) }
+      ] });
+    } finally { await client.close(); }
+  });
+
+  it("retains an unconfirmed submission when the CLI does not report success", async () => {
+    const f = await fixture();
+    f.runJson.mockResolvedValue({ data: { name: "training-a" } } as any);
+    expect(await f.submit()).toMatchObject({ experiment: { status: "submission_unknown" } });
+    expect(await f.submit()).toMatchObject({ experiment: { status: "submission_unknown" } });
+    expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
+  });
+
   it("keeps old task notes out of notifications and reads selected notes in bounded pages", async () => {
     const f = await fixture(); const { experiment } = await f.submit();
     const context = "EXPERIMENT_CONTINUATION_CONTEXT".repeat(200);
@@ -835,7 +877,7 @@ describe("SII asynchronous experiments", () => {
   });
 
   it.each(["exact", "stream_start", "other_call", "other_experiment"] as const)(
-    "correlates Claude's unnamed native result to its actual SII query (%s)", async mode => {
+    "correlates an unnamed native result to its actual SII query (%s)", async mode => {
       const f = await fixture(); const { experiment } = await f.submit();
       f.state("job_succeeded"); await f.service.refreshNow();
       const result = await f.binding.call("sii_get_experiment", { experiment_id: experiment.id });

@@ -4,9 +4,8 @@ import path from "node:path";
 import { getModels, getProviders } from "@earendil-works/pi-ai";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
-import { AGENT_PROTOCOLS, normalizeGatewayInput, type AgentHarness as CoreHarness, type AgentProtocol, type GatewayInput } from "../core/agent-runtime.js";
-type AgentHarness = Exclude<CoreHarness, "hermes">;
-const HARNESS_NATIVE_PROTOCOL: Record<AgentHarness, AgentProtocol> = { codex: "responses", pi: "chat-completions", dsh: "chat-completions", "claude-code": "anthropic-messages" };
+import { AGENT_PROTOCOLS, normalizeGatewayInput, type AgentHarness, type AgentProtocol, type GatewayInput } from "../core/agent-runtime.js";
+const HARNESS_NATIVE_PROTOCOL: Record<AgentHarness, AgentProtocol> = { codex: "responses", pi: "chat-completions", dsh: "chat-completions" };
 
 type Obj = Record<string, unknown>;
 const obj = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
@@ -52,6 +51,7 @@ export async function readHarnessGateway(
   harness: AgentHarness, model: string, env: GatewayEnvironment = process.env, home = os.homedir(),
   source?: "env" | "profile"
 ): Promise<GatewayInput> {
+  if (!Object.hasOwn(HARNESS_NATIVE_PROTOCOL, harness)) throw new Error(`Unsupported native Harness: ${harness}`);
   const key = prefix(harness);
   const explicitProfile = str(env[`${key}_PROFILE`]);
   const hasDirectConfig = Boolean(str(env[`${key}_API_KEY`]) || str(env[`${key}_BASE_URL`]));
@@ -71,7 +71,6 @@ export async function readHarnessGateway(
   } else {
     const defaults: Record<AgentHarness, string> = {
       codex: env.CODEX_HOME || path.join(home, ".codex"),
-      "claude-code": env.CLAUDE_CONFIG_DIR || path.join(home, ".claude"),
       pi: env.PI_CODING_AGENT_DIR || path.join(home, ".pi", "agent"),
       dsh: env.DSH_HOME || path.join(home, ".dsh")
     };
@@ -79,7 +78,7 @@ export async function readHarnessGateway(
     let directory: boolean;
     try { directory = (await fs.stat(location)).isDirectory(); }
     catch { throw new Error(`${key}_PROFILE location does not exist or cannot be read`); }
-    const filenames: Record<AgentHarness, string> = { codex: "config.toml", "claude-code": "settings.json", pi: "models.json", dsh: "settings.yaml" };
+    const filenames: Record<AgentHarness, string> = { codex: "config.toml", pi: "models.json", dsh: "settings.yaml" };
     let file = directory ? path.join(location, filenames[harness]) : location;
     if (harness === "dsh" && directory) {
       // Newer DSH releases store plugin settings in a native Cordis patch.
@@ -103,12 +102,6 @@ export async function readHarnessGateway(
       apiKey = reference ? str(env[reference]) : str(provider.experimental_bearer_token) ?? str(auth.OPENAI_API_KEY);
       wireProtocol = protocol(provider.wire_api, "responses");
       contextWindow = typeof effective.model_context_window === "number" ? effective.model_context_window : undefined;
-    } else if (harness === "claude-code") {
-      const values = obj(config.env);
-      url = str(values.ANTHROPIC_BASE_URL) ?? "https://api.anthropic.com";
-      apiKey = str(values.ANTHROPIC_AUTH_TOKEN) ?? str(values.ANTHROPIC_API_KEY);
-      wireProtocol = "anthropic-messages";
-      if (!apiKey && config.apiKeyHelper) throw new Error("Claude apiKeyHelper is not supported; configure native settings.env credentials");
     } else if (harness === "pi") {
       const settings = obj(await read(path.join(root, "settings.json"), true));
       const providers = obj(config.providers);

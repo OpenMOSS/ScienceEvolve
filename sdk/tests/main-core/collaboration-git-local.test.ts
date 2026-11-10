@@ -323,6 +323,34 @@ afterEach(async () => {
 });
 
 describe("LocalCollaborationGitService", () => {
+  it("cleans only a stopped task's pending Git paths and reuses its Agent directory without creating a commit", async () => {
+    const { service, store } = await fixture(undefined, "agent");
+    const original = execution(service, store, "exec-clean-original", "one");
+    const other = execution(service, store, "exec-clean-other", "two");
+    original.worktreePath = service.canonicalAgentWorktree("one");
+    other.worktreePath = service.canonicalAgentWorktree("two");
+    await service.createDeliveryWorktree(original, 1, { kind: "main" });
+    await service.createDeliveryWorktree(other, 1, { kind: "main" });
+    const head = await git(original.worktreePath, ["rev-parse", "HEAD"]);
+    await fs.writeFile(path.join(original.worktreePath, "README.md"), "Uncommitted change");
+    await fs.writeFile(path.join(original.worktreePath, "staged.txt"), "Staged change");
+    await git(original.worktreePath, ["add", "staged.txt"]);
+    await fs.mkdir(path.join(original.worktreePath, "temporary"));
+    await fs.writeFile(path.join(original.worktreePath, "temporary", "result.txt"), "Untracked result");
+    await fs.writeFile(path.join(other.worktreePath, "other-task.txt"), "Other task remains available");
+    const cleaned = await service.clearExecutionWorktree(original, 1, true);
+    expect(cleaned.cleanedPaths).toEqual(expect.arrayContaining(["README.md", "staged.txt", "temporary/result.txt"]));
+    expect(cleaned.pendingPaths).toEqual([]);
+    expect(await git(original.worktreePath, ["rev-parse", "HEAD"])).toBe(head);
+    expect(await fs.readFile(path.join(other.worktreePath, "other-task.txt"), "utf8")).toBe("Other task remains available");
+    const next = execution(service, store, "exec-clean-next", "one");
+    next.worktreePath = original.worktreePath;
+    const prepared = await service.createDeliveryWorktree(next, 1, { kind: "main" });
+    expect(prepared.worktreePath).toBe(original.worktreePath);
+    expect(prepared.branch).toBe(next.executionBranch);
+    expect(await git(next.worktreePath, ["status", "--porcelain"])).toBe("");
+  });
+
   it("previews and reverts one current-task commit once, preserving history and unrelated files after a lost journal response", async () => {
     const commands: string[] = [];
     const delegate = new ExecFileGitCommandRunner();

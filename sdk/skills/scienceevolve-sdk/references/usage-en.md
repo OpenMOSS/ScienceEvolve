@@ -2,7 +2,7 @@
 
 [← Back to SDK README](../../../README.md) · **English** | [简体中文](usage.md)
 
-Requires Node.js 24+. Install Codex/Claude Code/DSH as needed; pi is packaged. Each main dataDir is an explicit absolute path, separate from legacy/Web/other runtime revisions. Only one host may open it at a time. Keep credentials out of workflows, requirements, and output.
+Requires Node.js 24+. Install Codex/DSH as needed; pi is packaged. Each main dataDir is an explicit absolute path, separate from legacy/Web/other runtime revisions. Only one host may open it at a time. Keep credentials out of workflows, requirements, and output.
 
 ## GitHub credentials (Git-on)
 
@@ -29,7 +29,7 @@ scievolve start workflow.json research_proposal.txt --data-dir /absolute/new-mai
   --gateway GATEWAY_ID
 ```
 
-The templates use high. Before import, define the model mapping with SDK_CODEX_REASONING_FILE or JSON. Other Harnesses use SDK_PI / SDK_DSH / SDK_CLAUDE_CODE prefixes. If the provider actually supports Responses reasoning.effort:
+The templates use high. Before import, define the model mapping with SDK_CODEX_REASONING_FILE or JSON. Other Harnesses use SDK_PI / SDK_DSH prefixes. If the provider actually supports Responses reasoning.effort:
 
 ```json
 {"ACTUAL_MODEL":{"parameter":"reasoning.effort","options":[{"id":"high","label":"High","value":"high"}]}}

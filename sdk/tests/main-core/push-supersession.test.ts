@@ -192,7 +192,7 @@ describe("Agent-selected unknown push inclusion reconciliation", () => {
     const results = await Promise.all([f.facade.reconcilePushOperation(f.request), f.facade.reconcilePushOperation(f.request)]);
     expect(results[0].operation).toEqual(results[1].operation);
     expect(f.db.eventsAfter("project").filter(e => e.type === "scoped.operation.superseded")).toHaveLength(1);
-    captureKnownAgentGitResults(f.db, "project"); captureKnownAgentGitResults(f.db, "project");
+    await captureKnownAgentGitResults(f.db, "project"); await captureKnownAgentGitResults(f.db, "project");
     expect(f.db.eventsAfter("project").filter(e => e.type === "control.result.recorded" && e.payload.receipt &&
       (e.payload.receipt as { origin?: { status: string } }).origin?.status === "superseded")).toHaveLength(1);
     const proof = f.db.recordedGitOperation("project", f.original.id);

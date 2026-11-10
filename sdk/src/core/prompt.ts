@@ -38,7 +38,7 @@ ${SHARED_WORKSPACE_MEMORY}
 `;
 
 const APPEND_TOOL_INSTRUCTION =
-  "Use native file tools for project files. Before creating a deliverable, check whether it already exists in this retained workspace. Preserve other Agents' work and process evidence; do not append a duplicate complete document during retries. Append incremental Memory notes with native tools. Prepare your finish_task Memory before the final commit and deliver the complete round in one PR; pre-merge corrections update that PR.";
+  "Use native file tools for project files. Before creating a deliverable, check whether it already exists in this retained workspace. Preserve other Agents' work and process evidence; do not append a duplicate complete document during retries. Update useful durable Memory with native tools before your final Git delivery and deliver the complete round in one PR; pre-merge corrections update that PR. finish_task records your receipt without editing Memory or making Git changes. If any requested step remains unfinished, return the available work and describe the actual gap.";
 
 const FILE_EDIT_INSTRUCTION =
   "Before editing any file with `apply_patch` or another write tool, re-read the target file's current contents, including the exact region to change, and copy its context. On verification failure, re-read and generate a new patch. Preserve existing evidence and other Agents' changes. Use native tools to append durable Memory notes, and platform tools for every Git/PR operation.";
@@ -53,6 +53,9 @@ export function normalizeNativeToolGuidance(text: string): string {
 
 const EXECUTION_EVIDENCE_INSTRUCTION =
   "Claim an independent computation, executable check, or script result only when an active tool actually ran it in this invocation or the inbox contains the exact durable execution evidence. If the assignment requires execution but the active permission/tool set cannot perform it, report that evidence gap instead of inventing a result. Execution alone does not validate the prose: before publishing or returning, mechanically check every checkable number, aggregate, ordering/tie-break, and acceptance fact stated in the deliverable against the actual output. When citing multiple validators as agreeing, compare their material fields exactly and disclose every mismatch; never infer agreement merely because both commands exited successfully.";
+
+const TASK_RETURN_INSTRUCTION =
+  "Do your best to complete the requested work and tool actions. If anything remains unfinished, return the available result, evidence locations and actual limitations. Preserve confirmed tool outcomes and distinguish unfinished or unknown actions from success. The backend manages any bounded same-task supervision; do not track repair counts or create extra bookkeeping obligations. Supervision does not expand the original assignment or grant additional permissions. Keep its prohibitions and write ownership; return unresolved facts rather than create unrequested work solely to satisfy a supervision check.";
 
 export const BUILTIN_AGENT_PROMPTS: Record<AgentTemplate, string> = {
   general: "Carry out the bounded task assigned by main. Inspect project evidence, distinguish measured facts from proposals, and return an ordinary Worker handoff.",
@@ -72,11 +75,12 @@ export const MAIN_SYSTEM_PROMPT = [
   "You are the project's public main agent and sole workflow coordinator.",
   MAIN_ORCHESTRATION_POLICY,
   MAIN_STATE_RECORDS_GUIDANCE,
+  TASK_RETURN_INSTRUCTION,
   "A single strong edge is deterministic. When a completed Agent has multiple weak edges, choose among those edges using that Agent's decision prompt and the global project state.",
   "Only Main may request user input. Select user when the workflow allows user intervention and a user response is genuinely needed.",
   "Select finish only when the active termination context permits it and the requested final result is supported by current evidence. Main has no ordinary finish edge; a project configured with Main as its termination Agent may still finish through this structured decision.",
   "Treat MainInvocationContext.artifactCatalog and MainInvocationContext.currentDisplay as authoritative server state. A file mentioned in prose or merely present in a workspace is not published unless it appears in artifactCatalog, and a display action mentioned in prose did not happen unless currentDisplay records it or select_display succeeds in this invocation.",
-  "When artifactCatalog is non-empty, complete_project requires a non-empty display selection that references published artifacts. Stage select_display before complete_project when currentDisplay is absent. Never claim that publication or display selection succeeded unless the corresponding control tool actually succeeded.",
+  "When artifactCatalog is non-empty, select suitable published artifacts for display when useful. If publication or display selection remains unfinished, report the actual gap and return available results. complete_project records your explicit project completion decision without inventing a display selection or publication. Never claim that publication or display selection succeeded unless the corresponding control tool actually succeeded.",
   "Before completing or assigning a correction, inspect the published artifact bodies and reconcile every material contradiction within and across them. A prose label such as confirmed, verified, or corrected is not evidence when its own table, arithmetic, executable output, or another artifact disagrees. Scope a correction to every discovered mismatch, not only the first one.",
   "Formal deliverables are append-only. Never ask an Agent to append a replacement full document or another H1 to an existing deliverable path. Reuse and publish a complete unregistered file; for invalid or already-published content, use a versioned replacement path when the canonical User requirement authorizes it. Otherwise preserve the existing file and choose a compatible non-destructive delivery under current permissions, documenting limitations. Request user direction only when the current project policy and assigned Main tools allow it.",
   "For display.primary and display.items, you may use a path relative to the project workspace, a project-relative workspaces/<path>, or an absolute path inside the project workspace; the server will safely resolve and canonicalize it. Never select files outside the project workspace.",
@@ -114,7 +118,8 @@ export function effectiveAgentInstructions(
       : FILE_EDIT_INSTRUCTION,
     text.includes("Claim an independent computation")
       ? ""
-      : EXECUTION_EVIDENCE_INSTRUCTION
+      : EXECUTION_EVIDENCE_INSTRUCTION,
+    text.includes(TASK_RETURN_INSTRUCTION) ? "" : TASK_RETURN_INSTRUCTION
   ].filter(Boolean);
   return [text, ...additions].filter(Boolean).join("\n\n");
 }

@@ -157,7 +157,7 @@ describe("atomic original A plus independent B and final directory settlement", 
   it("accepts the original Agent's clean restoration to A without inventing a B delivery", async () => {
     const f = await openedClosingFixture({ originalStatus: "completed", businessDelivery: true });
     await fs.writeFile(f.memory, "Immutable original Memory at A\n");
-    f.db.completeScopedWorktreeClosing({ ...f.closing, envelope: f.envelope({ tool: "finish_task", summary: "I inspected and restored my original file" }, "finish") });
+    f.db.completeScopedWorktreeClosing({ ...f.closing, controlCapabilityHash: f.authority.control.capabilityHash!, envelope: f.envelope({ tool: "finish_task", summary: "I inspected and restored my original file" }, "finish") });
     f.db.recordScopedWorktreeClosingResult({ ...f.closing, inputId: f.turn.inputId, output: "I inspected the authorized file and restored A; no new result requires delivery.", residentTurnCompleted: true });
     f.db.stopScopedWorktreeClosingTurn({ ...f.closing, residentStopConfirmed: true, evidence: { exactNativeClosed: true } });
     const observation = await f.ordinaryGit.observeRestrictedWorktreeClosing({ ...f.execution, purpose: "delivery" }, 1, { kind: f.closing.kind, reportHeadSha: f.A, paths: f.files });

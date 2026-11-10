@@ -501,6 +501,22 @@ function expectStateError(
 }
 
 describe("Collaboration workflow revision lifecycle", () => {
+  it("counts Main native invocations across management and retries without counting a replay twice", async () => {
+    const { database } = await stateFixture();
+    createProject(database);
+    for (const [index, invocationId, agentId, type] of [
+      [1, "main-route", "main", "agent.native_binding.opened"],
+      [2, "main-repair", "main", "agent.native_binding.opened"],
+      [3, "main-repair", "main", "agent.native_binding.opened"],
+      [4, "main-management", "main", "agent.native_binding.opened"],
+      [5, "worker", "writer", "agent.native_binding.opened"],
+      [6, "queued-main", "main", "agent.queued"]
+    ] as const) {
+      database.appendEvent({ projectId: "project-1", eventId: `count-${index}`, agentId, invocationId, type, payload: {} });
+    }
+    expect(database.agentNativeInvocationCount("project-1", "main")).toBe(3);
+    expect(database.agentNativeInvocationCount("project-1", "writer")).toBe(1);
+  });
   it("locks an active group, unlocks only after final PR merge, and preserves run snapshots", async () => {
     const { database } = await stateFixture();
     seedGroup(database, {
@@ -1973,6 +1989,30 @@ describe("Collaboration group activation and scheduling", () => {
       "INVALID_STATE_TRANSITION"
     );
     expect(database.projectState("project-1").activeNodeRunId).toBeUndefined();
+  });
+
+  it.each(["missing", "open"] as const)("returns a standalone task through its existing route with a %s PR", async status => {
+    const { database } = await stateFixture(); createProject(database);
+    database.activateNode({ projectId: "project-1", nodeRunId: "standalone-return-node",
+      node: { kind: "agent", nodeId: "analysis-node", agentId: "analyst" }, activationRequestId: "standalone-return",
+      inputSnapshotRef: "snapshot:return", activatedByAgentId: "main", workflowRevision: 1 });
+    database.startStandaloneExecution({ projectId: "project-1", nodeRunId: "standalone-return-node", taskId: "return-task",
+      executionId: "return-execution", agentId: "analyst", assignment: "Return existing material truthfully",
+      executionBranch: "executions/return-execution", worktreePath: "/srv/openfars/git-worktrees/return-execution" });
+    if (status === "open") database.observePullRequest({ projectId: "project-1", executionId: "return-execution", ownershipEpoch: 1,
+      pullRequest: pullRequest({ id: "return-pull", number: 9, executionId: "return-execution",
+        head: "executions/return-execution", base: "main", status: "open" }) });
+    database.completeExecution({ projectId: "project-1", executionId: "return-execution", ownershipEpoch: 1,
+      output: "Existing output; final PR merge is unconfirmed" });
+    const input = { projectId: "project-1", nodeRunId: "standalone-return-node", executionId: "return-execution", ownershipEpoch: 1,
+      output: "Existing output; final PR merge is unconfirmed", routeEmissionId: "returned-route",
+      route: { kind: "fixed" as const, targetNodeId: "finish" } };
+    expect(database.completeStandaloneNode(input)).toMatchObject({ nodeRun: { status: "completed" }, outbox: { targetNodeId: "finish" } });
+    expect(database.completeStandaloneNode(input).replay).toBe(true);
+    const state = database.projectState("project-1");
+    expect(state.pullRequests).toEqual(status === "open" ? [expect.objectContaining({ status: "open" })] : []);
+    expect(state.pullRequests[0]?.mergeCommitSha).toBeUndefined();
+    expect(state.routeOutbox).toHaveLength(1);
   });
 
   it("runs a Git-enabled standalone Agent through task, main PR, completion, and route outbox", async () => {
@@ -5812,7 +5852,7 @@ describe("Collaboration exact event fact lookup", () => {
     expect(restarted.mainRouteControlRepairCount(projectId, nodeRunId)).toBe(0);
   });
 
-  it("renews an exhausted Main repair cycle after exact stopped authority for automatic and explicit Resume", async () => {
+  it("preserves Main's original repair allowance through automatic recovery and explicit Resume", async () => {
     const { database } = await stateFixture(); createProject(database);
     const projectId = "project-1", nodeRunId = "main-explicit-resume-node";
     database.activateNode({ projectId, nodeRunId, node: { kind: "agent", nodeId: "main", agentId: "main" },
@@ -5820,26 +5860,24 @@ describe("Collaboration exact event fact lookup", () => {
       activatedByAgentId: "main", workflowRevision: 1 });
     const repair = (epoch: number) => database.appendEvent({ projectId, nodeRunId, agentId: "main", coordinatorEpoch: epoch,
       type: "main.route.mechanism_repair.requested", payload: { missing: ["finish_task"] } });
-    repair(1); repair(1);
+    repair(1);
     database.freezeMainRouteFailure({ projectId, nodeRunId, routeEpoch: 1, error: "exhausted repairs" });
     expect(database.recoverMainRoute({ projectId, nodeRunId, routeEpoch: 1, explicitUserResume: true }).recovered).toBe(false);
     expect(database.recoverMainRoute({ projectId, nodeRunId, routeEpoch: 2, priorProcessStopped: true, explicitUserResume: true }).recovered).toBe(false);
-    expect(database.mainRouteControlRepairCount(projectId, nodeRunId)).toBe(2);
+    expect(database.mainRouteControlRepairCount(projectId, nodeRunId)).toBe(1);
     expect(database.recoverMainRoute({ projectId, nodeRunId, routeEpoch: 1, priorProcessStopped: true }).recovered).toBe(true);
-    expect(database.mainRouteControlRepairCount(projectId, nodeRunId)).toBe(0);
-    repair(2); repair(2);
+    expect(database.mainRouteControlRepairCount(projectId, nodeRunId)).toBe(1);
+    repair(2);
     database.freezeMainRouteFailure({ projectId, nodeRunId, routeEpoch: 2, error: "still exhausted" });
     const resume = { projectId, nodeRunId, routeEpoch: 2, priorProcessStopped: true, explicitUserResume: true };
     expect(database.recoverMainRoute(resume).recovered).toBe(true);
-    expect(database.mainRouteControlRepairCount(projectId, nodeRunId)).toBe(0);
-    repair(3);
-    // Repeating Resume after the freeze was cleared cannot keep renewing the budget.
-    expect(database.recoverMainRoute(resume).recovered).toBe(true);
-    expect(database.mainRouteControlRepairCount(projectId, nodeRunId)).toBe(1);
-    repair(3);
     expect(database.mainRouteControlRepairCount(projectId, nodeRunId)).toBe(2);
-    expect(database.eventsAfter(projectId, 0, 2000).filter(event => event.type === "main.route.mechanism_repair.requested")).toHaveLength(6);
-    expect(database.eventsAfter(projectId, 0, 2000).filter(event => event.type === "main.route.recovered" && event.payload.mechanismRepairBudgetRenewed === true)).toHaveLength(2);
+    repair(3);
+    // Resume keeps the same cumulative task history.
+    expect(database.recoverMainRoute(resume).recovered).toBe(true);
+    expect(database.mainRouteControlRepairCount(projectId, nodeRunId)).toBe(3);
+    expect(database.eventsAfter(projectId, 0, 2000).filter(event => event.type === "main.route.mechanism_repair.requested")).toHaveLength(3);
+    expect(database.eventsAfter(projectId, 0, 2000).filter(event => event.type === "main.route.recovered" && event.payload.mechanismRepairBudgetRenewed === true)).toHaveLength(0);
   });
 
   it("rebinds only an exact Main accepted choice after proven stop and rejects replacement", async () => {

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { CollaborationExecutionInputBuilder, CollaborationResidentHandle, CollaborationResidentLauncher } from "./collaboration-runtime.js";
-import type { CollaborationStateDatabase } from "./collaboration-state/store.js";
+import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import type { AgentNativeSessionBinding, TerminalPushCoordinationIncident, TerminalPushCoordinatorTurn } from "./collaboration-state/contracts.js";
 import type { ProjectStorage } from "./storage.js";
 import type { AgentRunRequest, AgentRunResult, ControlActionEnvelope, ProjectState, TraceSink } from "./types.js";
@@ -19,7 +19,7 @@ interface Options {
   publish(): Promise<void>;
   inputs(agentId: string, invocationId: string, inboxPath: string, runtimePath: string): Promise<InvocationInputs>;
   filesystem(): Promise<Parameters<CollaborationResidentLauncher["open"]>[0]["filesystemAuthorityInput"]>;
-  decorate(request: AgentRunRequest): void;
+  decorate(request: AgentRunRequest): void | Promise<void>;
   trace(agentId: string, invocationId: string): TraceSink;
   turnRequestFactory(request: AgentRunRequest): Parameters<CollaborationResidentLauncher["open"]>[0]["turnRequestFactory"];
   hasResident(key: string): boolean;
@@ -35,11 +35,11 @@ interface Options {
 export class TerminalPushCoordinatorRuntime {
   constructor(private readonly options: Options) {}
 
-  private context(turn: TerminalPushCoordinatorTurn): NonNullable<AgentRunRequest["executionContext"]> {
+  private async context(turn: TerminalPushCoordinatorTurn): Promise<NonNullable<AgentRunRequest["executionContext"]>> {
     const { database, state } = this.options;
-    const incident = database.terminalPushCoordinationIncidents(state.id).find(entry => entry.id === turn.incidentId)!;
+    const incident = (await database.terminalPushCoordinationIncidents(state.id)).find(entry => entry.id === turn.incidentId)!;
     // A genuine mechanism management scope, with no business route candidates.
-    return { role: "leader", nodeRunId: database.terminalPushOwnerNodeRunId(state.id, incident.executionId), routeScopeId: `receipt-${incident.id}`, coordinatorEpoch: turn.coordinatorEpoch };
+    return { role: "leader", nodeRunId: await database.terminalPushOwnerNodeRunId(state.id, incident.executionId), routeScopeId: `receipt-${incident.id}`, coordinatorEpoch: turn.coordinatorEpoch };
   }
 
   private async stopped(binding: Pick<AgentNativeSessionBinding, "agentId" | "runtimePath" | "executionContext">) {
@@ -56,21 +56,21 @@ export class TerminalPushCoordinatorRuntime {
     return result.evidence;
   }
 
-  private recordStopped(turn: TerminalPushCoordinatorTurn, evidence: Readonly<Record<string, unknown>>): void {
+  private async recordStopped(turn: TerminalPushCoordinatorTurn, evidence: Readonly<Record<string, unknown>>): Promise<void> {
     const { database } = this.options;
-    if (database.terminalPushCoordinatorTurns(turn.projectId).find(entry => entry.invocationId === turn.invocationId)?.status === "stopped") return;
-    database.stopTerminalPushCoordinator({ ...turn, residentStopConfirmed: true, evidence,
-      ...(turn.writerLeaseEpoch !== database.writerLease().epoch ? { priorWriterLeaseEpoch: turn.writerLeaseEpoch } : {}) });
+    if ((await database.terminalPushCoordinatorTurns(turn.projectId)).find(entry => entry.invocationId === turn.invocationId)?.status === "stopped") return;
+    await database.stopTerminalPushCoordinator({ ...turn, residentStopConfirmed: true, evidence,
+      ...(turn.writerLeaseEpoch !== (await database.writerLease()).epoch ? { priorWriterLeaseEpoch: turn.writerLeaseEpoch } : {}) });
   }
 
   async reconcile(): Promise<void> {
     const { state, database, storage } = this.options;
     if (state.status === "completed") return;
-    for (const turn of database.terminalPushCoordinatorTurns(state.id)) {
+    for (const turn of (await database.terminalPushCoordinatorTurns(state.id))) {
       if (turn.completion) await storage.saveTerminalPushCoordinatorCompletion(turn);
       if (turn.status === "stopped" || this.options.hasResident(`receipt-coordinator:${turn.invocationId}`)) continue;
-      const evidence = await this.stopped({ ...turn, executionContext: this.context(turn) });
-      this.recordStopped(turn, evidence);
+      const evidence = await this.stopped({ ...turn, executionContext: await this.context(turn) });
+      await this.recordStopped(turn, evidence);
     }
     await this.options.publish();
   }
@@ -79,10 +79,10 @@ export class TerminalPushCoordinatorRuntime {
     const o = this.options;
     if (o.state.status === "completed") return;
     await this.reconcile();
-    for (const original of o.database.terminalPushCoordinationIncidents(o.state.id)) {
+    for (const original of (await o.database.terminalPushCoordinationIncidents(o.state.id))) {
       while (true) {
         await o.wait(); o.assertCurrent(); o.signal.throwIfAborted();
-        const incident = o.database.terminalPushCoordinationIncidents(o.state.id).find(entry => entry.id === original.id)!;
+        const incident = (await o.database.terminalPushCoordinationIncidents(o.state.id)).find(entry => entry.id === original.id)!;
         if (incident.status === "waiting-user") {
           if (o.state.orchestration.allowUserIntervention === false) {
             throw new Error("当前 Workflow 已关闭用户介入；原 Git 回执问题尚未解决，保留现场等待故障恢复。");
@@ -90,38 +90,38 @@ export class TerminalPushCoordinatorRuntime {
           await o.requestUser(incident, incident.decision!); return;
         }
         if (incident.status === "manager-failed") {
-          const failure = o.database.terminalPushCoordinatorTurns(o.state.id).filter(turn => turn.incidentId === incident.id).at(-1)?.failure;
+          const failure = (await o.database.terminalPushCoordinatorTurns(o.state.id)).filter(turn => turn.incidentId === incident.id).at(-1)?.failure;
           throw new Error(`Receipt coordination needs a later recovery round: the original Main's fast retries are exhausted${failure ? `: ${failure}` : ""}`);
         }
         if (incident.status !== "open") break;
-        const prior = o.database.terminalPushCoordinatorTurns(o.state.id).filter(turn => turn.incidentId === incident.id &&
+        const prior = (await o.database.terminalPushCoordinatorTurns(o.state.id)).filter(turn => turn.incidentId === incident.id &&
           turn.level === incident.level && turn.userResponseRequestId === incident.userResponse?.requestId).at(-1);
         if (prior && !prior.failure) {
           if (prior.status !== "stopped") throw new Error("Receipt coordinator still owns a native process");
           if (prior.completion && prior.result && prior.stagedDecision) {
-            o.database.acceptTerminalPushCoordinatorDecision(prior); await o.publish(); continue;
+            await o.database.acceptTerminalPushCoordinatorDecision(prior); await o.publish(); continue;
           }
-          const nativeFailure = o.database.eventByRequestId(o.state.id, `receipt-coordinator-error:${prior.invocationId}`);
-          o.database.recordTerminalPushCoordinatorFailure({ ...prior, reason: typeof nativeFailure?.payload.reason === "string"
+          const nativeFailure = await o.database.eventByRequestId(o.state.id, `receipt-coordinator-error:${prior.invocationId}`);
+          await o.database.recordTerminalPushCoordinatorFailure({ ...prior, reason: typeof nativeFailure?.payload.reason === "string"
             ? nativeFailure.payload.reason : "The stopped original coordinator omitted its own finish, actual output or coordination decision" });
           await o.publish(); continue;
         }
         const manager = incident.coordinators[incident.level];
-        const binding = o.database.latestAgentNativeSessionBinding(o.state.id, manager.agentId);
+        const binding = await o.database.latestAgentNativeSessionBinding(o.state.id, manager.agentId);
         const session = o.state.agentSessions?.[manager.agentId];
         if (!binding || !session || binding.session.nativeId !== session.nativeId || binding.session.harnessId !== session.harnessId ||
           binding.session.generation !== session.generation || binding.session.createdAt !== session.createdAt || session.durable !== true) {
           throw new Error(`Original receipt manager ${manager.agentId} has no matching trusted retained native binding; its session is preserved`);
         }
-        const precedingTurn = o.database.terminalPushCoordinatorTurns(o.state.id).filter(entry => entry.agentId === manager.agentId).at(-1);
+        const precedingTurn = (await o.database.terminalPushCoordinatorTurns(o.state.id)).filter(entry => entry.agentId === manager.agentId).at(-1);
         const previousInvocationId = precedingTurn?.invocationId ?? binding.invocationId;
         const previousRuntimePath = precedingTurn?.runtimePath ?? binding.runtimePath;
-        const evidence = await this.stopped(precedingTurn ? { ...precedingTurn, executionContext: this.context(precedingTurn) } : binding);
+        const evidence = await this.stopped(precedingTurn ? { ...precedingTurn, executionContext: await this.context(precedingTurn) } : binding);
         await o.wait(); o.assertCurrent(); o.signal.throwIfAborted();
         const invocationId = `inv_${randomUUID().replaceAll("-", "")}`;
         const runtimePath = await o.storage.invocationRuntimePath(o.state.id, invocationId);
         const capability = randomUUID();
-        const turn = o.database.beginTerminalPushCoordinator({ projectId: o.state.id, incidentId: incident.id,
+        const turn = await o.database.beginTerminalPushCoordinator({ projectId: o.state.id, incidentId: incident.id,
           level: incident.level, agentId: manager.agentId, invocationId, runtimePath, worktreePath: binding.worktreePath,
           previousInvocationId, previousRuntimePath,
           ...(binding.invocationId === previousInvocationId ? { previousNativeBindingRequestId: `agent-native-binding:${binding.invocationId}` } : {}),
@@ -139,8 +139,8 @@ export class TerminalPushCoordinatorRuntime {
   private async run(incident: TerminalPushCoordinationIncident, turn: TerminalPushCoordinatorTurn, capability: string): Promise<void> {
     const o = this.options;
     const manager = incident.coordinators[turn.level];
-    const previous = o.database.terminalPushCoordinatorTurns(o.state.id).filter(entry => entry.agentId === turn.agentId && entry.invocationId !== turn.invocationId).at(-1);
-    const facts = o.database.authoritativeWorkflowFiles(o.state.id).currentState;
+    const previous = (await o.database.terminalPushCoordinatorTurns(o.state.id)).filter(entry => entry.agentId === turn.agentId && entry.invocationId !== turn.invocationId).at(-1);
+    const facts = (await o.database.authoritativeWorkflowFiles(o.state.id)).currentState;
     const sources = new AgentContextSources();
     const assignment = [
       "You are awake in your retained session only to coordinate this original Agent's unresolved receipt. Read the actual facts and its existing handoff; do not redo its successful business work.",
@@ -162,7 +162,7 @@ export class TerminalPushCoordinatorRuntime {
       const inbox = await o.storage.writeInbox(o.state, turn.agentId, turn.invocationId, assignment);
       const inputs = await o.inputs(turn.agentId, turn.invocationId, inbox, turn.runtimePath);
       if (inputs.workspacePath !== turn.worktreePath) throw new Error("Receipt manager preparation changed its retained native workspace");
-      const context = this.context(turn);
+      const context = await this.context(turn);
       const scope = { incidentId: incident.id, level: turn.level, coordinatorEpoch: turn.coordinatorEpoch,
         role: manager.role, canRequestUser: turn.allowUserIntervention };
       const fallback: AgentRunRequest = { project: structuredClone(o.state), purpose: "workflow", agent: turn.agentId,
@@ -174,37 +174,37 @@ export class TerminalPushCoordinatorRuntime {
       const request = o.builder ? await o.builder.build({ state: o.state, agentId: turn.agentId, invocationId: turn.invocationId,
         executionContext: context, projectPath: inputs.projectPath, worktreePath: turn.worktreePath, inboxPath: inputs.inboxPath,
         runtimePath: turn.runtimePath, assignment, terminalPushCoordination: scope }) : fallback;
-      o.decorate(request);
+      await o.decorate(request);
       request.contextSources = sources.sources;
       await o.wait(); o.assertCurrent(); o.signal.throwIfAborted();
-      o.database.assertTerminalPushCoordinatorLaunch(turn);
+      await o.database.assertTerminalPushCoordinatorLaunch(turn);
       handle = await o.launcher.open({ request, inputs, executionRuntimePath: turn.runtimePath,
         filesystemAuthorityInput: await o.filesystem(), signal: o.signal, onTrace: o.trace(turn.agentId, turn.invocationId),
-        onOpened: async () => { o.database.markTerminalPushCoordinatorOpened({ ...turn, nativeProcessOpened: true }); await o.publish(); },
+        onOpened: async () => { await o.database.markTerminalPushCoordinatorOpened({ ...turn, nativeProcessOpened: true }); await o.publish(); },
         turnRequestFactory: o.turnRequestFactory(request),
         controlScope: { role: "receipt-coordinator", projectId: o.state.id, nodeRunId: context.nodeRunId,
           routeScopeId: "routeScopeId" in context ? context.routeScopeId! : "", leaderAgentId: turn.agentId,
           coordinatorEpoch: turn.coordinatorEpoch, terminalPushCoordination: scope },
-        controlAuthorityFactory: terminalPushCoordinationControlAuthorityFactory({ state: o.state, database: o.database,
+        controlAuthorityFactory: await terminalPushCoordinationControlAuthorityFactory({ state: o.state, database: o.database,
           storage: o.storage, coordination: turn, capability, signal: o.signal, assertCurrent: o.assertCurrent }) });
       o.register(key, turn, handle);
       const result = await o.submit(handle, { inputId: `receipt-coordination:${turn.invocationId}`, invocationId: turn.invocationId, prompt: assignment });
       if (result.handoff?.trim()) {
         const output = redactTrace(result.handoff).slice(0, 100_000);
         const handoffPath = await o.storage.writeHandoff(o.state, turn.agentId, turn.invocationId, output);
-        o.database.recordTerminalPushCoordinatorResult({ ...turn, output, handoffPath }); await o.publish();
+        await o.database.recordTerminalPushCoordinatorResult({ ...turn, output, handoffPath }); await o.publish();
       }
       await o.wait();
     } catch (error) {
-      if (!o.signal.aborted) o.database.appendEvent({ projectId: o.state.id, agentId: turn.agentId, invocationId: turn.invocationId,
+      if (!o.signal.aborted) await o.database.appendEvent({ projectId: o.state.id, agentId: turn.agentId, invocationId: turn.invocationId,
         requestId: `receipt-coordinator-error:${turn.invocationId}`, type: "agent.terminal_push_coordinator.native.failed",
         payload: { incidentId: incident.id, reason: redactTrace(error instanceof Error ? error.message : String(error)).slice(0, 100_000) } });
       if (o.signal.aborted) throw error;
     } finally {
       // Keep the reservation and in-memory handle if native Stop fails.
       // A result or model end is never a physical process Stop proof.
-      if (handle) { await handle.close(); this.recordStopped(turn, { residentClosed: true }); }
-      else this.recordStopped(turn, await this.stopped({ ...turn, executionContext: this.context(turn) }));
+      if (handle) { await handle.close(); await this.recordStopped(turn, { residentClosed: true }); }
+      else await this.recordStopped(turn, await this.stopped({ ...turn, executionContext: await this.context(turn) }));
       o.unregister(key); await o.publish();
     }
   }

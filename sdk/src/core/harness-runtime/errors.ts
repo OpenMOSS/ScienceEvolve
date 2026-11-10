@@ -78,6 +78,24 @@ export class HarnessRuntimeError extends Error {
   }
 }
 
+/** Keep the final failure and its original cause in the persisted/displayed error. */
+export function formatHarnessError(error: Error): string {
+  const messages: string[] = [];
+  const seen = new Set<Error>();
+  for (let current: unknown = error; current instanceof Error && !seen.has(current) && seen.size < 8; current = current.cause) {
+    seen.add(current);
+    const parts = [current instanceof HarnessRuntimeError ? current.safeMessage : current.message];
+    if (current instanceof HarnessRuntimeError) {
+      for (const detail of [current.details.protocolMessage, current.details.reason]) {
+        if (typeof detail === "string" && !parts.some(part => part.includes(detail))) parts.push(detail);
+      }
+    }
+    const message = redactTrace(parts.join(": ")).slice(0, 450);
+    if (message && !messages.includes(message)) messages.push(message);
+  }
+  return messages.join("\nCaused by: ").slice(0, 4_000);
+}
+
 /** Trusted driver evidence: no native input/codec write was attempted. It is
  * safe to revoke this turn while retaining its idle process and session. */
 export class ResidentInputPreparationError extends Error {

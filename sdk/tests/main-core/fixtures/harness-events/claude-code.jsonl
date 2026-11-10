@@ -1,5 +1,0 @@
-{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000003","tools":["Read","Glob","Grep"]}
-{"type":"assistant","session_id":"00000000-0000-4000-8000-000000000003","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"sentinel.txt"}}]}}
-{"type":"user","session_id":"00000000-0000-4000-8000-000000000003","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"fixture-sentinel","is_error":false}]}}
-{"type":"assistant","session_id":"00000000-0000-4000-8000-000000000003","message":{"id":"msg-2","role":"assistant","content":[{"type":"text","text":"Fixture complete."}],"usage":{"input_tokens":12,"cache_read_input_tokens":2,"output_tokens":4}}}
-{"type":"result","subtype":"success","is_error":false,"duration_ms":100,"duration_api_ms":50,"num_turns":2,"result":"Fixture complete.","session_id":"00000000-0000-4000-8000-000000000003","total_cost_usd":0}

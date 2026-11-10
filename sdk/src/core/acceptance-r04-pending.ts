@@ -28,7 +28,7 @@ export async function requestR04PendingFile(input: AcceptanceBoundary & {
   const merged = input.result as SynchronizedPullRequestFact | undefined, op = input.operation;
   if (!merged || merged.status !== "merged" || !merged.localSynchronization || !op || op.status !== "finalized") return input.result;
   const sync = merged.localSynchronization;
-  const operationId = agentGitOperationId({ execution, envelope,
+  const operationId = await agentGitOperationId({ execution, envelope,
     recordedOperation: id => op.id === id ? op : undefined }, "merge");
   assert.ok(op.id === operationId &&
     op.kind === "pull.merge" && op.ownerExecutionId === execution.id && op.ownershipEpoch === execution.ownershipEpoch &&

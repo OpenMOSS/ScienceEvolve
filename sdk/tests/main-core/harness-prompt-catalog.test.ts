@@ -4,19 +4,41 @@ import { describe, expect, it, vi } from "vitest";
 import { HarnessPromptCatalog } from "../../src/core/harness-runtime/prompt-catalog.js";
 
 describe("read-only Harness prompt provenance", () => {
-  it("requires an exact installed model and never substitutes a default or a historical Session", async () => {
+  it("reads the installed gateway template for exact and custom models without opening a Session", async () => {
     const execute = vi.fn(async (_bin: string, args: string[]) => args[0] === "--version"
-      ? "codex-cli 0.153.4\n" : JSON.stringify({ models: [{ slug: "exact-model", base_instructions: "verbatim native base\n" }] }));
+      ? "codex-cli 0.153.4\n" : JSON.stringify({ models: [{ slug: "exact-model", use_responses_lite: false, base_instructions: "verbatim native base\n" }] }));
     const catalog = new HarnessPromptCatalog({ resolveExecutable: async () => process.execPath, execute });
     const exact = await catalog.query({ harness: "codex", model: "exact-model" });
     expect(exact).toMatchObject({ status: "available", installedVersion: "0.153.4", resolvedModel: "exact-model",
       scope: "base-default", sourceType: "bundled-default", text: "verbatim native base\n" });
     expect(exact.collectedAt).toMatch(/^\d{4}-/);
     expect(exact.sha256).toMatch(/^[a-f0-9]{64}$/);
-    const missing = await catalog.query({ harness: "codex", model: "custom-model" });
-    expect(missing).toMatchObject({ status: "model-unmatched", model: "custom-model" });
-    expect(missing.text).toBeUndefined();
+    const custom = await catalog.query({ harness: "codex", model: "custom-model" });
+    expect(custom).toMatchObject({ status: "available", model: "custom-model", resolvedModel: "exact-model", text: exact.text });
+    expect(custom.scopeNote).toContain("请求模型仍为 custom-model");
     expect(execute.mock.calls.every(([, args]) => args.join(" ") === "--version" || args.join(" ") === "debug models --bundled")).toBe(true);
+  });
+
+  it("reports a missing runtime template instead of inventing Prompt text", async () => {
+    const catalog = new HarnessPromptCatalog({ resolveExecutable: async () => process.execPath,
+      execute: async (_bin, args) => args[0] === "--version" ? "codex-cli 0.153.4"
+        : JSON.stringify({ models: [{ slug: "code-only", use_responses_lite: true, tool_mode: "code_mode_only", base_instructions: "OTHER_TOOL_MODE" }] }) });
+    const result = await catalog.query({ harness: "codex", model: "custom-model" });
+    expect(result.status).toBe("source-unavailable");
+    expect(result.reason).toContain("当前网关运行配置");
+    expect(result.text).toBeUndefined();
+  });
+
+  it("reports missing text in the selected model instead of using another model's Prompt", async () => {
+    const catalog = new HarnessPromptCatalog({ resolveExecutable: async () => process.execPath,
+      execute: async (_bin, args) => args[0] === "--version" ? "codex-cli 0.153.4" : JSON.stringify({ models: [
+        { slug: "ordinary", use_responses_lite: false, base_instructions: "UNRELATED_PROMPT" },
+        { slug: "selected", base_instructions: "  " }
+      ] }) });
+    const result = await catalog.query({ harness: "codex", model: "selected" });
+    expect(result).toMatchObject({ status: "source-unavailable", resolvedModel: "selected" });
+    expect(result.reason).toContain("缺少 selected 模板的基础提示词文本");
+    expect(result.text).toBeUndefined();
   });
 
   it("reuses the same source/configuration and invalidates model, version and relevant configuration changes", async () => {
@@ -38,7 +60,7 @@ describe("read-only Harness prompt provenance", () => {
     expect(execute.mock.calls.filter(([, args]) => args[0] === "debug")).toHaveLength(5);
   });
 
-  it.each(["pi", "dsh", "claude-code"])("reports an absent %s installation without inventing text", async harness => {
+  it.each(["pi", "dsh"])("reports an absent %s installation without inventing text", async harness => {
     const execute = vi.fn();
     const result = await new HarnessPromptCatalog({ resolveExecutable: async () => undefined, execute }).query({ harness, model: "selected" });
     expect(result.status).toBe("not-installed");
@@ -57,6 +79,44 @@ describe("read-only Harness prompt provenance", () => {
     } }).query({ harness: "codex", model: "a" });
     expect(failed.status).toBe("source-unavailable");
     expect(JSON.stringify(failed)).not.toContain("SECRET_EXCEPTION");
+  });
+
+  it("does not cache a failed source read after the installation recovers", async () => {
+    let fail = true;
+    const execute = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === "--version") return "codex-cli 0.153.4";
+      if (fail) throw new Error("temporary read failure");
+      return JSON.stringify({ models: [{ slug: "a", base_instructions: "recovered native prompt" }] });
+    });
+    const catalog = new HarnessPromptCatalog({ resolveExecutable: async () => process.execPath, execute });
+    const query = { harness: "codex", model: "a" };
+    expect((await catalog.query(query)).status).toBe("source-unavailable");
+    fail = false;
+    const recovered = await catalog.query(query);
+    expect(recovered).toMatchObject({ status: "available", text: "recovered native prompt" });
+    expect(await catalog.query(query)).toBe(recovered);
+    expect(execute.mock.calls.filter(([, args]) => args[0] === "debug")).toHaveLength(2);
+  });
+
+  it("does not let a slower failed read evict a newer successful refresh", async () => {
+    let finish!: () => void;
+    const execute = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === "--version") return "codex-cli 0.153.4";
+      if (!finish) {
+        await new Promise<void>(resolve => { finish = resolve; });
+        throw new Error("old read failed");
+      }
+      return JSON.stringify({ models: [{ slug: "a", base_instructions: "fresh native prompt" }] });
+    });
+    const catalog = new HarnessPromptCatalog({ resolveExecutable: async () => process.execPath, execute });
+    const query = { harness: "codex", model: "a" };
+    const first = catalog.query(query);
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    const fresh = await catalog.query({ ...query, forceRefresh: true });
+    finish();
+    expect((await first).status).toBe("source-unavailable");
+    expect(await catalog.query(query)).toBe(fresh);
+    expect(execute.mock.calls.filter(([, args]) => args[0] === "debug")).toHaveLength(2);
   });
 });
 

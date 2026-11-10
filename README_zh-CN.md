@@ -38,7 +38,7 @@ ScienceEvolve 是论文 [Rethinking Scientific Discovery in the Agentic Era](htt
 
 > “这里有一个泊松方程求解器。请探索两种改进方案，验证收敛性，比较误差，并整理成报告。”
 
-在 `workflow.json` 中连接计划、并行探索、实现和评审。Main 负责协调任务与确认完成，Worker 负责研究、实验、编码和评审等具体工作；每个 Agent 可独立选择 **Codex、Claude Code、DSH、pi 或 Hermes**，并配置模型、提示词、Skills 与 MCP 工具。
+在 `workflow.json` 中连接计划、并行探索、实现和评审。Main 负责协调任务与确认完成，Worker 负责研究、实验、编码和评审等具体工作；每个 Agent 可独立选择 **Codex、DSH 或 pi**，并配置模型、提示词、Skills 与 MCP 工具。
 
 <div align="center">
 
@@ -403,7 +403,7 @@ CCFA 与 Nature 的内置副本未记录导入时的提交版本；上游仓库�
 </thead>
 <tbody>
 <tr><td align="left">安装、连接模型与配置推理档位</td><td align="left"><a href="sdk/docs/main-cli-zh.md#部署与启动">CLI 与网关</a> · <a href="sdk/README_zh-CN.md">安装包入口</a></td></tr>
-<tr><td align="left">更换 Harness、使用原生登录</td><td align="left"><a href="sdk/docs/main-cli-zh.md#部署-json">部署配置</a> · <a href="sdk/docs/main-cli-zh.md#codex-原生-oauth-登录">Codex 登录</a> · <a href="sdk/docs/hermes-zh.md">Hermes</a></td></tr>
+<tr><td align="left">更换 Harness、使用原生登录</td><td align="left"><a href="sdk/docs/main-cli-zh.md#部署-json">部署配置</a> · <a href="sdk/docs/main-cli-zh.md#codex-原生-oauth-登录">Codex 登录</a></td></tr>
 <tr><td align="left">编写 Agent、路由、循环与动态重配置</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow.md">Workflow 参考</a> · <a href="sdk/docs/workflow-loops-zh.md">Loop</a> · <a href="sdk/skills/scienceevolve-sdk/SKILL.md">配置编写 Skill</a></td></tr>
 <tr><td align="left">接入 GitHub 与并行协作</td><td align="left"><a href="sdk/docs/main-cli-zh.md#github-认证与-git-协作">GitHub 认证</a> · <a href="sdk/examples/main-runtime/workflow.json">Git-on v3 示例</a></td></tr>
 <tr><td align="left">提供输入文件、选择工作目录、交付结果</td><td align="left"><a href="sdk/docs/project-inputs-zh.md">共享材料</a> · <a href="sdk/examples/workspace-examples.md">工作目录</a></td></tr>

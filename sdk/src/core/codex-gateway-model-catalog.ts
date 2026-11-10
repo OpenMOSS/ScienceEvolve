@@ -5,11 +5,25 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+/** Gateway launches and prompt inspection select the same installed metadata. */
+export function selectCodexGatewayModelTemplate(
+  models: readonly unknown[],
+  model: string
+): Record<string, unknown> & { slug: string } {
+  const known = models.find((entry) => entry && typeof entry === "object" && "slug" in entry && entry.slug === model);
+  const template = known ?? models.find((entry) => entry && typeof entry === "object" &&
+    "use_responses_lite" in entry && entry.use_responses_lite === false &&
+    (!("tool_mode" in entry) || entry.tool_mode == null));
+  if (!template || typeof template !== "object") throw new Error("Installed Codex has no ordinary Responses tool-loop template");
+  if (!("slug" in template) || typeof template.slug !== "string" || !template.slug.trim()) {
+    throw new Error("Installed Codex model template is missing its slug");
+  }
+  return template as Record<string, unknown> & { slug: string };
+}
+
 /**
- * The Codex 0.152 bundled catalog sends no tools for GPT-5.6 through a
- * custom Responses provider when Responses Lite and code-only tools are both
- * selected. Keep the actual model slug and its other metadata, but use the
- * ordinary Responses tool loop for OpenFARS gateway invocations.
+ * Prepare ordinary Responses tools for ScienceEvolve gateway invocations
+ * while preserving the requested model and its installed metadata.
  */
 export async function prepareCodexGatewayModelCatalog(
   executable: string,
@@ -35,12 +49,8 @@ export async function prepareCodexGatewayModelCatalog(
   const models = catalog && typeof catalog === "object" && "models" in catalog
     ? (catalog as { models: unknown }).models : undefined;
   if (!Array.isArray(models)) throw new Error("Installed Codex returned an invalid model catalog");
-  const known = models.find((entry) => entry && typeof entry === "object" && entry.slug === model);
-  // An unknown gateway slug can inherit the CLI's first, code-only catalog
-  // entry. Use a normal tool-loop template, without renaming the actual model.
-  const template = known ?? models.find((entry) => entry && typeof entry === "object" &&
-    entry.use_responses_lite === false && entry.tool_mode == null);
-  if (!template) throw new Error("Installed Codex has no ordinary Responses tool-loop template");
+  const template = selectCodexGatewayModelTemplate(models, model);
+  const known = template.slug === model ? template : undefined;
   if (known && known.use_responses_lite !== true && known.tool_mode !== "code_mode_only") return undefined;
   const selected = known ?? { ...template, slug: model, display_name: model,
     supported_reasoning_levels: [], default_reasoning_level: null,

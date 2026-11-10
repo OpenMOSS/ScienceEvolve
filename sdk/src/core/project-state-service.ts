@@ -1,4 +1,4 @@
-import type { CollaborationStateDatabase } from "./collaboration-state/store.js";
+import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import { CollaborationStateError } from "./collaboration-state/errors.js";
 import type { GitHubPullRequestFact } from "./collaboration-git/contracts.js";
 import { projectStateDigest, validateProjectStateRequest, type ProjectStatePrincipal,
@@ -13,7 +13,7 @@ export async function executeProjectStateRequest(database: CollaborationStateDat
   value: unknown, services: { observePullRequest: (preparation: ProjectStatePullPreparation) => Promise<GitHubPullRequestFact | undefined> }): Promise<unknown> {
   const input = validateProjectStateRequest(value);
   if (input.operation !== "reconcile_pull") return database.projectStateRequest(principal, input);
-  const checked = database.prepareProjectStatePullReconciliation(principal, input);
+  const checked = await database.prepareProjectStatePullReconciliation(principal, input);
   if (checked.replay !== undefined) return checked.replay;
   const preparation = checked.preparation!;
   const queryRequestId = `project-state-query:${projectStateDigest({ principal, callId: input.callId })}`;
@@ -26,7 +26,7 @@ export async function executeProjectStateRequest(database: CollaborationStateDat
     return pending.result;
   }
   const result = Promise.resolve().then(async () => {
-    const prior = database.eventByRequestId(principal.projectId, queryRequestId);
+    const prior = await database.eventByRequestId(principal.projectId, queryRequestId);
     if (prior) {
       const observation = prior.payload.observation as { error?: { name: string; message: string; code?: string } };
       if (observation.error) {
@@ -40,14 +40,14 @@ export async function executeProjectStateRequest(database: CollaborationStateDat
       try { pull = await services.observePullRequest(preparation); }
       catch (error) {
         const record = error instanceof Error ? error : new Error(String(error));
-        database.recordProjectStatePullQuery(principal, input, preparation, { error: {
+        await database.recordProjectStatePullQuery(principal, input, preparation, { error: {
           name: redactTrace(record.name), message: redactTrace(record.message),
           ...("code" in record && typeof record.code === "string" ? { code: redactTrace(record.code) } : {})
         } });
         // The first call returns the provider's actual error to its original caller.
         throw error;
       }
-      database.recordProjectStatePullQuery(principal, input, preparation, { ...(pull ? { pull } : {}) });
+      await database.recordProjectStatePullQuery(principal, input, preparation, { ...(pull ? { pull } : {}) });
     }
     return database.commitProjectStatePullReconciliation(principal, input, preparation, queryRequestId);
   });

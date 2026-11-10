@@ -18,12 +18,12 @@ await coordinator.initialize();
 try {
   const state = await storage.loadState(projectId), database = coordinator.database();
   state.title = "Current writer publication";
-  database.appendEvent({ projectId, type: "projection.test.observation", payload: { message: "Successor writer owns this publication" } });
+  await database.appendEvent({ projectId, type: "projection.test.observation", payload: { message: "Successor writer owns this publication" } });
   await coordinator.saveWorkflowRevision(state, { orchestration: state.orchestration, affectedGroupIds: [] });
-  const current = coordinator.getWorkflowAdjustments(state).current;
+  const current = (await coordinator.getWorkflowAdjustments(state)).current;
   await storage.writeMainAgentOrchestrationCurrentSnapshot(projectId, mainAgentOrchestrationDocument(projectId,
     current.snapshot.orchestration, current.snapshot.agents, current.snapshot.skillDefinitions, current.snapshot.mcpDefinitions, current.version),
-    () => { database.assertWriterLeaseHeld(); return true; });
-  process.stdout.write(JSON.stringify({ epoch: database.writerLease().epoch, version: current.version,
+    async () => { await database.assertWriterLeaseHeld(); return true; });
+  process.stdout.write(JSON.stringify({ epoch: (await database.writerLease()).epoch, version: current.version,
     nativeCalls, eventCount: (await storage.readEvents(projectId, 0, Number.MAX_SAFE_INTEGER)).length }));
 } finally { await coordinator.shutdown(); }

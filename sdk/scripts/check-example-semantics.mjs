@@ -31,7 +31,16 @@ function semantic(source) {
 }
 const workflows = {};
 for (const [file, record] of Object.entries(baseline.workflows)) {
-  const actual = semantic(JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')));
+  const workflow = JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
+  // Pin the ARIS author deployment while checking the fixed method digest.
+  if (file === 'example/aris/workflow.json') {
+    for (const [name, agent] of Object.entries(workflow.agents)) {
+      if (['reviewer', 'paper_reviewer'].includes(name)) continue;
+      if (agent.harness !== 'pi') throw new Error(`Invalid ARIS author Harness: ${name}`);
+      agent.harness = 'claude-code';
+    }
+  }
+  const actual = semantic(workflow);
   let before;
   if (sourceArgument >= 0) {
     const beforePath = inventory.candidates.find(candidate => candidate.afterPath === file)?.beforePath ?? file;

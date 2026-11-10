@@ -17,17 +17,12 @@ function exactName(value: unknown, field: string): string {
 }
 
 /**
- * Pi and Claude's explicit registration/allowlist surfaces use this qualified
+ * Pi's explicit registration surface uses this qualified
  * form. Codex and DSH remain responsible for their native namespace display;
  * the common catalog never pretends those native representations are equal.
  */
 export function modelFacingMcpToolName(namespace: string, rawName: string): string {
   return `mcp__${exactName(namespace, "MCP namespace")}__${exactName(rawName, "MCP tool name")}`;
-}
-
-/** Claude's allowlist accepts a namespace wildcard while still discovering the real tools/list. */
-export function modelFacingMcpNamespaceWildcard(namespace: string): string {
-  return `mcp__${exactName(namespace, "MCP namespace")}__*`;
 }
 
 /**

@@ -84,6 +84,26 @@ function expectRecoverableToolError(
 }
 
 describe("orchestration control MCP", () => {
+  it.each([true, false])("reports actual finish persistence through real MCP (saved facts: %s)", async saved => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finish-facts-mcp-")); roots.push(root);
+    const settings = context(root);
+    const facts = { taskId: "original-task", agent: "branch", invocationId: "original-turn", callId: "original-finish",
+      requestedAt: "2026-11-04T05:40:51.164Z", status: "requested", memoryPath: path.join(root, "agent-memory/branch/Memory.md") };
+    const service = new ControlActionService({ projectId: String(settings.projectId), agent: "branch", invocationId: String(settings.invocationId),
+      stateVersion: Number(settings.stateVersion), capability: "capability-test-secret", stagingPath: String(settings.stagingPath),
+      revalidate: async () => saved ? facts : undefined });
+    const bridge = await startControlActionBridge(service, root);
+    try {
+      const [response] = await runMcp({ ...settings, bridgePath: bridge.endpoint.path, bridgeHost: bridge.endpoint.host, bridgePort: bridge.endpoint.port }, [
+        { id: 1, method: "tools/call", params: { name: "finish_task", arguments: { callId: "finish", memory: "Replacement round" } } }
+      ]);
+      expect(response.result.isError).not.toBe(true);
+      expect(response.result.structuredContent).toMatchObject({ status: saved ? "recorded" : "staged", result: saved ? facts : null });
+      expect(response.result.content[0].text).toContain(saved ? "Existing completion record reused" : "persistence is unconfirmed");
+      if (saved) expect(response.result.content[0].text).toContain(facts.memoryPath);
+    } finally { await bridge.close(); }
+  });
+
   it("keeps user requests disabled even when a retained Main capability says they are allowed", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-disabled-user-capability-")); roots.push(root);
     const settings = context(root, { kind: "main", agent: "main", allowUserIntervention: false,

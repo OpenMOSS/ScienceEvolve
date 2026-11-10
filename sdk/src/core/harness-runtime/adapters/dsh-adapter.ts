@@ -38,6 +38,7 @@ import {
   type AdapterRuntimeOptions
 } from "./adapter-utils.js";
 import { dshOfficialEventMapper } from "./dsh-event-mapper.js";
+import { NATIVE_PROCESS_SUPPORT_ENV } from "../native-processes.js";
 
 const descriptor = BUILTIN_HARNESS_DESCRIPTORS.find((item) => item.id === "dsh")!;
 const DEFAULT_DSH_HANDSHAKE_TIMEOUT_MS = 60_000;
@@ -1029,7 +1030,7 @@ export function dshMcpPatch(
         `        args: [${row.args.map((item) => JSON.stringify(item)).join(", ")}]`,
         "        failOnStartupError: true",
         "        env:",
-        ...Object.entries(row.env ?? {}).map(([key, value]) => `          ${key}: ${JSON.stringify(value)}`)
+        ...Object.entries({ ...row.env, [NATIVE_PROCESS_SUPPORT_ENV]: "1" }).map(([key, value]) => `          ${key}: ${JSON.stringify(value)}`)
       );
     } else {
       common.push(

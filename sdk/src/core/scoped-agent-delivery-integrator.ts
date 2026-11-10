@@ -2,7 +2,7 @@ import type { CollaborationGitFacade } from "./collaboration-git/facade.js";
 import type { GitExecutionAuthority, GitHubPullRequestFact, GitHubRepositoryFact } from "./collaboration-git/contracts.js";
 import { GitInputError, OperationStoreViolationError } from "./collaboration-git/errors.js";
 import { mergedPullSynchronizationOperationId } from "./collaboration-git/operation.js";
-import { CollaborationStateDatabase } from "./collaboration-state/store.js";
+import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import { CollaborationStateError } from "./collaboration-state/errors.js";
 import type { CompletedScopedAgentArrival, ScopedExecutionRecord } from "./collaboration-state/contracts.js";
 
@@ -15,7 +15,7 @@ export interface IntegrateScopedAgentDeliveryInput {
   ownershipEpoch: number;
   repository: GitHubRepositoryFact;
   /** Report/checkpoint already pushed by the trusted worker execution path. */
-  expectedHeadSha: string;
+  expectedHeadSha?: string;
   selectedWeakTarget?: string;
   signal?: AbortSignal;
 }
@@ -45,42 +45,52 @@ export class ScopedAgentDeliveryIntegrator {
 
   private async performIntegration(input: IntegrateScopedAgentDeliveryInput): Promise<ScopedAgentDeliveryResult> {
     input.signal?.throwIfAborted();
-    if (!/^[0-9a-f]{40}$/i.test(input.expectedHeadSha)) throw new GitInputError("Scoped Agent delivery requires an exact reported head SHA");
-    const execution = this.database.scopedExecution(input.projectId, input.executionId);
+    const execution = await this.database.scopedExecution(input.projectId, input.executionId);
     if (!execution || execution.ownershipEpoch !== input.ownershipEpoch) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped Agent execution ownership is stale or missing");
     }
-    const projection = this.database.projectState(input.projectId);
+    const projection = await this.database.projectState(input.projectId);
     const binding = projection.git.repository;
     if (!projection.git.enabled || projection.git.status !== "ready" || !binding ||
       binding.owner !== input.repository.owner || binding.name !== input.repository.name ||
       binding.private !== input.repository.private || binding.defaultBranch !== input.repository.defaultBranch) {
       throw new GitInputError("Scoped Agent delivery must use its project's ready, pinned repository");
     }
-    const group = this.database.scopedGroupRun(input.projectId, execution.groupRunId);
+    if (this.options.agentOwnsGit) {
+      const owner = execution;
+      const delivery = await this.database.scopedAgentGitDeliveryStatus(input.projectId, owner.id, owner.ownershipEpoch, input.expectedHeadSha, true);
+      const supervision = await this.database.executionSupervisionResult(input.projectId, owner.id);
+      if (delivery.missingActions.length || supervision && supervision.outcome !== "resolved") {
+        return { status: "completed", completion: await this.database.completeScopedAgentArrival({
+          projectId: input.projectId, arrivalRequestId: owner.arrivalRequestId, executionId: owner.id,
+          ownershipEpoch: owner.ownershipEpoch, selectedWeakTarget: input.selectedWeakTarget }) };
+      }
+    }
+    if (!input.expectedHeadSha || !/^[0-9a-f]{40}$/i.test(input.expectedHeadSha)) throw new GitInputError("Scoped Agent delivery requires an exact reported head SHA");
+    const group = await this.database.scopedGroupRun(input.projectId, execution.groupRunId);
     if (!group) throw new OperationStoreViolationError("Scoped Agent delivery has no direct group");
     if (execution.status === "completed") {
       const proof = projection.scopedAgentMerges?.find((fact) => fact.executionId === execution.id);
       if (!proof || proof.pullRequest.headSha !== input.expectedHeadSha) {
         throw new OperationStoreViolationError("Completed scoped delivery has no matching head and merge proof");
       }
-      return { status: "completed", completion: this.database.completeScopedAgentArrivalAfterMerge({
+      return { status: "completed", completion: await this.database.completeScopedAgentArrivalAfterMerge({
         projectId: input.projectId, arrivalRequestId: execution.arrivalRequestId,
         executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
         pullRequest: proof.pullRequest, synchronization: proof.synchronization,
         selectedWeakTarget: input.selectedWeakTarget
       }) };
     }
-    const arrival = this.database.scopedArrivals(group.id).find((item) => item.requestId === execution.arrivalRequestId);
+    const arrival = (await this.database.scopedArrivals(group.id)).find((item) => item.requestId === execution.arrivalRequestId);
     if (!arrival) throw new OperationStoreViolationError("Scoped Agent delivery lost its arrival");
     // Validate weak/strong routing before any remote observation or PR.
     // The later SQLite completion commits the same decision atomically.
-    this.database.previewScopedArrivalRoute(input.projectId, arrival.requestId, input.selectedWeakTarget);
-    const report = this.database.scopedAgentReport(input.projectId, execution.id, execution.ownershipEpoch);
+    await this.database.previewScopedArrivalRoute(input.projectId, arrival.requestId, input.selectedWeakTarget);
+    const report = await this.database.scopedAgentReport(input.projectId, execution.id, execution.ownershipEpoch);
     if (!report || report.selectedWeakTarget !== input.selectedWeakTarget) {
       throw new OperationStoreViolationError("Scoped Agent delivery requires its persisted model report and exact route decision");
     }
-    if (report.headSha) this.database.bindScopedAgentReportHead({
+    if (report.headSha) await this.database.bindScopedAgentReportHead({
       projectId: input.projectId, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
       headSha: input.expectedHeadSha
     });
@@ -91,7 +101,7 @@ export class ScopedAgentDeliveryIntegrator {
       expectedBranch: execution.executionBranch, operation: "provider.mutate"
     });
     const ref = await this.git.observeRemoteRef(input.repository, execution.executionBranch, input.signal);
-    const retainedPull = this.database.scopedRecoveryPull(input.projectId, execution.id, execution.ownershipEpoch);
+    const retainedPull = await this.database.scopedRecoveryPull(input.projectId, execution.id, execution.ownershipEpoch);
     const recoveredPull = retainedPull?.headSha === input.expectedHeadSha ? retainedPull : undefined;
     input.signal?.throwIfAborted();
     if (ref.ref !== execution.executionBranch || (ref.status !== "present" && !(ref.status === "missing" && recoveredPull?.status === "merged")) ||
@@ -99,7 +109,7 @@ export class ScopedAgentDeliveryIntegrator {
       ref.owner !== input.repository.owner || ref.repository !== input.repository.name) {
       throw new GitInputError("Scoped Agent delivery requires the exact pushed execution branch head");
     }
-    this.database.bindScopedAgentReportHead({
+    await this.database.bindScopedAgentReportHead({
       projectId: input.projectId, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
       headSha: input.expectedHeadSha
     });
@@ -108,7 +118,7 @@ export class ScopedAgentDeliveryIntegrator {
       repository: input.repository, execution: authority, ownershipEpoch: execution.ownershipEpoch,
       expectedHead: input.expectedHeadSha, signal: input.signal
     };
-    const discoveredPullRecord = this.database.scopedAgentRecordedDeliveryPull(input.projectId,
+    const discoveredPullRecord = await this.database.scopedAgentRecordedDeliveryPull(input.projectId,
       execution.id, execution.ownershipEpoch, input.expectedHeadSha);
     const discoveredPull: GitHubPullRequestFact | undefined = discoveredPullRecord?.headSha ? {
       ...discoveredPullRecord,
@@ -129,13 +139,13 @@ export class ScopedAgentDeliveryIntegrator {
     this.assertPull(input, execution, group.groupBranch, pull);
     if (!["open", "merged"].includes(pull.status)) return { status: "waiting_for_pull", execution, pullRequest: pull };
     if (this.options.agentOwnsGit) {
-      const synchronized = this.database.scopedMergedSynchronization({
+      const synchronized = await this.database.scopedMergedSynchronization({
         projectId: input.projectId, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
         providerNumber: pull.providerNumber, expectedHead: input.expectedHeadSha,
         expectedBase: group.groupBranch, expectedMergeCommitSha: pull.mergeCommitSha ?? ""
       });
       if (!synchronized) throw new OperationStoreViolationError("Agent-owned merged PR has no exact local synchronization fact");
-      return { status: "completed", completion: this.database.completeScopedAgentArrivalAfterMerge({
+      return { status: "completed", completion: await this.database.completeScopedAgentArrivalAfterMerge({
         projectId: input.projectId, arrivalRequestId: execution.arrivalRequestId,
         executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
         pullRequest: pull, synchronization: synchronized,
@@ -155,7 +165,7 @@ export class ScopedAgentDeliveryIntegrator {
     if (!/^[0-9a-f]{40}$/i.test(merged.mergeCommitSha ?? "")) {
       throw new OperationStoreViolationError("Scoped Agent merge has no exact merge commit");
     }
-    const retainedSync = this.database.scopedMergedSynchronization({
+    const retainedSync = await this.database.scopedMergedSynchronization({
       projectId: input.projectId, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
       providerNumber: merged.providerNumber, expectedHead: input.expectedHeadSha,
       expectedBase: group.groupBranch, expectedMergeCommitSha: merged.mergeCommitSha!
@@ -174,7 +184,7 @@ export class ScopedAgentDeliveryIntegrator {
       !synchronized.localSynchronization) {
       throw new OperationStoreViolationError("Scoped Agent delivery requires confirmed local synchronization of the same PR");
     }
-    return { status: "completed", completion: this.database.completeScopedAgentArrivalAfterMerge({
+    return { status: "completed", completion: await this.database.completeScopedAgentArrivalAfterMerge({
       projectId: input.projectId, arrivalRequestId: execution.arrivalRequestId,
       executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
       pullRequest: synchronized, synchronization: synchronized.localSynchronization,

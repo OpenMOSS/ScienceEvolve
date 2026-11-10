@@ -21,11 +21,17 @@ async function fixture() {
 const cases = [
   { harness: "codex", prefix: "SDK_CODEX", protocol: "responses" },
   { harness: "pi", prefix: "SDK_PI", protocol: "chat-completions" },
-  { harness: "dsh", prefix: "SDK_DSH", protocol: "chat-completions" },
-  { harness: "claude-code", prefix: "SDK_CLAUDE_CODE", protocol: "anthropic-messages" }
+  { harness: "dsh", prefix: "SDK_DSH", protocol: "chat-completions" }
 ] as const;
 
 describe("explicit main API-key env/profile import, without network or native writes", () => {
+  it("rejects an unsupported harness before importing credentials", async () => {
+    const { sdk, fetch } = await fixture();
+    await expect(sdk.gateways.importHarness({ harness: "hermes", model: "fixture", source: "env",
+      environment: {} } as never)).rejects.toThrow(/harness/);
+    expect(await sdk.gateways.list()).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it.each(cases)("imports $harness env keys and context without probing", async ({ harness, prefix, protocol }) => {
     const { sdk, fetch } = await fixture();
     const key = "opaque+/=imported-key";

@@ -38,13 +38,14 @@ export function buildAgentQueueSnapshot(shared: AgentQueueSnapshot, projects: Pr
       if (!previous || previous.leaseState === "recovering" && activity.leaseState === "current" ||
         previous.leaseState === activity.leaseState && activity.kind === "turn") activities.set(owner, activity);
     }
+    const retained = ["paused", "retrying", "interrupted", "failed"].includes(state.runtime?.status ?? state.status);
     for (const activity of activities.values()) {
       const management = activity.scopeKind === "scoped-leader" || activity.scopeKind === "scoped-main" ||
         activity.scopeKind === "terminal-push-coordinator" || !activity.executionId;
       const kind: AgentKind = management ? "main" : "worker";
       const task: AgentQueueTask = { id: `${state.id}:${activity.invocationId}`, projectId: state.id, agentId: activity.agentId,
         invocationId: activity.invocationId, executionId: activity.executionId, groupRunId: activity.groupRunId, startedAt: activity.startedAt,
-        state: activity.leaseState === "recovering" ? "recovering" : activity.phase === "resident:starting" ? "starting" : "running" };
+        state: retained || activity.leaseState === "recovering" ? "recovering" : activity.phase === "resident:starting" ? "starting" : "running" };
       (task.state === "recovering" ? result[kind].recoveringTasks! : result[kind].activeTasks!).push(task);
     }
     const waiting: Record<"main" | "worker", AgentQueueItem[]> = { main: [], worker: [] };

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { CollaborationControlAuthorityFactory } from "./collaboration-runtime.js";
-import type { CollaborationStateDatabase } from "./collaboration-state/store.js";
+import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import type { TerminalPushObservationTurn } from "./collaboration-state/contracts.js";
 import type { ProjectStorage } from "./storage.js";
 import type { ControlActionEnvelope, ControlMcpRequest, ProjectState } from "./types.js";
@@ -25,7 +25,7 @@ export function terminalPushObservationControlAuthorityFactory(options: {
   const assertCurrent = async () => {
     options.signal?.throwIfAborted();
     await options.assertCurrent();
-    options.database.assertTerminalPushObservationControl({ ...observation, operationId: observation.operation.id });
+    await options.database.assertTerminalPushObservationControl({ ...observation, operationId: observation.operation.id });
   };
   return async ({ request, turn }) => {
     const context = request.executionContext;
@@ -63,9 +63,10 @@ export function terminalPushObservationControlAuthorityFactory(options: {
         assertEnvelope(envelope);
         await assertCurrent();
         if (envelope.action.tool === "finish_task") {
-          const completion = options.database.completeTerminalPushObservation({ ...observation, envelope });
-          await options.storage.saveTerminalPushObservationCompletion(completion);
+          const completion = await options.database.completeTerminalPushObservation({ ...observation, envelope });
+          const saved = await options.storage.saveTerminalPushObservationCompletion(completion);
           await assertCurrent();
+          return { ...completion, ...saved };
         }
       },
       execute: async (envelope, signal) => {
@@ -76,7 +77,7 @@ export function terminalPushObservationControlAuthorityFactory(options: {
           execution: { id: observation.executionId, agentId: observation.agentId, purpose: "delivery",
             ownershipEpoch: observation.ownershipEpoch, executionBranch: observation.executionBranch,
             worktreePath: observation.worktreePath }, base: "main", facts: {}, envelope,
-          recordedOperation: id => options.database.recordedGitOperation(observation.projectId, id), signal });
+          recordedOperation: async id => await options.database.recordedGitOperation(observation.projectId, id), signal });
         await assertCurrent();
         return result;
       }

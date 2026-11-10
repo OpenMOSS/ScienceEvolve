@@ -10,7 +10,6 @@ import {
   RESIDENT_PROTOCOL_MAX_FRAME_BYTES,
   ResidentNativeDriver,
   ResidentTurnActivityClock,
-  claudeStreamJsonCodec,
   codexAppServerCodec,
   dshSdkCodec,
   piRpcCodec,
@@ -63,15 +62,6 @@ const fakeSources: Record<string, string> = {
         send({method:'item/completed',params:{threadId:'codex-thread',turnId:id,item:{type:'toolCall',id:'tool-'+turn}}});
         return send({method:'turn/completed',params:{threadId:'codex-thread',turn:{id,status:'completed',items:[{type:'agentMessage',text:'codex-'+turn}]}}}); }
       if(q.method==='thread/unsubscribe') return send({id:q.id,result:{}});
-    });`,
-  "claude-stream-json": `
-    const r=require('node:readline').createInterface({input:process.stdin});
-    let turn=0; const send=v=>process.stdout.write(JSON.stringify(v)+'\\n');
-    r.on('line',line=>{const q=JSON.parse(line); turn++;
-      send({type:'system',subtype:'turn_start',session_id:q.session_id,turn});
-      send({type:'stream_event',session_id:q.session_id,event:{type:'content_block_delta',turn}});
-      send({type:'assistant',session_id:q.session_id,message:{role:'assistant',content:[{type:'text',text:'claude-'+turn}]}});
-      send({type:'result',session_id:q.session_id,is_error:false,result:'claude-'+turn});
     });`,
   "pi-rpc": `
     const r=require('node:readline').createInterface({input:process.stdin});
@@ -249,12 +239,6 @@ describe("ResidentTurnActivityClock", () => {
       activity: { kind: "tool", phase: "started", callId: "c1", name: "read" }
     },
     {
-      name: "Claude",
-      codec: claudeStreamJsonCodec(),
-      frame: { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "x" } } },
-      activity: { kind: "model", phase: "delta" }
-    },
-    {
       name: "Pi",
       codec: piRpcCodec(),
       frame: { type: "tool_execution_update", toolCallId: "p1", toolName: "grep" },
@@ -326,7 +310,6 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
 
   it.each([
     ["codex", "codex-app-server", "pending:fixture", () => codexAppServerCodec({ cwd: process.cwd(), model: "fixture", sandbox: "read-only" })],
-    ["claude-code", "claude-stream-json", "claude-session", claudeStreamJsonCodec],
     ["pi", "pi-rpc", "pi-session", piRpcCodec],
     ["dsh", "dsh-sdk-json-rpc", "dsh-session", dshSdkCodec]
   ] as const)("keeps %s at a verified idle boundary after a transient model failure", async (harnessId, protocol, sessionId, codec) => {
@@ -364,14 +347,6 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
         cwd: process.cwd(), model: "fixture", sandbox: "read-only"
       }),
       handoff: "codex-2",
-      recovery: "native-session-resume"
-    },
-    {
-      harnessId: "claude-code",
-      protocol: "claude-stream-json",
-      sessionId: "claude-session",
-      codec: claudeStreamJsonCodec,
-      handoff: "claude-2",
       recovery: "native-session-resume"
     },
     {
@@ -469,12 +444,6 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
       })
     },
     {
-      harnessId: "claude-code",
-      protocol: "claude-stream-json",
-      sessionId: "claude-session",
-      codec: claudeStreamJsonCodec
-    },
-    {
       harnessId: "pi",
       protocol: "pi-rpc",
       sessionId: "pi-session",
@@ -513,19 +482,12 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
 
   it("delivers a legal multi-megabyte native result without truncating the protocol frame", async () => {
     const largeOutput = "x".repeat(2 * 1024 * 1024);
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin});
-      const large=${JSON.stringify(largeOutput)};
-      r.on('line',line=>{const q=JSON.parse(line);
-        process.stdout.write(JSON.stringify({type:'stream_event',session_id:q.session_id,event:{type:'content_block_delta',delta:{type:'text_delta',text:large}}})+'\\n');
-        process.stdout.write(JSON.stringify({type:'result',session_id:q.session_id,is_error:false,result:'large-result-complete'})+'\\n');
-      });
-    `);
+    const child = await fakeNative("pi-rpc", piTurnSource(`const large=${JSON.stringify(largeOutput)}; send({type:'message_update',event:{delta:{text:large}}}); finish('large-result-complete');`));
     let observedLength = 0;
     const driver = await ResidentNativeDriver.open({
       child,
-      session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(),
+      session: session("pi", "pi-session"),
+      codec: piRpcCodec(),
       turnAuthority: inertAuthority(),
       ownershipEpoch: 1,
       onFrame: (frame) => {
@@ -855,12 +817,7 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
   });
 
   it("backpressures an unlimited fast producer while keeping the frame queue bounded", async () => {
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin});
-      const send=async v=>{if(process.stdout.write(JSON.stringify(v)+'\\n'))return;await new Promise(ok=>process.stdout.once('drain',ok));};
-      let producing=false;
-      r.on('line',line=>{const q=JSON.parse(line);if(producing)return;producing=true;(async()=>{let seq=0;for(;;seq+=1){await send({type:'stream_event',session_id:q.session_id,event:{type:'content_block_delta',seq}});}})();});
-    `);
+    const child = await fakeNative("pi-rpc", piTurnSource(`(async()=>{for(let seq=0;;seq++){if(!send({type:'message_update',event:{seq}}))await new Promise(ok=>process.stdout.once('drain',ok));}})();`));
     let releaseFirstFrame!: () => void;
     const firstFrameBlocked = new Promise<void>((resolve) => {
       releaseFirstFrame = resolve;
@@ -868,8 +825,8 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
     let block = true;
     const driver = await ResidentNativeDriver.open({
       child,
-      session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(),
+      session: session("pi", "pi-session"),
+      codec: piRpcCodec(),
       turnAuthority: inertAuthority(),
       ownershipEpoch: 1,
       onFrame: async () => {
@@ -896,16 +853,10 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
   }, 30_000);
 
   it("accepts an exact large native user input split into its normal text blocks", async () => {
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin}),send=v=>process.stdout.write(JSON.stringify(v)+'\\n');
-      r.on('line',line=>{const q=JSON.parse(line),text=q.message.content[0].text,index=text.indexOf('\\n');
-        send({type:'user',session_id:q.session_id,message:{role:'user',content:[{type:'text',text:text.slice(0,index)},{type:'output_text',text:text.slice(index+1)}]}});
-        send({type:'result',session_id:q.session_id,is_error:false,result:'split-input-complete'});
-      });
-    `);
-    const received: unknown[] = [], driver = await ResidentNativeDriver.open({ child, session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(), turnAuthority: inertAuthority(), ownershipEpoch: 1,
-      onFrame: frame => { if (frame.type === "user") received.push(frame.message); } });
+    const child = await fakeNative("pi-rpc", piTurnSource(`const text=q.message,index=text.indexOf('\\n'); send({type:'message_end',message:{role:'user',content:[{type:'text',text:text.slice(0,index)},{type:'output_text',text:text.slice(index+1)}]}});finish('split-input-complete');`));
+    const received: unknown[] = [], driver = await ResidentNativeDriver.open({ child, session: session("pi", "pi-session"),
+      codec: piRpcCodec(), turnAuthority: inertAuthority(), ownershipEpoch: 1,
+      onFrame: frame => { if (frame.type === "message_end") received.push(frame.message); } });
     try {
       await expect(driver.submit({ ...turn(1), prompt: "Exact first block\n" + "原样长输入".repeat(600_000) })).resolves.toMatchObject({ handoff: "split-input-complete" });
       expect(received).toHaveLength(1); expect(driver.protocolBufferState().maxObservedFrameBytes).toBeGreaterThan(RESIDENT_PROTOCOL_MAX_FRAME_BYTES);
@@ -913,19 +864,12 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
   }, 30_000);
 
   it("backpressures repeated exact oversized input frames while their original durable sink is held", async () => {
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin});
-      const send=v=>process.stdout.write(JSON.stringify(v)+'\\n');
-      r.on('line',line=>{const q=JSON.parse(line);
-        for(let index=0;index<4;index++)send({type:'user',session_id:q.session_id,message:q.message});
-        send({type:'result',session_id:q.session_id,is_error:false,result:'exact-large-input-complete'});
-      });
-    `);
+    const child = await fakeNative("pi-rpc", piTurnSource(`for(let index=0;index<4;index++)send({type:'message_end',message:{role:'user',content:[{type:'text',text:q.message}]}});finish('exact-large-input-complete');`));
     let release!: () => void, entered!: () => void, count = 0;
     const gate = new Promise<void>(resolve => { release = resolve; }), received = new Promise<void>(resolve => { entered = resolve; });
-    const driver = await ResidentNativeDriver.open({ child, session: session("claude-code", "claude-session"), codec: claudeStreamJsonCodec(),
+    const driver = await ResidentNativeDriver.open({ child, session: session("pi", "pi-session"), codec: piRpcCodec(),
       turnAuthority: inertAuthority(), ownershipEpoch: 1, onFrame: async frame => {
-        if (frame.type === "user" && ++count === 1) { entered(); await gate; }
+        if (frame.type === "message_end" && ++count === 1) { entered(); await gate; }
       } });
     const running = driver.submit({ ...turn(1), prompt: "complete-bound-input ".repeat(500_000) });
     try {
@@ -940,35 +884,20 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
 
   it.each(["assistant", "foreign-session", "changed-input", "metadata", "tool-result"])(
     "rejects an oversized %s frame while an exact large input is bound", async mode => {
-      const child = await fakeNative("claude-stream-json", `
-        const r=require('node:readline').createInterface({input:process.stdin});
-        const send=v=>process.stdout.write(JSON.stringify(v)+'\\n');
-        r.on('line',line=>{const q=JSON.parse(line),mode=${JSON.stringify(mode)};
-          const frame={type:'user',session_id:q.session_id,message:q.message};
-          if(mode==='assistant') {frame.type='assistant';frame.message={...q.message,role:'assistant'};}
-          if(mode==='foreign-session') frame.session_id='foreign-native-session';
-          if(mode==='changed-input') frame.message={...q.message,content:[{type:'text',text:'X'+q.message.content[0].text.slice(1)}]};
-          if(mode==='metadata') frame.padding='m'.repeat(64*1024+1);
-          if(mode==='tool-result') frame.message={...q.message,content:[{type:'tool_result',tool_use_id:'other-call',content:q.message.content[0].text}]};
-          send(frame);
-        });
-      `);
-      const observed = vi.fn(), driver = await ResidentNativeDriver.open({ child, session: session("claude-code", "claude-session"),
-        codec: claudeStreamJsonCodec(), turnAuthority: inertAuthority(), ownershipEpoch: 1, onFrame: observed });
-      await expect(driver.submit({ ...turn(1), prompt: "large-bound-input ".repeat(600_000) })).rejects.toThrow(/frame exceeded its byte limit/);
+      const child = await fakeNative("pi-rpc", piTurnSource(`const mode=${JSON.stringify(mode)};const message={role:'user',content:[{type:'text',text:q.message}]}; const frame={type:'message_end',sessionId:'pi-session',message};if(mode==='assistant'){frame.message={...message,role:'assistant'};}if(mode==='foreign-session')frame.sessionId='foreign-native-session';if(mode==='changed-input')frame.message={...message,content:[{type:'text',text:'X'+q.message.slice(1)}]};if(mode==='metadata')frame.padding='m'.repeat(64*1024+1);if(mode==='tool-result')frame.message={...message,content:[{type:'tool_result',tool_use_id:'other-call',content:q.message}]};send(frame);`));
+      const observed = vi.fn(), driver = await ResidentNativeDriver.open({ child, session: session("pi", "pi-session"),
+        codec: piRpcCodec(), turnAuthority: inertAuthority(), ownershipEpoch: 1, onFrame: frame => { if(frame.type === "message_end") observed(frame); } });
+      await expect(driver.submit({ ...turn(1), prompt: "large-bound-input ".repeat(600_000) })).rejects.toThrow(mode === "foreign-session" ? /different native session identity/ : /frame exceeded its byte limit/);
       expect(observed).not.toHaveBeenCalled();
       await expect.poll(async () => (await driver.probe()).alive).toBe(false);
     }, 30_000);
 
   it("retains the per-frame byte limit independently of turn length", async () => {
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin});
-      r.on('line',()=>process.stdout.write('x'.repeat(${RESIDENT_PROTOCOL_MAX_FRAME_BYTES + 1})+'\\n'));
-    `);
+    const child = await fakeNative("pi-rpc", piTurnSource(`process.stdout.write('x'.repeat(${RESIDENT_PROTOCOL_MAX_FRAME_BYTES + 1})+'\\n');`));
     const driver = await ResidentNativeDriver.open({
       child,
-      session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(),
+      session: session("pi", "pi-session"),
+      codec: piRpcCodec(),
       turnAuthority: inertAuthority(),
       ownershipEpoch: 1
     });
@@ -978,17 +907,12 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
   });
 
   it("does not let meaningless protocol noise refresh resident inactivity", async () => {
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin});
-      let timer;
-      r.on('line',line=>{const q=JSON.parse(line);timer=setInterval(()=>process.stdout.write(JSON.stringify({type:'system',subtype:'diagnostic_noise',session_id:q.session_id})+'\\n'),5);});
-      process.on('exit',()=>clearInterval(timer));
-    `);
+    const child = await fakeNative("pi-rpc", piTurnSource(`const timer=setInterval(()=>send({type:'queue_update'}),5);process.on('exit',()=>clearInterval(timer));`));
     const traces: Array<Record<string, unknown> | undefined> = [];
     const driver = await ResidentNativeDriver.open({
       child,
-      session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(),
+      session: session("pi", "pi-session"),
+      codec: piRpcCodec(),
       turnAuthority: inertAuthority(),
       ownershipEpoch: 1,
       inactivityPolicy: { modelTimeoutMs: 50, toolTimeoutMs: 500 },
@@ -1073,6 +997,53 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
     await expect(driver.submit(turn(1))).rejects.toThrow(/ended without success/);
     await expect.poll(async () => (await driver.probe()).alive).toBe(false);
   });
+
+  it.each(["active", "tail", "idle", "child-failure", "resume", "rejected-resume", "late"])("keeps Codex native subagents inside their parent execution (%s)", async mode => {
+    const child = await fakeNative("codex-app-server", codexSubagentSource(mode));
+    const delivered: Array<{ frame: Readonly<Record<string, unknown>>; turn?: ResidentTurn }> = [];
+    const releases: string[] = [];
+    const parentUsage: Array<number | undefined> = [];
+    const driver = await ResidentNativeDriver.open({ child, session: session("codex", "pending:fixture"),
+      codec: codexAppServerCodec({ cwd: process.cwd(), model: "fixture", sandbox: "read-only" }),
+      turnAuthority: { activate: async value => ({ inputId: value.inputId, invocationId: value.invocationId,
+        ownershipEpoch: 1, release: outcome => { releases.push(`${value.inputId}:${outcome}`); } }) },
+      ownershipEpoch: 1, onFrame: (frame, turn) => {
+        delivered.push({ frame, turn });
+        if (frame.method === "turn/completed" && (frame.params as { threadId?: string })?.threadId === "codex-thread") parentUsage.push(driver.activityState()?.knownUsage?.totalTokens);
+      } });
+    const identity = driver.identity;
+    await expect(driver.submit(turn(1))).resolves.toMatchObject({ handoff: "parent-1", threadId: "codex-thread" });
+    if (mode === "idle") await new Promise(resolve => setTimeout(resolve, 250));
+    await expect(driver.submit(turn(2))).resolves.toMatchObject({ handoff: "parent-2" });
+    expect(driver.identity).toEqual(identity);
+    expect(driver.session.nativeId).toBe("codex-thread");
+    expect(releases).toEqual(["input-1:completed", "input-2:completed"]);
+    const childMessages = delivered.filter(({ frame }) => ["child-thread", "grandchild-thread"].includes(
+      (frame.params as { threadId?: string } | undefined)?.threadId ?? ""));
+    if (mode === "late") {
+      expect(childMessages.length).toBeGreaterThan(0);
+      expect(childMessages.every(event => event.turn?.inputId === "input-1")).toBe(true);
+    } else expect(childMessages).toEqual([]);
+    expect(delivered.filter(({ frame }) => frame.method === "turn/completed" &&
+      (frame.params as { threadId?: string })?.threadId === "codex-thread")).toHaveLength(2);
+    expect(parentUsage).toEqual([17, 17]);
+    expect((await driver.probe()).alive).toBe(true);
+    await driver.close();
+  });
+
+  it.each(["foreign-turn", "wrong-child-turn", "missing-child-turn", "bad-status", "bad-flag", "missing-thread", "request-frame", "bad-spawn"])(
+    "rejects invalid Codex subagent protocol evidence (%s)", async mode => {
+      const child = await fakeNative("codex-app-server", codexSubagentSource(mode));
+      const releases: string[] = [];
+      const driver = await ResidentNativeDriver.open({ child, session: session("codex", "pending:fixture"),
+        codec: codexAppServerCodec({ cwd: process.cwd(), model: "fixture", sandbox: "read-only" }),
+        turnAuthority: { activate: async value => ({ inputId: value.inputId, invocationId: value.invocationId,
+          ownershipEpoch: 1, release: outcome => { releases.push(outcome); } }) }, ownershipEpoch: 1 });
+      await expect(driver.submit(turn(1))).rejects.toMatchObject({ code: "HARNESS_CONTRACT_VIOLATION" });
+      expect(releases).toEqual(["failed"]);
+      expect((await driver.probe()).alive).toBe(false);
+    }
+  );
 
   it("lets Codex retry a valid error notification under the same native turn", async () => {
     const source = fakeSources["codex-app-server"]!.replace("return send({method:'turn/completed'",
@@ -1162,21 +1133,20 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
   });
 
   it("preserves a shutdown protocol failure instead of replacing it with the containment signal", async () => {
-    const child = await fakeNative("claude-stream-json", `
-      process.stdin.resume();
+    const child = await fakeNative("pi-rpc", `${fakeSources["pi-rpc"]}
       process.stdin.on('end', () => { process.stdout.write('malformed shutdown frame\\n'); });
       setInterval(() => {}, 1000);
     `);
-    const driver = await ResidentNativeDriver.open({ child, session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(), turnAuthority: inertAuthority(), ownershipEpoch: 1 });
+    const driver = await ResidentNativeDriver.open({ child, session: session("pi", "pi-session"),
+      codec: piRpcCodec(), turnAuthority: inertAuthority(), ownershipEpoch: 1 });
     await expect(driver.close()).rejects.toThrow("Resident native protocol emitted malformed JSON");
     expect((await driver.probe()).alive).toBe(false);
   });
 
   it("allows close to be retried after graceful protocol shutdown fails", async () => {
-    const child = await fakeNative("claude-stream-json");
+    const child = await fakeNative("pi-rpc");
     let closeAttempts = 0;
-    const base = claudeStreamJsonCodec();
+    const base = piRpcCodec();
     const codec: ResidentProtocolCodec = {
       ...base,
       close: async () => {
@@ -1186,7 +1156,7 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
     };
     const driver = await ResidentNativeDriver.open({
       child,
-      session: session("claude-code", "claude-session"),
+      session: session("pi", "pi-session"),
       codec,
       turnAuthority: inertAuthority(),
       ownershipEpoch: 1
@@ -1199,7 +1169,6 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
 
   it.each([
     { harnessId: "codex", protocol: "codex-app-server", nativeId: "pending:fixture", codec: () => codexAppServerCodec({ cwd: process.cwd(), model: "fixture", sandbox: "read-only" }) },
-    { harnessId: "claude-code", protocol: "claude-stream-json", nativeId: "claude-session", codec: claudeStreamJsonCodec },
     { harnessId: "pi", protocol: "pi-rpc", nativeId: "pi-session", codec: piRpcCodec },
     { harnessId: "dsh", protocol: "dsh-sdk-json-rpc", nativeId: "dsh-session", codec: dshSdkCodec }
   ].flatMap(fixture => [true, false].map(waitForExit => ({ ...fixture, waitForExit }))))(
@@ -1244,17 +1213,17 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
     roots.push(runtimePath);
     const pidFile = path.join(runtimePath, "descendant.pid");
     const managed = new CommonProcessHost().startRaw({
-      command: process.execPath, args: ["-e", `${fakeSources["claude-stream-json"]}
+      command: process.execPath, args: ["-e", `${fakeSources["pi-rpc"]}
         const child = require('node:child_process').spawn(process.execPath,
           ['-e', 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], {stdio:'ignore'});
         require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`],
       cwd: runtimePath, env: process.env, eventFormat: "jsonl", rawLogLimitBytes: 1024,
-      session: session("claude-code", "claude-session")
+      session: session("pi", "pi-session")
     }, new AbortController().signal);
     children.push(managed.child);
     try {
       const driver = await ResidentNativeDriver.open({ child: managed.child,
-        session: session("claude-code", "claude-session"), codec: claudeStreamJsonCodec(),
+        session: session("pi", "pi-session"), codec: piRpcCodec(),
         turnAuthority: inertAuthority(), ownershipEpoch: 1 });
       await vi.waitFor(async () => expect(await fs.readFile(pidFile, "utf8")).toMatch(/^\d+$/));
       const descendant = Number(await fs.readFile(pidFile, "utf8"));
@@ -1276,12 +1245,12 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
   });
 
   it.each([false, true])("requires the trusted host cancellation for an interrupted shutdown response (cancelled=%s)", async cancelled => {
-    const child = await fakeNative("claude-stream-json");
+    const child = await fakeNative("pi-rpc");
     const controller = new AbortController();
     const driver = await ResidentNativeDriver.open({ child,
-      session: session("claude-code", "claude-session"), turnAuthority: inertAuthority(), ownershipEpoch: 1,
+      session: session("pi", "pi-session"), turnAuthority: inertAuthority(), ownershipEpoch: 1,
       processSignal: controller.signal,
-      codec: { ...claudeStreamJsonCodec(), close: async () => {
+      codec: { ...piRpcCodec(), close: async () => {
         if (cancelled) controller.abort();
         throw new Error("fixture interrupted shutdown response");
       } }
@@ -1316,123 +1285,29 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
     })).rejects.toThrow(/reused the source native session identity/);
   });
 
-  it.each(["assistant", "stream_event"].flatMap(source => [true, false].map(parented => ({ source, parented }))))(
-    "retains Claude tool progress for the current $source call until its actual result (parent: $parented)", async ({ source, parented }) => {
-    const start = source === "assistant"
-      ? "{type:'assistant',session_id:q.session_id,message:{role:'assistant',content:[{type:'tool_use',id:'slow-call',name:'mcp__fixture__delayed',input:{}}]}}"
-      : "{type:'stream_event',session_id:q.session_id,event:{type:'content_block_start',index:0,content_block:{type:'tool_use',id:'slow-call',name:'mcp__fixture__delayed',input:{}}}}";
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin});let sid;
-      const s=v=>process.stdout.write(JSON.stringify(v)+'\\n');
-      r.on('line',line=>{const q=JSON.parse(line);
-        if(q.type==='fixture-result-release'){
-          s({type:'user',session_id:sid,message:{role:'user',content:[{type:'tool_result',tool_use_id:'slow-call',content:'actual-delayed-result'}]}});
-          return s({type:'result',session_id:sid,is_error:false,result:'tool-result-processed'});
-        }
-        sid=q.session_id;
-        s(${start});
-        s({type:'tool_progress',tool_use_id:${JSON.stringify(parented ? "slow-call-heartbeat-0" : "slow-call")},tool_name:'mcp__fixture__delayed',parent_tool_use_id:${parented ? "'slow-call'" : "null"},elapsed_time_seconds:30,heartbeat:true,session_id:q.session_id,uuid:'progress-1'});
-      });
-    `);
-    const delivered: Array<Record<string, unknown>> = [];
-    const releases: string[] = [];
-    const driver = await ResidentNativeDriver.open({ child, session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(), ownershipEpoch: 1,
-      turnAuthority: { activate: async turn => ({ inputId: turn.inputId, invocationId: turn.invocationId,
-        ownershipEpoch: 1, release: outcome => { releases.push(outcome); } }) },
-      onFrame: frame => { delivered.push(frame); } });
-    let settled = false;
-    const result = driver.submit(turn(1)).finally(() => { settled = true; });
-    // Attach a rejection handler while observing the intermediate boundary.
-    void result.catch(() => undefined);
-    await expect.poll(() => delivered.some(frame => frame.type === "tool_progress")).toBe(true);
-    expect(settled).toBe(false);
-    expect(releases).toEqual([]);
-    expect(driver.activityState()).toMatchObject({ deadlineType: "tool-activity-idle", toolCallId: "slow-call",
-      toolName: "mcp__fixture__delayed", lastActivityType: "tool.updated" });
-    child.stdin.write('{"type":"fixture-result-release"}\n');
-    await expect(result).resolves.toMatchObject({ handoff: "tool-result-processed" });
-    expect(delivered.map(frame => frame.type)).toEqual([source, "tool_progress", "user", "result"]);
-    expect(releases).toEqual(["completed"]);
-    await driver.close();
-  });
-
-  it.each([
-    { tool_use_id: "foreign-call" }, { tool_name: "foreign-tool" },
-    { elapsed_time_seconds: -1 }, { elapsed_time_seconds: "30" },
-    { session_id: "foreign-session" }, { parent_tool_use_id: "foreign-call" },
-    { parent_tool_use_id: 42 }, { tool_use_id: "" }
-  ])("rejects Claude progress outside the exact active call: %j", async patch => {
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin});
-      const s=v=>process.stdout.write(JSON.stringify(v)+'\\n');
-      r.on('line',line=>{const q=JSON.parse(line);
-        s({type:'assistant',session_id:q.session_id,message:{role:'assistant',content:[{type:'tool_use',id:'slow-call',name:'mcp__fixture__delayed',input:{}}]}});
-        s({...{type:'tool_progress',tool_use_id:'slow-call',tool_name:'mcp__fixture__delayed',elapsed_time_seconds:30,session_id:q.session_id},...${JSON.stringify(patch)}});
-        s({type:'result',session_id:q.session_id,is_error:false,result:'must-not-complete'});
-      });
-    `);
-    const delivered: string[] = [];
-    const driver = await ResidentNativeDriver.open({ child, session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(), ownershipEpoch: 1, turnAuthority: inertAuthority(),
-      onFrame: frame => { delivered.push(String(frame.type)); } });
-    await expect(driver.submit(turn(1))).rejects.toThrow(/Claude.*(progress|frame|session)/);
-    expect(delivered).toEqual(["assistant"]);
-    await expect.poll(async () => (await driver.probe()).alive).toBe(false);
-  });
-
-  it.each(["completed-call", "previous-turn"] as const)("rejects Claude progress from a %s", async mode => {
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin});let n=0;
-      const s=v=>process.stdout.write(JSON.stringify(v)+'\\n');
-      r.on('line',line=>{const q=JSON.parse(line);n++;
-        if(n===1){
-          s({type:'assistant',session_id:q.session_id,message:{role:'assistant',content:[{type:'tool_use',id:'old-call',name:'mcp__fixture__delayed',input:{}}]}});
-          s({type:'user',session_id:q.session_id,message:{role:'user',content:[{type:'tool_result',tool_use_id:'old-call',content:'old-result'}]}});
-        }
-        if(${JSON.stringify(mode)}==='previous-turn'&&n===1)return s({type:'result',session_id:q.session_id,is_error:false,result:'first-complete'});
-        s({type:'tool_progress',tool_use_id:'old-call-heartbeat-0',parent_tool_use_id:'old-call',tool_name:'mcp__fixture__delayed',elapsed_time_seconds:30,session_id:q.session_id});
-        s({type:'result',session_id:q.session_id,is_error:false,result:'must-not-complete'});
-      });
-    `);
-    const driver = await ResidentNativeDriver.open({ child, session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(), ownershipEpoch: 1, turnAuthority: inertAuthority() });
-    if (mode === "previous-turn") await expect(driver.submit(turn(1))).resolves.toMatchObject({ handoff: "first-complete" });
-    await expect(driver.submit(turn(mode === "previous-turn" ? 2 : 1))).rejects.toThrow(/Claude.*(progress|frame)/);
-    await expect.poll(async () => (await driver.probe()).alive).toBe(false);
-  });
-
   it("fails closed instead of attributing an unknown idle frame to the active turn", async () => {
-    const child = await fakeNative("claude-stream-json", `
-      const r=require('node:readline').createInterface({input:process.stdin});
-      const s=v=>process.stdout.write(JSON.stringify(v)+'\\n');
-      r.on('line',line=>{const q=JSON.parse(line);
-        s({type:'assistant',session_id:q.session_id,message:{role:'assistant',content:[{type:'text',text:'partial'}]}});
-        s({type:'idle',session_id:q.session_id});
-        s({type:'result',session_id:q.session_id,is_error:false,result:'must-not-complete'});
-      });
-    `);
+    const child = await fakeNative("pi-rpc", piTurnSource(`send({type:'message_update'});send({type:'fixture-unknown-frame'});`));
     const delivered: string[] = [];
     const driver = await ResidentNativeDriver.open({
       child,
-      session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(),
+      session: session("pi", "pi-session"),
+      codec: piRpcCodec(),
       turnAuthority: inertAuthority(),
       ownershipEpoch: 1,
       onFrame: (frame) => { delivered.push(String(frame.type)); }
     });
     await expect(driver.submit(turn(1))).rejects.toThrow(/unknown or out-of-turn frame/);
-    expect(delivered).toEqual(["assistant"]);
+    expect(delivered).toEqual(["response", "message_update"]);
     await expect.poll(async () => (await driver.probe()).alive).toBe(false);
   });
 
   it("releases a mismatched broker acknowledgement and kills the resident process", async () => {
-    const child = await fakeNative("claude-stream-json");
+    const child = await fakeNative("pi-rpc");
     const released: string[] = [];
     const driver = await ResidentNativeDriver.open({
       child,
-      session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(),
+      session: session("pi", "pi-session"),
+      codec: piRpcCodec(),
       ownershipEpoch: 7,
       turnAuthority: {
         activate: async (value) => ({
@@ -1449,12 +1324,12 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
   });
 
   it("rejects reused per-turn routes and control capabilities before broker activation", async () => {
-    const child = await fakeNative("claude-stream-json");
+    const child = await fakeNative("pi-rpc");
     const activations: string[] = [];
     const driver = await ResidentNativeDriver.open({
       child,
-      session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(),
+      session: session("pi", "pi-session"),
+      codec: piRpcCodec(),
       ownershipEpoch: 1,
       turnAuthority: {
         activate: async (value) => {
@@ -1484,15 +1359,15 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
   });
 
   it("observes a retained ProcessHost callback failure and terminates the process", async () => {
-    const child = await fakeNative("claude-stream-json");
+    const child = await fakeNative("pi-rpc");
     let failCompletion!: (error: Error) => void;
     const processCompletion = new Promise<never>((_resolve, reject) => {
       failCompletion = reject;
     });
     const driver = await ResidentNativeDriver.open({
       child,
-      session: session("claude-code", "claude-session"),
-      codec: claudeStreamJsonCodec(),
+      session: session("pi", "pi-session"),
+      codec: piRpcCodec(),
       ownershipEpoch: 1,
       turnAuthority: inertAuthority(),
       processCompletion
@@ -1502,6 +1377,85 @@ describe.runIf(process.platform === "linux")("built-in resident native protocols
     await expect(driver.submit(turn(1))).rejects.toThrow(/callback failed/);
   });
 });
+
+function piTurnSource(onPrompt: string): string {
+  return `
+    const r=require('node:readline').createInterface({input:process.stdin});
+    const send=value=>process.stdout.write(JSON.stringify(value)+'\\n');
+    let lastText='';
+    const finish=text=>{lastText=text;send({type:'agent_end',messages:[{role:'assistant',content:[{type:'text',text}]}]});};
+    r.on('line',line=>{const q=JSON.parse(line);
+      if(q.type==='get_state')return send({id:q.id,type:'response',command:'get_state',success:true,data:{isStreaming:false,sessionId:'pi-session'}});
+      if(q.type==='get_last_assistant_text')return send({id:q.id,type:'response',command:'get_last_assistant_text',success:true,data:{text:lastText}});
+      if(q.type!=='prompt')throw new Error('Unexpected Pi fixture command');
+      send({id:q.id,type:'response',command:'prompt',success:true});
+      ${onPrompt}
+    });
+  `;
+}
+
+function codexSubagentSource(mode: string): string {
+  return `
+    const r=require('node:readline').createInterface({input:process.stdin});
+    const send=v=>process.stdout.write(JSON.stringify(v)+'\\n');
+    const mode=${JSON.stringify(mode)}; let turn=0;
+    const status=(threadId,type='idle')=>send({method:'thread/status/changed',params:{threadId,status:type==='active'?{type,activeFlags:[]}:{type}}});
+    const collab=(threadId,turnId,id,receiver,completed)=>send({method:completed?'item/completed':'item/started',params:{threadId,turnId,item:{type:'collabAgentToolCall',id,tool:mode==='resume'&&threadId==='codex-thread'?'resumeAgent':'spawnAgent',status:completed?'completed':'inProgress',senderThreadId:threadId,receiverThreadIds:completed?[receiver]:[],agentsStates:{}}}});
+    const childEvents=()=>{
+      const tid='child-turn-'+turn;
+      status('child-thread','active');
+      send({method:'turn/started',params:{threadId:'child-thread',turn:{id:tid,status:'inProgress',items:[]}}});
+      send({method:'item/completed',params:{threadId:'child-thread',turnId:tid,item:{id:'child-user-'+turn,type:'userMessage',content:[{type:'text',text:'Internal child input, not the parent receipt.'}]}}});
+      collab('child-thread',tid,'nested-'+turn,'grandchild-thread',false);
+      status('grandchild-thread');
+      collab('child-thread',tid,'nested-'+turn,'grandchild-thread',true);
+      send({method:'turn/started',params:{threadId:'grandchild-thread',turn:{id:'grand-turn-'+turn,status:'inProgress',items:[]}}});
+      send({method:'turn/completed',params:{threadId:'grandchild-thread',turn:{id:'grand-turn-'+turn,status:'completed',items:[{type:'agentMessage',text:'Not the parent result.'}]}}});
+      send({method:'item/started',params:{threadId:'child-thread',turnId:tid,item:{type:'commandExecution',id:'child-tool-'+turn,command:'fixture'}}});
+      send({method:'item/completed',params:{threadId:'child-thread',turnId:tid,item:{type:'commandExecution',id:'child-tool-'+turn,status:'completed'}}});
+      send({method:'error',params:{threadId:'child-thread',turnId:tid,willRetry:true,error:{message:'child retry',additionalDetails:null}}});
+      send({method:'turn/completed',params:{threadId:'child-thread',turn:{id:tid,status:mode==='child-failure'?'failed':'completed',items:[{type:'agentMessage',text:'Not the parent result.'}]}}});
+      const usage={totalTokens:2,inputTokens:1,cachedInputTokens:0,outputTokens:1,reasoningOutputTokens:0};
+      send({method:'thread/tokenUsage/updated',params:{threadId:'child-thread',turnId:tid,tokenUsage:{total:usage,last:usage,modelContextWindow:null}}});
+      status('child-thread');
+      send({method:'thread/closed',params:{threadId:'child-thread'}});
+    };
+    r.on('line',line=>{const q=JSON.parse(line);
+      if(q.method==='initialize')return send({id:q.id,result:{}});
+      if(q.method==='thread/start')return send({id:q.id,result:{thread:{id:'codex-thread'}}});
+      if(q.method==='thread/unsubscribe')return send({id:q.id,result:{}});
+      if(q.method!=='turn/start')return;
+      turn++; const tid='turn-'+turn;
+      send({id:q.id,result:{turn:{id:tid}}});
+      const usage={totalTokens:17,inputTokens:10,cachedInputTokens:0,outputTokens:7,reasoningOutputTokens:0};
+      send({method:'thread/tokenUsage/updated',params:{threadId:'codex-thread',turnId:tid,tokenUsage:{total:usage,last:usage,modelContextWindow:null}}});
+      if(mode!=='late'||turn===1){
+      collab('codex-thread',tid,'spawn-'+turn,'child-thread',false);
+      // Native 0.153.4 broadcasts these before the spawn result identifies the child.
+      status('child-thread');
+      send({method:'warning',params:{threadId:'child-thread',message:'Native child warning'}});
+      if(mode==='bad-spawn')return collab('codex-thread',tid,'spawn-'+turn,'codex-thread',true);
+      collab('codex-thread',tid,'spawn-'+turn,'child-thread',true);
+      }
+      if(mode==='rejected-resume'){
+        for(const status of ['inProgress','failed'])send({method:status==='failed'?'item/completed':'item/started',params:{threadId:'codex-thread',turnId:tid,item:{type:'collabAgentToolCall',id:'rejected-resume-'+turn,tool:'resumeAgent',status,senderThreadId:'codex-thread',receiverThreadIds:['codex-thread'],agentsStates:{}}}});
+      }
+      if(mode==='foreign-turn')return send({method:'turn/completed',params:{threadId:'unrelated-thread',turn:{id:'foreign',status:'completed',items:[]}}});
+      if(mode==='wrong-child-turn'||mode==='missing-child-turn'){
+        send({method:'turn/started',params:{threadId:'child-thread',turn:{id:'actual-child-turn',status:'inProgress',items:[]}}});
+        return send({method:'item/started',params:{threadId:'child-thread',...(mode==='wrong-child-turn'?{turnId:'wrong-turn'}:{}),item:{type:'commandExecution',id:'wrong'}}});
+      }
+      if(mode==='bad-status')return status('child-thread','unknown');
+      if(mode==='bad-flag')return send({method:'thread/status/changed',params:{threadId:'child-thread',status:{type:'active',activeFlags:['unknown']}}});
+      if(mode==='missing-thread')return status('');
+      if(mode==='request-frame')return send({id:999,method:'thread/status/changed',params:{threadId:'child-thread',status:{type:'idle'}}});
+      if(['active','child-failure','resume','rejected-resume'].includes(mode)||mode==='late'&&turn===2)childEvents();
+      send({method:'turn/completed',params:{threadId:'codex-thread',turn:{id:tid,status:'completed',items:[{type:'agentMessage',text:'parent-'+turn}]}}});
+      if(mode==='tail')childEvents();
+      if(mode==='idle')setTimeout(childEvents,175);
+    });
+  `;
+}
 
 function codexUsageTailSource(frameCount: number | "continuous", intervalMs = 0): string {
   return `
@@ -1560,14 +1514,6 @@ function longTurnSource(protocol: string, eventCount: number): string {
         return send({method:'turn/completed',params:{threadId:'codex-thread',turn:{id,status:'completed',items:[{type:'agentMessage',text:'long-complete-codex'}]}}});
       }
       if(q.method==='thread/unsubscribe')return send({id:q.id,result:{}});
-    };
-    r.on('line',line=>{chain=chain.then(()=>handle(JSON.parse(line)));});
-  `;
-  if (protocol === "claude-stream-json") return `${prelude}
-    const handle=async q=>{
-      for(let index=0;index<${eventCount};index+=1)await send({type:'stream_event',session_id:q.session_id,event:{type:'content_block_delta',index}});
-      await send({type:'assistant',session_id:q.session_id,message:{role:'assistant',content:[{type:'text',text:'long-complete-claude'}]}});
-      return send({type:'result',session_id:q.session_id,is_error:false,result:'long-complete-claude'});
     };
     r.on('line',line=>{chain=chain.then(()=>handle(JSON.parse(line)));});
   `;
@@ -1717,6 +1663,41 @@ function piRetrySource(mode: string): string {
     });
   `;
 }
+
+describe("Codex asynchronous item ownership", () => {
+  it.each(["owned", "unknown-item", "wrong-turn", "old-completion"])("handles a previous turn notification by its recorded item owner (%s)", async mode => {
+    const source = `
+      const r=require('node:readline').createInterface({input:process.stdin});
+      const send=v=>process.stdout.write(JSON.stringify(v)+'\\n'); let n=0;
+      r.on('line',line=>{const q=JSON.parse(line);
+        if(q.method==='initialize')return send({id:q.id,result:{}});
+        if(q.method==='thread/start')return send({id:q.id,result:{thread:{id:'codex-thread'}}});
+        if(q.method==='thread/unsubscribe')return send({id:q.id,result:{}});
+        if(q.method!=='turn/start')return;
+        const id='turn-'+(++n);send({id:q.id,result:{turn:{id}}});
+        if(n===1)send({method:'item/started',params:{threadId:'codex-thread',turnId:id,item:{type:'commandExecution',id:'background',command:'fixture'}}});
+        if(n===2) {
+          if(${JSON.stringify(mode)}==='old-completion')send({method:'turn/completed',params:{threadId:'codex-thread',turn:{id:'turn-1',status:'completed',items:[]}}});
+          else send({method:'item/completed',params:{threadId:'codex-thread',turnId:${JSON.stringify(mode === "wrong-turn" ? "unknown-turn" : "turn-1")},item:{type:'commandExecution',id:${JSON.stringify(mode === "unknown-item" ? "unknown-command" : "background")},exitCode:143,status:'completed'}}});
+        }
+        send({method:'turn/completed',params:{threadId:'codex-thread',turn:{id,status:'completed',items:[{type:'agentMessage',text:'result-'+n}]}}});
+      });`;
+    const child = await fakeNative("codex-app-server", source);
+    const delivered: Array<{ frame: Record<string, unknown>; invocation?: string }> = [];
+    const driver = await ResidentNativeDriver.open({ child, session: session("codex", "pending:fixture"),
+      codec: codexAppServerCodec({ cwd: "/fixture", model: "fixture", sandbox: "workspace-write" }),
+      turnAuthority: inertAuthority(), ownershipEpoch: 1,
+      onFrame: (frame, origin) => { delivered.push({ frame, invocation: origin?.invocationId }); } });
+    await expect(driver.submit(turn(1))).resolves.toMatchObject({ handoff: "result-1" });
+    if (mode === "owned") {
+      await expect(driver.submit(turn(2))).resolves.toMatchObject({ handoff: "result-2" });
+      const late = delivered.find(item => item.frame.method === "item/completed");
+      expect(late?.invocation).toBe("inv-1");
+      expect((late?.frame.params as { item: { exitCode: number } }).item.exitCode).toBe(143);
+      await driver.close();
+    } else await expect(driver.submit(turn(2))).rejects.toThrow(/different native turn/);
+  });
+});
 
 async function fakeNative(
   protocol: string,

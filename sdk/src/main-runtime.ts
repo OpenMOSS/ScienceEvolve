@@ -149,6 +149,10 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
     const skills = new SkillCatalog(options.skillRoots ?? [builtinSkillRoot], options.userSkillRoot ?? path.join(root, "skills"));
     const facade = options.internal ? undefined : createSdkHarnessRuntime({
       ...options.runnerOptions,
+      // Let transport recovery settle before either outer model watchdog expires.
+      protocolProxyTimeoutMs: Math.floor(Math.min(options.runnerOptions?.protocolProxyTimeoutMs ?? 20 * 60_000,
+        options.execution?.agentActivityIdleWindowMs ?? 20 * 60_000,
+        options.runnerOptions?.residentModelInactivityTimeoutMs ?? 20 * 60_000) * 0.9),
       ...(siiExperiments ? { siiExperiments,
         // Async SII uses direct execFile in its service. Do not activate the
         // legacy shell wrapper, whose root guard rejects bound SDK workspaces.

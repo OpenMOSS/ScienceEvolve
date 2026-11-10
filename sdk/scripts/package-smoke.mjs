@@ -66,11 +66,12 @@ for (const file of ["dist/main-runtime.js", "dist/main-runtime.d.ts", "dist/core
   "dist/core/project-state-mcp.js", "dist/core/project-state-service.js", "dist/core/project-runtime-projection.js",
   "dist/core/agent-queue-view.js",
   "dist/core/harness-runtime/descriptor-broker-mcp.js", "dist/core/harness-runtime/adapters/pi-mcp-extension.js",
-  "dist/host/hermes/hermes-adapter.js", "dist/host/hermes/hermes-acp.js",
-  "dist/host/hermes/hermes-settings.js", "docs/hermes-zh.md", "examples/hermes/workflow.json",
   "dist/core/collaboration-state/store.js", "dist/schemas/main-decision.json", "dist/schemas/worker-result.json",
   "resources/main-runtime/manifest.json", "docs/main-runtime-migration-zh.md"]) {
   assert.ok(metadata.files.some((entry) => entry.path === file), `Missing main-runtime package file: ${file}`);
+}
+for (const entry of metadata.files) {
+  assert.ok(!/(?:^|\/)hermes(?:[/.\-]|$)/i.test(entry.path), `Unsupported harness packaged: ${entry.path}`);
 }
 for (const resource of ["SKILL.md", "references/workflow.md", "references/usage.md", "assets/workflow.json"]) {
   assert.ok(metadata.files.some(({ path: file }) => file === `skills/scienceevolve-sdk/${resource}`), `Missing SDK authoring skill resource: ${resource}`);

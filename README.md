@@ -38,7 +38,7 @@ ScienceEvolve is the autonomous version of the research framework presented in [
 
 > “Here is a Poisson solver. Explore two improvements, validate convergence, compare the errors, and write a report.”
 
-Connect planning, parallel exploration, implementation, and review in `workflow.json`. Main coordinates the work and confirms completion; Workers handle research, experiments, coding, and review. Each Agent can select **Codex, Claude Code, DSH, pi, or Hermes**, with its own model, prompt, Skills, and MCP tools.
+Connect planning, parallel exploration, implementation, and review in `workflow.json`. Main coordinates the work and confirms completion; Workers handle research, experiments, coding, and review. Each Agent can select **Codex, DSH, or pi**, with its own model, prompt, Skills, and MCP tools.
 
 <div align="center">
 
@@ -405,7 +405,7 @@ Detailed guides are available in English and Chinese. Use the language links at 
 </thead>
 <tbody>
 <tr><td align="left">Install, connect models, and set reasoning options</td><td align="left"><a href="sdk/docs/main-cli.md#deployment-and-startup">CLI and gateways</a> · <a href="sdk/README.md">Package guide</a></td></tr>
-<tr><td align="left">Change Harnesses or use native login</td><td align="left"><a href="sdk/docs/main-cli.md#deployment-json">Deployment</a> · <a href="sdk/docs/main-cli.md#codex-native-oauth-login">Codex login</a> · <a href="sdk/docs/hermes.md">Hermes</a></td></tr>
+<tr><td align="left">Change Harnesses or use native login</td><td align="left"><a href="sdk/docs/main-cli.md#deployment-json">Deployment</a> · <a href="sdk/docs/main-cli.md#codex-native-oauth-login">Codex login</a></td></tr>
 <tr><td align="left">Define Agents, routes, Loops, and reconfiguration</td><td align="left"><a href="sdk/skills/scienceevolve-sdk/references/workflow-en.md">Workflow reference</a> · <a href="sdk/docs/workflow-loops.md">Loops</a> · <a href="sdk/skills/scienceevolve-sdk/README_en.md">Authoring Skill</a></td></tr>
 <tr><td align="left">Connect GitHub and run parallel collaboration</td><td align="left"><a href="sdk/docs/main-cli.md#github-authentication-and-git-collaboration">GitHub authentication</a> · <a href="sdk/examples/main-runtime/workflow.json">Git-on v3 example</a></td></tr>
 <tr><td align="left">Provide inputs, choose workspaces, and deliver files</td><td align="left"><a href="sdk/docs/project-inputs.md">Shared inputs</a> · <a href="sdk/examples/workspace-examples-en.md">Workspaces</a></td></tr>

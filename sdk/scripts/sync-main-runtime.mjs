@@ -62,7 +62,7 @@ const regressionTests = [
   "orchestration-control-mcp.test.ts", "orchestration-control-pending.test.ts",
   "project-state-documents.test.ts", "project-state-reconciliation.test.ts", "project-state.test.ts",
   "resident-adapter-factory.test.ts", "resident-initialization-quiet.test.ts",
-  "resident-lease.test.ts", "resident-native-driver.test.ts", "claude-stream-native.test.ts",
+  "resident-lease.test.ts", "resident-native-driver.test.ts",
   "scoped-project-runtime.test.ts", "scoped-worktree-closing-control.test.ts",
   "scoped-worktree-closing-runtime.test.ts",
   "terminal-push-coordination-state.test.ts", "terminal-push-observation-runtime.test.ts",
@@ -70,7 +70,7 @@ const regressionTests = [
   "helpers/agent-git-native-fixture.ts", "helpers/scoped-runtime-git.ts",
   "helpers/workflow-projection-writer.ts", "helpers/pause-writer-crash.ts",
   "fixtures/harness-events/codex.jsonl", "fixtures/harness-events/pi.jsonl",
-  "fixtures/harness-events/claude-code.jsonl", "fixtures/harness-events/dsh.jsonl"
+  "fixtures/harness-events/dsh.jsonl"
 ];
 const selectedRegressionTests = sharedFixes.regressionTests ?? regressionTests;
 const selectedSchemas = sharedFixes.schemas ?? ["main-decision.json", "worker-result.json"];
@@ -98,13 +98,6 @@ const portableRegressionFixes = {
     }, {
       before: '      await fs.writeFile(path.join(f.root, "uncertain-original.txt"), "Preserved unknown file");\n      await fs.symlink(path.join(f.root, "uncertain-original.txt"), path.join(f.worktree, "uncertain.txt"));',
       after: '      await fs.writeFile(path.join(f.root, "uncertain-original.txt"), "Preserved unknown file");\n      try { await fs.symlink(path.join(f.root, "uncertain-original.txt"), path.join(f.worktree, "uncertain.txt")); } catch (error) {\n        if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") { context.skip(); return; }\n        throw error;\n      }'
-    }]
-  },
-  "official-event-bridge.test.ts": {
-    description: "SDK location for upstream official-event fixtures",
-    replacements: [{
-      before: 'const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "harness-events");',
-      after: 'const fixtureRoot = path.resolve(process.cwd(), "tests", "main-core", "fixtures", "harness-events");'
     }]
   },
   "harness-runtime.test.ts": {
@@ -673,8 +666,7 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
           ? `resources/main-runtime/schemas/${entry.source.slice("server/schemas/".length)}`
           : entry.source.startsWith("server/tests/")
             ? `tests/main-core/${entry.source.slice("server/tests/".length)}`
-            : /^sdk\/src\/core\/harness-runtime\/adapters\/hermes-(?:acp|adapter|settings)\.ts$/.test(entry.source)
-              ? entry.source.slice("sdk/".length) : undefined;
+            : undefined;
       if (!expected || expected !== entry.target || !/^[a-f0-9]{64}$/.test(entry.sha256) ||
         (entry.sourceSha256 !== undefined && !/^[a-f0-9]{64}$/.test(entry.sourceSha256)) ||
         (entry.upstreamCommit !== undefined && !/^[a-f0-9]{40}$/.test(entry.upstreamCommit)) ||
@@ -792,11 +784,6 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
       if (text.split(before).length !== 2) throw new Error("Installed DSH fixture path changed");
       text = text.replace(before, 'const executable = process.env.SCIENCEEVOLVE_TEST_DSH_BIN ?? path.resolve("../harness/dsh/node_modules/.bin/dsh");');
       testAdaptations.push("Explicit installed DSH executable for SDK-only source layouts");
-    }
-    if (relative === "official-event-bridge.test.ts") {
-      if (text.split('"/bin/true"').length !== 7) throw new Error("Pinned adapter contract executable fixture changed");
-      text = text.replaceAll('"/bin/true"', '(process.platform === "win32" ? process.execPath : "/bin/true")');
-      testAdaptations.push("Actual local Node executable for Windows adapter contract; no Harness or model invocation");
     }
     if (relative === "scoped-project-runtime.test.ts") {
       const before = '    expect(turns).toBe(2); expect(heads[0]).not.toBe(heads[1]);';

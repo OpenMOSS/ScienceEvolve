@@ -2811,24 +2811,61 @@
       "from": "sdk/examples/requirement.txt",
       "to": "sdk/examples/research_proposal.txt",
       "reason": "Rename example research input and replace execution instructions with a concrete research proposal; runtime preparation is documented separately."
-    },
-    {
-      "from": "sdk/src/core/harness-runtime/adapters/hermes-acp.ts",
-      "to": "sdk/src/host/hermes/hermes-acp.ts",
-      "reason": "SDK-owned Hermes implementation moved outside the byte-identical shared core; common runtime exposes the trusted Adapter extension hook."
-    },
-    {
-      "from": "sdk/src/core/harness-runtime/adapters/hermes-adapter.ts",
-      "to": "sdk/src/host/hermes/hermes-adapter.ts",
-      "reason": "SDK-owned Hermes implementation moved outside the byte-identical shared core; common runtime exposes the trusted Adapter extension hook."
-    },
-    {
-      "from": "sdk/src/core/harness-runtime/adapters/hermes-settings.ts",
-      "to": "sdk/src/host/hermes/hermes-settings.ts",
-      "reason": "SDK-owned Hermes implementation moved outside the byte-identical shared core; common runtime exposes the trusted Adapter extension hook."
     }
   ],
   "removals": [
+    {
+      "path": "sdk/docs/hermes-zh.md",
+      "reason": "Hermes host support was removed from the SDK."
+    },
+    {
+      "path": "sdk/examples/hermes/workflow.json",
+      "reason": "Hermes host support was removed from the SDK."
+    },
+    {
+      "path": "sdk/src/core/harness-runtime/adapters/hermes-acp.ts",
+      "reason": "Hermes host support was removed from the SDK; this baseline file was previously delivered as sdk/src/host/hermes/hermes-acp.ts."
+    },
+    {
+      "path": "sdk/src/core/harness-runtime/adapters/hermes-adapter.ts",
+      "reason": "Hermes host support was removed from the SDK; this baseline file was previously delivered as sdk/src/host/hermes/hermes-adapter.ts."
+    },
+    {
+      "path": "sdk/src/core/harness-runtime/adapters/hermes-settings.ts",
+      "reason": "Hermes host support was removed from the SDK; this baseline file was previously delivered as sdk/src/host/hermes/hermes-settings.ts."
+    },
+    {
+      "path": "sdk/tests/hermes-acp.test.ts",
+      "reason": "Hermes host support was removed from the SDK."
+    },
+    {
+      "path": "sdk/tests/hermes-native.test.ts",
+      "reason": "Hermes host support was removed from the SDK."
+    },
+    {
+      "path": "sdk/tests/hermes-settings.test.ts",
+      "reason": "Hermes host support was removed from the SDK."
+    },
+    {
+      "path": "sdk/src/core/harness-runtime/adapters/claude-code-adapter.ts",
+      "reason": "Claude Code is not a supported Harness."
+    },
+    {
+      "path": "sdk/src/core/harness-runtime/adapters/claude-code-event-mapper.ts",
+      "reason": "Claude Code is not a supported Harness."
+    },
+    {
+      "path": "sdk/src/core/harness-runtime/claude-tool-progress.ts",
+      "reason": "Claude Code is not a supported Harness."
+    },
+    {
+      "path": "sdk/tests/main-core/claude-stream-native.test.ts",
+      "reason": "Claude Code is not a supported Harness."
+    },
+    {
+      "path": "sdk/tests/main-core/fixtures/harness-events/claude-code.jsonl",
+      "reason": "Claude Code is not a supported Harness."
+    },
     {
       "path": "research/todo-seven/README.md",
       "reason": "Superseded by the unified example index"

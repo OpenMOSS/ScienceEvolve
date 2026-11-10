@@ -219,8 +219,10 @@ export function createProductionCollaborationResidentLauncher(
     let closing: Promise<void> | undefined;
     let activeSubmit: Promise<AgentRunResult> | undefined;
     let nativeTurnFailed = false;
+    let closeRequested = false;
     const handle: CollaborationResidentHandle = {
       get closed() { return closed; },
+      supervisionActions: () => opened.supervisionActions?.() ?? Promise.resolve([]),
       submit: async (turn) => {
         activeSubmitInvocationId = turn.invocationId;
         const operation = opened.submit(turn);
@@ -262,18 +264,19 @@ export function createProductionCollaborationResidentLauncher(
         // A rejected close clears its in-flight promise so it can be retried.
         // Keep the native failure after submit settles: a later Pause still
         // needs exact stop confirmation, not a control call on the crashed lease.
-        if (nativeTurnFailed || closing) {
+        if (nativeTurnFailed || closeRequested) {
           await handle.close();
           return;
         }
         await opened.pause();
       },
       resume: async () => {
-        if (nativeTurnFailed || closing) { await handle.close(); return; }
+        if (nativeTurnFailed || closeRequested) { await handle.close(); return; }
         if (!closed) await opened.resume();
       },
       close: async () => {
         if (closed) return;
+        closeRequested = true;
         closing ??= (async () => {
           const observedLease = await opened.probe().catch(() => undefined);
           const finalLease = observedLease ?? opened.initialLease;

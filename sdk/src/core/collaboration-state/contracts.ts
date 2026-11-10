@@ -660,8 +660,8 @@ export interface ScopedGroupIssue {
 }
 
 export interface ReleaseScopedLeaderTurnInput extends ClaimScopedLeaderTurnInput {
-  /** Trusted resident close/stop must complete before this server-only call. */
-  residentStopConfirmed: true;
+  /** Retire scheduling authority while preserving the actual cleanup result. */
+  residentStopConfirmed: boolean;
 }
 
 export interface ReleasedScopedLeaderTurn {
@@ -782,9 +782,8 @@ export interface RecordScopedAgentReportInput {
   reportHeadSha?: string;
   /** Server-only native turn-end proof; not supplied by an MCP caller. */
   residentTurnCompleted: true;
-  /** Required for a turn reserved through beginScopedAgentTurn. Report and
-   * native stop are persisted atomically before any delivery can proceed. */
-  residentStopConfirmed?: true;
+  /** Native resource stop is recorded separately from task result return. */
+  residentStopConfirmed?: boolean;
   expectedRevision?: number;
 }
 

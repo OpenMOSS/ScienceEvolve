@@ -27,6 +27,8 @@ import type {
 } from "./contracts.js";
 import { HarnessRuntimeError } from "./errors.js";
 import { harnessSupportsNativeProfile } from "./registry.js";
+import { NATIVE_PROCESS_SCOPE_ENV, NativeProcessScope, nativeProcessScope, newNativeProcessScope,
+  recoverNativeProcesses, stopNativeProcessScope, type NativeProcessOwner } from "./native-processes.js";
 import {
   PUBLISHED_ARTIFACT_MANIFEST_ENV,
   PUBLISHED_ARTIFACT_MANIFEST_FILENAME
@@ -40,7 +42,7 @@ const SAFE_HOST_ENV = new Set([
   "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TMP", "TEMP",
   "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "HTTP_PROXY", "HTTPS_PROXY",
   "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
-  "BASH_ENV", "SHLVL", "CLAUDE_CODE_SHELL",
+  "BASH_ENV", "SHLVL",
   "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA", "APPDATA"
 ]);
 
@@ -58,11 +60,7 @@ function hostEnvironmentValue(
 
 const SENSITIVE_ENV_NAME = /(?:API[_-]?KEY|ACCESS[_-]?KEY|AUTH|BEARER|CREDENTIAL|PASSWORD|SECRET|TOKEN|COOKIE)/i;
 
-function sensitiveEnvironmentValue(key: string, value: string | undefined): boolean {
-  // This native setting counts model tokens; it is not an authentication token.
-  // Keep the exception numeric and bounded so it cannot carry an arbitrary secret.
-  if (key === "CLAUDE_CODE_MAX_CONTEXT_TOKENS" && value !== undefined &&
-    /^[1-9]\d{0,6}$/.test(value) && Number(value) <= 1_000_000) return false;
+function sensitiveEnvironmentValue(key: string): boolean {
   return SENSITIVE_ENV_NAME.test(key);
 }
 
@@ -75,6 +73,7 @@ const PROVIDER_CREDENTIALS = [
 ] as const;
 
 const PROTECTED_OPENFARS_KEYS = new Set([
+  NATIVE_PROCESS_SCOPE_ENV,
   "SCIENCEEVOLVE_PROJECT_ID", "SCIENCEEVOLVE_INVOCATION_ID", "SCIENCEEVOLVE_AGENT_NAME",
   "SCIENCEEVOLVE_AGENT_KIND", "SCIENCEEVOLVE_AGENT_PERMISSION", "SCIENCEEVOLVE_AGENT_HARNESS",
   "SCIENCEEVOLVE_AGENT_PROTOCOL", "SCIENCEEVOLVE_PROJECT_ROOT", "SCIENCEEVOLVE_ROLE_WORKSPACE",
@@ -239,6 +238,7 @@ export function spawnTrustedUtility(
 }
 
 export interface InvocationProcessBinding {
+  nativeProcesses?: NativeProcessOwner;
   invocationId: string;
   harnessId: string;
   runtimePath: string;
@@ -263,6 +263,7 @@ export interface InvocationProcessBinding {
  * per-turn invocation ids, and none of those ids is valid for its lifetime.
  */
 export interface ResidentProcessBinding {
+  nativeProcesses?: NativeProcessOwner;
   scopeId: string;
   role: "leader" | "delivery" | "final-integration";
   harnessId: string;
@@ -379,7 +380,7 @@ export class CommonProcessHost {
         command: process.execPath,
         args: ["-e", RESIDENT_SUPERVISOR_SOURCE, claim.configFile],
         stdin: undefined
-      }, callbacks, binding.signal);
+      }, callbacks, binding.signal, binding.nativeProcesses ? { owner: binding.nativeProcesses, runtimePath: binding.runtimePath } : undefined);
       await waitForResidentSupervisorClaim(claim, started);
       return started;
     } catch (error) {
@@ -454,27 +455,47 @@ export class CommonProcessHost {
   startRaw(
     plan: LaunchPlan,
     signal: AbortSignal,
-    options: RawProcessOptions = {}
+    options: RawProcessOptions = {},
+    inventory?: { owner: NativeProcessOwner; runtimePath: string }
   ): RawManagedProcess {
     assertCommonRawLogLimit(plan.rawLogLimitBytes);
     if (signal.aborted) {
       throw new HarnessRuntimeError("INVOCATION_INTERRUPTED", "Invocation cancelled before process start");
     }
-    let child: ChildProcessWithoutNullStreams;
+    let child!: ChildProcessWithoutNullStreams;
+    const scopeId = inventory && process.platform === "linux" ? newNativeProcessScope() : undefined;
     try {
       child = spawn(plan.command, plan.args, {
         cwd: plan.cwd,
-        env: plan.env,
+        env: scopeId ? { ...plan.env, [NATIVE_PROCESS_SCOPE_ENV]: scopeId } : plan.env,
         stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsHide: true
       });
       rememberProcessTreeIdentity(child);
+      if (scopeId && inventory) {
+        const captured = PROCESS_TREE_IDENTITIES.get(child);
+        new NativeProcessScope(child, inventory.runtimePath, inventory.owner, scopeId, captured ? {
+          pid: captured.pid, procPid: captured.procPid, processGroupId: captured.processGroupId,
+          namespace: captured.pidNamespace, startTicks: captured.startTicks,
+          parentProcPid: Number.parseInt(readFileSync("/proc/self/stat", "utf8").split(" ", 1)[0]!, 10),
+          command: path.basename(plan.command)
+        } : undefined);
+      }
     } catch (error) {
+      let cleanupFailure: unknown;
+      if (child?.pid) {
+        try { if (scopeId) stopNativeProcessScope(scopeId); }
+        catch (failure) { cleanupFailure = failure; }
+        try { signalProcessTree(child, "SIGKILL"); }
+        catch (failure) { cleanupFailure ??= failure; }
+      }
       throw new HarnessRuntimeError(
         "HARNESS_PROCESS_EXITED",
         "Unable to start Harness process",
-        { command: path.basename(plan.command) },
+        { command: path.basename(plan.command), ...(cleanupFailure !== undefined ? {
+          stopProof: "unconfirmed", cleanupFailure: cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure)
+        } : {}) },
         { source: "process", cause: error instanceof Error ? error : undefined }
       );
     }
@@ -486,6 +507,9 @@ export class CommonProcessHost {
             if (failure?.status === "rejected") throw failure.reason;
           })
         : task;
+      // The awaited completion owns this error, including when process exit
+      // follows the termination request on a later event-loop iteration.
+      void termination.catch(() => undefined);
     };
     const terminate = () => rememberTermination(terminateProcessTree(child, options.termination));
     const forceTerminate = () => rememberTermination(terminateProcessTree(child, {
@@ -494,9 +518,16 @@ export class CommonProcessHost {
     }));
     signal.addEventListener("abort", terminate, { once: true });
     if (signal.aborted) terminate();
+    let exitCleanup: Promise<void> | undefined;
+    child.once("exit", () => {
+      if (!nativeProcessScope(child)) return;
+      exitCleanup = terminateProcessTree(child, { killAfterMs: 250 });
+      void exitCleanup.catch(() => undefined);
+    });
     const completed = (async (): Promise<ProcessExit> => {
       const exit = await waitForExit(child);
-      await termination;
+      await settleThenCleanup((async () => { await exitCleanup; await termination; })(),
+        () => nativeProcessScope(child)?.finish() ?? Promise.resolve());
       if (signal.aborted && options.rejectOnAbort !== false) {
         throw new HarnessRuntimeError("INVOCATION_INTERRUPTED", "Harness invocation was cancelled");
       }
@@ -517,9 +548,10 @@ export class CommonProcessHost {
   start(
     plan: LaunchPlan,
     callbacks: ProcessHostCallbacks,
-    signal: AbortSignal
+    signal: AbortSignal,
+    inventory?: { owner: NativeProcessOwner; runtimePath: string }
   ): ManagedProcess {
-    const raw = this.startRaw(plan, signal);
+    const raw = this.startRaw(plan, signal, {}, inventory);
     const child = raw.child;
     // Defer invocation so a synchronous bookkeeping failure follows the same
     // cleanup path as a rejected async callback after the process has spawned.
@@ -621,6 +653,7 @@ export class CommonProcessHost {
   }
 
   async cleanupInterrupted(invocationId: string, runtimePath: string): Promise<void> {
+    await recoverNativeProcesses(runtimePath, { invocationId });
     const identities = await findInvocationProcesses(invocationId, runtimePath);
     for (const identity of identities) {
       const target = process.platform === "win32"
@@ -659,6 +692,7 @@ export class CommonProcessHost {
         `Resident ${identity.scopeId} has no trusted launch claim or durable launch protocol proof`
       );
     }
+    await recoverNativeProcesses(runtimePath, { projectId: identity.projectId, executionId: identity.scopeId });
     if (claim?.status === "spawned") {
       const processIdentity = claim.process!;
       assertLinuxProcessTreeIdentity(processIdentity);
@@ -717,7 +751,8 @@ class BoundInvocationProcessHost implements InvocationProcessHost {
     this.#claimLaunch(plan);
     let raw: RawManagedProcess;
     try {
-      raw = this.#host.startRaw(plan, this.#binding.signal, options);
+      raw = this.#host.startRaw(plan, this.#binding.signal, options, this.#binding.nativeProcesses
+        ? { owner: this.#binding.nativeProcesses, runtimePath: this.#binding.runtimePath } : undefined);
     } catch (error) {
       this.#processActive = false;
       throw error;
@@ -781,7 +816,8 @@ class BoundInvocationProcessHost implements InvocationProcessHost {
           );
           await callbacks.onSpawn?.(child);
         }
-      }, this.#binding.signal);
+      }, this.#binding.signal, this.#binding.nativeProcesses
+        ? { owner: this.#binding.nativeProcesses, runtimePath: this.#binding.runtimePath } : undefined);
     } catch (error) {
       this.#processActive = false;
       throw error;
@@ -1005,7 +1041,7 @@ function assertAuthorizedLaunchPlan(
   }
   if (binding.commonEnvironment) {
     for (const [key, value] of Object.entries(plan.env)) {
-      if (value !== undefined && sensitiveEnvironmentValue(key, value) &&
+      if (value !== undefined && sensitiveEnvironmentValue(key) &&
         !allowedInvocationSecret(key, value, plan, binding)) {
         reject(`Harness launch contains an unapproved credential key ${key}`);
       }
@@ -1103,7 +1139,7 @@ function assertAuthorizedLaunchPlan(
   }
   const adapterKeys = new Set(plan.adapterEnvironmentKeys ?? []);
   for (const key of adapterKeys) {
-    if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(key) || sensitiveEnvironmentValue(key, plan.env[key]) ||
+    if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(key) || sensitiveEnvironmentValue(key) ||
       COMMON_INVOCATION_ENV.has(key) || key.startsWith("SCIENCEEVOLVE_INSPIRE_")) {
       reject(`Harness launch declares an unsafe Adapter environment key ${key}`);
     }
@@ -1119,7 +1155,7 @@ function assertAuthorizedLaunchPlan(
     if (adapterKeys.has(key) && embedsInvocationSecret(value, binding)) {
       reject(`Harness launch embedded an invocation credential in Adapter environment key ${key}`);
     }
-    if (sensitiveEnvironmentValue(key, value) && !allowedInvocationSecret(key, value, plan, binding)) {
+    if (sensitiveEnvironmentValue(key) && !allowedInvocationSecret(key, value, plan, binding)) {
       reject(`Harness launch contains an unapproved credential key ${key}`);
     }
   }
@@ -1954,10 +1990,10 @@ export async function terminateProcessTree(
   signalProcessTree(child, initialSignal);
   const terminateAfterMs = options.terminateAfterMs;
   if (terminateAfterMs !== undefined && initialSignal !== "SIGTERM") {
-    if (await waitForOwnedProcessTreeExit(child, startedAt + terminateAfterMs)) return;
+    if (await waitForOwnedProcessTreeExit(child, startedAt + terminateAfterMs)) { await nativeProcessScope(child)?.flushAudit(); return; }
     signalProcessTree(child, "SIGTERM");
   }
-  if (await waitForOwnedProcessTreeExit(child, startedAt + (options.killAfterMs ?? 1_000))) return;
+  if (await waitForOwnedProcessTreeExit(child, startedAt + (options.killAfterMs ?? 1_000))) { await nativeProcessScope(child)?.flushAudit(); return; }
   // Do not gate escalation on the group leader's ChildProcess state. A native
   // CLI can exit on SIGTERM while a same-PGID descendant deliberately ignores
   // it. The captured Linux identity prevents a reused leader PID/PGID from
@@ -1971,9 +2007,13 @@ export async function terminateProcessTree(
       { source: "process" }
     );
   }
+  await nativeProcessScope(child)?.flushAudit();
 }
 
 export function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+  let scopeFailure: Error | undefined;
+  try { nativeProcessScope(child)?.signal(signal); }
+  catch (error) { scopeFailure = error instanceof Error ? error : new Error("Native descendant signal failed", { cause: error }); }
   if (process.platform === "win32") {
     try { child.kill(signal); } catch { /* Process already exited. */ }
     return;
@@ -1997,7 +2037,10 @@ export function signalProcessTree(child: ChildProcessWithoutNullStreams, signal:
     ? identity ? ownedLinuxProcessGroup(identity) : false
     : true;
   if (identity && !rootOwned && !groupOwned &&
-    (child.exitCode !== null || child.signalCode !== null)) return;
+    (child.exitCode !== null || child.signalCode !== null)) {
+    if (scopeFailure) throw scopeFailure;
+    return;
+  }
   // Signal the known child PID as well as its detached process group.  Some
   // container runtimes acknowledge a group-directed STOP/KILL while delaying
   // delivery to the namespace-visible group leader; PID-first delivery keeps
@@ -2015,6 +2058,7 @@ export function signalProcessTree(child: ChildProcessWithoutNullStreams, signal:
     const processGroupId = identity?.processGroupId ?? child.pid!;
     try { process.kill(-processGroupId, signal); } catch { /* Group already exited. */ }
   }
+  if (scopeFailure) throw scopeFailure;
 }
 
 interface LinuxProcessTreeIdentity {
@@ -2252,16 +2296,20 @@ async function waitForOwnedProcessTreeExit(
   const identity = PROCESS_TREE_IDENTITIES.get(child);
   if (!identity) {
     while (Date.now() < deadline) {
-      if (child.exitCode !== null || child.signalCode !== null) return true;
+      if (child.exitCode !== null || child.signalCode !== null) {
+        if (!nativeProcessScope(child)?.live()) return true;
+        nativeProcessScope(child)?.signal("SIGKILL");
+      }
       await delay(Math.min(20, Math.max(1, deadline - Date.now())));
     }
-    return child.exitCode !== null || child.signalCode !== null;
+    return (child.exitCode !== null || child.signalCode !== null) && !nativeProcessScope(child)?.live();
   }
   while (Date.now() < deadline) {
-    if (!ownedLinuxProcessGroup(identity)) return true;
+    if (!ownedLinuxProcessGroup(identity) && !nativeProcessScope(child)?.live()) return true;
+    if (child.exitCode !== null || child.signalCode !== null) nativeProcessScope(child)?.signal("SIGKILL");
     await delay(Math.min(20, Math.max(1, deadline - Date.now())));
   }
-  return !ownedLinuxProcessGroup(identity);
+  return !ownedLinuxProcessGroup(identity) && !nativeProcessScope(child)?.live();
 }
 
 export async function writeStreamWithBackpressure(

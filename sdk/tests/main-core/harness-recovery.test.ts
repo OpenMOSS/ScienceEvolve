@@ -1,9 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { HarnessRuntimeError, ProtocolRecoveryExhaustedError, ProtocolToolArgumentsError,
-  harnessRecoveryDelayMs, proxyFailureError, transientHarnessFailure } from "../../src/core/harness-runtime/errors.js";
+  formatHarnessError, harnessRecoveryDelayMs, proxyFailureError, transientHarnessFailure } from "../../src/core/harness-runtime/errors.js";
 
 describe("shared Harness transport recovery", () => {
-  it.each(["codex", "claude-code", "pi", "dsh"])("preserves typed provider failures for %s without relying on native error text", harnessId => {
+  it("preserves the original parsing cause behind a recovery failure without credentials or cyclic causes", () => {
+    const original = new Error("Invalid JSON at position 5564; Authorization: Bearer private-token");
+    const recovery = new HarnessRuntimeError("SESSION_RESUME_FAILED", "Original Session recovery failed", {}, { cause: original });
+    original.cause = recovery;
+    const message = formatHarnessError(recovery);
+    expect(message).toContain("Original Session recovery failed");
+    expect(message).toContain("Invalid JSON at position 5564");
+    expect(message).not.toContain("private-token");
+    expect(message.match(/Original Session recovery failed/g)).toHaveLength(1);
+  });
+
+  it("includes the typed parser feedback when a final recovery error wraps a protocol failure", () => {
+    const parsing = new ProtocolToolArgumentsError("pi", { protocolMessage: "Unterminated string at position 5564" });
+    const final = new HarnessRuntimeError("SESSION_RESUME_FAILED", "Session continuation failed", {}, { cause: parsing });
+    expect(formatHarnessError(final)).toContain("Session continuation failed");
+    expect(formatHarnessError(final)).toContain("Unterminated string at position 5564");
+  });
+
+  it.each(["codex", "pi", "dsh"])("preserves typed provider failures for %s without relying on native error text", harnessId => {
     const failure = proxyFailureError({ code: "MODEL_PROVIDER_FAILED", message: "upstream temporarily unavailable",
       httpStatus: 503, sourceProtocol: "responses", targetProtocol: "chat-completions", model: "neutral-model" }, harnessId,
     new Error("Native driver terminal failure"));

@@ -38,7 +38,7 @@ async function store(fetchImpl: typeof fetch): Promise<GatewayStore> {
     resolveHostname: async () => ["8.8.8.8"],
     // Simulated native adapter; actual CLI processes are covered by native-adapter suites.
     adapterSmokeProbe: {
-      harnessIds: () => ["codex", "pi", "dsh", "claude-code"], nativeProtocol: nativeProtocolForHarness,
+      harnessIds: () => ["codex", "pi", "dsh"], nativeProtocol: nativeProtocolForHarness,
       cacheKey: async () => smokeIdentity, runSmoke: async () => smokeIdentity
     }
   });
@@ -58,7 +58,7 @@ function probeResponse(body: { stream?: boolean; tool_choice?: unknown }): Respo
 }
 
 describe("gateway matrix probe", () => {
-  it("starts all four Harness rows before waiting for a row to finish", async () => {
+  it("starts all three Harness rows before waiting for a row to finish", async () => {
     let requests = 0;
     const registry = await store(async (_url, init) => {
       requests += 1;
@@ -68,13 +68,13 @@ describe("gateway matrix probe", () => {
     const controller = new AbortController();
     const started: string[] = [];
     await expect(registry.testMatrix(gateway.id, {
-      harnesses: ["dsh", "pi", "codex", "claude-code"], models: ["model-a"]
+      harnesses: ["dsh", "pi", "codex"], models: ["model-a"]
     }, controller.signal, (event) => {
       if (event.type !== "combination-start") return;
       started.push(event.harness);
-      if (started.length === 4) controller.abort();
+      if (started.length === 3) controller.abort();
     })).rejects.toBeInstanceOf(GatewayProbeCancelledError);
-    expect(started).toEqual(["dsh", "pi", "codex", "claude-code"]);
+    expect(started).toEqual(["dsh", "pi", "codex"]);
     expect(requests).toBe(0);
     expect((await registry.get(gateway.id))?.tests).toEqual([]);
   });

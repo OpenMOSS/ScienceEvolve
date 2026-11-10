@@ -114,7 +114,7 @@ export async function agentFixtureDelivery(
     actions.push(envelope);
     return action.tool === "finish_task" ? undefined : authority.execute!(envelope);
   };
-  const base = coordinator.database().executionPullBase(input.request.project.id, executionId);
+  const base = await coordinator.database().executionPullBase(input.request.project.id, executionId);
   let pull;
   if (choice.retainedPull) {
     // The simulated Agent requests its original provider fact. Production

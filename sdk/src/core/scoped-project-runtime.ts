@@ -5,11 +5,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { transientHarnessFailure } from "./harness-runtime/errors.js";
 import { isDeepStrictEqual } from "node:util";
-import type { AgentRunRequest, AgentRunResult, ControlActionEnvelope, ControlMcpRequest, ProjectState, TraceSink } from "./types.js";
+import type { AgentRunRequest, AgentRunResult, ControlActionEnvelope, ControlMcpRequest, ProjectState, TraceSink, TaskCompletionRecord } from "./types.js";
 import type { InvocationInputs } from "./harness-runtime/contracts.js";
 import type { CollaborationResidentHandle, CollaborationResidentLauncher, CollaborationResidentOpenInput,
   CollaborationControlAuthorityFactory, CollaborationExecutionInputBuilder } from "./collaboration-runtime.js";
-import { CollaborationStateDatabase } from "./collaboration-state/store.js";
+import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import { CollaborationStateError } from "./collaboration-state/errors.js";
 import type { ScopedExecutionRecord, ScopedGroupRunRecord, ScopedLeaderActionInput } from "./collaboration-state/contracts.js";
 import type { GitExecutionAuthority, GitHubPullRequestFact, GitHubRepositoryFact } from "./collaboration-git/contracts.js";
@@ -41,6 +41,7 @@ import { createR11GatewayFetch } from "./acceptance-r11.js";
 import type { WorkflowAdjustmentPublication } from "./workflow-adjustments.js";
 import { sameDurableSession } from "./control-result-receipts.js";
 import { GitInputError } from "./collaboration-git/errors.js";
+import { MAX_TASK_REPAIR_WAKEUPS, superviseTask, supervisionError, supervisionHandoff } from "./task-supervision.js";
 
 export interface ScopedProjectRuntimeDependencies {
   database: CollaborationStateDatabase;
@@ -52,7 +53,7 @@ export interface ScopedProjectRuntimeDependencies {
   inputBuilder?: CollaborationExecutionInputBuilder;
   signal: AbortSignal;
   filesystem(): Promise<CollaborationResidentOpenInput["filesystemAuthorityInput"]>;
-  decorate(request: AgentRunRequest): void;
+  decorate(request: AgentRunRequest): void | Promise<void>;
   trace(agentId: string, invocationId: string): TraceSink;
   publish(): Promise<void>;
   /** Consume only a released manager's explicit read-only receipt retry. */
@@ -91,12 +92,16 @@ export class ScopedProjectRuntime {
   private closingDiscoveryTail: Promise<void> = Promise.resolve();
   private readonly d: ScopedProjectRuntimeDependencies;
 
-  constructor(dependencies: ScopedProjectRuntimeDependencies) {
-    this.d = dependencies;
-    dependencies.database.initializeScopedConfiguration(dependencies.state.id, { agents: dependencies.state.agents,
+  static async create(dependencies: ScopedProjectRuntimeDependencies): Promise<ScopedProjectRuntime> {
+    await dependencies.database.initializeScopedConfiguration(dependencies.state.id, { agents: dependencies.state.agents,
       skillDefinitions: dependencies.state.skillDefinitions ?? {}, mcpDefinitions: dependencies.state.mcpDefinitions ?? {} });
-    const invoker = new ResidentScopedAgentTurnInvoker({ open: input => this.openAgentResident(input) }, {
-      prepare: (input) => this.prepareAgent(input),
+    return new ScopedProjectRuntime(dependencies);
+  }
+
+  private constructor(dependencies: ScopedProjectRuntimeDependencies) {
+    this.d = dependencies;
+    const invoker = new ResidentScopedAgentTurnInvoker({ open: async input => this.openAgentResident(input) }, {
+      prepare: async (input) => this.prepareAgent(input),
       missingActions: async (input) => {
         const delivery = await this.agentGitDelivery(input);
         const weakCandidates = (input.workflow.routes[input.arrival.targetNodeId] ?? [])
@@ -104,17 +109,23 @@ export class ScopedProjectRuntime {
         const retainedRoute = this.capabilities.get(input.invocationId)?.retained?.some((entry) => entry.action.tool === "route_to_agent")
           || Boolean(input.reportRepair?.report.selectedWeakTarget);
         const routeMissing = this.d.state.agents[input.execution.agentId]?.decisionBy === "agent" && weakCandidates.length > 0 && !retainedRoute;
-        return [!this.d.database.scopedAgentTaskCompleted(this.d.state.id, input.execution.id,
-          input.execution.ownershipEpoch, input.reportRepair?.report.invocationId ?? input.invocationId) && "finish_task",
+        return [!(await this.d.database.scopedAgentTaskCompleted(this.d.state.id, input.execution.id,
+          input.execution.ownershipEpoch, input.reportRepair?.report.invocationId ?? input.invocationId)) && "finish_task",
           ...delivery.missingActions.map(action => action === "git_push" && input.missingReportRepair
             ? "github_get_pr for the retained merged PR head; report any current checkout mismatch" : action),
           routeMissing && `route_to_agent (${weakCandidates.join(", ")})`
         ].filter(Boolean) as string[];
       },
-      reserveRepair: (input, missing) => this.d.database.reserveScopedAgentMechanismRepair({
+      reserveRepair: async (input, missing) => await this.d.database.reserveScopedAgentMechanismRepair({
         projectId: this.d.state.id, executionId: input.execution.id,
         ownershipEpoch: input.execution.ownershipEpoch, invocationId: input.invocationId, missing
       }),
+      recordSupervision: async (input, outcome, missing, reason) => {
+        await this.d.database.appendEvent({ projectId: this.d.state.id, agentId: input.execution.agentId,
+          invocationId: input.invocationId, type: "execution.supervision.finished",
+          payload: { executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch,
+            outcome, missing, ...(reason ? { reason } : {}) } });
+      },
       retainTurnResult: async (input, result, inputId) => {
         this.retainAgentTurnResult(input, result);
         await observeR04PendingFile({ projectTitle: this.d.state.title, projectRoot: this.d.storage.projectDir(this.d.state.id),
@@ -122,20 +133,26 @@ export class ScopedProjectRuntime {
           groupRunId: input.groupRun.id, base: input.groupRun.groupBranch, repository: this.d.repository,
           invocationId: input.invocationId, inputId, git: this.d.git });
       },
-      acceptResult: (input, result) => this.acceptAgent(input, result),
+      acceptResult: async (input, result) => this.acceptAgent(input, result),
       onHandle: async () => { await this.d.publish(); },
       onClosed: async (input) => {
-        this.d.database.stopScopedAgentTurn({ projectId: input.execution.projectId, executionId: input.execution.id,
+        await this.d.database.stopScopedAgentTurn({ projectId: input.execution.projectId, executionId: input.execution.id,
           ownershipEpoch: input.execution.ownershipEpoch, invocationId: input.invocationId, residentStopConfirmed: true });
+      },
+      onRetired: async (input, nativeStopConfirmed, reason) => {
         this.d.unregister(`scoped:${input.invocationId}`);
         this.nativeAgents.delete(input.execution.agentId);
+        if (!nativeStopConfirmed) await this.d.database.appendEvent({ projectId: this.d.state.id, agentId: input.execution.agentId,
+          invocationId: input.invocationId, type: "execution.resource_cleanup.failed",
+          payload: { executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch, nativeStopConfirmed,
+            ...(reason ? { reason } : {}) } });
         await this.d.publish();
       },
-      submit: (input, handle, turn) => this.d.submit(handle, turn, result => {
+      submit: async (input, handle, turn) => await this.d.submit(handle, turn, async result => {
         // Validate the live broker's receipts, then archive only actual text.
         // Report acceptance and all successor effects stay beyond Pause.
         this.retainAgentTurnResult(input, result);
-        if (typeof result.handoff === "string") this.d.database.recordScopedAgentNativeOutput({
+        if (typeof result.handoff === "string") await this.d.database.recordScopedAgentNativeOutput({
           projectId: this.d.state.id, executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch,
           invocationId: input.invocationId, agentId: input.execution.agentId, inputId: turn.inputId, output: redactTrace(result.handoff) });
       })
@@ -155,7 +172,7 @@ export class ScopedProjectRuntime {
           const childDefinition = this.d.state.orchestration.scopedWorkflow?.groups.find((entry) => entry.id === child.groupId);
           const manager = childDefinition?.decisionBy === "agent" ? child : parent;
           await this.manage(manager, "route", arrival,
-            `Child group ${child.id} reached its Finish barrier. Verified local results:\n${scopedGroupOutput(this.d.database.projectState(this.d.state.id), child.id)}`,
+            `Child group ${child.id} reached its Finish barrier. Verified local results:\n${scopedGroupOutput((await this.d.database.projectState(this.d.state.id)), child.id)}`,
             false, { sourceArrivalGroupRunId: parent.id });
         },
         resolveRootRoute: async (group, nodeRunId, candidates, output) => {
@@ -165,12 +182,12 @@ export class ScopedProjectRuntime {
         },
         completeGroup: async (group) => {
           await this.manage(group, "complete", undefined,
-            `All required arrivals reached Finish. Decide whether to request explicit final integration from an eligible Agent, or complete the group after an existing final merge proof.\n\n${scopedGroupOutput(this.d.database.projectState(this.d.state.id), group.id)}`);
+            `All required arrivals reached Finish. Decide whether to request explicit final integration from an eligible Agent, or complete the group after an existing final merge proof.\n\n${scopedGroupOutput((await this.d.database.projectState(this.d.state.id)), group.id)}`);
         },
         recoverGroup: async (group, arrivals) => { await this.manage(group, "recover", undefined, `Failed direct/delegated arrivals: ${arrivals.join(", ")}`); },
         recoverGlobal: async (root) => {
           if (this.d.state.userIntervention?.status === "pending") return;
-          const directState = this.d.database.scopedRecoveryCandidates(this.d.state.id, root.id, true).some(candidate => candidate.mainStateRequest);
+          const directState = (await this.d.database.scopedRecoveryCandidates(this.d.state.id, root.id, true)).some(candidate => candidate.mainStateRequest);
           await this.manage(root, "recover", undefined, directState
             ? "Retained key-state issues were explicitly assigned to GLOBAL Main through the formal direct entry. Inspect the exact source, original operation and actual observations; coordinate using current authority. Ordinary escalated failures may also be present."
             : `Every group level has escalated these retained failures. Only this GLOBAL Main turn can approve an authorized skip. ${this.d.state.orchestration.allowUserIntervention === false
@@ -178,13 +195,13 @@ export class ScopedProjectRuntime {
               : "A genuinely necessary user decision may be requested only through the assigned Main tools."}`, true);
         },
         continueSkipped: async (group, arrival) => {
-          if (!this.d.database.scopedArrivalRouteDecision(this.d.state.id, arrival)) await this.manage(group, "route", arrival,
+          if (!(await this.d.database.scopedArrivalRouteDecision(this.d.state.id, arrival))) await this.manage(group, "route", arrival,
             "Global Main approved skipping this failed task. Explicitly plan its local continuation; no business policy is forced by the server. The skipped task is not a successful execution.");
-          this.d.database.continueScopedSkippedArrival(this.d.state.id, group.id, arrival);
+          await this.d.database.continueScopedSkippedArrival(this.d.state.id, group.id, arrival);
           await dependencies.publish();
         }
       }, { agentOwnsGit: true, beforeAdmission: () => dependencies.applyWaitingWorkflowAdjustments?.() ?? Promise.resolve(),
-        invokeFinalAgent: { invokeAgent: (integration) => this.integrateFinalAsAgent(integration) } });
+        invokeFinalAgent: { invokeAgent: async (integration) => this.integrateFinalAsAgent(integration) } });
   }
 
   activate(input: Omit<ActivateRuntimeScopedGroupInput, "repository" | "signal">) {
@@ -202,12 +219,12 @@ export class ScopedProjectRuntime {
 
   private async publishRetainedWorkflowAdjustments(): Promise<void> {
     const d = this.d;
-    const records = d.database.workflowAdjustments(d.state.id).filter(record => record.source.kind === "scoped_leader" ||
+    const records = (await d.database.workflowAdjustments(d.state.id)).filter(record => record.source.kind === "scoped_leader" ||
       record.source.kind === "main" && record.source.scope?.kind === "scoped");
     for (const record of records) {
       if (record.status !== "pending" && record.status !== "needs_resubmission" && !(record.status === "applied" &&
-        record.source.kind !== "user" && !d.database.eventByRequestId(d.state.id, `scoped-leader-action:${record.source.invocationId}:${record.source.callId}`))) continue;
-      d.database.publishStoppedScopedWorkflowAdjustment(d.state.id, record.requestId, d.state);
+        record.source.kind !== "user" && !(await d.database.eventByRequestId(d.state.id, `scoped-leader-action:${record.source.invocationId}:${record.source.callId}`)))) continue;
+      await d.database.publishStoppedScopedWorkflowAdjustment(d.state.id, record.requestId, d.state);
     }
     if (records.length) await d.publish();
   }
@@ -221,65 +238,65 @@ export class ScopedProjectRuntime {
   async reconcileResidents(): Promise<void> {
     const d = this.d;
     await d.reconcileWorktreeClosings?.();
-    for (const turn of d.database.scopedLeaderTurns(d.state.id).filter((entry) => entry.status === "active")) {
+    for (const turn of (await d.database.scopedLeaderTurns(d.state.id)).filter((entry) => entry.status === "active")) {
       if (!turn.runtimePath || !d.launcher.stopScopedForRecovery) throw new Error("Retained scoped Leader requires supervisor stop reconciliation");
-      const group = d.database.scopedGroupRun(d.state.id, turn.groupRunId)!;
-      const nodeRunId = this.rootNode(group);
+      const group = (await d.database.scopedGroupRun(d.state.id, turn.groupRunId))!;
+      const nodeRunId = await this.rootNode(group);
       const proof = await d.launcher.stopScopedForRecovery({ state: d.state, nodeRunId,
         scopeId: `management:${nodeRunId}:${group.id}`, agentId: turn.agentId, role: "leader",
         ownershipEpoch: turn.coordinatorEpoch, executionRuntimePath: turn.runtimePath });
       if (!proof.stopped) throw new Error("Scoped Leader still has an unconfirmed native process");
-      d.database.releaseScopedLeaderTurn({ projectId: d.state.id, groupRunId: group.id,
+      await d.database.releaseScopedLeaderTurn({ projectId: d.state.id, groupRunId: group.id,
         agentId: turn.agentId, invocationId: turn.invocationId, residentStopConfirmed: true });
     }
-    for (const turn of d.database.scopedFinalNativeTurns(d.state.id).filter((entry) => entry.status !== "stopped")) {
+    for (const turn of (await d.database.scopedFinalNativeTurns(d.state.id)).filter((entry) => entry.status !== "stopped")) {
       if (!d.launcher.stopScopedForRecovery) throw new Error("Retained final Agent requires supervisor stop reconciliation");
-      const group = d.database.scopedGroupRun(d.state.id, turn.groupRunId)!;
-      const proof = await d.launcher.stopScopedForRecovery({ state: d.state, nodeRunId: this.rootNode(group),
+      const group = (await d.database.scopedGroupRun(d.state.id, turn.groupRunId))!;
+      const proof = await d.launcher.stopScopedForRecovery({ state: d.state, nodeRunId: await this.rootNode(group),
         scopeId: turn.executionId, agentId: turn.agentId, role: "delivery", ownershipEpoch: turn.ownershipEpoch,
         executionRuntimePath: turn.runtimePath });
       if (!proof.stopped) throw new Error("Final Agent still has an unconfirmed native process");
-      d.database.stopScopedFinalNativeTurn(turn, true);
+      await d.database.stopScopedFinalNativeTurn(turn, true);
     }
-    const projection = d.database.projectState(d.state.id);
+    const projection = await d.database.projectState(d.state.id);
     for (const execution of projection.scopedExecutions ?? []) {
       if (!["running", "integrating", "merged", "failed"].includes(execution.status)) continue;
-      const turn = d.database.scopedAgentTurn(d.state.id, execution.id, execution.ownershipEpoch);
+      const turn = await d.database.scopedAgentTurn(d.state.id, execution.id, execution.ownershipEpoch);
       if (!turn) continue;
-      const alreadyStopped = turn.status === "stopped" && (turn.writerLeaseEpoch === d.database.writerLease().epoch ||
-        d.database.scopedAgentRecoveredForCurrentWriter(d.state.id, execution.id, execution.ownershipEpoch, turn.invocationId));
+      const alreadyStopped = turn.status === "stopped" && (turn.writerLeaseEpoch === (await d.database.writerLease()).epoch ||
+        (await d.database.scopedAgentRecoveredForCurrentWriter(d.state.id, execution.id, execution.ownershipEpoch, turn.invocationId)));
       if (!alreadyStopped) {
         if (!d.launcher.stopScopedForRecovery) throw new Error("Retained scoped business invocation requires supervisor reconciliation");
-        const proof = await d.launcher.stopScopedForRecovery({ state: d.state, nodeRunId: this.rootNode(d.database.scopedGroupRun(d.state.id, execution.groupRunId)!),
+        const proof = await d.launcher.stopScopedForRecovery({ state: d.state, nodeRunId: await this.rootNode((await d.database.scopedGroupRun(d.state.id, execution.groupRunId))!),
           scopeId: execution.id, agentId: execution.agentId, role: "delivery", ownershipEpoch: execution.ownershipEpoch, executionRuntimePath: turn.runtimePath });
         if (!proof.stopped) throw new Error("Scoped business process stop remains unconfirmed");
-        d.database.reconcileScopedAgentTurn({ projectId: d.state.id, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
+        await d.database.reconcileScopedAgentTurn({ projectId: d.state.id, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
           invocationId: turn.invocationId, residentStopConfirmed: true, evidence: proof.evidence });
       }
-      const recovered = d.database.scopedAgentTurn(d.state.id, execution.id, execution.ownershipEpoch);
-      if (recovered?.status === "reserved" && recovered.writerLeaseEpoch === d.database.writerLease().epoch &&
-        d.database.scopedAgentMissingReportRepair(d.state.id, execution.id, execution.ownershipEpoch)) continue;
-      if (!d.database.projectCancellationIntent(d.state.id) && !d.database.scopedAgentReport(d.state.id, execution.id, execution.ownershipEpoch) && execution.status !== "failed") {
-        if (d.database.scopedExecutionHasUnsettledGitOperation(d.state.id, execution.id, execution.ownershipEpoch)) {
-          d.database.recordScopedAgentInterruptedOperation({ projectId: d.state.id, executionId: execution.id,
+      const recovered = await d.database.scopedAgentTurn(d.state.id, execution.id, execution.ownershipEpoch);
+      if (recovered?.status === "reserved" && recovered.writerLeaseEpoch === (await d.database.writerLease()).epoch &&
+        (await d.database.scopedAgentMissingReportRepair(d.state.id, execution.id, execution.ownershipEpoch))) continue;
+      if (!(await d.database.projectCancellationIntent(d.state.id)) && !(await d.database.scopedAgentReport(d.state.id, execution.id, execution.ownershipEpoch)) && execution.status !== "failed") {
+        if ((await d.database.scopedExecutionHasUnsettledGitOperation(d.state.id, execution.id, execution.ownershipEpoch))) {
+          await d.database.recordScopedAgentInterruptedOperation({ projectId: d.state.id, executionId: execution.id,
             ownershipEpoch: execution.ownershipEpoch, invocationId: turn.invocationId });
-        } else if (!alreadyStopped) d.database.failScopedAgentArrival({ projectId: d.state.id, arrivalRequestId: execution.arrivalRequestId, executionId: execution.id,
+        } else if (!alreadyStopped) await d.database.failScopedAgentArrival({ projectId: d.state.id, arrivalRequestId: execution.arrivalRequestId, executionId: execution.id,
           ownershipEpoch: execution.ownershipEpoch, residentStopConfirmed: true, reason: "Interrupted native invocation stopped; its group Leader must coordinate retained-branch recovery" });
       }
     }
-    if (!d.database.projectCancellationIntent(d.state.id)) for (const group of projection.scopedGroupRuns ?? []) d.database.recoverScopedFinalIntegration(d.state.id, group.id);
+    if (!(await d.database.projectCancellationIntent(d.state.id))) for (const group of projection.scopedGroupRuns ?? []) await d.database.recoverScopedFinalIntegration(d.state.id, group.id);
     await d.publish();
   }
 
-  private rootNode(group: ScopedGroupRunRecord): string {
+  private async rootNode(group: ScopedGroupRunRecord): Promise<string> {
     let root = group;
     const seen = new Set<string>();
     while (root.parentGroupRunId) {
       if (seen.has(root.id)) throw new Error("Scoped ancestry cycle");
       seen.add(root.id);
-      root = this.d.database.scopedGroupRun(this.d.state.id, root.parentGroupRunId)!;
+      root = (await this.d.database.scopedGroupRun(this.d.state.id, root.parentGroupRunId))!;
     }
-    const node = this.d.database.projectState(this.d.state.id).nodeRuns.find((entry) => entry.activationRequestId === root.activationRequestId);
+    const node = (await this.d.database.projectState(this.d.state.id)).nodeRuns.find((entry) => entry.activationRequestId === root.activationRequestId);
     if (!node || node.node.kind !== "collaboration" || node.node.groupId !== root.groupId) throw new Error("Scoped group lost its outer node authority");
     return node.id;
   }
@@ -296,7 +313,7 @@ export class ScopedProjectRuntime {
     };
     request.sessionContinuity = "strict";
     request.resumeThreadId = state.agentSessionIds?.[agentId];
-    this.d.decorate(request);
+    await this.d.decorate(request);
     this.requests.set(invocationId, request);
     return request;
   }
@@ -311,37 +328,39 @@ export class ScopedProjectRuntime {
     };
     return this.d.withNativeLaunchFence
       ? this.d.withNativeLaunchFence(openAndRegister)
-      : openAndRegister();
+      : (openAndRegister());
   }
 
   /** Leader assigns the publisher; the actual Agent receives every provider
    * result and decides its next action. The system only transports tools and
    * proves the task/PR/stop facts before the separate group completion turn. */
-  private async integrateFinalAsAgent(integration: ScopedFinalIntegrationRecord): Promise<SynchronizedPullRequestFact> {
+  private async integrateFinalAsAgent(integration: ScopedFinalIntegrationRecord): Promise<SynchronizedPullRequestFact | undefined> {
     const d = this.d;
-    const group = d.database.scopedGroupRun(d.state.id, integration.groupRunId)!;
-    const agentId = d.database.scopedGroupIntegrationRequest(d.state.id, group.id)?.integrationOwnerAgentId;
+    const group = (await d.database.scopedGroupRun(d.state.id, integration.groupRunId))!;
+    const agentId = (await d.database.scopedGroupIntegrationRequest(d.state.id, group.id))?.integrationOwnerAgentId;
     if (!agentId || agentId === group.leaderAgentId) throw new Error("Final delivery requires the Leader's eligible business Agent");
-    const retained = d.database.scopedFinalRecoveryPull(d.state.id, integration.id, integration.ownershipEpoch);
-    const synchronization = retained?.mergeCommitSha ? d.database.scopedMergedSynchronization({
+    const retained = await d.database.scopedFinalRecoveryPull(d.state.id, integration.id, integration.ownershipEpoch);
+    const synchronization = retained?.mergeCommitSha ? (await d.database.scopedMergedSynchronization({
       projectId: d.state.id, executionId: integration.id, ownershipEpoch: integration.ownershipEpoch,
       providerNumber: retained.providerNumber, expectedHead: integration.expectedHeadSha,
-      expectedBase: integration.integrationTarget, expectedMergeCommitSha: retained.mergeCommitSha }) : undefined;
+      expectedBase: integration.integrationTarget, expectedMergeCommitSha: retained.mergeCommitSha })) : undefined;
     const taskId = `${integration.id}:epoch:${integration.ownershipEpoch}`;
+    if ((await d.database.executionSupervisionResult(d.state.id, integration.id)))
+      return retained ? { ...retained, ...(synchronization ? { localSynchronization: synchronization } : {}) } : undefined;
     if (retained?.status === "merged" && synchronization && d.state.taskCompletions?.[taskId])
       return { ...retained, localSynchronization: synchronization };
     const invocationId = `inv_${randomUUID().replaceAll("-", "")}`;
     const runtimePath = await d.storage.invocationRuntimePath(d.state.id, invocationId);
-    if (!d.database.reserveScopedFinalNativeTurn({ projectId: d.state.id, groupRunId: group.id,
-      executionId: integration.id, ownershipEpoch: integration.ownershipEpoch, agentId, invocationId, runtimePath }))
+    if (!(await d.database.reserveScopedFinalNativeTurn({ projectId: d.state.id, groupRunId: group.id,
+      executionId: integration.id, ownershipEpoch: integration.ownershipEpoch, agentId, invocationId, runtimePath })))
       throw new ScopedManagementDeferredError();
-    const turn = d.database.scopedFinalNativeTurns(d.state.id).find((entry) => entry.invocationId === invocationId)!;
+    const turn = (await d.database.scopedFinalNativeTurns(d.state.id)).find((entry) => entry.invocationId === invocationId)!;
     const workspace = path.join(d.storage.projectDir(d.state.id), "git-worktrees", "agents", agentId);
     const facts: AgentGitFacts = { pushedHeadSha: integration.expectedHeadSha,
       ...(retained ? { pullRequest: retained } : {}), ...(retained && synchronization ? { merged: { ...retained, localSynchronization: synchronization } } : {}) };
-    const deliveryStatus = () => agentGitDeliveryStatus({ executionId: integration.id, ownershipEpoch: integration.ownershipEpoch,
+    const deliveryStatus = async () => agentGitDeliveryStatus({ executionId: integration.id, ownershipEpoch: integration.ownershipEpoch,
       headSha: facts.pushedHeadSha, pull: facts.pullRequest, synchronized: Boolean(facts.merged?.localSynchronization),
-      operations: d.database.projectState(d.state.id).operations });
+      operations: (await d.database.projectState(d.state.id)).operations });
     const sources = new AgentContextSources();
     const assignment = [`You are now the delivery Agent assigned by Leader ${group.leaderAgentId} for canonical final integration of ${group.groupId}.`,
       `Preserve your existing business checkout and native session. Only publish the canonical branch ${integration.executionBranch}@${integration.expectedHeadSha} into its direct target ${integration.integrationTarget}. Its head is already confirmed published by member delivery.`,
@@ -352,10 +371,10 @@ export class ScopedProjectRuntime {
     let handle: CollaborationResidentHandle | undefined;
     let launchBegan = false;
     let stopped = false;
-    let targetWorktreeBlocker: GitInputError | undefined;
+    let returned = false;
     try {
       const inbox = await d.storage.writeInbox(d.state, agentId, invocationId, assignment);
-      const context: NonNullable<AgentRunRequest["executionContext"]> = { role: "delivery", nodeRunId: this.rootNode(group),
+      const context: NonNullable<AgentRunRequest["executionContext"]> = { role: "delivery", nodeRunId: await this.rootNode(group),
         groupRunId: group.id, executionId: integration.id, ownershipEpoch: integration.ownershipEpoch, executionWorktree: workspace };
       const request = await this.request(agentId, invocationId, workspace, runtimePath, inbox, assignment, context);
       request.contextSources = sources.sources;
@@ -373,87 +392,96 @@ export class ScopedProjectRuntime {
             throw new Error("Final Agent action differs from its live task capability");
           await d.database.operationsForProject(d.state.id, true).assertExecutionOwnership({ projectId: d.state.id,
             executionId: integration.id, ownershipEpoch: integration.ownershipEpoch, expectedBranch: integration.executionBranch, operation: "provider.mutate" });
-          if (d.database.scopedFinalNativeTurns(d.state.id).find((entry) => entry.invocationId === invocationId)?.status !== "opened")
+          if ((await d.database.scopedFinalNativeTurns(d.state.id)).find((entry) => entry.invocationId === invocationId)?.status !== "opened")
             throw new Error("Final Agent native authority is not open");
-          if (envelope.action.tool === "finish_task") await d.storage.requestTaskCompletion(d.state, taskId, envelope);
+          if (envelope.action.tool === "finish_task") return d.storage.requestTaskCompletion(d.state, taskId, envelope);
           else if (!isAgentGitAction(envelope.action.tool)) throw new Error("Final delivery only has its task completion and canonical PR tools");
         }, execute: async (envelope, signal) => {
-          let result;
-          try { result = await executeAgentGitTool({ git: d.git as CollaborationGitFacade, repository: d.repository,
+          const result = await executeAgentGitTool({ git: d.git as CollaborationGitFacade, repository: d.repository,
             execution: { ...integration, purpose: "group-final-integration" }, base: integration.integrationTarget,
             facts, envelope, signal,
             ...agentGitOperationJournal(d.database, d.state.id),
-            recordedOperation: id => d.database.recordedGitOperation(d.state.id, id),
-            recordedSynchronization: query => d.database.scopedMergedSynchronization(query), deliveryStatus });
-          } catch (error) {
-            if (error instanceof GitInputError && error.publicData.blocker === "TARGET_WORKTREE_DIRTY") targetWorktreeBlocker = error;
-            throw error;
-          }
-          if (facts.pullRequest) d.database.recordScopedFinalRecoveryPull(d.state.id, group.id, facts.pullRequest);
+            recordedOperation: async id => await d.database.recordedGitOperation(d.state.id, id),
+            recordedSynchronization: async query => await d.database.scopedMergedSynchronization(query), deliveryStatus });
+          if (facts.pullRequest) await d.database.recordScopedFinalRecoveryPull(d.state.id, group.id, facts.pullRequest);
           return result;
         } };
       };
-      const reopenProof = d.database.assertScopedFinalNativeReopenLaunch(turn);
+      const reopenProof = await d.database.assertScopedFinalNativeReopenLaunch(turn);
       handle = await this.openAgentResident({ request, executionRuntimePath: runtimePath, signal: d.signal,
         ...(reopenProof ? { sameEpochReopen: { previousRuntimePath: reopenProof.previousRuntimePath,
-          revalidate: () => {
-            if (d.database.assertScopedFinalNativeReopenLaunch(turn)?.previousRuntimePath !== reopenProof.previousRuntimePath)
+          revalidate: async () => {
+            if ((await d.database.assertScopedFinalNativeReopenLaunch(turn))?.previousRuntimePath !== reopenProof.previousRuntimePath)
               throw new Error("Final supplemental launch lineage changed before native open");
           } } } : {}),
         filesystemAuthorityInput: await d.filesystem(), onTrace: d.trace(agentId, invocationId),
-        onOpened: async () => { d.database.markScopedFinalNativeOpened(turn); },
+        onOpened: async () => { await d.database.markScopedFinalNativeOpened(turn); },
         turnRequestFactory: async () => ({ request: { ...request, project: structuredClone(d.state) }, onTrace: d.trace(agentId, invocationId) }),
         controlScope: { role: "scoped-agent", projectId: d.state.id, nodeRunId: context.nodeRunId, groupRunId: group.id,
           executionId: integration.id, agentId, ownershipEpoch: integration.ownershipEpoch, candidates: [], decisionBy: "agent" },
         controlAuthorityFactory }, () => { launchBegan = true; });
       await d.publish();
-      let result: AgentRunResult | undefined;
-      const missing = () => [!d.state.taskCompletions?.[taskId] && "finish_task",
-        ...deliveryStatus().missingActions].filter(Boolean);
-      for (let attempt = 0; attempt <= 2; attempt += 1) {
-        d.signal.throwIfAborted();
-        result = await d.submit(handle, { inputId: `scoped-final:${integration.id}:${invocationId}:${attempt}`, invocationId,
-          prompt: attempt === 0 ? assignment : `Continue the same canonical delivery task. Missing actions: ${missing().join(", ")}. Existing provider facts: source=final-delivery-facts in the current context index. Inspect real results and report any blocker to the Leader.` });
-        if (targetWorktreeBlocker && deliveryStatus().missingActions.length) {
-          await d.storage.writeHandoff(d.state, agentId, invocationId, result.handoff ?? targetWorktreeBlocker.message);
-          throw targetWorktreeBlocker;
+      const initial = await d.submit(handle, { inputId: `scoped-final:${integration.id}:initial`, invocationId, prompt: assignment });
+      const supervised = await superviseTask({ key: `${d.state.id}:${integration.id}`, value: initial, signal: d.signal,
+        inspect: async () => [!d.state.taskCompletions?.[taskId] && "finish_task", ...(await deliveryStatus()).missingActions,
+          ...await handle!.supervisionActions?.() ?? []].filter((item): item is string => Boolean(item)),
+        reserve: async missing => await d.database.reserveScopedFinalSupervisionRepair({ projectId: d.state.id,
+          executionId: integration.id, groupRunId: group.id, ownershipEpoch: integration.ownershipEpoch, invocationId, missing }),
+        invoke: async (attempt, missing) => d.submit(handle!, { inputId: `scoped-final:${integration.id}:supervision:${attempt}`, invocationId,
+          prompt: `Continue the original final delivery task in this session. Remaining facts: ${missing.join("; ")}. Inspect the actual provider results and preserve confirmed operations. Do what you can and return the existing result and actual limitations if anything remains.` }),
+        record: async (outcome, missing, reason) => {
+          await d.database.appendEvent({ projectId: d.state.id, agentId, invocationId,
+            type: "execution.supervision.finished", payload: { executionId: integration.id, ownershipEpoch: integration.ownershipEpoch,
+              groupRunId: group.id, outcome, missing, ...(reason ? { reason } : {}) } });
         }
-        if (!missing().length || facts.pullRequest && ["conflicted", "closed", "unknown"].includes(facts.pullRequest.status)) break;
-      }
-      await d.storage.writeHandoff(d.state, agentId, invocationId, result?.handoff ?? "Canonical delivery turn returned without a textual handoff.");
-      if (!facts.pullRequest) throw new Error("Final Agent returned without an explicit canonical PR action");
-      if (!d.state.taskCompletions?.[taskId]) throw new Error("Final Agent must explicitly call finish_task");
+      });
+      returned = true;
+      try { await d.storage.writeHandoff(d.state, agentId, invocationId, supervisionHandoff(supervised.value.handoff ?? "", supervised)); }
+      catch (error) { console.warn(`Final handoff diagnostics unavailable (${integration.id}): ${supervisionError(error)}`); }
       return facts.merged ?? facts.pullRequest;
     } finally {
-      if (handle) { await handle.close(); stopped = true; d.unregister(`scoped:${invocationId}`); this.nativeAgents.delete(agentId); }
-      if (stopped || !launchBegan) d.database.stopScopedFinalNativeTurn(turn, true);
-      await d.publish();
+      if (handle) {
+        try { await handle.close(); stopped = true; }
+        catch (error) {
+          console.warn(`Final task cleanup unconfirmed (${integration.id}): ${supervisionError(error)}`);
+          await d.database.appendEvent({ projectId: d.state.id, agentId, invocationId, type: "execution.resource_cleanup.failed",
+            payload: { executionId: integration.id, nativeStopConfirmed: false, reason: supervisionError(error) } });
+        }
+        d.unregister(`scoped:${invocationId}`); this.nativeAgents.delete(agentId);
+      }
+      if (stopped || !launchBegan) await d.database.stopScopedFinalNativeTurn(turn, true);
+      try { await d.publish(); }
+      catch (error) {
+        if (!returned) throw error;
+        console.warn(`Returned final task projection unavailable (${integration.id}): ${supervisionError(error)}`);
+      }
     }
   }
 
   private async prepareAgent(input: ScopedAgentTurnInput): Promise<CollaborationResidentOpenInput> {
     const d = this.d;
-    const plan = d.database.scopedGroupPlan(d.state.id, input.groupRun.id);
+    const plan = await d.database.scopedGroupPlan(d.state.id, input.groupRun.id);
     const plannedTask = plan?.tasks.find(task => task.taskId === input.arrival.targetNodeId);
-    const root = d.database.projectState(d.state.id).nodeRuns.find((node) => node.id === this.rootNode(input.groupRun))!;
-    const projection = d.database.projectState(d.state.id);
+    const rootNodeId = await this.rootNode(input.groupRun);
+    const root = (await d.database.projectState(d.state.id)).nodeRuns.find(node => node.id === rootNodeId)!;
+    const projection = await d.database.projectState(d.state.id);
     const predecessor = scopedPredecessorOutput(projection, input.arrival);
-    const finalRepair = d.database.scopedFinalRepairForArrival(d.state.id, input.arrival.requestId);
+    const finalRepair = await d.database.scopedFinalRepairForArrival(d.state.id, input.arrival.requestId);
     const retainedPull = input.execution.ownershipEpoch > 1
-      ? d.database.scopedRecoveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch - 1) : undefined;
+      ? (await d.database.scopedRecoveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch - 1)) : undefined;
     const existingCompletion = input.reportRepair || input.missingReportRepair
-      ? d.database.scopedAgentTaskCompletion(d.state.id, input.execution.id, input.execution.ownershipEpoch) : undefined;
+      ? (await d.database.scopedAgentTaskCompletion(d.state.id, input.execution.id, input.execution.ownershipEpoch)) : undefined;
     const retainedNativeOutputs = input.missingReportRepair
-      ? d.database.scopedAgentNativeOutputs(d.state.id, input.execution.id, input.execution.ownershipEpoch, input.missingReportRepair.originalInvocationId)
+      ? (await d.database.scopedAgentNativeOutputs(d.state.id, input.execution.id, input.execution.ownershipEpoch, input.missingReportRepair.originalInvocationId))
       : [];
     // Transport the durable binding and real PR facts so the Agent can decide
     // its own closeout. Historical prose must not hide a later bound head.
     const reportHead = input.reportRepair?.report.headSha;
     const matchingHeadPull = reportHead
-      ? d.database.scopedAgentRecordedDeliveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch, reportHead)
+      ? (await d.database.scopedAgentRecordedDeliveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch, reportHead))
       : undefined;
     const recordedPull = input.reportRepair
-      ? matchingHeadPull ?? d.database.scopedRecoveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch)
+      ? matchingHeadPull ?? (await d.database.scopedRecoveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch))
       : undefined;
     // Keep inherited requirements verbatim, with their original source. A
     // Main/Leader assignment in durable history cannot change this physical
@@ -472,7 +500,7 @@ export class ScopedProjectRuntime {
       input.reportRepair ? `Continue this exact original task without repeating its completed business work. Its preserved report is:\n${sources.record("retained-report", "Preserved original report", input.reportRepair.report)}\nOriginal formal weak route: ${input.reportRepair.report.selectedWeakTarget ?? "none"}. Missing tool facts: ${input.reportRepair.missing.join(", ")}. Existing finish_task receipt: ${sources.record("retained-completion", "Existing immutable finish_task receipt", existingCompletion ?? null)}. ${existingCompletion ? "finish_task is already accepted for this logical task and ownership epoch. This supplemental invocation is not a new task. Preserve the accepted summary and memory; do not call finish_task again with a new callId or changed content. Your other authorized tools remain available; supply only the missing mechanism facts and your actual handoff." : "finish_task is still missing for this logical task; use the actual tool to supply it."} The original report, task, branch, PRs, unsettled operations and directory remain yours; inspect actual tool results and supply the missing facts yourself.` : "",
       input.missingReportRepair ? `Continue this original task in your retained session; the previous invocation ${input.missingReportRepair.originalInvocationId} stopped without a saved report. Do not repeat completed business work or push a new commit. ${input.missingReportRepair.interruptedOperationIds?.length
         ? `The remote outcomes of these interrupted original requests have not been inferred: ${input.missingReportRepair.interruptedOperationIds.join(", ")}. Query each exact operationId with git_get_operation and inspect its real provider result. If you choose to reconcile a merge, reuse the original request's callId shown in its journal so the original operation is observed/finalized; a new callId does not settle it. Use git_reconcile_push for an original push; retry=true is your explicit choice to resend that original commit. Preserve unresolved ownership and report an accurate blocker if the retained task cannot finish under this observation/continuation authority.`
-        : "Inspect the existing PR yourself with github_get_pr and use github_merge_pr if its exact local synchronization still needs completion."} Provide your actual handoff/report and required route. Existing immutable finish_task receipt: ${sources.record("retained-completion", "Existing immutable finish_task receipt", existingCompletion ?? null)}. A recorded completion remains valid; call finish_task only if it is still missing. Retained recovery PR facts, requiring your own tool observation: ${sources.record("recovery-pull", "Retained recovery PR facts", d.database.scopedRecoveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch) ?? null)}. Your released manager's accepted instructions: ${sources.record("missing-report-coordination", "Released manager instructions", input.missingReportRepair.coordination)}.` : "",
+        : "Inspect the existing PR yourself with github_get_pr and use github_merge_pr if its exact local synchronization still needs completion."} Provide your actual handoff/report and required route. Existing immutable finish_task receipt: ${sources.record("retained-completion", "Existing immutable finish_task receipt", existingCompletion ?? null)}. A recorded completion remains valid; call finish_task only if it is still missing. Retained recovery PR facts, requiring your own tool observation: ${sources.record("recovery-pull", "Retained recovery PR facts", (await d.database.scopedRecoveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch)) ?? null)}. Your released manager's accepted instructions: ${sources.record("missing-report-coordination", "Released manager instructions", input.missingReportRepair.coordination)}.` : "",
       input.reportRepair ? `Retained delivery binding: ${JSON.stringify({ executionId: input.execution.id,
         ownershipEpoch: input.execution.ownershipEpoch, reportInvocationId: input.reportRepair.report.invocationId,
         reportHeadSha: reportHead ?? null, matchingHeadPull: matchingHeadPull ?? null })}` : "",
@@ -492,7 +520,7 @@ export class ScopedProjectRuntime {
         ? `Retained work record for this stopped task: agent-memory/${input.execution.agentId}/Memory.md. Preserve the existing file and accepted finish_task summary/memory. Supply this report continuation's verified observations through your actual handoff. Report any unresolved work-record or checkout issue to your scoped manager within this continuation's existing authority.`
         : input.reportRepair
         ? `Original-task work record: agent-memory/${input.execution.agentId}/Memory.md. Inspect the retained file, its actual committed content and current git_status. Do not append another record solely because this is a new physical invocation. Preserve any completed work-record step and accepted finish_task; supply this supplement's operational observations through your actual handoff. Complete a genuinely missing work record only within this task's current tool authority. Any new commit requires its own exact-head push, PR merge and local synchronization; a previously merged PR does not cover it. Report authority blockers to your scoped manager without repeating completed business or discarding required evidence.`
-        : `Record this turn's verified facts, decisions, handoff and any no-code review in agent-memory/${input.execution.agentId}/Memory.md inside this execution worktree. Append to the existing file and preserve earlier entries. Treat that work record as a deliverable: commit it with the business changes, or commit it by itself when no other files changed, before calling git_push. The finish_task memory field is a durable mirror, not a substitute for the committed record.`,
+        : `Update agent-memory/${input.execution.agentId}/Memory.md with durable facts useful to later work, using native file tools when appropriate. Preserve existing entries. Complete any Memory update before your final Git delivery so this round can be delivered together. finish_task records a completion receipt without editing Memory or creating a commit. If any requested step remains unfinished, return your available result and actual limitations.`,
       (() => {
         const weak = (input.workflow.routes[input.arrival.targetNodeId] ?? []).filter((edge) => edge.kind === "weak").map((edge) => edge.target);
         return d.state.agents[input.execution.agentId]?.decisionBy === "agent" && weak.length
@@ -514,7 +542,7 @@ export class ScopedProjectRuntime {
     const runtime = await d.storage.invocationRuntimePath(d.state.id, input.invocationId);
     if (runtime !== input.runtimePath) throw new Error("Scoped native runtime path differs from trusted storage");
     const inbox = await d.storage.writeInbox(d.state, input.execution.agentId, input.invocationId, assignment);
-    const context: NonNullable<AgentRunRequest["executionContext"]> = { role: "delivery", nodeRunId: this.rootNode(input.groupRun),
+    const context: NonNullable<AgentRunRequest["executionContext"]> = { role: "delivery", nodeRunId: await this.rootNode(input.groupRun),
       groupRunId: input.groupRun.id, executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch,
       executionWorktree: input.execution.worktreePath };
     const request = await this.request(input.execution.agentId, input.invocationId, input.execution.worktreePath, runtime, inbox, assignment, context);
@@ -524,15 +552,15 @@ export class ScopedProjectRuntime {
     const repairIdentity = input.reportRepair ? { projectId: d.state.id, executionId: input.execution.id,
       ownershipEpoch: input.execution.ownershipEpoch, agentId: input.execution.agentId,
       invocationId: input.invocationId, runtimePath: runtime, originalReportInvocationId: input.reportRepair.report.invocationId } : undefined;
-    const repairProof = repairIdentity ? d.database.assertScopedAgentReportRepairLaunch(repairIdentity) : undefined;
+    const repairProof = repairIdentity ? (await d.database.assertScopedAgentReportRepairLaunch(repairIdentity)) : undefined;
     const missingRepairIdentity = input.missingReportRepair ? { projectId: d.state.id, executionId: input.execution.id,
       ownershipEpoch: input.execution.ownershipEpoch, agentId: input.execution.agentId, invocationId: input.invocationId, runtimePath: runtime } : undefined;
-    const missingRepairProof = missingRepairIdentity ? d.database.assertScopedAgentMissingReportRepairLaunch(missingRepairIdentity) : undefined;
+    const missingRepairProof = missingRepairIdentity ? (await d.database.assertScopedAgentMissingReportRepairLaunch(missingRepairIdentity)) : undefined;
     return { request, initialTask: assignment, executionRuntimePath: runtime, filesystemAuthorityInput: await d.filesystem(), signal: d.signal,
       ...(repairProof ? { sameEpochReopen: { previousRuntimePath: repairProof.previousRuntimePath,
-        revalidate: () => { d.database.assertScopedAgentReportRepairLaunch(repairIdentity!); } } } : {}),
+        revalidate: async () => { await d.database.assertScopedAgentReportRepairLaunch(repairIdentity!); } } } : {}),
       ...(missingRepairProof ? { sameEpochReopen: { previousRuntimePath: missingRepairProof.previousRuntimePath,
-        revalidate: () => { d.database.assertScopedAgentMissingReportRepairLaunch(missingRepairIdentity!); } } } : {}),
+        revalidate: async () => { await d.database.assertScopedAgentMissingReportRepairLaunch(missingRepairIdentity!); } } } : {}),
       onTrace: d.trace(request.agent, request.invocationId),
       turnRequestFactory: async ({ turn }) => {
         const current = { ...request, project: structuredClone(d.state) };
@@ -566,13 +594,14 @@ export class ScopedProjectRuntime {
         canComplete: false, allowAgentGitActions: true, workspacePath: input.execution.worktreePath, requireBridge: true };
       return { control, revalidate: async (envelope) => {
         this.assertReceipt(envelope, input.invocationId, input.execution.agentId, input.execution.ownershipEpoch);
-        const native = this.d.database.scopedAgentTurn(this.d.state.id, input.execution.id, input.execution.ownershipEpoch);
+        const native = await this.d.database.scopedAgentTurn(this.d.state.id, input.execution.id, input.execution.ownershipEpoch);
         if (native?.invocationId !== input.invocationId || native.status !== "opened" ||
-          native.writerLeaseEpoch !== this.d.database.writerLease().epoch) {
+          native.writerLeaseEpoch !== (await this.d.database.writerLease()).epoch) {
           throw new Error("Scoped Agent tool receipt is outside its exact live native authority");
         }
         await this.d.database.operationsForProject(this.d.state.id, true).assertExecutionOwnership({ projectId: this.d.state.id,
           executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch, expectedBranch: input.execution.executionBranch, operation: "provider.mutate" });
+        let completion: TaskCompletionRecord | undefined;
         if (envelope.action.tool === "route_to_agent") {
           const original = retained.find((item) => item.action.tool === "route_to_agent")?.action;
           const originalTarget = original?.tool === "route_to_agent" ? original.target : input.reportRepair?.report.selectedWeakTarget;
@@ -580,17 +609,17 @@ export class ScopedProjectRuntime {
             throw new Error("Supplemental mechanism turn cannot replace the original Agent's formal route");
           }
           if (!candidates.includes(envelope.action.target)) throw new Error("Worker route is outside its Agent-owned local candidates");
-          this.d.database.previewScopedArrivalRoute(this.d.state.id, input.arrival.requestId, envelope.action.target);
+          await this.d.database.previewScopedArrivalRoute(this.d.state.id, input.arrival.requestId, envelope.action.target);
         } else if (envelope.action.tool === "finish_task") {
           await rejectR03InitialFinish({ projectTitle: this.d.state.title, projectRoot: this.d.storage.projectDir(this.d.state.id),
             execution: { ...input.execution, purpose: "delivery" }, arrivalRequestId: input.arrival.requestId,
             groupRunId: input.groupRun.id, base: input.groupRun.groupBranch, repository: this.d.repository,
             envelope, inputId: turn.inputId, facts: this.agentGitFacts.get(input.invocationId),
-            completionAlreadyAccepted: this.d.database.scopedAgentTaskCompleted(this.d.state.id, input.execution.id,
+            completionAlreadyAccepted: await this.d.database.scopedAgentTaskCompleted(this.d.state.id, input.execution.id,
               input.execution.ownershipEpoch, input.invocationId) });
           // The completion receipt records only this delivery task. It does
           // not release the group, create a PR, or close the native channel.
-          await this.recordAgentTaskCompletion(input, envelope);
+          completion = await this.recordAgentTaskCompletion(input, envelope);
         } else if (envelope.action.tool === "publish_artifact") {
           if (envelope.action.replacesPath !== undefined) {
             throw new Error("Pending publication replacement requires standalone execution authority");
@@ -599,7 +628,8 @@ export class ScopedProjectRuntime {
         } else if (!isAgentGitAction(envelope.action.tool)) throw new Error("Scoped business turn cannot perform management or global actions");
         const accepted = this.capabilities.get(input.invocationId)!.accepted;
         if (!accepted.some((item) => item.callId === envelope.callId)) accepted.push(structuredClone(envelope));
-      }, execute: (envelope, signal) => this.executeAgentGitAction({ ...input, signal }, envelope, turn.inputId) };
+        return completion;
+      }, execute: async (envelope, signal) => this.executeAgentGitAction({ ...input, signal }, envelope, turn.inputId) };
     };
   }
 
@@ -616,7 +646,7 @@ export class ScopedProjectRuntime {
     const authority: GitExecutionAuthority & { projectId: string } = { ...input.execution, purpose: "delivery" };
     const key = input.invocationId;
     const facts = this.agentGitFacts.get(key) ?? {
-      pushedHeadSha: this.d.database.scopedAgentReport(this.d.state.id, input.execution.id, input.execution.ownershipEpoch)?.headSha
+      pushedHeadSha: (await this.d.database.scopedAgentReport(this.d.state.id, input.execution.id, input.execution.ownershipEpoch))?.headSha
     };
     this.agentGitFacts.set(key, facts);
     if (isAgentGitAction(action.tool) && action.tool !== "git_prepare_conflict") {
@@ -627,12 +657,12 @@ export class ScopedProjectRuntime {
       const gitInput = { git: this.d.git, repository: this.d.repository,
         execution: authority, base: input.groupRun.groupBranch, facts, envelope, signal: input.signal,
         ...agentGitOperationJournal(this.d.database, this.d.state.id),
-        recordedOperation: (id: string) => this.d.database.recordedGitOperation(this.d.state.id, id),
-        recordedSynchronization: (query: Parameters<CollaborationStateDatabase["scopedMergedSynchronization"]>[0]) => this.d.database.scopedMergedSynchronization(query),
-        deliveryStatus: () => this.agentGitDelivery(input) };
+        recordedOperation: async (id: string) => await this.d.database.recordedGitOperation(this.d.state.id, id),
+        recordedSynchronization: async (query: Parameters<CollaborationStateDatabase["scopedMergedSynchronization"]>[0]) => await this.d.database.scopedMergedSynchronization(query),
+        deliveryStatus: async () => this.agentGitDelivery(input) };
       const result = await executeAgentGitTool(gitInput);
-      const mergeOperation = action.tool === "github_merge_pr" ? this.d.database.recordedGitOperation(this.d.state.id,
-        agentGitOperationId(gitInput, "merge")) : undefined;
+      const mergeOperation = action.tool === "github_merge_pr" ? (await this.d.database.recordedGitOperation(this.d.state.id,
+        (await agentGitOperationId(gitInput, "merge")))) : undefined;
       if (action.tool === "github_get_pr" && result && typeof result === "object" &&
         "id" in result && "providerNumber" in result) {
         const observedPull = result as GitHubPullRequestFact;
@@ -656,7 +686,7 @@ export class ScopedProjectRuntime {
       if (!this.d.git.prepareConflictResolution) throw new Error("Conflict preparation is unavailable for this Git facade");
       // Recovery only wakes the original Agent. The Agent chooses this tool;
       // the runtime must not merge a base into its retained worktree on launch.
-      const finalRepair = this.d.database.scopedFinalRepairForArrival(this.d.state.id, input.arrival.requestId);
+      const finalRepair = await this.d.database.scopedFinalRepairForArrival(this.d.state.id, input.arrival.requestId);
       const sourceBranch = finalRepair?.sourceBranch ?? group.groupBranch;
       const base = this.d.git.refreshRecoveryBase
         ? await this.d.git.refreshRecoveryBase(this.d.repository, authority, input.execution.ownershipEpoch, sourceBranch, input.signal)
@@ -677,17 +707,17 @@ export class ScopedProjectRuntime {
     const execution = input.execution;
     const facts = this.agentGitFacts.get(input.invocationId);
     const observed = await this.observedRetainedReportDelivery(input);
-    const report = database.scopedAgentReport(this.d.state.id, execution.id, execution.ownershipEpoch);
+    const report = await database.scopedAgentReport(this.d.state.id, execution.id, execution.ownershipEpoch);
     const headSha = facts?.pushedHeadSha ?? observed?.headSha ?? input.reportRepair?.report.headSha ?? report?.headSha;
-    const recorded = headSha ? database.scopedAgentRecordedDeliveryPull(this.d.state.id, execution.id, execution.ownershipEpoch, headSha) : undefined;
+    const recorded = headSha ? (await database.scopedAgentRecordedDeliveryPull(this.d.state.id, execution.id, execution.ownershipEpoch, headSha)) : undefined;
     const pull = observed?.pullRequest ?? (facts?.pullRequest && facts.pullRequest.headSha === headSha ? facts.pullRequest : undefined) ?? recorded;
     const merged = facts?.merged && facts.merged.headSha === headSha ? facts.merged : undefined;
     const synchronized = Boolean(observed?.synchronized || merged?.status === "merged" && merged.localSynchronization ||
-      pull?.status === "merged" && pull.mergeCommitSha && database.scopedMergedSynchronization({ projectId: this.d.state.id,
+      pull?.status === "merged" && pull.mergeCommitSha && (await database.scopedMergedSynchronization({ projectId: this.d.state.id,
         executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, providerNumber: pull.providerNumber,
-        expectedHead: headSha!, expectedBase: pull.base, expectedMergeCommitSha: pull.mergeCommitSha }));
+        expectedHead: headSha!, expectedBase: pull.base, expectedMergeCommitSha: pull.mergeCommitSha })));
     return agentGitDeliveryStatus({ executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, headSha, pull, synchronized,
-      operations: database.projectState(this.d.state.id).operations,
+      operations: (await database.projectState(this.d.state.id)).operations,
       worktreeMissingActions: await executionWorktreeClosingActions(this.d.git, { ...execution, purpose: "delivery" }, input.signal) });
   }
 
@@ -715,7 +745,7 @@ export class ScopedProjectRuntime {
   } | undefined> {
     const facts = this.agentGitFacts.get(input.invocationId);
     if (!(input.reportRepair || input.missingReportRepair) || input.reportRepair?.report.headSha || facts?.pushedHeadSha) return undefined;
-    const retained = this.d.database.scopedRecoveryPull(this.d.state.id, input.execution.id, input.execution.ownershipEpoch);
+    const retained = await this.d.database.scopedRecoveryPull(this.d.state.id, input.execution.id, input.execution.ownershipEpoch);
     if (retained?.status !== "merged") return undefined;
     const observations = [...(this.agentObservedPulls.get(input.invocationId)?.values() ?? [])];
     if (!observations.length) return undefined;
@@ -734,12 +764,12 @@ export class ScopedProjectRuntime {
     const original = observed.id === retained.id && observed.providerNumber === retained.providerNumber &&
       observed.headSha === retained.headSha && observed.mergeCommitSha === retained.mergeCommitSha;
     if (!original) {
-      const recorded = this.d.database.scopedAgentRecordedDeliveryPull(this.d.state.id,
+      const recorded = await this.d.database.scopedAgentRecordedDeliveryPull(this.d.state.id,
         input.execution.id, input.execution.ownershipEpoch, checkout.head);
       if (recorded?.status !== "merged" || recorded.id !== observed.id || recorded.providerNumber !== observed.providerNumber ||
         recorded.headSha !== observed.headSha || recorded.base !== observed.base ||
         recorded.mergeCommitSha !== observed.mergeCommitSha) return undefined;
-      const pushed = this.d.database.projectState(this.d.state.id).operations.some(operation =>
+      const pushed = (await this.d.database.projectState(this.d.state.id)).operations.some(operation =>
         operation.kind === "git.push" && operation.status === "finalized" &&
         operation.ownerExecutionId === input.execution.id && operation.ownershipEpoch === input.execution.ownershipEpoch &&
         operation.expectedHead === checkout.head && operation.expectedBase === input.execution.executionBranch &&
@@ -748,7 +778,7 @@ export class ScopedProjectRuntime {
         operation.remoteFact.owner === this.d.repository.owner && operation.remoteFact.repository === this.d.repository.name);
       if (!pushed) return undefined;
     }
-    const synchronization = this.d.database.scopedMergedSynchronization({ projectId: this.d.state.id,
+    const synchronization = await this.d.database.scopedMergedSynchronization({ projectId: this.d.state.id,
       executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch, providerNumber: observed.providerNumber,
       expectedHead: observed.headSha!, expectedBase: input.groupRun.groupBranch, expectedMergeCommitSha: observed.mergeCommitSha! });
     if (!original && !synchronization) return undefined;
@@ -767,7 +797,7 @@ export class ScopedProjectRuntime {
         selectedWeakTarget = envelope.action.target;
       }
       else if (envelope.action.tool === "finish_task") await this.recordAgentTaskCompletion(input, envelope);
-      else if (envelope.action.tool === "publish_artifact") d.database.appendEvent({ projectId: d.state.id,
+      else if (envelope.action.tool === "publish_artifact") await d.database.appendEvent({ projectId: d.state.id,
         requestId: `scoped-artifact-intent:${input.execution.id}:${input.execution.ownershipEpoch}:${envelope.callId}`,
         workflowRevision: input.groupRun.workflowRevision, agentId: input.execution.agentId, invocationId: input.invocationId,
         type: "scoped.artifact.staged", payload: { executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch,
@@ -777,14 +807,15 @@ export class ScopedProjectRuntime {
     const weak = (input.workflow.routes[input.arrival.targetNodeId] ?? []).filter((edge) => edge.kind === "weak");
     if (weak.length && !input.reportRepair && d.state.agents[input.execution.agentId].decisionBy === "main") {
       await this.manage(input.groupRun, "route", input.arrival.requestId, output);
-      selectedWeakTarget = d.database.scopedArrivalRouteDecision(d.state.id, input.arrival.requestId)?.targetNodeId;
+      selectedWeakTarget = (await d.database.scopedArrivalRouteDecision(d.state.id, input.arrival.requestId))?.targetNodeId;
     }
     if (weak.length && !selectedWeakTarget) throw new Error("Scoped weak route requires a formal current local decision");
-    await d.storage.writeHandoff(d.state, input.execution.agentId, input.invocationId, output || "Business turn completed.");
+    try { await d.storage.writeHandoff(d.state, input.execution.agentId, input.invocationId, output || "Business turn completed."); }
+    catch (error) { console.warn(`Returned Agent handoff view unavailable (${input.execution.id}): ${supervisionError(error)}`); }
     const facts = this.agentGitFacts.get(input.invocationId);
     let reportHeadSha = facts?.pushedHeadSha ?? (await this.observedRetainedReportDelivery(input))?.headSha;
     if (input.reportRepair) {
-      const retained = d.database.scopedRecoveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch);
+      const retained = await d.database.scopedRecoveryPull(d.state.id, input.execution.id, input.execution.ownershipEpoch);
       if (input.reportRepair.report.headSha) reportHeadSha = input.reportRepair.report.headSha;
       else if (retained?.status === "merged" && facts?.pushedHeadSha) {
         const observed = facts?.pullRequest;
@@ -796,18 +827,17 @@ export class ScopedProjectRuntime {
     const omitHead = await withholdR14ReportHead({ projectTitle: d.state.title, projectRoot: d.storage.projectDir(d.state.id),
       execution: { ...input.execution, purpose: "delivery" }, arrivalRequestId: input.arrival.requestId,
       groupRunId: input.groupRun.id, base: input.groupRun.groupBranch, repository: d.repository,
-      invocationId: input.invocationId, nativeTurn: d.database.scopedAgentTurn(d.state.id, input.execution.id, input.execution.ownershipEpoch),
+      invocationId: input.invocationId, nativeTurn: await d.database.scopedAgentTurn(d.state.id, input.execution.id, input.execution.ownershipEpoch),
       output, selectedWeakTarget, facts, repair: Boolean(input.reportRepair || input.missingReportRepair) });
     this.agentGitFacts.delete(input.invocationId);
     this.agentObservedPulls.delete(input.invocationId);
     return { output, ...(selectedWeakTarget ? { selectedWeakTarget } : {}), ...(!omitHead && reportHeadSha ? { reportHeadSha } : {}) };
   }
 
-  private async recordAgentTaskCompletion(input: ScopedAgentTurnInput, envelope: ControlActionEnvelope): Promise<void> {
+  private async recordAgentTaskCompletion(input: ScopedAgentTurnInput, envelope: ControlActionEnvelope): Promise<TaskCompletionRecord> {
     if (envelope.action.tool !== "finish_task") throw new Error("Scoped Agent completion receipt requires finish_task");
-    await this.d.storage.requestTaskCompletion(this.d.state, input.execution.id, envelope,
-      input.reportRepair || input.missingReportRepair ? {} : { executionWorktree: input.execution.worktreePath });
-    this.d.database.recordScopedAgentTaskCompletion({
+    const receipt = await this.d.storage.requestTaskCompletion(this.d.state, input.execution.id, envelope);
+    await this.d.database.recordScopedAgentTaskCompletion({
       projectId: this.d.state.id,
       executionId: input.execution.id,
       ownershipEpoch: input.execution.ownershipEpoch,
@@ -818,12 +848,13 @@ export class ScopedProjectRuntime {
       ...(envelope.action.memory === undefined ? {} : { memory: envelope.action.memory }),
       requestedAt: envelope.receivedAt
     });
+    return receipt;
   }
 
-  private manage(group: ScopedGroupRunRecord, purpose: "plan" | "route" | "root-route" | "recover" | "complete", sourceArrivalRequestId?: string, context = "", globalMain = false,
+  private async manage(group: ScopedGroupRunRecord, purpose: "plan" | "route" | "root-route" | "recover" | "complete", sourceArrivalRequestId?: string, context = "", globalMain = false,
     routeContext: { sourceArrivalGroupRunId?: string; sourceOuterNodeRunId?: string; routeCandidates?: string[] } = {}): Promise<void> {
     const attempt = () => {
-      const job = this.managementTail.catch(() => undefined).then(() => this.performManagement(group, purpose, sourceArrivalRequestId, context, globalMain, routeContext));
+      const job = this.managementTail.catch(() => undefined).then(async () => this.performManagement(group, purpose, sourceArrivalRequestId, context, globalMain, routeContext));
       this.managementTail = job.catch(() => undefined);
       return job;
     };
@@ -832,29 +863,29 @@ export class ScopedProjectRuntime {
     // serial management queue, so the recovery needed to admit it can run.
     // Skipped arrivals and other graph jobs instead use the pump's durable
     // deferred-admission path and must never hold this queue while waiting.
-    const pendingHandoff = () => purpose === "route" && sourceArrivalRequestId &&
-      this.d.database.scopedArrivals(routeContext.sourceArrivalGroupRunId ?? group.id)
+    const pendingHandoff = async () => purpose === "route" && sourceArrivalRequestId &&
+      (await this.d.database.scopedArrivals(routeContext.sourceArrivalGroupRunId ?? group.id))
         .some(arrival => arrival.requestId === sourceArrivalRequestId && arrival.status === "running");
-    if (!pendingHandoff()) return attempt();
+    if (!(await pendingHandoff())) return attempt();
     return (async () => {
       for (;;) {
-        const revision = this.d.database.projectState(this.d.state.id).stateRevision;
+        const revision = (await this.d.database.projectState(this.d.state.id)).stateRevision;
         try { return await attempt(); }
         catch (error) {
-          if (!(error instanceof ScopedManagementDeferredError) || !pendingHandoff()) throw error;
+          if (!(error instanceof ScopedManagementDeferredError) || !(await pendingHandoff())) throw error;
           do {
             this.d.signal.throwIfAborted();
             this.d.assertManagementActive?.();
             await new Promise(resolve => setTimeout(resolve, 100));
-          } while (pendingHandoff() && this.d.database.projectState(this.d.state.id).stateRevision === revision);
+          } while ((await pendingHandoff()) && (await this.d.database.projectState(this.d.state.id)).stateRevision === revision);
         }
       }
     })();
   }
 
-  private restoreReceivedMainInputs(): void {
+  private async restoreReceivedMainInputs(): Promise<void> {
     for (const input of this.d.state.userInputs.filter(entry => entry.status === "pending")) {
-      const received = this.d.database.eventByRequestId(this.d.state.id, `scoped-user-input-received:${input.id}`);
+      const received = await this.d.database.eventByRequestId(this.d.state.id, `scoped-user-input-received:${input.id}`);
       if (!received) continue;
       if (received.type !== "user.input.delivered" || received.payload.inputId !== input.id ||
         received.payload.messageDigest !== createHash("sha256").update(input.message).digest("hex") ||
@@ -881,43 +912,43 @@ export class ScopedProjectRuntime {
     const invocationId = `inv_${randomUUID().replaceAll("-", "")}`;
     const runtime = await d.storage.invocationRuntimePath(d.state.id, invocationId);
     d.assertManagementActive?.();
-    group = d.database.scopedGroupRun(d.state.id, group.id)!;
+    group = (await d.database.scopedGroupRun(d.state.id, group.id))!;
     const worktreeClosingOnly = group.status === "completed";
     if (worktreeClosingOnly && (purpose !== "recover" || globalMain)) throw new Error("Completed group permits only its original Leader's closing coordination");
     const agentId = globalMain ? "main" : group.leaderAgentId;
     const sourceArrivalGroupRunId = routeContext.sourceArrivalGroupRunId ?? group.id;
     const handoffArrival = sourceArrivalRequestId
-      ? d.database.scopedArrivals(sourceArrivalGroupRunId).find((arrival) => arrival.requestId === sourceArrivalRequestId)
+      ? (await d.database.scopedArrivals(sourceArrivalGroupRunId)).find((arrival) => arrival.requestId === sourceArrivalRequestId)
       : undefined;
     const handoffExecution = handoffArrival
-      ? d.database.projectState(d.state.id).scopedExecutions?.find((execution) => execution.arrivalRequestId === handoffArrival.requestId)
+      ? (await d.database.projectState(d.state.id)).scopedExecutions?.find((execution) => execution.arrivalRequestId === handoffArrival.requestId)
       : undefined;
     const claimInput = { projectId: d.state.id, groupRunId: group.id, agentId, invocationId, runtimePath: runtime,
       ...(globalMain ? { globalMain: true } : {}),
       ...(purpose === "recover" || globalMain ? { allowStoppedRepairFaults: true } : {}),
       ...(purpose === "route" && handoffArrival?.targetKind === "agent" && handoffExecution
         ? { allowStoppedWorkerHandoff: true, allowStoppedWorkerHandoffExecutionId: handoffExecution.id } : {}) };
-    const claim = d.database.claimScopedLeaderTurn(claimInput);
+    const claim = await d.database.claimScopedLeaderTurn(claimInput);
     if (!claim) throw new ScopedManagementDeferredError();
     const identity = { ...claimInput, coordinatorEpoch: claim.coordinatorEpoch };
     let handle: CollaborationResidentHandle | undefined;
     let launchBegan = false;
     let stopped = false;
     let failure: unknown;
+    let retired = false;
+    let managementReturned = false;
     try {
       const repairScopeKey = createHash("sha256").update(JSON.stringify([group.id, agentId, purpose,
-        sourceArrivalRequestId ?? null, globalMain, ...(d.state.workflowRecovery?.attempt
-          ? [d.state.workflowRecovery.attempt] : [])])).digest("hex");
-      if (d.database.scopedManagementRepairCount(d.state.id, repairScopeKey) >= 2) {
-        throw new Error("Manager still lacks required formal actions after two retained-session mechanism repairs");
-      }
-      const workflow = d.database.scopedGroupWorkflow(d.state.id, group.id);
-      const source = sourceArrivalRequestId ? d.database.scopedArrivals(sourceArrivalGroupRunId).find((item) => item.requestId === sourceArrivalRequestId) : undefined;
+        sourceArrivalRequestId ?? null, globalMain])).digest("hex");
+      const repairScope = { groupRunId: group.id, agentId, purpose, ...(sourceArrivalRequestId ? { sourceArrivalRequestId } : {}) };
+      if ((await d.database.scopedManagementRepairCount(d.state.id, repairScopeKey, repairScope)) >= MAX_TASK_REPAIR_WAKEUPS) return;
+      const workflow = await d.database.scopedGroupWorkflow(d.state.id, group.id);
+      const source = sourceArrivalRequestId ? (await d.database.scopedArrivals(sourceArrivalGroupRunId)).find((item) => item.requestId === sourceArrivalRequestId) : undefined;
       const routeCandidates = routeContext.routeCandidates ?? (source?.status === "skipped" ? [...workflow.nodes.map((node) => node.nodeId), "finish"]
-        : source ? (d.database.scopedGroupWorkflow(d.state.id, sourceArrivalGroupRunId).routes[source.targetNodeId] ?? []).filter((edge) => edge.kind === "weak").map((edge) => edge.target) : []);
-      const recoveryCandidates = d.database.scopedRecoveryCandidates(d.state.id, group.id, globalMain)
+        : source ? ((await d.database.scopedGroupWorkflow(d.state.id, sourceArrivalGroupRunId)).routes[source.targetNodeId] ?? []).filter((edge) => edge.kind === "weak").map((edge) => edge.target) : []);
+      const recoveryCandidates = (await d.database.scopedRecoveryCandidates(d.state.id, group.id, globalMain))
         .filter(candidate => !worktreeClosingOnly || candidate.kind === "worktree-closing");
-      const recoveryOptions = d.database.scopedRecoveryOptions(d.state.id, group.id, globalMain, recoveryCandidates);
+      const recoveryOptions = await d.database.scopedRecoveryOptions(d.state.id, group.id, globalMain, recoveryCandidates);
       const failedArrivalRequestIds = recoveryCandidates.map((item) => item.arrivalRequestId);
       const ordinaryFailureIds = recoveryCandidates.filter(item => item.kind !== "worktree-closing").map(item => item.arrivalRequestId);
       const closingCandidates = recoveryCandidates.filter(item => item.kind === "worktree-closing");
@@ -935,14 +966,16 @@ export class ScopedProjectRuntime {
       // excerpts, without choosing/completing the group on the Agent's behalf.
       const finalFacts = purpose === "complete" ? {
         groupRunId: group.id,
-        integration: d.database.scopedFinalIntegration(d.state.id, group.id) ?? null,
-        integrationRequest: d.database.scopedGroupIntegrationRequest(d.state.id, group.id) ?? null,
-        finalMerge: d.database.scopedGroupFinalMergeFact(d.state.id, group.id) ?? null
+        integration: (await d.database.scopedFinalIntegration(d.state.id, group.id)) ?? null,
+        integrationRequest: (await d.database.scopedGroupIntegrationRequest(d.state.id, group.id)) ?? null,
+        finalMerge: (await d.database.scopedGroupFinalMergeFact(d.state.id, group.id)) ?? null,
+        supervision: (await d.database.scopedFinalIntegration(d.state.id, group.id))
+          ? (await d.database.executionSupervisionResult(d.state.id, (await d.database.scopedFinalIntegration(d.state.id, group.id))!.id)) ?? null : null
       } : undefined;
-      const terminalCandidates = d.database.scopedRecoveryCandidates(d.state.id,group.id,globalMain)
+      const terminalCandidates = (await d.database.scopedRecoveryCandidates(d.state.id,group.id,globalMain))
         .filter(candidate => candidate.kind === "terminal-push");
-      const terminalFacts = terminalCandidates.length ? d.database.authoritativeWorkflowFiles(d.state.id).currentState : undefined;
-      if (globalMain) this.restoreReceivedMainInputs();
+      const terminalFacts = terminalCandidates.length ? (await d.database.authoritativeWorkflowFiles(d.state.id)).currentState : undefined;
+      if (globalMain) await this.restoreReceivedMainInputs();
       const pendingInputs = globalMain ? d.state.userInputs.filter(input => input.status === "pending").map(input => ({
         ...structuredClone(input), text: workflowMessagesText([{ sender: "user", body: input.message }])
       })) : [];
@@ -960,7 +993,7 @@ export class ScopedProjectRuntime {
         `Context:\n${sources.record("management-source-context", "Source task and handoff context", context)}`,
         globalMain ? "Do not execute business work. This is the global recovery control turn, not a local Leader turn. Preserve every Agent identity/session/cwd."
           : purpose === "complete"
-            ? "This is a group completion control turn. First call finish_task for your own management task. After the explicit final integration proof exists, call complete_group; otherwise call request_group_integration with an eligible non-leader Agent. Do not perform business Git work yourself."
+            ? "This is a group completion control turn. Record your management handoff with finish_task. After the final integration task returns, call complete_group and describe its actual delivery facts; otherwise call request_group_integration with an eligible non-leader Agent. Report any remaining process omissions without inventing delivery. Do not perform business Git work yourself."
             : purpose === "recover"
               ? "This is a recovery control turn for existing retained failures. Use coordinate_group_task for the distinct recovery actions described below. assign_group_tasks produces a plan and does not resolve these failures. Do not perform business work or dispatch outside this scope."
           : purpose === "route" || purpose === "root-route"
@@ -986,22 +1019,23 @@ export class ScopedProjectRuntime {
         d.state.userIntervention?.status === "answered" ? `User response: ${d.state.userIntervention.response}` : "",
         allowEdit ? `You may formally edit ${globalMain ? "the global workflow" : "this group's graph and local shared Agent configuration"}; locked fields and necessary active nodes remain protected.` : "Workflow reconfiguration is disabled."].filter(Boolean).join("\n\n");
       sources.record("management-reference", "Management facts and protocol reference", background);
-      const rootNode = d.database.projectState(d.state.id).nodeRuns.find(node => node.id === this.rootNode(group));
+      const rootNodeId = await this.rootNode(group);
+      const rootNode = (await d.database.projectState(d.state.id)).nodeRuns.find(node => node.id === rootNodeId);
       const messages: WorkflowDirectMessage[] = [];
       if (purpose === "plan") {
         if (group.parentGroupRunId && group.parentArrivalRequestId) {
-          const parent = d.database.scopedGroupRun(d.state.id, group.parentGroupRunId)!;
-          const arrival = d.database.scopedArrivals(parent.id).find(item => item.requestId === group.parentArrivalRequestId);
-          const task = d.database.scopedGroupPlan(d.state.id, parent.id)?.tasks.find(item => item.taskId === arrival?.targetNodeId);
+          const parent = (await d.database.scopedGroupRun(d.state.id, group.parentGroupRunId))!;
+          const arrival = (await d.database.scopedArrivals(parent.id)).find(item => item.requestId === group.parentArrivalRequestId);
+          const task = (await d.database.scopedGroupPlan(d.state.id, parent.id))?.tasks.find(item => item.taskId === arrival?.targetNodeId);
           if (task) messages.push({ sender: parent.leaderAgentId, body: task.assignment });
-          if (arrival) messages.push(...scopedPredecessorMessages(d.database.projectState(d.state.id), arrival,
-            d.database.scopedGroupWorkflow(d.state.id, parent.id).routes));
+          if (arrival) messages.push(...scopedPredecessorMessages((await d.database.projectState(d.state.id)), arrival,
+            (await d.database.scopedGroupWorkflow(d.state.id, parent.id)).routes));
         } else if (rootNode?.optionalTask) {
           messages.push({ sender: rootNode.sourceAgentId ?? (rootNode.inputSnapshotRef.startsWith("project:") ? "user" : rootNode.activatedByAgentId), body: rootNode.optionalTask });
         }
       }
       if (context) messages.push({ sender: sourceArrivalRequestId
-        ? d.database.scopedArrivals(routeContext.sourceArrivalGroupRunId ?? group.id).find(item => item.requestId === sourceArrivalRequestId)?.agentId ?? "OpenFARS"
+        ? (await d.database.scopedArrivals(routeContext.sourceArrivalGroupRunId ?? group.id)).find(item => item.requestId === sourceArrivalRequestId)?.agentId ?? "OpenFARS"
         : purpose === "complete" || purpose === "root-route" ? group.leaderAgentId : "OpenFARS", body: context });
       messages.push(...pendingInputs.map(input => ({ sender: "user", body: input.message })));
       if (globalMain && d.state.userIntervention?.status === "answered")
@@ -1013,7 +1047,7 @@ export class ScopedProjectRuntime {
       const inputs = await d.managementInputs({ ...group, leaderAgentId: agentId }, invocationId, inbox, runtime, allowEdit);
       d.assertManagementActive?.();
       const request = await this.request(agentId, invocationId, inputs.workspacePath, runtime, inputs.inboxPath, assignment,
-        { role: "leader", nodeRunId: this.rootNode(group), groupRunId: group.id, coordinatorEpoch: claim.coordinatorEpoch });
+        { role: "leader", nodeRunId: await this.rootNode(group), groupRunId: group.id, coordinatorEpoch: claim.coordinatorEpoch });
       request.contextSources = sources.sources;
       request.nativeInputNotices = pendingInputs.map(input => input.text);
       d.assertManagementActive?.();
@@ -1022,33 +1056,33 @@ export class ScopedProjectRuntime {
         const mainInvocation = d.state.mainInvocationSeq + 1;
         request.onNativeUserInput = async (event, session) => {
           await priorNativeInput?.(event, session);
-          const binding = d.database.latestAgentNativeSessionBinding(d.state.id, agentId);
+          const binding = await d.database.latestAgentNativeSessionBinding(d.state.id, agentId);
           if (!session || !binding || event.kind !== "user.message" || event.invocationId !== invocationId ||
             event.harnessId !== session.harnessId || typeof event.eventId !== "string" || !event.eventId ||
             typeof event.message !== "string" || binding.invocationId !== invocationId || binding.runtimePath !== runtime ||
             binding.worktreePath !== inputs.workspacePath || !isDeepStrictEqual(binding.executionContext, request.executionContext) ||
             !sameDurableSession(binding.session, session)) return;
-          d.database.assertScopedLeaderAuthority(identity);
+          await d.database.assertScopedLeaderAuthority(identity);
           for (const input of pendingInputs) {
             if (!event.message.includes(redactTrace(input.text))) continue;
             const requestId = `scoped-user-input-received:${input.id}`;
-            if (d.database.eventByRequestId(d.state.id, requestId)) continue;
-            d.database.appendEvent({ projectId: d.state.id, agentId, invocationId, coordinatorEpoch: claim!.coordinatorEpoch,
+            if ((await d.database.eventByRequestId(d.state.id, requestId))) continue;
+            await d.database.appendEvent({ projectId: d.state.id, agentId, invocationId, coordinatorEpoch: claim!.coordinatorEpoch,
               requestId, type: "user.input.delivered", payload: { inputId: input.id, mainInvocation,
                 messageDigest: createHash("sha256").update(input.message).digest("hex"), eventId: event.eventId,
                 sourceType: event.sourceType, session, groupRunId: group.id } });
           }
-          this.restoreReceivedMainInputs();
+          await this.restoreReceivedMainInputs();
           await d.storage.saveState(d.state);
         };
       }
       request.workflowContext = { scope: globalMain ? "global" : "group", groupId: group.groupId,
         groupRunId: group.id, sourceNodeId: source?.targetNodeId, purpose, candidates: [...routeCandidates] };
-      Object.assign(inputs, await prepareWorkflowContext(request, inputs, d.database.authoritativeWorkflowFiles(d.state.id)));
+      Object.assign(inputs, await prepareWorkflowContext(request, inputs, (await d.database.authoritativeWorkflowFiles(d.state.id))));
       const proposalCache = new Map<string, Pick<ScopedLeaderActionInput, "proposal" | "baseWorkflowHash" | "configuration" | "baseConfigurationHash" | "baseVersion">>();
       const retainedActions: ControlActionEnvelope[] = [];
       let finishOnlyRepair = false;
-      const controlScope = { role: globalMain ? "scoped-main" as const : "scoped-leader" as const, projectId: d.state.id, nodeRunId: this.rootNode(group),
+      const controlScope = { role: globalMain ? "scoped-main" as const : "scoped-leader" as const, projectId: d.state.id, nodeRunId: await this.rootNode(group),
         groupRunId: group.id, leaderAgentId: agentId, coordinatorEpoch: claim.coordinatorEpoch,
         memberNodeIds: worktreeClosingOnly ? [] : workflow.nodes.map((node) => node.nodeId), routeCandidates, failedArrivalRequestIds, recoveryOptions,
         ...(closingArrivalRequestIds.length ? { closingArrivalRequestIds } : {}),
@@ -1063,7 +1097,7 @@ export class ScopedProjectRuntime {
         // both complete so it can pause the exact resident that was opened.
         launchBegan = true;
         handle = await d.launcher.open({ request, inputs, executionRuntimePath: runtime, filesystemAuthorityInput,
-        signal: d.signal, onTrace: d.trace(agentId, invocationId), onOpened: async () => { d.database.markScopedLeaderOpened(identity); await d.publish(); },
+        signal: d.signal, onTrace: d.trace(agentId, invocationId), onOpened: async () => { await d.database.markScopedLeaderOpened(identity); await d.publish(); },
         turnRequestFactory: async () => ({ request: { ...request, project: structuredClone(d.state),
           sessionContinuity: "strict", resumeThreadId: d.state.agentSessionIds?.[agentId] }, onTrace: d.trace(agentId, invocationId) }),
         controlScope, controlAuthorityFactory: async ({ turn }) => {
@@ -1092,17 +1126,18 @@ export class ScopedProjectRuntime {
                 !retainedActions.some((entry) => isDeepStrictEqual(entry.action, envelope.action))) {
                 throw new Error("The management round's staged decision cannot be replaced during finish_task repair");
               }
+              let completion: TaskCompletionRecord | undefined;
               let proposal: Pick<ScopedLeaderActionInput, "proposal" | "baseWorkflowHash" | "configuration" | "baseConfigurationHash" | "baseVersion"> = {};
               if (envelope.action.tool === "apply_workflow") {
-                const retained = d.database.scopedWorkflowAdjustmentProposal(d.state.id, invocationId, envelope.callId);
+                const retained = await d.database.scopedWorkflowAdjustmentProposal(d.state.id, invocationId, envelope.callId);
                 if (retained) {
                   proposal = { proposal: retained.proposal, baseWorkflowHash: retained.baseWorkflowHash,
                     ...(retained.baseVersion ? { baseVersion: retained.baseVersion } : {}),
                     ...(retained.configuration ? { configuration: retained.configuration, baseConfigurationHash: retained.baseConfigurationHash } : {}) };
                 } else {
                   if (!inputs.workflowAuthoringPath) throw new Error("Scoped proposal authoring is not enabled");
-                  const base = d.database.workflowAdjustmentCurrent(d.state.id);
-                  const baseConfigurationHash = d.database.scopedConfigurationHash(d.state.id);
+                  const base = await d.database.workflowAdjustmentCurrent(d.state.id);
+                  const baseConfigurationHash = await d.database.scopedConfigurationHash(d.state.id);
                   const info = await fs.lstat(inputs.workflowAuthoringPath);
                   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || await fs.realpath(inputs.workflowAuthoringPath) !== inputs.workflowAuthoringPath) throw new Error("Scoped proposal is not its pinned regular file");
                   const raw = await fs.readFile(inputs.workflowAuthoringPath, "utf8");
@@ -1113,14 +1148,14 @@ export class ScopedProjectRuntime {
                       ? mainAgentOrchestrationDocument(d.state.id, current.snapshot.orchestration,
                         restoreAgentConfiguration(current.snapshot, d.state.agents), current.snapshot.skillDefinitions, current.snapshot.mcpDefinitions, current.version)
                       : mainWorkflowDocument(d.state.id, current.snapshot.orchestration, current.version),
-                    () => sameWorkflowConfigurationVersion(d.database.workflowAdjustmentCurrent(d.state.id).version, current.version));
+                    async () => sameWorkflowConfigurationVersion((await d.database.workflowAdjustmentCurrent(d.state.id)).version, current.version));
                   await refreshCurrentReference();
                   const parsed = globalMain ? parseAgentOrchestrationProposal(raw, d.state.id, d.state.orchestration, d.state.agents, resources)
                     : parseScopedWorkflowProposal(raw, d.state.id, d.state.orchestration, d.state.agents, group.groupId, resources);
                   if (parsed.skillDefinitions && parsed.mcpDefinitions) {
                     if (!d.validateConfiguration) throw new Error("Agent configuration proposals require the existing server route/resource validator");
                     await d.validateConfiguration(parsed as AgentOrchestrationProposal);
-                    const current = d.database.workflowAdjustmentCurrent(d.state.id);
+                    const current = await d.database.workflowAdjustmentCurrent(d.state.id);
                     if (!sameWorkflowConfigurationVersion(base.version, current.version)) await refreshCurrentReference(current);
                   }
                   proposal = { proposal: parsed.orchestration, baseWorkflowHash: workflowBaseHash(base.snapshot.orchestration), baseVersion: base.version,
@@ -1132,14 +1167,15 @@ export class ScopedProjectRuntime {
               if (envelope.action.tool === "finish_task") {
                 // Management completion is a task-scoped receipt. It does not
                 // complete the group or release its parent route.
-                d.database.revalidateScopedLeaderTaskCompletion({ ...identity, envelope });
+                await d.database.revalidateScopedLeaderTaskCompletion({ ...identity, envelope });
                 const receipt = await d.storage.requestTaskCompletion(d.state, `management:${group.id}:${invocationId}`, envelope);
+                completion = receipt;
                 if (receipt.summary !== envelope.action.summary || receipt.memory !== envelope.action.memory) {
                   throw new Error("Repeat management finish_task must preserve its accepted summary and memory");
                 }
-                d.database.recordScopedLeaderTaskCompletion({ ...identity, envelope });
+                await d.database.recordScopedLeaderTaskCompletion({ ...identity, envelope });
               } else {
-                d.database.revalidateScopedLeaderAction({ ...identity, envelope, ...(sourceArrivalRequestId ? { sourceArrivalRequestId } : {}),
+                await d.database.revalidateScopedLeaderAction({ ...identity, envelope, ...(sourceArrivalRequestId ? { sourceArrivalRequestId } : {}),
                   ...(routeContext.sourceArrivalGroupRunId ? { sourceArrivalGroupRunId: routeContext.sourceArrivalGroupRunId } : {}),
                   ...(routeContext.sourceOuterNodeRunId ? { sourceOuterNodeRunId: routeContext.sourceOuterNodeRunId } : {}), ...proposal });
                 if (envelope.action.tool === "apply_workflow") {
@@ -1149,6 +1185,7 @@ export class ScopedProjectRuntime {
               }
               const accepted = this.capabilities.get(invocationId)!.accepted;
               if (!accepted.some((item) => item.callId === envelope.callId)) accepted.push(structuredClone(envelope));
+              return completion;
             } };
         } });
         d.register(`scoped:${invocationId}`, handle);
@@ -1156,57 +1193,65 @@ export class ScopedProjectRuntime {
       };
       await (d.withNativeLaunchFence
         ? d.withNativeLaunchFence(openAndRegister)
-        : openAndRegister());
+        : (openAndRegister()));
       if (!handle) throw new Error("Scoped management resident did not open");
       const formalTools = worktreeClosingOnly ? ["coordinate_group_task"] : purpose === "recover" ? ["coordinate_group_task", ...(canRequestUser ? ["request_user"] : []), "apply_workflow"]
         : purpose === "complete" ? ["request_group_integration", "complete_group"]
         : purpose === "route" || purpose === "root-route" ? ["route_to_agent", "apply_workflow"] : ["assign_group_tasks", "apply_workflow"];
-      const stateRequests = () => purpose === "recover" && !globalMain
-        ? d.database.projectStateMainCoordinationRequests(d.state.id, invocationId) : [];
-      const hasDecision = () => retainedActions.some((entry) => formalTools.includes(entry.action.tool)) || stateRequests().length > 0;
-      const missing = () => [!d.database.scopedLeaderTaskCompleted(d.state.id, group.id, agentId,
-        invocationId, claim!.coordinatorEpoch) && "finish_task", !hasDecision() && `formal ${purpose} control action`].filter(Boolean);
+      const stateRequests = async () => purpose === "recover" && !globalMain
+        ? (await d.database.projectStateMainCoordinationRequests(d.state.id, invocationId)) : [];
+      const hasDecision = async () => retainedActions.some((entry) => formalTools.includes(entry.action.tool)) || (await stateRequests()).length > 0;
+      const missing = async () => [!(await d.database.scopedLeaderTaskCompleted(d.state.id, group.id, agentId,
+        invocationId, claim!.coordinatorEpoch)) && "finish_task", !(await hasDecision()) && `formal ${purpose} control action`].filter(Boolean);
       const inputId = `${purpose}:${group.id}:${sourceArrivalRequestId ?? invocationId}`;
-      let result = await d.submit(handle, { inputId, invocationId, prompt: assignment });
-      d.assertManagementActive?.();
-      while (true) {
-        d.signal.throwIfAborted();
+      const retain = (result: AgentRunResult) => {
         for (const envelope of result.controlActions ?? []) {
           this.assertReceipt(envelope, invocationId, agentId, claim.coordinatorEpoch);
-          if (!this.capabilities.get(invocationId)!.accepted.some((entry) => isDeepStrictEqual(entry, envelope))) {
+          if (!this.capabilities.get(invocationId)!.accepted.some(entry => isDeepStrictEqual(entry, envelope))) {
             throw new Error("Leader result was not accepted by its live scoped broker");
           }
-          if (!retainedActions.some((entry) => isDeepStrictEqual(entry.action, envelope.action))) retainedActions.push(envelope);
+          if (!retainedActions.some(entry => isDeepStrictEqual(entry.action, envelope.action))) retainedActions.push(envelope);
         }
-        const absent = missing();
-        if (!absent.length) break;
-        const count = d.database.scopedManagementRepairCount(d.state.id, repairScopeKey);
-        if (count >= 2) throw new Error("Manager still lacks required formal actions after two retained-session mechanism repairs");
-        d.database.assertScopedLeaderAuthority(identity);
-        d.database.appendEvent({ projectId: d.state.id, agentId, invocationId, coordinatorEpoch: claim.coordinatorEpoch,
-          requestId: `scoped-management-repair:${invocationId}:${count + 1}`, type: "scoped.management.mechanism_repair.requested",
-          payload: { groupRunId: group.id, repairScopeKey, purpose, attempt: count + 1, missing: absent } });
-        // Keep the actual Agent/session/claim and its staged choices. The
-        // runtime supplies facts and tools; it never fills in a business plan.
-        finishOnlyRepair = hasDecision();
-        result = await d.submit(handle, { inputId: `${inputId}:mechanism-repair:${count + 1}`, invocationId,
-          prompt: [assignment, `Continue this management round in your retained session. Missing formal mechanism actions: ${absent.join(", ")}.`,
-            `Already staged actions: ${sources.list("management-staged-actions", "Already staged actions", retainedActions.filter((entry) => entry.action.tool !== "finish_task").map((entry) => entry.action))}.`,
-            d.database.scopedLeaderTaskCompleted(d.state.id, group.id, agentId, invocationId, claim.coordinatorEpoch)
-              ? "finish_task is already accepted for this invocation. Preserve its immutable summary and memory; do not call it again. Supply the still-missing formal control action with the actual tool."
-              : "finish_task is still missing for this invocation; supply it with the actual tool.",
-            "A statement that a tool was called does not create a receipt. Check the actual tool response; rejected calls are still missing. Invoke the control tool exposed by your current Harness, using the current control identity above.",
-            purpose === "recover" ? globalMain
-              ? canRequestUser ? "If no recovery or authorized skip can be applied, call request_user with the exact unresolved blocker, then finish_task if still missing. A prose statement that recovery is blocked is not this formal decision. Preserve the user's existing authorization; do not ask again for an already authorized skip when it is now valid."
-                : userEscalationGuidance
-              : "If you cannot recover the failed task, formally call coordinate_group_task with operation=escalate for its arrivalRequestId, or use state_request_main for the exact retained mechanism issue when available. Then finish_task if still missing. A prose handoff to Main does not submit this escalation."
-              : "",
-            finishOnlyRepair ? "Preserve those choices and supply finish_task; do not replace the staged decision." : "Use the assigned control tools to decide; the system cannot decide for you."
-          ].join("\n\n") });
-        d.assertManagementActive?.();
-      }
+      };
+      const initial = await d.submit(handle, { inputId, invocationId, prompt: assignment });
+      retain(initial);
+      const supervised = await superviseTask({ key: `${d.state.id}:management:${repairScopeKey}`, value: initial,
+        signal: d.signal, inspect: async () => [...(await missing()), ...await handle!.supervisionActions?.() ?? []]
+          .filter((value): value is string => typeof value === "string"),
+        reserve: async absent => {
+          d.assertManagementActive?.();
+          await d.database.assertScopedLeaderAuthority(identity);
+          const count = await d.database.scopedManagementRepairCount(d.state.id, repairScopeKey, repairScope);
+          if (count >= MAX_TASK_REPAIR_WAKEUPS) return undefined;
+          await d.database.appendEvent({ projectId: d.state.id, agentId, invocationId, coordinatorEpoch: claim.coordinatorEpoch,
+            requestId: `scoped-management-repair:${repairScopeKey}:${count + 1}`, type: "scoped.management.mechanism_repair.requested",
+            payload: { ...repairScope, repairScopeKey, attempt: count + 1, missing: absent } });
+          return count + 1;
+        },
+        invoke: async (attempt, absent) => {
+          finishOnlyRepair = (await hasDecision());
+          return d.submit(handle!, { inputId: `${inputId}:supervision:${attempt}`, invocationId,
+            prompt: [assignment, `Continue this management task in the same session. Remaining facts: ${absent.join("; ")}.`,
+              `Accepted actions: ${sources.list("management-staged-actions", "Accepted actions", retainedActions.filter(entry => entry.action.tool !== "finish_task").map(entry => entry.action))}.`,
+              "Preserve the accepted choices and actual tool results. Do what you can and return the existing result and actual limitations if anything remains."
+            ].join("\n\n") });
+        },
+        accept: retain,
+        record: async (outcome, absent, reason) => {
+          await d.database.appendEvent({ projectId: d.state.id, agentId, invocationId, coordinatorEpoch: claim.coordinatorEpoch,
+            type: "scoped.management.supervision.finished", payload: { ...repairScope, globalMain, repairScopeKey,
+              outcome, missing: absent, ...(reason ? { reason } : {}) } });
+        }
+      });
+      const result = { ...supervised.value, handoff: supervisionHandoff(supervised.value.handoff ?? "", supervised) };
       d.assertManagementActive?.();
-      await handle.close(); stopped = true; d.unregister(`scoped:${invocationId}`);
+      try { await handle.close(); stopped = true; }
+      catch (error) {
+        console.warn(`Management resource cleanup unconfirmed (${invocationId}): ${supervisionError(error)}`);
+        await d.database.appendEvent({ projectId: d.state.id, agentId, invocationId, type: "execution.resource_cleanup.failed",
+          payload: { groupRunId: group.id, nativeStopConfirmed: false, reason: supervisionError(error) } });
+      }
+      retired = true; d.unregister(`scoped:${invocationId}`);
       d.assertManagementActive?.();
       if (retainedActions.some(envelope => envelope.action.tool === "apply_workflow")) await this.discoverWorktreeClosings();
       d.assertManagementActive?.();
@@ -1214,36 +1259,48 @@ export class ScopedProjectRuntime {
       for (const envelope of retainedActions) {
         if (envelope.action.tool !== "finish_task") {
           d.assertManagementActive?.();
-          const acceptance = d.database.acceptScopedLeaderAction({ ...identity, envelope, ...(sourceArrivalRequestId ? { sourceArrivalRequestId } : {}),
+          const acceptance = await d.database.acceptScopedLeaderAction({ ...identity, envelope, ...(sourceArrivalRequestId ? { sourceArrivalRequestId } : {}),
             ...(routeContext.sourceArrivalGroupRunId ? { sourceArrivalGroupRunId: routeContext.sourceArrivalGroupRunId } : {}),
             ...(routeContext.sourceOuterNodeRunId ? { sourceOuterNodeRunId: routeContext.sourceOuterNodeRunId } : {}),
-            ...proposalCache.get(envelope.callId), residentStopConfirmed: true }, d.state);
+            ...proposalCache.get(envelope.callId), residentStopConfirmed: stopped }, d.state);
           if (acceptance.workflowAdjustment) workflowAdjustments.push(acceptance.workflowAdjustment);
           if (envelope.action.tool === "complete_group") {
-            d.database.completeScopedGroupAfterLeaderDecision({ projectId: d.state.id, groupRunId: group.id,
+            await d.database.completeScopedGroupAfterLeaderDecision({ projectId: d.state.id, groupRunId: group.id,
               agentId, invocationId, coordinatorEpoch: claim!.coordinatorEpoch, output: envelope.action.output,
               requestId: `scoped-group-complete:${group.id}:${envelope.callId}` });
           }
         }
       }
+      managementReturned = true;
+      await d.database.appendEvent({ projectId: d.state.id, agentId, invocationId, coordinatorEpoch: claim.coordinatorEpoch,
+        requestId: `scoped-management-round-completed:${invocationId}`, type: "scoped.management.round.completed",
+        payload: { groupRunId: group.id, repairScopeKey, purpose, globalMain, decisionRecorded: await hasDecision(), supervisionOutcome: supervised.outcome,
+          ...((await stateRequests()).length ? { mainStateRequestIds: (await stateRequests()).map(event => event.requestId) } : {}),
+          ...(workflowAdjustments.length ? { workflowAdjustments } : {}) } });
       await d.storage.writeHandoff(d.state, agentId, invocationId, result.handoff ?? "Management turn completed without a textual handoff.");
       d.assertManagementActive?.();
-      d.database.appendEvent({ projectId: d.state.id, agentId, invocationId, coordinatorEpoch: claim.coordinatorEpoch,
-        requestId: `scoped-management-round-completed:${invocationId}`, type: "scoped.management.round.completed",
-        payload: { groupRunId: group.id, repairScopeKey, purpose,
-          ...(stateRequests().length ? { mainStateRequestIds: stateRequests().map(event => event.requestId) } : {}),
-          ...(workflowAdjustments.length ? { workflowAdjustments } : {}) } });
       if (globalMain && d.state.userIntervention?.status === "answered" && retainedActions.some((entry) =>
         entry.action.tool !== "finish_task" && entry.action.tool !== "request_user")) {
-        d.database.appendEvent({ projectId: d.state.id, requestId: `scoped-user-consumed:${d.state.userIntervention.id}`, agentId: "main", invocationId,
+        await d.database.appendEvent({ projectId: d.state.id, requestId: `scoped-user-consumed:${d.state.userIntervention.id}`, agentId: "main", invocationId,
           type: "scoped.user.response.consumed", payload: { interventionId: d.state.userIntervention.id } });
         d.state.userIntervention = undefined;
       }
       await d.publish();
-    } catch (error) { failure = error;
+    } catch (error) {
+      if (!managementReturned) failure = error;
+      else console.warn(`Accepted management result retained after auxiliary failure (${invocationId}): ${supervisionError(error)}`);
     } finally {
-      if (handle && !stopped) { await handle.close(); stopped = true; d.unregister(`scoped:${invocationId}`); }
-      if (stopped || !launchBegan) { d.database.releaseScopedLeaderTurn({ ...identity, residentStopConfirmed: true }); await d.publish(); }
+      if (handle && !retired) {
+        try { await handle.close(); stopped = true; }
+        catch (error) { console.warn(`Management cleanup unconfirmed (${invocationId}): ${supervisionError(error)}`); }
+        d.unregister(`scoped:${invocationId}`);
+      }
+      await d.database.releaseScopedLeaderTurn({ ...identity, residentStopConfirmed: stopped || !launchBegan });
+      try { await d.publish(); }
+      catch (error) {
+        if (!managementReturned) throw error;
+        console.warn(`Accepted management projection unavailable (${invocationId}): ${supervisionError(error)}`);
+      }
     }
     if (failure !== undefined) {
       if (failure instanceof ScopedManagementDeferredError) throw failure;
@@ -1253,11 +1310,11 @@ export class ScopedProjectRuntime {
       if (transientHarnessFailure(failure) && (stopped || !launchBegan)) throw failure;
       const failureReason = failure instanceof Error ? redactTrace(failure.message) : "Leader coordination failed";
       if ((stopped || !launchBegan) && (purpose === "recover" || purpose === "plan" || globalMain) &&
-        !d.signal.aborted && !d.database.projectCancellationIntent(d.state.id)) {
+        !d.signal.aborted && !(await d.database.projectCancellationIntent(d.state.id))) {
         if (purpose === "plan" && !globalMain) {
-          d.database.recordScopedGroupIssue({ projectId: d.state.id, groupRunId: group.id, kind: "plan", reason: failureReason });
+          await d.database.recordScopedGroupIssue({ projectId: d.state.id, groupRunId: group.id, kind: "plan", reason: failureReason });
         }
-        const failures = d.database.recordScopedManagementFailure({ ...identity, purpose, reason: failureReason });
+        const failures = await d.database.recordScopedManagementFailure({ ...identity, purpose, reason: failureReason });
         if (globalMain && failures.some((entry) => entry.exhausted)) {
           // A technical Main failure is a durable runtime condition. Preserve
           // the exact source for the next automatic recovery round without
@@ -1271,42 +1328,42 @@ export class ScopedProjectRuntime {
       throw failure;
     }
     if (purpose === "plan" && !globalMain) {
-      d.database.resolveScopedGroupIssueIfPresent(d.state.id, group.id, "plan", "Leader produced a durable group plan after technical recovery");
+      await d.database.resolveScopedGroupIssueIfPresent(d.state.id, group.id, "plan", "Leader produced a durable group plan after technical recovery");
     }
     await this.applyAcceptedRecoveries();
   }
 
   private applyAcceptedRecoveries(): Promise<void> {
-    const job = this.recoveryTail.catch(() => undefined).then(() => this.performAcceptedRecoveries());
+    const job = this.recoveryTail.catch(() => undefined).then(async () => this.performAcceptedRecoveries());
     this.recoveryTail = job.catch(() => undefined);
     return job;
   }
 
   private async prepareFinalRepair(incidentId: string, envelope: ControlActionEnvelope): Promise<void> {
-    const d = this.d; const issue = d.database.scopedGroupIssues(d.state.id).find((entry) => entry.id === incidentId);
+    const d = this.d; const issue = (await d.database.scopedGroupIssues(d.state.id)).find((entry) => entry.id === incidentId);
     if (!issue) return;
-    const group = d.database.scopedGroupRun(d.state.id, issue.groupRunId)!;
-    const owner = d.database.scopedFinalIntegration(d.state.id, group.id);
+    const group = (await d.database.scopedGroupRun(d.state.id, issue.groupRunId))!;
+    const owner = await d.database.scopedFinalIntegration(d.state.id, group.id);
     if (owner) {
       if (!d.git.observePullRequestForExecution) throw new Error("Final recovery requires authoritative canonical PR discovery");
       const execution = { ...owner, purpose: "group-final-integration" as const };
       const pull = await d.git.observePullRequestForExecution({ repository: d.repository, execution, expectedBase: owner.integrationTarget, signal: d.signal });
       // A formal retry authorizes retained execution recovery, not GitHub
       // cleanup. Keep the actual PR and let an authorized Agent act on it.
-      d.database.recordScopedFinalRecoveryPull(d.state.id, group.id, pull);
+      await d.database.recordScopedFinalRecoveryPull(d.state.id, group.id, pull);
     }
     const source = await d.git.observeRemoteRef(d.repository, group.integrationTarget, d.signal);
     if (source.status !== "present" || !/^[0-9a-f]{40}$/i.test(source.sha ?? "") || source.ref !== group.integrationTarget || source.owner !== d.repository.owner || source.repository !== d.repository.name)
       throw new Error("Final repair lost its canonical direct parent base");
-    d.database.startScopedFinalRepair({ projectId: d.state.id, incidentId, envelope, sourceHead: source.sha! });
+    await d.database.startScopedFinalRepair({ projectId: d.state.id, incidentId, envelope, sourceHead: source.sha! });
   }
 
   private async observeScopedRecoveryPull(execution: ScopedExecutionRecord): Promise<GitHubPullRequestFact | undefined> {
     const d = this.d;
-    const base = d.database.scopedGroupRun(d.state.id, execution.groupRunId)!.groupBranch;
+    const base = (await d.database.scopedGroupRun(d.state.id, execution.groupRunId))!.groupBranch;
     const authority = { ...execution, purpose: "delivery" as const };
-    const bound = d.database.scopedRecoveryPull(d.state.id, execution.id, execution.ownershipEpoch);
-    if (!bound && d.database.projectState(d.state.id).operations.some(operation =>
+    const bound = await d.database.scopedRecoveryPull(d.state.id, execution.id, execution.ownershipEpoch);
+    if (!bound && (await d.database.projectState(d.state.id)).operations.some(operation =>
       operation.ownerExecutionId === execution.id && operation.ownershipEpoch === execution.ownershipEpoch &&
       operation.status === "finalized" && ["pull.create", "pull.merge", "pull.close", "pull.update"].includes(operation.kind))) {
       // Several successive PRs on one branch can deliver the business result
@@ -1317,8 +1374,8 @@ export class ScopedProjectRuntime {
         local.branch !== execution.executionBranch || local.worktreePath !== execution.worktreePath || !/^[0-9a-f]{40}$/i.test(local.head)) {
         throw new Error("Scoped recovery lost its exact retained execution checkout");
       }
-      const head = d.database.scopedAgentReport(d.state.id, execution.id, execution.ownershipEpoch)?.headSha ?? local.head;
-      const recorded = d.database.scopedAgentRecordedDeliveryPull(d.state.id, execution.id, execution.ownershipEpoch,
+      const head = (await d.database.scopedAgentReport(d.state.id, execution.id, execution.ownershipEpoch))?.headSha ?? local.head;
+      const recorded = await d.database.scopedAgentRecordedDeliveryPull(d.state.id, execution.id, execution.ownershipEpoch,
         head, { requireUniqueProvider: true });
       if (recorded) {
         if (!d.git.observePullRequest) throw new Error("Scoped recovery requires authoritative journaled-PR observation");
@@ -1350,56 +1407,56 @@ export class ScopedProjectRuntime {
 
   private async performAcceptedRecoveries(): Promise<void> {
     const d = this.d;
-    if (d.database.projectCancellationIntent(d.state.id)) return;
-    for (const group of d.database.projectState(d.state.id).scopedGroupRuns ?? []) {
-      for (const receipt of d.database.scopedAcceptedLeaderActions(d.state.id, group.id)) {
+    if ((await d.database.projectCancellationIntent(d.state.id))) return;
+    for (const group of (await d.database.projectState(d.state.id)).scopedGroupRuns ?? []) {
+      for (const receipt of (await d.database.scopedAcceptedLeaderActions(d.state.id, group.id))) {
         const action = receipt.envelope.action;
         if (action.tool === "request_user" && receipt.globalMain) {
           await this.requestScopedUser(receipt.envelope.invocationId, receipt.envelope.callId, action.message, action.rationale);
           continue;
         }
         if (action.tool === "coordinate_group_task" && action.operation === "close_worktree") {
-          if (d.database.scopedWorktreeClosingGrantFailure(d.state.id, receipt.envelope.invocationId, receipt.envelope.callId)) continue;
-          if (d.database.scopedWorktreeClosingTurns(d.state.id).some(turn => turn.grantInvocationId === receipt.envelope.invocationId &&
+          if ((await d.database.scopedWorktreeClosingGrantFailure(d.state.id, receipt.envelope.invocationId, receipt.envelope.callId))) continue;
+          if ((await d.database.scopedWorktreeClosingTurns(d.state.id)).some(turn => turn.grantInvocationId === receipt.envelope.invocationId &&
             turn.grantCallId === receipt.envelope.callId)) continue;
           if (!d.continueWorktreeClosings) throw new Error("Closing requires its original-session supplemental dispatcher");
           await d.continueWorktreeClosings();
           continue;
         }
         if (action.tool !== "coordinate_group_task" || action.operation === "escalate" || !receipt.failedOwnershipEpoch) continue;
-        if (d.database.eventByRequestId(d.state.id,
-          `scoped-recovery-application-failed:${receipt.envelope.invocationId}:${receipt.envelope.callId}`)) continue;
-        const manager = d.database.scopedLeaderTurns(d.state.id).find(turn => turn.invocationId === receipt.envelope.invocationId);
+        if ((await d.database.eventByRequestId(d.state.id,
+          `scoped-recovery-application-failed:${receipt.envelope.invocationId}:${receipt.envelope.callId}`))) continue;
+        const manager = (await d.database.scopedLeaderTurns(d.state.id)).find(turn => turn.invocationId === receipt.envelope.invocationId);
         if (manager?.status !== "released") continue;
         try {
           if (receipt.incidentId) {
-            const issue = d.database.scopedGroupIssues(d.state.id).find((entry) => entry.id === receipt.incidentId);
+            const issue = (await d.database.scopedGroupIssues(d.state.id)).find((entry) => entry.id === receipt.incidentId);
             if (!issue) continue;
             // Report retries are consumed by the runner; an unreported owner
             // first needs its existing same-epoch reservation. Both wait until
             // the exact manager releases; neither chooses a remote Git outcome.
             if (issue.kind === "mechanism") {
               if (action.operation === "skip" && receipt.globalMain && receipt.executionId) {
-                const execution = d.database.scopedExecution(d.state.id, receipt.executionId);
+                const execution = await d.database.scopedExecution(d.state.id, receipt.executionId);
                 if (!execution || execution.ownershipEpoch !== receipt.failedOwnershipEpoch) continue;
                 const pull = await this.observeScopedRecoveryPull(execution);
-                d.database.applyScopedMainSkip(d.state.id, execution.id, execution.ownershipEpoch, pull ?? null);
+                await d.database.applyScopedMainSkip(d.state.id, execution.id, execution.ownershipEpoch, pull ?? null);
                 continue;
               }
               if (!issue.interruptedOperationIds?.length || !receipt.executionId || action.operation !== "retry" ||
-                d.database.eventByRequestId(d.state.id, `scoped-missing-report-repair:${receipt.envelope.invocationId}:${receipt.envelope.callId}`)) continue;
-              const manager = d.database.scopedLeaderTurns(d.state.id).find(turn => turn.invocationId === receipt.envelope.invocationId);
+                (await d.database.eventByRequestId(d.state.id, `scoped-missing-report-repair:${receipt.envelope.invocationId}:${receipt.envelope.callId}`))) continue;
+              const manager = (await d.database.scopedLeaderTurns(d.state.id)).find(turn => turn.invocationId === receipt.envelope.invocationId);
               if (manager?.status !== "released") continue;
-              const execution = d.database.scopedExecution(d.state.id, receipt.executionId);
+              const execution = await d.database.scopedExecution(d.state.id, receipt.executionId);
               if (!execution || execution.ownershipEpoch !== receipt.failedOwnershipEpoch || execution.status !== "running" ||
-                d.database.scopedAgentReport(d.state.id, execution.id, execution.ownershipEpoch)) continue;
+                (await d.database.scopedAgentReport(d.state.id, execution.id, execution.ownershipEpoch))) continue;
               const pull = await this.observeScopedRecoveryPull(execution);
-              d.database.recordScopedRecoveryPull({ projectId: d.state.id, executionId: execution.id,
+              await d.database.recordScopedRecoveryPull({ projectId: d.state.id, executionId: execution.id,
                 ownershipEpoch: execution.ownershipEpoch, pull });
               const invocationId = `inv_${createHash("sha256").update(JSON.stringify([execution.id, execution.ownershipEpoch,
                 "missing-report-repair", receipt.envelope.invocationId, receipt.envelope.callId])).digest("hex").slice(0, 32)}`;
               const runtimePath = await d.storage.invocationRuntimePath(d.state.id, invocationId);
-              d.database.beginScopedAgentMissingReportRepair({ projectId: d.state.id, executionId: execution.id,
+              await d.database.beginScopedAgentMissingReportRepair({ projectId: d.state.id, executionId: execution.id,
                 ownershipEpoch: execution.ownershipEpoch, invocationId, runtimePath, coordination: receipt.envelope });
               continue;
             }
@@ -1409,43 +1466,43 @@ export class ScopedProjectRuntime {
               continue;
             }
             if (issue.kind === "final") {
-              if (!action.repairNodeId && group.id !== issue.groupRunId && !receipt.globalMain) d.database.returnScopedFinalIssueToLeader(d.state.id, issue.id, receipt.envelope);
+              if (!action.repairNodeId && group.id !== issue.groupRunId && !receipt.globalMain) await d.database.returnScopedFinalIssueToLeader(d.state.id, issue.id, receipt.envelope);
               else await this.prepareFinalRepair(issue.id, receipt.envelope);
-            } else d.database.applyScopedGroupIssueRetry(d.state.id, issue.id, receipt.envelope);
+            } else await d.database.applyScopedGroupIssueRetry(d.state.id, issue.id, receipt.envelope);
             continue;
           }
           if (!receipt.executionId) continue;
-          if (d.database.eventByRequestId(d.state.id, `scoped-agent-coordinated-repair:${receipt.envelope.invocationId}:${receipt.envelope.callId}`) ||
-            d.database.eventByRequestId(d.state.id, `scoped-missing-report-repair:${receipt.envelope.invocationId}:${receipt.envelope.callId}`)) continue;
-          const execution = d.database.scopedExecution(d.state.id, receipt.executionId);
+          if ((await d.database.eventByRequestId(d.state.id, `scoped-agent-coordinated-repair:${receipt.envelope.invocationId}:${receipt.envelope.callId}`)) ||
+            (await d.database.eventByRequestId(d.state.id, `scoped-missing-report-repair:${receipt.envelope.invocationId}:${receipt.envelope.callId}`))) continue;
+          const execution = await d.database.scopedExecution(d.state.id, receipt.executionId);
           if (execution?.status === "failed" && execution.ownershipEpoch === receipt.failedOwnershipEpoch) {
             const pull = await this.observeScopedRecoveryPull(execution);
             if (action.operation === "skip") {
-              d.database.applyScopedMainSkip(d.state.id, execution.id, execution.ownershipEpoch, pull ?? null);
+              await d.database.applyScopedMainSkip(d.state.id, execution.id, execution.ownershipEpoch, pull ?? null);
               continue;
             }
-            d.database.recordScopedRecoveryPull({ projectId: d.state.id, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, pull });
+            await d.database.recordScopedRecoveryPull({ projectId: d.state.id, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, pull });
             if (pull?.status === "merged") {
               // Retain the original report/epoch rather than rerunning business
               // work or discarding a merged PR. The runner must wake its Agent
               // if explicit finish/PR/local-sync facts are still missing.
-              if (!d.database.scopedAgentReport(d.state.id, execution.id, execution.ownershipEpoch) && action.operation === "retry") {
+              if (!(await d.database.scopedAgentReport(d.state.id, execution.id, execution.ownershipEpoch)) && action.operation === "retry") {
                 const invocationId = `inv_${createHash("sha256").update(JSON.stringify([execution.id, execution.ownershipEpoch,
                   "missing-report-repair", receipt.envelope.invocationId, receipt.envelope.callId])).digest("hex").slice(0, 32)}`;
                 const runtimePath = await d.storage.invocationRuntimePath(d.state.id, invocationId);
-                d.database.beginScopedAgentMissingReportRepair({ projectId: d.state.id, executionId: execution.id,
+                await d.database.beginScopedAgentMissingReportRepair({ projectId: d.state.id, executionId: execution.id,
                   ownershipEpoch: execution.ownershipEpoch, invocationId, runtimePath, coordination: receipt.envelope });
-              } else d.database.resumeScopedMergedDelivery(d.state.id, execution.id, execution.ownershipEpoch,
+              } else await d.database.resumeScopedMergedDelivery(d.state.id, execution.id, execution.ownershipEpoch,
                 receipt.envelope);
-            } else d.database.retryScopedAgentArrival({ projectId: d.state.id, executionId: execution.id,
+            } else await d.database.retryScopedAgentArrival({ projectId: d.state.id, executionId: execution.id,
               arrivalRequestId: execution.arrivalRequestId, failedOwnershipEpoch: receipt.failedOwnershipEpoch });
           }
         } catch (error) {
-          if (d.signal.aborted || d.database.projectCancellationIntent(d.state.id) || error instanceof ScopedManagementDeferredError ||
+          if (d.signal.aborted || (await d.database.projectCancellationIntent(d.state.id)) || error instanceof ScopedManagementDeferredError ||
             error instanceof CollaborationStateError && (error.code === "WORKFLOW_ADJUSTMENT_PENDING" ||
               error.code === "ACTIVE_NODE_CONFLICT" && error.details.reason === "management-occupancy")) throw error;
           const reason = `Recovery decision could not be applied: ${error instanceof Error ? redactTrace(error.message) : "Unknown recovery application failure"}`;
-          const failures = d.database.recordScopedManagementFailure({ projectId: d.state.id, groupRunId: group.id,
+          const failures = await d.database.recordScopedManagementFailure({ projectId: d.state.id, groupRunId: group.id,
             agentId: manager.agentId, invocationId: manager.invocationId, runtimePath: manager.runtimePath,
             coordinatorEpoch: manager.coordinatorEpoch, purpose: "recover", reason, applicationFailure: receipt.envelope });
           if (receipt.globalMain && failures.some(failure => failure.exhausted)) {
@@ -1463,7 +1520,7 @@ export class ScopedProjectRuntime {
   private async requestScopedUser(invocationId: string, callId: string, message: string, rationale: string): Promise<void> {
     const d = this.d;
     if (d.state.orchestration.allowUserIntervention === false) {
-      if (d.state.userIntervention?.status === "pending" && d.database.isScopedUserIntervention(d.state.id, d.state.userIntervention.id)) {
+      if (d.state.userIntervention?.status === "pending" && (await d.database.isScopedUserIntervention(d.state.id, d.state.userIntervention.id))) {
         d.state.userIntervention = undefined;
         if (d.state.phase === "user-intervention-required") {
           d.state.status = "retrying"; d.state.phase = "collaboration:scoped-failure";
@@ -1473,32 +1530,32 @@ export class ScopedProjectRuntime {
       }
       return;
     }
-    const latest = d.database.latestScopedUserRequest(d.state.id);
+    const latest = await d.database.latestScopedUserRequest(d.state.id);
     if (!latest || latest.invocationId !== invocationId || latest.callId !== callId) return;
     const key = `scoped-user-request:${invocationId}:${callId}`;
-    const prior = d.database.eventByRequestId(d.state.id, key);
+    const prior = await d.database.eventByRequestId(d.state.id, key);
     const intervention = prior?.payload.intervention as ProjectState["userIntervention"] | undefined ?? {
       id: `intervention_${createHash("sha256").update(key).digest("hex").slice(0, 32)}`, status: "pending" as const,
       requestedAt: new Date().toISOString(), message, rationale, successCriteria: [], requestedBy: "main",
       requestedInvocationId: invocationId, requestKind: "main" as const
     };
     if (prior) {
-      if (d.database.eventByRequestId(d.state.id, `scoped-user-consumed:${intervention.id}`)) {
-        if (d.state.userIntervention && d.database.isScopedUserIntervention(d.state.id, d.state.userIntervention.id)) {
+      if ((await d.database.eventByRequestId(d.state.id, `scoped-user-consumed:${intervention.id}`))) {
+        if (d.state.userIntervention && (await d.database.isScopedUserIntervention(d.state.id, d.state.userIntervention.id))) {
           d.state.userIntervention = undefined;
           await d.storage.saveState(d.state);
         }
         return;
       }
       if (d.state.userIntervention?.id === intervention.id) return;
-      const answered = d.database.eventByRequestId(d.state.id, `user-response-${intervention.id}`);
+      const answered = await d.database.eventByRequestId(d.state.id, `user-response-${intervention.id}`);
       if (answered && typeof answered.payload.response === "string" && answered.payload.response.trim()) {
         d.state.userIntervention = { ...intervention, status: "answered", response: answered.payload.response,
           answeredAt: typeof answered.payload.answeredAt === "string" ? answered.payload.answeredAt : answered.ts };
         d.state.status = "queued"; d.state.phase = "collaboration:user-response";
         await d.storage.saveState(d.state); return;
       }
-    } else d.database.appendEvent({ projectId: d.state.id, requestId: key, agentId: "main", invocationId,
+    } else await d.database.appendEvent({ projectId: d.state.id, requestId: key, agentId: "main", invocationId,
       type: "user.intervention.requested", payload: { intervention, scoped: true } });
     d.state.userIntervention = intervention; d.state.status = "retrying"; d.state.phase = "user-intervention-required";
     await d.storage.saveState(d.state);
@@ -1508,11 +1565,11 @@ export class ScopedProjectRuntime {
     // Publications are derived solely from accepted scoped control intents and
     // immutable PR+sync facts; never from an open PR or a mutable checkout.
     const d = this.d;
-    const projection = d.database.projectState(d.state.id);
-    const events = [] as ReturnType<CollaborationStateDatabase["eventsAfter"]>;
+    const projection = await d.database.projectState(d.state.id);
+    const events = [] as Awaited<ReturnType<CollaborationStateDatabase["eventsAfter"]>>;
     let cursor = 0;
     for (;;) {
-      const page = d.database.eventsAfter(d.state.id, cursor, 1_000);
+      const page = await d.database.eventsAfter(d.state.id, cursor, 1_000);
       if (!page.length) break;
       events.push(...page); cursor = page.at(-1)!.seq;
     }

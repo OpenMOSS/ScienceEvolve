@@ -124,7 +124,7 @@ describe("durable Workflow adjustment native notifications", () => {
       } finally { db.mockRestore(); }
     });
 
-  it.each(["codex", "claude-code", "pi", "dsh"])("binds Main's exact withdrawn proposal to actual %s input reception without rewriting its draft or tool receipt", async harness => {
+  it.each(["codex", "pi", "dsh"])("binds Main's exact withdrawn proposal to actual %s input reception without rewriting its draft or tool receipt", async harness => {
     const f = await fixture(harness), id = f.acceptMain(), original = f.database.workflowAdjustments("p")[0];
     const accepted = f.database.eventsAfter("p", 0, 1000).find(event => event.type === "main.route_action.accepted");
     const draft = join(f.root, "workflow.json"); await writeFile(draft, "Main's unsubmitted draft remains exact");

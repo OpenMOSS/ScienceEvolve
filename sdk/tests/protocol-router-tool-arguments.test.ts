@@ -151,3 +151,50 @@ describe.each([
     expect(events.map((event) => JSON.parse(event.argumentsDelta!))).toEqual(values);
   });
 });
+
+describe("native function argument correction", () => {
+  it.each(["responses", "chat-completions"] as const)("keeps %s parsing feedback on the original route", async sourceProtocol => {
+    const malformed = '{"target":"next"} trailing text';
+    const requests: Array<Record<string, unknown>> = [];
+    const server = createServer(async (request, response) => {
+      let raw = "";
+      for await (const chunk of request) raw += chunk.toString();
+      requests.push(JSON.parse(raw));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: "correction", model: "fixture-model", choices: [{ index: 0,
+        message: requests.length === 1
+          ? { role: "assistant", content: null, tool_calls: [{ id: "bad-call", type: "function",
+            function: { name: toolName, arguments: malformed } }] }
+          : { role: "assistant", content: "The Agent received the parser feedback." },
+        finish_reason: requests.length === 1 ? "tool_calls" : "stop" }] }));
+    });
+    servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing provider port");
+    const proxy = await mainRouter.startProtocolProxy({ sourceProtocol, targetProtocol: "chat-completions", force: true,
+      gatewayUrl: `http://127.0.0.1:${address.port}/v1`, gatewayApiKey: "test-secret", validateGatewayTarget: async () => undefined });
+    proxies.push(proxy);
+    const send = (input: Record<string, unknown>) => fetch(`${proxy.baseUrl}/${sourceProtocol === "responses" ? "responses" : "chat/completions"}`, {
+      method: "POST", headers: { authorization: `Bearer ${proxy.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...sourceRequest(sourceProtocol), stream: false, ...input })
+    });
+    const first = await send({});
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    const call = sourceProtocol === "responses" ? firstBody.output.find(item => item.type === "function_call")
+      : firstBody.choices[0].message.tool_calls[0];
+    expect(sourceProtocol === "responses" ? call.arguments : call.function.arguments).toBe(malformed);
+    expect(proxy.getFailure?.()).toBeUndefined();
+    const feedback = "Tool argument parsing failed; correct the original call.";
+    const next = await send(sourceProtocol === "responses" ? { input: [call,
+      { type: "function_call_output", call_id: "bad-call", output: feedback }] }
+      : { messages: [{ role: "assistant", content: null, tool_calls: [call] },
+        { role: "tool", tool_call_id: "bad-call", content: feedback }] });
+    expect(next.status).toBe(200);
+    await next.text();
+    expect(JSON.stringify(requests[1])).toContain(feedback);
+    expect(requests).toHaveLength(2);
+    expect(proxy.getFailure?.()).toBeUndefined();
+  });
+});

@@ -7,7 +7,6 @@ import type { AgentRunRequest, ProjectState } from "../../src/core/types.js";
 import { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";
 import { CodexRunner } from "../../src/core/codex-runner.js";
 import type { SessionRef } from "../../src/core/harness-runtime/contracts.js";
-import { ClaudeCodeAdapter } from "../../src/core/harness-runtime/adapters/claude-code-adapter.js";
 import {
   DshAdapter,
   dshExplainerPatch, dshSelectedSkillsPatch,
@@ -24,145 +23,6 @@ afterEach(async () => {
     fs.rm(root, { recursive: true, force: true })
   ));
 });
-
-type FakeClaudeIdentityMode =
-  | "argument"
-  | "resume-mismatch"
-  | "inconsistent"
-  | "invalid"
-  | "missing"
-  | "max-turns"
-  | "structured-max-turns"
-  | "long-turn"
-  | "recovery-missing"
-  | "malformed-hang";
-
-async function fakeClaudeExecutable(
-  root: string,
-  identityMode: FakeClaudeIdentityMode = "argument"
-): Promise<{ executable: string; capture: string; terminated: string; later: string }> {
-  const executable = path.join(root, "fake-claude.mjs");
-  const capture = path.join(root, "claude-capture.jsonl");
-  const terminated = path.join(root, "claude-terminated.txt");
-  const later = path.join(root, "claude-later.txt");
-  await fs.writeFile(executable, `#!/usr/bin/env node
-import fs from "node:fs";
-import { spawnSync } from "node:child_process";
-const args = process.argv.slice(2);
-const resumed = args.includes("--resume");
-const sessionArgument = resumed ? "--resume" : "--session-id";
-const sessionIndex = args.indexOf(sessionArgument);
-const requestedSession = sessionIndex >= 0 ? args[sessionIndex + 1] : "";
-const identityMode = ${JSON.stringify(identityMode)};
-const mismatchSession = "00000000-0000-4000-8000-000000000004";
-const capturePath = ${JSON.stringify(capture)};
-const priorAttempts = fs.existsSync(capturePath)
-  ? fs.readFileSync(capturePath, "utf8").trim().split("\\n").filter(Boolean).length
-  : 0;
-const nativeAttempt = priorAttempts + 1;
-process.on("SIGTERM", () => {
-  fs.writeFileSync(${JSON.stringify(terminated)}, "terminated\\n");
-  process.exit(0);
-});
-const session = identityMode === "invalid"
-  ? "not-a-valid-claude-session"
-  : identityMode === "resume-mismatch" && resumed
-    ? mismatchSession
-    : requestedSession;
-const laterSession = identityMode === "inconsistent" ? mismatchSession : session;
-const omitSession = identityMode === "missing" ||
-  (identityMode === "recovery-missing" && nativeAttempt > 1);
-const withSession = (value, sessionId) => omitSession
-  ? value
-  : { ...value, session_id: sessionId };
-let prompt = "";
-for await (const chunk of process.stdin) prompt += chunk;
-const wirePrompt = prompt;
-const replayedUser = args.includes("--input-format") ? JSON.parse(prompt.trim()) : undefined;
-if (replayedUser) prompt = replayedUser.message.content.map((part) => part.text ?? "").join("\\n");
-const lineValue = (prefix, suffix) => {
-  const line = prompt.split("\\n").find((value) => value.startsWith(prefix));
-  return line && line.endsWith(suffix)
-    ? line.slice(prefix.length, -suffix.length)
-    : "";
-};
-const inboxPath = lineValue("Current task Inbox: ", ". Its exact current instructions are included below; use the context index for background and do not reload unchanged material.") || lineValue("Current task Inbox: ", ". Open it for your assigned task; use the context index for background records and read details only when needed.") || lineValue("Read the invocation Inbox at ", ".") || (prompt.includes("项目入口：") && process.env.SCIENCEEVOLVE_INVOCATION_ID ? process.cwd() + "/.scienceevolve/inbox/" + process.env.SCIENCEEVOLVE_INVOCATION_ID + ".md" : "");
-const memoryPath =
-  lineValue("Persistent project memory: ", ". Consult relevant portions when needed; do not reload unchanged memory or entire histories by default.") ||
-  lineValue("Read persistent project memory at ", " before acting.") ||
-  lineValue("Read persistent Agent memory at ", " before acting.") ||
-  lineValue("Read persistent Agent memory at ", ".") || (prompt.includes("项目入口：") && process.env.SCIENCEEVOLVE_INVOCATION_ID ? process.cwd() + "/Memory.md" : "");
-const inspireProbe = process.env.SCIENCEEVOLVE_AGENT_PERMISSION === "compute"
-  ? spawnSync("inspire", ["job", "create", "--name", "claude-compute-probe", "--workspace", "fixture", "--group", "H100", "--quota", "1,1,1", "--nodes", "1", "--command", "true"], { encoding: "utf8" })
-  : null;
-fs.appendFileSync(capturePath, JSON.stringify({
-  mcpConfig: args.includes("--mcp-config") ? JSON.parse(fs.readFileSync(args[args.indexOf("--mcp-config") + 1], "utf8")) : undefined,
-  args,
-  wirePrompt,
-  nativeAttempt,
-  requestedSession,
-  emittedSession: omitSession ? null : session,
-  prompt,
-  inboxPath,
-  memoryPath,
-  inbox: inboxPath ? fs.readFileSync(inboxPath, "utf8") : null,
-  memory: memoryPath ? fs.readFileSync(memoryPath, "utf8") : null,
-  autoCompactWindow: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW,
-  maxContextTokens: process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS,
-  streamFirstByteTimeout: process.env.CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS ?? null,
-  streamIdleTimeout: process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS ?? null,
-  byteStreamIdleTimeout: process.env.CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS ?? null,
-  apiTimeout: process.env.API_TIMEOUT_MS ?? null,
-  disableWindowEnforcement: process.env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT ?? null,
-  permission: process.env.SCIENCEEVOLVE_AGENT_PERMISSION,
-  inspireStatus: inspireProbe?.status ?? null,
-  inspireLedger: process.env.SCIENCEEVOLVE_INSPIRE_WORKLOAD_LEDGER ?? null,
-  inspirePath: process.env.PATH?.split(":")[0] ?? null,
-  inspireConfigPath: process.env.INSPIRE_GLOBAL_CONFIG_PATH ?? null,
-  inspireWorkspaceRoot: process.env.SCIENCEEVOLVE_INSPIRE_WORKSPACE_ROOT ?? null,
-  noProxy: process.env.NO_PROXY ?? null
-}) + "\\n");
-console.log(JSON.stringify(withSession({ type: "system", subtype: "init" }, session)));
-if (replayedUser && args.includes("--replay-user-messages")) console.log(JSON.stringify(withSession(replayedUser, session)));
-if (identityMode === "malformed-hang") {
-  console.error("Authorization: Bearer fixture-private-token");
-  process.stdout.write('{"type":"assistant" broken}\\n');
-  setTimeout(() => {
-    fs.writeFileSync(${JSON.stringify(later)}, "late output was reached\\n");
-    console.log(JSON.stringify(withSession({ type: "assistant", message: {
-      role: "assistant", content: [{ type: "text", text: "must not be emitted" }]
-    }}, session)));
-  }, 250);
-  setTimeout(() => process.exit(0), 1000);
-} else {
-  const responseText = identityMode === "recovery-missing" && nativeAttempt > 1
-    ? "SECOND_ATTEMPT_WORK_MUST_NOT_PUBLISH"
-    : "Fixture complete.";
-  const loopCount = identityMode === "long-turn" ? 9 : 1;
-  for (let loop = 1; loop <= loopCount; loop += 1) {
-    console.log(JSON.stringify(withSession({ type: "assistant", message: {
-      role: "assistant", content: [{ type: "tool_use", id: "read-" + loop, name: "Read", input: { file_path: inboxPath } }]
-    }}, laterSession)));
-    console.log(JSON.stringify(withSession({ type: "user", message: {
-      role: "user", content: [{ type: "tool_result", tool_use_id: "read-" + loop, content: "authority inbox", is_error: false }]
-    }}, session)));
-  }
-  console.log(JSON.stringify(withSession({ type: "assistant", message: {
-    role: "assistant", content: [{ type: "text", text: responseText }]
-  }}, session)));
-  console.log(JSON.stringify(withSession(identityMode === "structured-max-turns"
-    ? { type: "result", subtype: "error_max_turns", is_error: true, result: "Reached max turns" }
-    : { type: "result", subtype: "success", is_error: false, result: responseText }, session)));
-  if (identityMode === "max-turns" || identityMode === "structured-max-turns") {
-    if (identityMode !== "structured-max-turns") console.error("Reached max turns");
-    process.exitCode = 1;
-  } else if (identityMode === "recovery-missing" && nativeAttempt === 1) {
-    process.stdout.write("", () => process.kill(process.pid, "SIGKILL"));
-  }
-}
-`, { encoding: "utf8", mode: 0o700 });
-  return { executable, capture, terminated, later };
-}
 
 async function fakePiExecutable(
   root: string,
@@ -282,6 +142,7 @@ async function fakeDshExecutable(
 import fs from "node:fs";
 import path from "node:path";
 import { zstdCompressSync } from "node:zlib";
+import { spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
 const patchIndex = args.lastIndexOf("--patch");
 const patch = patchIndex >= 0 ? fs.readFileSync(args[patchIndex + 1], "utf8") : "";
@@ -365,6 +226,8 @@ const handle = (request) => {
       lineValue("Read persistent project memory at ", " before acting.") ||
       lineValue("Read persistent Agent memory at ", " before acting.") || (prompt.includes("项目入口：") && process.env.SCIENCEEVOLVE_INVOCATION_ID ? process.cwd() + "/Memory.md" : "")
     : "";
+  const inspireProbe = prompt && process.env.SCIENCEEVOLVE_AGENT_PERMISSION === "compute"
+    ? spawnSync("inspire", ["job", "create", "--name", "dsh-compute-probe", "--workspace", "fixture", "--group", "H100", "--quota", "1,1,1", "--nodes", "1", "--command", "true"], { encoding: "utf8" }) : undefined;
   fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({
     args,
     patch: fs.readFileSync(args[args.lastIndexOf("--patch") + 1], "utf8"),
@@ -373,6 +236,12 @@ const handle = (request) => {
     patch,
     permission: process.env.SCIENCEEVOLVE_AGENT_PERMISSION,
     webSearchEnabled: process.env.SCIENCEEVOLVE_WEB_SEARCH_ENABLED,
+    inspireStatus: inspireProbe?.status ?? null,
+    inspireLedger: process.env.SCIENCEEVOLVE_INSPIRE_WORKLOAD_LEDGER ?? null,
+    inspirePath: process.env.PATH?.split(path.delimiter)[0] ?? null,
+    inspireConfigPath: process.env.INSPIRE_GLOBAL_CONFIG_PATH ?? null,
+    inspireWorkspaceRoot: process.env.SCIENCEEVOLVE_INSPIRE_WORKSPACE_ROOT ?? null,
+    noProxy: process.env.NO_PROXY ?? null,
     ...(prompt ? {
       prompt,
       inboxPath,
@@ -589,7 +458,7 @@ async function workflowRequest(
   root: string,
   kind: "main" | "worker",
   invocationId: string,
-  harness = "claude-code"
+  harness = "dsh"
 ): Promise<AgentRunRequest> {
   const projectId = kind === "main"
     ? `prj_${"1".repeat(32)}`
@@ -662,7 +531,7 @@ async function workflowRequest(
   };
 }
 
-type CleanupHarnessId = "claude-code" | "pi" | "dsh";
+type CleanupHarnessId = "pi" | "dsh";
 
 async function cleanupFailureFixture(
   root: string,
@@ -674,9 +543,7 @@ async function cleanupFailureFixture(
   cleanupPath: string;
   cleanupOperation: "remove" | "write";
 }> {
-  const executable = harnessId === "claude-code"
-    ? (await fakeClaudeExecutable(root, behavior === "normal" ? "argument" : behavior)).executable
-    : harnessId === "pi"
+  const executable = harnessId === "pi"
       ? (await fakePiExecutable(root, behavior)).executable
       : (await fakeDshExecutable(root, behavior)).executable;
   const runtime = new HarnessRuntimeFacade({
@@ -698,9 +565,7 @@ async function cleanupFailureFixture(
     request,
     cleanupPath: path.join(
       request.runtimePath,
-      harnessId === "claude-code"
-        ? "claude-mcp.json"
-        : harnessId === "dsh"
+      harnessId === "dsh"
           ? "dsh-openfars.patch.yml"
           : "pi-stdout.log"
     ),
@@ -752,10 +617,9 @@ async function explainerSnapshot(request: AgentRunRequest): Promise<{
 }
 
 describe("built-in Harness Adapters", () => {
-  it.each(["codex", "claude-code", "pi", "dsh"] as const)("injects only product assistant tools into the native %s Explainer", async harness => {
+  it.each(["codex", "pi", "dsh"] as const)("injects only product assistant tools into the native %s Explainer", async harness => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-native-assistant-")); roots.push(root);
-    const fake = harness === "codex" ? await fakeCodexExplainerExecutable(root) : harness === "claude-code" ? await fakeClaudeExecutable(root)
-      : harness === "pi" ? await fakePiExecutable(root) : await fakeDshExecutable(root);
+    const fake = harness === "codex" ? await fakeCodexExplainerExecutable(root) : harness === "pi" ? await fakePiExecutable(root) : await fakeDshExecutable(root);
     const runtime = new HarnessRuntimeFacade({ harnessExecutables: { [harness]: fake.executable },
       protocolProxyFactory: vi.fn(async () => ({ baseUrl: "http://127.0.0.1:43198/v1", token: "invocation-token", close: async () => undefined })) });
     const source = await workflowRequest(root, "worker", `inv_${harness}_assistant`, harness), snapshot = await explainerSnapshot(source);
@@ -778,10 +642,9 @@ describe("built-in Harness Adapters", () => {
     if (harness === "codex") expect(capture.args).toEqual(expect.arrayContaining(["-s", "danger-full-access", "skip_host_skill_discovery"]));
     await expect(runtime.runExplainer({ ...input, assistantMcp: { url: "https://external.example/mcp" } }, new AbortController().signal)).rejects.toThrow();
   });
-  it.each(["codex", "claude-code", "pi", "dsh"])("uses the service shell environment for %s even when an old Agent config contains a proxy mode", async harness => {
+  it.each(["codex", "pi", "dsh"])("uses the service shell environment for %s even when an old Agent config contains a proxy mode", async harness => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-service-network-")); roots.push(root);
     const native = harness === "codex" ? await fakeCodexExplainerExecutable(root)
-      : harness === "claude-code" ? await fakeClaudeExecutable(root)
       : harness === "pi" ? await fakePiExecutable(root) : await fakeDshExecutable(root);
     const executable = path.join(root, "network-observer.mjs"), capturePath = path.join(root, "network-observer.jsonl");
     const startup = path.join(root, "service-startup.bash");
@@ -1000,32 +863,132 @@ child.on("exit", code => process.exit(code ?? 1));
     }
   });
 
-  it("removes only the fixed DSH and Claude credential artifacts after interruption", async () => {
+
+
+  it("removes only the fixed DSH credential artifact after interruption", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-adapter-interrupted-cleanup-"));
     roots.push(root);
     const runtimePath = path.join(root, "runtime");
     const dshPatch = path.join(runtimePath, "dsh-openfars.patch.yml");
-    const claudeConfig = path.join(runtimePath, "claude-mcp.json");
     const unrelated = path.join(runtimePath, "keep.txt");
     await fs.mkdir(runtimePath, { recursive: true });
     await Promise.all([
       fs.writeFile(dshPatch, "dsh-secret", "utf8"),
-      fs.writeFile(claudeConfig, "claude-secret", "utf8"),
       fs.writeFile(unrelated, "keep", "utf8")
     ]);
 
     await new DshAdapter().cleanupInterrupted("inv_cleanup", runtimePath);
-    await new ClaudeCodeAdapter().cleanupInterrupted("inv_cleanup", runtimePath);
     // Interruption recovery may run more than once after a server restart.
     await new DshAdapter().cleanupInterrupted("inv_cleanup", runtimePath);
-    await new ClaudeCodeAdapter().cleanupInterrupted("inv_cleanup", runtimePath);
 
     await expect(fs.lstat(dshPatch)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(fs.lstat(claudeConfig)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.readFile(unrelated, "utf8")).resolves.toBe("keep");
   });
 
-  it.each(["claude-code", "pi", "dsh"] as const)(
+
+  it.each(["workflow", "explainer"] as const)(
+    "does not start a %s same-Harness replacement after the invocation process budget is exhausted",
+    async (purpose) => {
+      const root = await fs.mkdtemp(path.join(
+        os.tmpdir(),
+        `openfars-pi-${purpose}-budget-`
+      ));
+      roots.push(root);
+      const fake = await fakePiExecutable(root, "resume-mismatch");
+      const runtime = new HarnessRuntimeFacade({
+        harnessExecutables: { "pi": fake.executable },
+        invocationRecoveryMaxAttempts: 1,
+        protocolProxyFactory: vi.fn(async () => ({
+          baseUrl: "http://127.0.0.1:43197/v1",
+          token: "invocation-token",
+          close: async () => undefined
+        }))
+      });
+      const source = await workflowRequest(
+        root,
+        purpose === "workflow" ? "main" : "worker",
+        `inv_pi_${purpose}_budget`,
+        "pi"
+      );
+      const explainerPaths = purpose === "explainer"
+        ? await explainerSnapshot(source)
+        : undefined;
+      const sessionPath = path.join(
+        source.projectPath, "runtime", "harness-sessions",
+        purpose === "workflow" ? "main" : "__explainer__", "pi", "sessions", "previous.jsonl"
+      );
+      await fs.mkdir(path.dirname(sessionPath), { recursive: true });
+      await fs.writeFile(sessionPath, JSON.stringify({
+        type: "session", version: 3, id: "previous-pi-session",
+        timestamp: "2026-09-16T00:00:00.000Z",
+        cwd: explainerPaths?.workspacePath ?? source.workspacePath
+      }) + "\n", "utf8");
+      const previousSession: SessionRef = {
+        schemaVersion: 1,
+        harnessId: "pi",
+        adapterVersion: "1",
+        generation: 2,
+        nativeId: sessionPath,
+        durable: true,
+        createdAt: "2026-09-16T00:00:00.000Z"
+      };
+      const invocation = purpose === "workflow"
+        ? (() => {
+            source.project.agentSessions = { main: previousSession };
+            return runtime.run(
+              source,
+              () => undefined,
+              new AbortController().signal
+            );
+          })()
+        : runtime.runExplainer({
+            invocationId: source.invocationId,
+            projectId: source.project.id,
+            projectPath: source.projectPath,
+            workspacePath: explainerPaths!.workspacePath,
+            runtimePath: source.runtimePath,
+            inboxPath: explainerPaths!.inboxPath,
+            memoryPath: explainerPaths!.memoryPath,
+            harnessId: "pi",
+            gateway: {
+              id: source.project.agents.worker!.gatewaySnapshot!.id,
+              name: source.project.agents.worker!.gatewaySnapshot!.name,
+              url: source.project.agents.worker!.gatewaySnapshot!.url,
+              apiKey: source.project.agents.worker!.gatewaySnapshot!.apiKey,
+              models: source.project.agents.worker!.gatewaySnapshot!.models,
+              defaultModel: source.project.agents.worker!.gatewaySnapshot!.defaultModel,
+              protocol: source.project.agents.worker!.gatewaySnapshot!.protocol
+            },
+            model: "fixture-model",
+            reasoningEffort: "low",
+            prompt: [
+              `Read the invocation Inbox at ${explainerPaths!.inboxPath}.`,
+              `Read persistent Agent memory at ${explainerPaths!.memoryPath}.`
+            ].join("\n"),
+            session: previousSession,
+            onTrace: () => undefined,
+            onEvent: () => undefined
+          }, new AbortController().signal);
+
+      await expect(invocation).rejects.toMatchObject({
+        code: "INVOCATION_ATTEMPT_BUDGET_EXHAUSTED",
+        source: "runtime",
+        details: {
+          attemptsStarted: 1,
+          maxAttempts: 1,
+          requestedEvidence: "adapter-dispatch"
+        }
+      });
+      const captures = (await fs.readFile(fake.capture, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { args: string[] });
+      expect(captures).toHaveLength(1);
+      expect(captures[0]?.args).toContain("--session");
+    }
+  );
+
+  it.each([ "pi", "dsh"] as const)(
     "normalizes %s cleanup failures after otherwise successful execution",
     async (harnessId) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), `openfars-${harnessId}-cleanup-fail-`));
@@ -1057,7 +1020,7 @@ child.on("exit", code => process.exit(code ?? 1));
     }
   );
 
-  it.each(["claude-code", "pi", "dsh"] as const)(
+  it.each([ "pi", "dsh"] as const)(
     "does not let a %s cleanup failure replace the primary event-stream error",
     async (harnessId) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), `openfars-${harnessId}-primary-fail-`));
@@ -1223,7 +1186,7 @@ child.on("exit", code => process.exit(code ?? 1));
   it("gives multiple compute Adapters the same staged Inspire wrapper and workload ledger", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-compute-adapters-"));
     roots.push(root);
-    const claude = await fakeClaudeExecutable(root);
+    const dsh = await fakeDshExecutable(root);
     const pi = await fakePiExecutable(root);
     const inspireBin = await fakeInspireExecutable(root);
     const inspireConfigPath = "/secure/inspire/config.toml";
@@ -1233,7 +1196,7 @@ child.on("exit", code => process.exit(code ?? 1));
       inspireNoProxy: ["inspire.fixture"],
       inspireWorkspaceRoot: root,
       harnessExecutables: {
-        "claude-code": claude.executable,
+        dsh: dsh.executable,
         pi: pi.executable
       },
       protocolProxyFactory: vi.fn(async () => ({
@@ -1244,7 +1207,7 @@ child.on("exit", code => process.exit(code ?? 1));
     });
 
     for (const [harness, invocationId] of [
-      ["claude-code", "inv_compute_claude"],
+      ["dsh", "inv_compute_dsh"],
       ["pi", "inv_compute_pi"]
     ] as const) {
       const runRequest = await workflowRequest(root, "worker", invocationId, harness);
@@ -1257,8 +1220,9 @@ child.on("exit", code => process.exit(code ?? 1));
       );
     }
 
-    const captures = await Promise.all([claude.capture, pi.capture].map(async (file) =>
-      JSON.parse((await fs.readFile(file, "utf8")).trim()) as {
+    const captures = await Promise.all([dsh.capture, pi.capture].map(async (file) =>
+      (await fs.readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line))
+        .findLast(record => typeof record.prompt === "string") as {
         permission: string;
         inspireStatus: number | null;
         inspireLedger: string | null;
@@ -1280,7 +1244,7 @@ child.on("exit", code => process.exit(code ?? 1));
       });
       expect(capture.noProxy?.split(",")).toContain("inspire.fixture");
       expect(capture.inspirePath).toMatch(
-        new RegExp(`${path.sep}runtime${path.sep}inv_compute_(?:claude|pi)${path.sep}bin$`)
+        new RegExp(`${path.sep}runtime${path.sep}inv_compute_(?:dsh|pi)${path.sep}bin$`)
       );
     }
     const ledger = (await fs.readFile(ledgerPath, "utf8"))
@@ -1289,8 +1253,8 @@ child.on("exit", code => process.exit(code ?? 1));
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(ledger).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        invocationId: "inv_compute_claude",
-        name: "claude-compute-probe",
+        invocationId: "inv_compute_dsh",
+        name: "dsh-compute-probe",
         requestedAcceleratorType: "H100",
         source: "wrapper"
       }),
@@ -1301,561 +1265,6 @@ child.on("exit", code => process.exit(code ?? 1));
         source: "wrapper"
       })
     ]));
-  });
-
-  it("sends an SII Claude input as one official frame and observes its complete echoed body before display truncation", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-claude-sii-input-")); roots.push(root);
-    const fake = await fakeClaudeExecutable(root);
-    const runRequest = await workflowRequest(root, "worker", "inv_sii_input");
-    runRequest.siiMcp = { url: "http://127.0.0.1:45991/local-sii-fixture" };
-    runRequest.siiResumePrompt = "known-result-context-".repeat(2200) + "SII-NATIVE-TAIL-9213";
-    const full: Array<{ event: Record<string, unknown>; session?: SessionRef }> = [];
-    const displayed: Record<string, unknown>[] = [];
-    runRequest.onNativeUserInput = (event, session) => { full.push({ event, session }); };
-    runRequest.onOfficialHarnessEvent = event => { displayed.push(event); };
-    const runtime = new HarnessRuntimeFacade({ harnessExecutables: { "claude-code": fake.executable },
-      protocolProxyFactory: async () => ({ baseUrl: "http://127.0.0.1:43199/v1", token: "local-fixture", close: async () => undefined }) });
-    expect((await runtime.run(runRequest, () => undefined, new AbortController().signal)).handoff).toBe("Fixture complete.");
-    const capture = JSON.parse((await fs.readFile(fake.capture, "utf8")).trim());
-    expect(capture.args).toEqual(expect.arrayContaining(["--input-format", "stream-json", "--replay-user-messages", "--tools", "default"]));
-    expect(JSON.parse(capture.wirePrompt)).toEqual({ type: "user", session_id: capture.requestedSession,
-      message: { role: "user", content: [{ type: "text", text: capture.prompt }] } });
-    expect(full).toHaveLength(1);
-    expect(full[0]!.event.message).toContain("SII-NATIVE-TAIL-9213");
-    expect(String(full[0]!.event.message).length).toBeGreaterThan(40000);
-    expect(full[0]!.session?.nativeId).toBe(capture.requestedSession);
-    const preview = displayed.find(event => event.kind === "user.message")!;
-    expect(String(preview.message).length).toBeLessThanOrEqual(40000);
-    expect(String(preview.message)).not.toContain("SII-NATIVE-TAIL-9213");
-  });
-
-  it.each(["main", "worker"] as const)("preauthorizes the actual Claude %s control server including finish and state tools", async kind => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-claude-control-approval-")); roots.push(root);
-    const fake = await fakeClaudeExecutable(root);
-    const runRequest = await workflowRequest(root, kind, "inv_authorized_control");
-    runRequest.control = { stagingPath: path.join(runRequest.runtimePath, "control.json"), capability: "local-control-fixture",
-      stateVersion: 1, candidates: [], decisionBy: "agent", allowUserIntervention: false, canComplete: false, projectState: true };
-    const runtime = new HarnessRuntimeFacade({ harnessExecutables: { "claude-code": fake.executable },
-      protocolProxyFactory: async () => ({ baseUrl: "http://127.0.0.1:43199/v1", token: "local-fixture", close: async () => {} }) });
-    await runtime.run(runRequest, () => undefined, new AbortController().signal);
-    const capture = JSON.parse((await fs.readFile(fake.capture, "utf8")).trim());
-    expect(capture.mcpConfig.mcpServers).toHaveProperty("scienceevolve-orchestration-control");
-    expect(capture.args.slice(capture.args.indexOf("--allowedTools") + 1, capture.args.indexOf("--strict-mcp-config"))).toEqual(expect.arrayContaining(["Bash", "Read", "Write", "Edit", "Agent"]));
-    expect(capture.args.slice(capture.args.indexOf("--permission-mode"), capture.args.indexOf("--permission-mode") + 2))
-      .toEqual(["--permission-mode", "dontAsk"]);
-  });
-
-  it("gives Claude Main and Worker the same native read tools and real staged input paths", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-claude-adapter-"));
-    roots.push(root);
-    const fake = await fakeClaudeExecutable(root);
-    const close = vi.fn(async () => undefined);
-    const runtime = new HarnessRuntimeFacade({
-      harnessExecutables: { "claude-code": fake.executable },
-      protocolProxyFactory: vi.fn(async () => ({
-        baseUrl: "http://127.0.0.1:43199/v1",
-        token: "invocation-token",
-        close
-      }))
-    });
-
-    for (const [kind, invocationId] of [["main", "inv_main"], ["worker", "inv_worker"]] as const) {
-      const runRequest = await workflowRequest(root, kind, invocationId);
-      const agentConfig = runRequest.project.agents[runRequest.agent]!;
-      agentConfig.gatewaySnapshot!.modelContextWindows = { [agentConfig.model]: 1_000_000 };
-      const result = await runtime.run(
-        runRequest,
-        () => undefined,
-        new AbortController().signal
-      );
-      expect(result.handoff).toBe("Fixture complete.");
-    }
-
-    const captures = (await fs.readFile(fake.capture, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as {
-        args: string[];
-        requestedSession: string;
-        emittedSession: string;
-        prompt: string;
-        inboxPath: string;
-        memoryPath: string;
-        inbox: string;
-        memory: string;
-        autoCompactWindow: string;
-        maxContextTokens: string;
-        disableWindowEnforcement: string | null;
-        streamFirstByteTimeout: string | null;
-        streamIdleTimeout: string | null;
-        byteStreamIdleTimeout: string | null;
-        apiTimeout: string | null;
-      });
-    expect(captures).toHaveLength(2);
-    for (const capture of captures) {
-      expect(capture.autoCompactWindow).toBe("800000");
-      expect(capture.maxContextTokens).toBe("1000000");
-      expect(capture.disableWindowEnforcement).toBeNull();
-      expect(capture.streamFirstByteTimeout).toBeNull();
-      expect(capture.streamIdleTimeout).toBeNull();
-      expect(capture.byteStreamIdleTimeout).toBeNull();
-      expect(capture.apiTimeout).toBeNull();
-      const toolsIndex = capture.args.indexOf("--tools");
-      expect(capture.args.slice(toolsIndex, toolsIndex + 2)).toEqual([
-        "--tools",
-        "default"
-      ]);
-      expect(capture.args).toEqual(expect.arrayContaining([
-        "--output-format",
-        "stream-json",
-        "--tools"
-      ]));
-      expect(capture.args).not.toContain("--max-turns");
-      expect(capture.args).not.toContain("--effort");
-      expect(capture.args).toContain("Bash");
-      expect(capture.args.slice(capture.args.indexOf("--allowedTools") + 1, capture.args.indexOf("--strict-mcp-config"))).toEqual(expect.arrayContaining(["Bash", "Read", "Write", "Edit", "Agent"]));
-      expect(capture.mcpConfig.mcpServers).toHaveProperty("scienceevolve-workspace");
-      expect(capture.args).not.toContain("--restricted");
-
-    }
-    expect(captures.map((item) => item.inbox)).toEqual([
-      "main authoritative inbox\n",
-      "worker authoritative inbox\n"
-    ]);
-    expect(captures.map((item) => item.memory)).toEqual([
-      "main persistent memory\n",
-      "worker persistent memory\n"
-    ]);
-    expect(close).toHaveBeenCalledTimes(2);
-  });
-
-  it("lets a Claude workflow naturally complete more than eight legal model/tool loops", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-claude-long-turn-"));
-    roots.push(root);
-    const fake = await fakeClaudeExecutable(root, "long-turn");
-    const runtime = new HarnessRuntimeFacade({
-      harnessExecutables: { "claude-code": fake.executable },
-      protocolProxyFactory: vi.fn(async () => ({
-        baseUrl: "http://127.0.0.1:43197/v1",
-        token: "invocation-token",
-        close: async () => undefined
-      }))
-    });
-    const request = await workflowRequest(root, "worker", "inv_claude_long_turn");
-    const officialEvents = vi.fn(async () => undefined);
-    request.onOfficialHarnessEvent = officialEvents;
-
-    await expect(runtime.run(
-      request,
-      () => undefined,
-      new AbortController().signal
-    )).resolves.toMatchObject({ handoff: "Fixture complete." });
-
-    const captures = (await fs.readFile(fake.capture, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as {
-        args: string[];
-        nativeAttempt: number;
-        streamFirstByteTimeout: string | null;
-        streamIdleTimeout: string | null;
-        byteStreamIdleTimeout: string | null;
-        apiTimeout: string | null;
-      });
-    expect(captures).toEqual([expect.objectContaining({
-      nativeAttempt: 1,
-      streamFirstByteTimeout: null,
-      streamIdleTimeout: null,
-      byteStreamIdleTimeout: null,
-      apiTimeout: null
-    })]);
-    expect(captures[0]?.args).not.toContain("--max-turns");
-    expect(JSON.stringify(officialEvents.mock.calls)).toContain("read-9");
-  });
-
-  it("preserves a resumed Claude Session and stops after repeated identity mismatches", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-claude-resume-id-"));
-    roots.push(root);
-    const fake = await fakeClaudeExecutable(root, "resume-mismatch");
-    const runtime = new HarnessRuntimeFacade({
-      harnessExecutables: { "claude-code": fake.executable },
-      protocolProxyFactory: vi.fn(async () => ({
-        baseUrl: "http://127.0.0.1:43197/v1",
-        token: "invocation-token",
-        close: async () => undefined
-      }))
-    });
-    const request = await workflowRequest(root, "main", "inv_claude_resume_id");
-    const previousSession: SessionRef = {
-      schemaVersion: 1,
-      harnessId: "claude-code",
-      adapterVersion: "1",
-      generation: 2,
-      nativeId: "00000000-0000-4000-8000-000000000003",
-      durable: true,
-      createdAt: "2026-09-16T00:00:00.000Z"
-    };
-    request.project.agentSessions = { main: previousSession };
-    const onSessionStarted = vi.fn();
-    const traces: string[] = [];
-    request.onSessionStarted = onSessionStarted;
-
-    await expect(runtime.run(
-      request,
-      (_type, message) => { traces.push(message); },
-      new AbortController().signal
-    )).rejects.toMatchObject({ code: "SESSION_RESUME_FAILED", retryable: false, details: { recoveryLimit: 1 } });
-
-    expect(traces).toContain(
-      "Native session recovery retrying the original Session"
-    );
-    const captures = (await fs.readFile(fake.capture, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as {
-        args: string[];
-        requestedSession: string;
-        emittedSession: string;
-      });
-    expect(captures).toHaveLength(2);
-    expect(captures[0]).toMatchObject({
-      requestedSession: previousSession.nativeId,
-      emittedSession: "00000000-0000-4000-8000-000000000004"
-    });
-    expect(captures[0]?.args).toEqual(expect.arrayContaining([
-      "--resume",
-      previousSession.nativeId
-    ]));
-    expect(captures[1]?.args).toEqual(expect.arrayContaining(["--resume", previousSession.nativeId]));
-    expect(captures[1]?.requestedSession).toBe(previousSession.nativeId);
-    expect(onSessionStarted).toHaveBeenCalledWith(expect.objectContaining({
-      harnessId: "claude-code",
-      generation: 2,
-      nativeId: previousSession.nativeId
-    }));
-  });
-
-  it.each(["workflow", "explainer"] as const)(
-    "does not start a %s same-Harness replacement after the invocation process budget is exhausted",
-    async (purpose) => {
-      const root = await fs.mkdtemp(path.join(
-        os.tmpdir(),
-        `openfars-claude-${purpose}-budget-`
-      ));
-      roots.push(root);
-      const fake = await fakeClaudeExecutable(root, "resume-mismatch");
-      const runtime = new HarnessRuntimeFacade({
-        harnessExecutables: { "claude-code": fake.executable },
-        invocationRecoveryMaxAttempts: 1,
-        protocolProxyFactory: vi.fn(async () => ({
-          baseUrl: "http://127.0.0.1:43197/v1",
-          token: "invocation-token",
-          close: async () => undefined
-        }))
-      });
-      const source = await workflowRequest(
-        root,
-        purpose === "workflow" ? "main" : "worker",
-        `inv_claude_${purpose}_budget`
-      );
-      const explainerPaths = purpose === "explainer"
-        ? await explainerSnapshot(source)
-        : undefined;
-      const previousSession: SessionRef = {
-        schemaVersion: 1,
-        harnessId: "claude-code",
-        adapterVersion: "1",
-        generation: 2,
-        nativeId: "00000000-0000-4000-8000-000000000003",
-        durable: true,
-        createdAt: "2026-09-16T00:00:00.000Z"
-      };
-      const invocation = purpose === "workflow"
-        ? (() => {
-            source.project.agentSessions = { main: previousSession };
-            return runtime.run(
-              source,
-              () => undefined,
-              new AbortController().signal
-            );
-          })()
-        : runtime.runExplainer({
-            invocationId: source.invocationId,
-            projectId: source.project.id,
-            projectPath: source.projectPath,
-            workspacePath: explainerPaths!.workspacePath,
-            runtimePath: source.runtimePath,
-            inboxPath: explainerPaths!.inboxPath,
-            memoryPath: explainerPaths!.memoryPath,
-            harnessId: "claude-code",
-            gateway: {
-              id: source.project.agents.worker!.gatewaySnapshot!.id,
-              name: source.project.agents.worker!.gatewaySnapshot!.name,
-              url: source.project.agents.worker!.gatewaySnapshot!.url,
-              apiKey: source.project.agents.worker!.gatewaySnapshot!.apiKey,
-              models: source.project.agents.worker!.gatewaySnapshot!.models,
-              defaultModel: source.project.agents.worker!.gatewaySnapshot!.defaultModel,
-              protocol: source.project.agents.worker!.gatewaySnapshot!.protocol
-            },
-            model: "fixture-model",
-            reasoningEffort: "low",
-            prompt: [
-              `Read the invocation Inbox at ${explainerPaths!.inboxPath}.`,
-              `Read persistent Agent memory at ${explainerPaths!.memoryPath}.`
-            ].join("\n"),
-            session: previousSession,
-            onTrace: () => undefined,
-            onEvent: () => undefined
-          }, new AbortController().signal);
-
-      await expect(invocation).rejects.toMatchObject({
-        code: "INVOCATION_ATTEMPT_BUDGET_EXHAUSTED",
-        source: "runtime",
-        details: {
-          attemptsStarted: 1,
-          maxAttempts: 1,
-          requestedEvidence: "adapter-dispatch"
-        }
-      });
-      const captures = (await fs.readFile(fake.capture, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { args: string[] });
-      expect(captures).toHaveLength(1);
-      expect(captures[0]?.args).toContain("--resume");
-    }
-  );
-
-  it.each(["inconsistent", "invalid", "missing"] as const)(
-    "fails a new Claude Session whose official identity is %s",
-    async (identityMode) => {
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), `openfars-claude-${identityMode}-`));
-      roots.push(root);
-      const fake = await fakeClaudeExecutable(root, identityMode);
-      const runtime = new HarnessRuntimeFacade({
-        harnessExecutables: { "claude-code": fake.executable },
-        protocolProxyFactory: vi.fn(async () => ({
-          baseUrl: "http://127.0.0.1:43197/v1",
-          token: "invocation-token",
-          close: async () => undefined
-        }))
-      });
-      const request = await workflowRequest(
-        root,
-        "worker",
-        `inv_claude_${identityMode}`
-      );
-      const officialEvents = vi.fn();
-      request.onOfficialHarnessEvent = officialEvents;
-
-      await expect(runtime.run(
-        request,
-        () => undefined,
-        new AbortController().signal
-      )).rejects.toMatchObject({
-        code: "HARNESS_CONTRACT_VIOLATION",
-        source: "adapter",
-        harnessId: "claude-code"
-      });
-      const publishedKinds = officialEvents.mock.calls.map(([event]) =>
-        (event as { kind: string }).kind
-      );
-      expect(publishedKinds).toEqual(identityMode === "inconsistent"
-        ? ["lifecycle", "user.message"]
-        : []);
-      if (identityMode === "inconsistent") {
-        expect(officialEvents.mock.calls[1]?.[0]).toMatchObject({
-          kind: "user.message", invocationId: request.invocationId, harnessId: "claude-code", message: expect.any(String)
-        });
-      }
-    }
-  );
-
-  it("requires Claude recovery processes to reconfirm Session identity before work", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-claude-recovery-identity-"));
-    roots.push(root);
-    const fake = await fakeClaudeExecutable(root, "recovery-missing");
-    const runtime = new HarnessRuntimeFacade({
-      harnessExecutables: { "claude-code": fake.executable },
-      protocolProxyFactory: vi.fn(async () => ({
-        baseUrl: "http://127.0.0.1:43197/v1",
-        token: "invocation-token",
-        close: async () => undefined
-      }))
-    });
-    const request = await workflowRequest(root, "worker", "inv_claude_recovery_identity");
-    const officialEvents = vi.fn();
-    request.onOfficialHarnessEvent = officialEvents;
-
-    await expect(runtime.run(
-      request,
-      () => undefined,
-      new AbortController().signal
-    )).rejects.toMatchObject({
-      code: "HARNESS_CONTRACT_VIOLATION",
-      safeMessage: "Claude Code official stream emitted work before confirming its Session identity",
-      harnessId: "claude-code"
-    });
-
-    const captures = (await fs.readFile(fake.capture, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as {
-        args: string[];
-        nativeAttempt: number;
-        emittedSession: string | null;
-      });
-    expect(captures).toHaveLength(2);
-    expect(captures[0]).toMatchObject({ nativeAttempt: 1, emittedSession: expect.any(String) });
-    expect(captures[1]).toMatchObject({ nativeAttempt: 2, emittedSession: null });
-    expect(captures[1]?.args).toContain("--resume");
-    expect(JSON.stringify(officialEvents.mock.calls)).not.toContain(
-      "SECOND_ATTEMPT_WORK_MUST_NOT_PUBLISH"
-    );
-  });
-
-  it("terminates Claude on malformed stream JSON, retains redacted stderr, and removes its MCP config", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-claude-stream-failfast-"));
-    roots.push(root);
-    const fake = await fakeClaudeExecutable(root, "malformed-hang");
-    const runtime = new HarnessRuntimeFacade({
-      harnessExecutables: { "claude-code": fake.executable },
-      protocolProxyFactory: vi.fn(async () => ({
-        baseUrl: "http://127.0.0.1:43197/v1",
-        token: "invocation-token",
-        close: async () => undefined
-      }))
-    });
-    const request = await workflowRequest(
-      root,
-      "worker",
-      "inv_claude_stream_failfast"
-    );
-    const officialEvents = vi.fn();
-    request.onOfficialHarnessEvent = officialEvents;
-
-    await expect(runtime.run(
-      request,
-      () => undefined,
-      new AbortController().signal
-    )).rejects.toMatchObject({
-      code: "HARNESS_EVENT_STREAM_FAILED",
-      safeMessage: "Invalid official JSON event"
-    });
-
-    await expect(fs.readFile(fake.terminated, "utf8")).resolves.toContain("terminated");
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    await expect(fs.lstat(fake.later)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(fs.lstat(path.join(
-      request.runtimePath,
-      "claude-mcp.json"
-    ))).rejects.toMatchObject({ code: "ENOENT" });
-    const stderr = await fs.readFile(path.join(
-      request.runtimePath,
-      "claude-code-stderr.log"
-    ), "utf8");
-    expect(stderr).toContain("[REDACTED]");
-    expect(stderr).not.toContain("fixture-private-token");
-    expect(officialEvents.mock.calls.map(([event]) => (event as { kind: string }).kind)).toEqual(["lifecycle", "user.message"]);
-    expect(officialEvents.mock.calls[1]?.[0]).toMatchObject({
-      invocationId: request.invocationId, harnessId: "claude-code", message: expect.any(String)
-    });
-    expect(JSON.stringify(officialEvents.mock.calls)).not.toContain("must not be emitted");
-  });
-
-  it.each(["max-turns", "structured-max-turns"] as const)(
-    "does not turn a Claude native turn-limit report into process recovery (%s)",
-    async (identityMode) => {
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-claude-recovery-budget-"));
-      roots.push(root);
-      const fake = await fakeClaudeExecutable(root, identityMode);
-      const runtime = new HarnessRuntimeFacade({
-        harnessExecutables: { "claude-code": fake.executable },
-        invocationRecoveryMaxAttempts: 2,
-        protocolProxyFactory: vi.fn(async () => ({
-          baseUrl: "http://127.0.0.1:43197/v1",
-          token: "invocation-token",
-          close: async () => undefined
-        }))
-      });
-
-      await expect(runtime.run(
-        await workflowRequest(root, "worker", "inv_claude_budget"),
-        () => undefined,
-        new AbortController().signal
-      )).rejects.toMatchObject({
-        code: "HARNESS_PROCESS_EXITED",
-        details: {
-          harnessId: "claude-code",
-          exitCode: 1
-        }
-      });
-
-      const captures = (await fs.readFile(fake.capture, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { args: string[]; requestedSession: string });
-      expect(captures).toHaveLength(1);
-      expect(captures[0]?.args).toContain("--session-id");
-      expect(captures[0]?.args).not.toContain("--max-turns");
-    }
-  );
-
-  it("disables slash-command Skills for the snapshot-confined Claude Explainer", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-claude-explainer-"));
-    roots.push(root);
-    const fake = await fakeClaudeExecutable(root);
-    const runtime = new HarnessRuntimeFacade({
-      harnessExecutables: { "claude-code": fake.executable },
-      protocolProxyFactory: vi.fn(async () => ({
-        baseUrl: "http://127.0.0.1:43197/v1",
-        token: "invocation-token",
-        close: async () => undefined
-      }))
-    });
-    const source = await workflowRequest(root, "worker", "inv_claude_explainer");
-    const explainerPaths = await explainerSnapshot(source);
-    const gateway = source.project.agents.worker!.gatewaySnapshot!;
-
-    await runtime.runExplainer({
-      invocationId: source.invocationId,
-      projectId: source.project.id,
-      projectPath: source.projectPath,
-      workspacePath: explainerPaths.workspacePath,
-      runtimePath: source.runtimePath,
-      inboxPath: explainerPaths.inboxPath,
-      memoryPath: explainerPaths.memoryPath,
-      harnessId: "claude-code",
-      gateway: {
-        id: gateway.id,
-        name: gateway.name,
-        url: gateway.url,
-        apiKey: gateway.apiKey,
-        models: gateway.models,
-        defaultModel: gateway.defaultModel,
-        protocol: gateway.protocol
-      },
-      model: "fixture-model",
-      reasoningEffort: "low",
-      prompt: [
-        `Read the invocation Inbox at ${explainerPaths.inboxPath}.`,
-        `Read persistent Agent memory at ${explainerPaths.memoryPath}.`
-      ].join("\n"),
-      onTrace: () => undefined,
-      onEvent: () => undefined
-    }, new AbortController().signal);
-
-    const capture = JSON.parse((await fs.readFile(fake.capture, "utf8")).trim()) as {
-      args: string[];
-    };
-    expect(capture.args).toEqual(expect.arrayContaining([
-      "--disable-slash-commands",
-      "--tools",
-      "default",
-      "--max-turns",
-      "8"
-    ]));
-    expect(capture.args).toContain("Bash");
   });
 
   it("launches Pi in official JSON print mode with durable Main and ephemeral Worker sessions", async () => {

@@ -1,4 +1,5 @@
 import { proxyFailureError } from "./errors.js";
+import { pendingNativeProcesses, type NativeProcessOwner } from "./native-processes.js";
 import { resolveGatewayReasoning } from "../gateway-reasoning.js";
 import { redactTrace } from "../utils.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -119,7 +120,6 @@ import { validateSessionRef } from "./session-ref.js";
 import { stageInvocationSkills } from "./skill-staging.js";
 import { CodexAdapter } from "./adapters/codex-adapter.js";
 import { PiAdapter } from "./adapters/pi-adapter.js";
-import { ClaudeCodeAdapter } from "./adapters/claude-code-adapter.js";
 import { DshAdapter } from "./adapters/dsh-adapter.js";
 import {
   agentEnvironment,
@@ -933,12 +933,12 @@ function createCanonicalEventIngress(options: {
         );
       }
       if (
-        (event.kind === "assistant.delta" || event.kind === "assistant.message") &&
+        (event.kind === "assistant.delta" || event.kind === "assistant.message" || event.kind === "reasoning.summary") &&
         Boolean(event.message)
       ) {
         options.onActivity?.({
           kind: "model",
-          phase: event.kind === "assistant.delta" ? "delta" : "completed",
+          phase: event.phase === "delta" ? "delta" : "completed",
           source: "harness",
           ...(event.kind === "assistant.delta"
             ? { deltaKind: "visible-text" as const }
@@ -1355,7 +1355,10 @@ function validateAdapterResult(
     throw new HarnessRuntimeError(
       "HARNESS_CONTRACT_VIOLATION",
       `${descriptor.label} returned an invalid natural-language handoff`,
-      { harnessId: descriptor.id },
+      { harnessId: descriptor.id, reason: typeof handoff !== "string" ? "handoff must be a string"
+        : !handoff.trim() ? "handoff is empty"
+        : handoff.length > HANDOFF_CHARACTER_LIMIT ? `handoff has ${handoff.length} characters; maximum is ${HANDOFF_CHARACTER_LIMIT}`
+        : "handoff contains unsupported control characters" },
       { source: "adapter" }
     );
   }
@@ -1465,7 +1468,6 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       new DshAdapter(adapterOptions),
       new PiAdapter(adapterOptions),
       new CodexAdapter(adapterOptions),
-      new ClaudeCodeAdapter(adapterOptions),
       ...(options.additionalAdapters ?? [])
     ];
     this.registry = new HarnessRegistry(
@@ -1912,6 +1914,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       facadeFixedMcpToken
     );
     const processBinding = {
+      nativeProcesses: this.nativeProcessOwner(request, input.onTrace, residentScopeId(context)),
       scopeId: residentScopeId(context),
       role: context.role,
       harnessId,
@@ -2117,6 +2120,21 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
 
   probeResident(authority: ResidentLeaseAuthority): Promise<ResidentProcessLease> {
     return this.residentLeases.probe(authority);
+  }
+
+  async pendingResidentProcesses(authority: ResidentLeaseAuthority) {
+    const lease = await this.residentLeases.probe(authority);
+    return pendingNativeProcesses(lease.pid);
+  }
+
+  private nativeProcessOwner(request: AgentRunRequest, onTrace: TraceSink, executionId?: string): NativeProcessOwner {
+    return { projectId: request.project.id, projectPath: request.projectPath, agentId: request.agent,
+      ...(executionId ? { executionId } : { invocationId: request.invocationId }),
+      onChanges: async records => {
+        for (const record of records) await onTrace("status", `Native process ${record.state}: ${record.command}`, {
+          nativeProcess: record, diagnostic: true, diagnosticSource: "process", harness: request.project.agents[request.agent]?.harness
+        });
+      } };
   }
 
   closeResident(authority: ResidentLeaseAuthority): Promise<ResidentProcessLease> {
@@ -2501,6 +2519,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     const createInvocationProcessHost = (): InvocationProcessHost => {
       return this.processHost.forInvocation({
         invocationId: request.invocationId,
+        nativeProcesses: this.nativeProcessOwner(request, onTrace),
         harnessId,
         runtimePath: inputs.runtimePath,
         workspacePath: inputs.workspacePath,

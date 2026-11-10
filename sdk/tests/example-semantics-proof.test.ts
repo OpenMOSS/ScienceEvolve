@@ -46,6 +46,14 @@ describe("example semantic proof without historical Git objects", () => {
     expect(f.run().status).not.toBe(0);
   });
 
+  it("requires Pi for the ARIS author deployment", async () => {
+    const f = await fixture(), file = path.join(f.root, "example/aris/workflow.json");
+    const workflow = JSON.parse(await fs.readFile(file, "utf8"));
+    workflow.agents.main.harness = "codex";
+    await fs.writeFile(file, JSON.stringify(workflow));
+    expect(f.run()).toMatchObject({ status: 1, output: expect.stringContaining("Invalid ARIS author Harness: main") });
+  });
+
   it.each(["missing", "extra", "edits", "identity"])("rejects %s proof drift", async fault => {
     const f = await fixture(), file = path.join(f.root, proofPath);
     const proof = JSON.parse(await fs.readFile(file, "utf8"));

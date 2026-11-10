@@ -55,12 +55,12 @@ describe("one main source policy replaces supplemental and patched core imports"
   it.each(["fixes", "hostSources", "supplementalSources"])("rejects nonempty %s even before an extraction or check", async field => {
     const f = await fixture(), before = await fs.readFile(f.manifestFile, "utf8");
     Object.assign(f.index, { [field]: field === "fixes" ? [{ id: "fixture-patch", source: f.entry.source, hostOnly: true,
-      replacements: [{ before: "true", after: "false" }] }] : field === "hostSources" ? ["harness-runtime/adapters/hermes-fixture.ts"]
+      replacements: [{ before: "true", after: "false" }] }] : field === "hostSources" ? ["harness-runtime/adapters/host-fixture.ts"]
       : [{ source: "server/src/foreign.ts", upstreamCommit: "a".repeat(40), sourceSha256: hash("foreign") }] });
     await fs.writeFile(f.indexFile, JSON.stringify(f.index));
     for (const args of [["--check"], ["--source", path.join(f.root, "missing-checkout")]]) {
       const result = f.run(...args); expect(result.status).not.toBe(0);
-      expect(result.output).toContain("Shared core must use one exact main source");
+      expect(result.output).toContain(field === "hostSources" ? "Shared core cannot contain SDK adapter sources" : "Shared core must use one exact main source");
     }
     expect(await fs.readFile(f.manifestFile, "utf8")).toBe(before);
     expect(await fs.readFile(path.join(f.root, f.entry.target), "utf8")).toBe(f.content);

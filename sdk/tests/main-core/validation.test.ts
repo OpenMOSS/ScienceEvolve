@@ -411,12 +411,12 @@ describe("agent configuration defaults", () => {
     const parsed = agentOrchestrationTemplateSchema.parse({
       ...orchestration,
       resultFormat: {
-        presets: ["论文", "表格", "论文", "  Markdown 文件  "],
+        presets: ["论文", "表格", "论文", "  Markdown 文件  ", "HTML 文件"],
         custom: "  以便审阅和继续编辑的结构交付。  "
       }
     });
     expect(parsed.resultFormat).toEqual({
-      presets: ["论文", "表格", "Markdown 文件"],
+      presets: ["论文", "表格", "Markdown 文件", "HTML 文件"],
       custom: "以便审阅和继续编辑的结构交付。"
     });
 

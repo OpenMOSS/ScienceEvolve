@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse as parseToml } from "smol-toml";
+import { NATIVE_PROCESS_SUPPORT_ENV } from "../../src/core/harness-runtime/native-processes.js";
 import { AgentContextSources, publishAgentContextIndex } from "../../src/core/agent-context-index.js";
 import type { AgentPermission, AgentRunRequest, AuthoritativeWorkflowFiles } from "../../src/core/types.js";
 import { cloneAgentOrchestrationTemplate } from "../../src/core/agent-orchestration.js";
@@ -21,7 +22,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SiiExperimentService, assertSiiControlAction } from "../../src/core/sii-experiments.js";
 import { CodexAdapter } from "../../src/core/harness-runtime/adapters/codex-adapter.js";
-import { ClaudeCodeAdapter } from "../../src/core/harness-runtime/adapters/claude-code-adapter.js";
 import { PiAdapter } from "../../src/core/harness-runtime/adapters/pi-adapter.js";
 import { DshAdapter, dshSessionArtifactPath } from "../../src/core/harness-runtime/adapters/dsh-adapter.js";
 import type {
@@ -70,9 +70,155 @@ afterEach(async () => {
 });
 
 describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () => {
-  it.each(["codex", "claude-code", "pi", "dsh"])("delivers long current instructions directly to %s without requiring a context-detail read", async harnessId => {
-    const native = harnessId === "codex" ? new CodexAdapter() : harnessId === "claude-code" ? new ClaudeCodeAdapter()
-      : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
+  it("retains a completed native handoff and accepted route when the old gateway stream does not drain", async () => {
+    const fixture = await createFixture("pi", new PiAdapter());
+    const processHost = new CommonProcessHost();
+    let environment: NodeJS.ProcessEnv | undefined;
+    const start = processHost.startResident.bind(processHost);
+    vi.spyOn(processHost, "startResident").mockImplementation((binding, plan, callbacks) => {
+      environment = { ...plan.env }; return start(binding, plan, callbacks);
+    });
+    const upstream = createServer((request, response) => {
+      request.resume(); response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write("data: retained child stream\n\n");
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address(); if (!address || typeof address === "string") throw Error("Missing test listener");
+    const configured = configuredAdapter("pi", fixture.launch.executable);
+    const facade = new HarnessRuntimeFacade({ adapters: [new CodexAdapter(), configured], processHost });
+    const services: ControlActionService[] = [], traces: Array<Record<string, unknown>> = [];
+    let sequence = 0, pendingBody: Promise<string> | undefined;
+    const adapter = new HarnessRuntimeResidentAdapter({ runtime: facade,
+      routeFactory: async () => {
+        const route = await openTestInvocationRoute("chat-completions", `drain-${++sequence}`);
+        if (sequence !== 1) return route;
+        const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+        return { ...route, baseUrl, proxy: { ...route.proxy, baseUrl }, close: async () => {
+          upstream.closeAllConnections(); await closeTestServer(upstream); await route.close();
+        } };
+      }, controlServiceFactory: options => {
+        const service = new ControlActionService(options); services.push(service); return service;
+      } });
+    const prepared = await highLevelInput(fixture, async () => undefined);
+    const capability = "accepted-before-stream-cleanup";
+    const handle = await adapter.open({ ...prepared,
+      controlScope: { role: "standalone-route", projectId: "prj_fixture", nodeRunId: "nr_fixture",
+        executionId: "exec-fixture", agentId: "writer", ownershipEpoch: 7, candidates: ["next-node"], decisionBy: "agent" },
+      controlAuthorityFactory: async ({ turn }) => ({ control: {
+        stagingPath: path.join(fixture.executionRuntime, `${turn.invocationId}.json`), capability: `${capability}-${turn.invocationId}`,
+        capabilityHash: createHash("sha256").update(`${capability}-${turn.invocationId}`).digest("hex"), stateVersion: 7, candidates: ["next-node"],
+        decisionBy: "agent", allowAgentGitActions: true, allowUserIntervention: false, canComplete: false, requireBridge: true
+      }, revalidate: async () => undefined }),
+      turnRequestFactory: async ({ baseRequest, turn }) => ({ request: { ...baseRequest, invocationId: turn.invocationId },
+        onTrace: async (_kind, message, data) => {
+          if (data?.resourceCleanupFailed) traces.push(data);
+          if (message !== "Resident turn authority activated") return;
+          await services.at(-1)!.stage(`${capability}-${turn.invocationId}`, "accepted-route", { tool: "route_to_agent", target: "next-node" });
+          if (turn.inputId !== "old-stream") return;
+          const gateway = stableGatewayFromEnvironment("chat-completions", environment!);
+          const response = await fetch(gateway.endpoint, { method: "POST", headers: gateway.headers, body: "{}" });
+          pendingBody = response.text().catch(() => "closed");
+        } }) });
+    try {
+      const first = await handle.submit({ inputId: "old-stream", invocationId: "drain-first", prompt: "Return accepted work" });
+      expect(first).toMatchObject({ handoff: "pi-1", controlActions: [{ invocationId: "drain-first", action: { tool: "route_to_agent", target: "next-node" } }] });
+      expect(traces).toEqual([expect.objectContaining({ resourceCleanupFailed: true,
+        cleanupFailures: expect.arrayContaining([expect.objectContaining({ resource: "gateway", reason: "Resident Gateway requests did not drain" })]) })]);
+      await expect(pendingBody).resolves.toBe("closed");
+      await expect(handle.submit({ inputId: "next-work", invocationId: "drain-second", prompt: "Continue ordinary work" }))
+        .resolves.toMatchObject({ handoff: "pi-2" });
+      expect((await handle.probe()).pid).toBe(handle.initialLease.pid);
+    } finally { await handle.close(); upstream.closeAllConnections(); await closeTestServer(upstream); }
+  }, 15_000);
+
+  it("keeps the current native turn running when saving a known old item notification fails", async () => {
+    const fixture = await createFixture("codex", new CodexAdapter());
+    const events = "if(n===1)s({method:'item/started',params:{threadId:'codex-session',turnId:id,item:{type:'mcpToolCall',id:'old-item',server:'fixture',tool:'inspect_result',status:'started',arguments:{}}}});if(n===2)s({method:'item/completed',params:{threadId:'codex-session',turnId:'t1',item:{type:'mcpToolCall',id:'old-item',server:'fixture',tool:'inspect_result',status:'completed',result:{content:[{type:'text',text:'late old result'}]}}}});";
+    await fs.writeFile(fixture.launch.executable, fakeSource("codex", true).replace("s({method:'thread/tokenUsage/updated'", events + "s({method:'thread/tokenUsage/updated'"), { mode: 0o700 });
+    const configured = configuredAdapter("codex", fixture.launch.executable);
+    const facade = new HarnessRuntimeFacade({ adapters: [configured] });
+    const trace = vi.fn(async (_kind, _message, data) => {
+      if (data?.late) throw new Error("Old diagnostic file unavailable");
+    });
+    const prepared = await highLevelInput(fixture, async () => undefined);
+    prepared.onTrace = trace;
+    let sequence = 0;
+    const adapter = new HarnessRuntimeResidentAdapter({ runtime: facade,
+      routeFactory: () => openTestInvocationRoute(configured.descriptor.nativeProtocol, `late-diagnostic-${++sequence}`) });
+    const handle = await adapter.open({ ...prepared, turnRequestFactory: async ({ baseRequest, turn }) => ({
+      request: { ...baseRequest, invocationId: turn.invocationId }, onTrace: trace }) });
+    try {
+      await expect(handle.submit({ inputId: "first-input", invocationId: "inv_first", prompt: "Original task" })).resolves.toMatchObject({ handoff: "codex-1" });
+      await expect(handle.submit({ inputId: "next-input", invocationId: "inv_next", prompt: "Next task" })).resolves.toMatchObject({ handoff: "codex-2" });
+      expect(trace.mock.calls.some(call => call[2]?.late === true && call[2]?.invocationId === "inv_first")).toBe(true);
+      expect(await handle.probe()).toMatchObject({ state: "waiting", session: { nativeId: "codex-session" } });
+    } finally { await handle.close(); }
+  }, 15_000);
+
+  it.each(["codex", "pi", "dsh"])("exposes %s process facts to common supervision without an adapter-owned wakeup", async harnessId => {
+    const native = harnessId === "codex" ? new CodexAdapter() : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
+    const fixture = await createFixture(harnessId, native);
+    await fs.writeFile(fixture.launch.executable, fakeSource(harnessId, true), { mode: 0o700 });
+    const configured = configuredAdapter(harnessId, fixture.launch.executable);
+    const facade = new HarnessRuntimeFacade({ adapters: harnessId === "codex" ? [configured] : [new CodexAdapter(), configured] });
+    const prepared = await highLevelInput(fixture, async () => undefined);
+    const pending = vi.spyOn(facade, "pendingResidentProcesses").mockResolvedValueOnce([{
+      scopeId: "test-scope", projectId: prepared.request.project.id, agentId: "writer", executionId: "exec-fixture",
+      pid: 424242, procPid: 424242, parentProcPid: 424240, processGroupId: 424242, startTicks: "1", bootId: "test-boot",
+      namespace: "test-namespace", command: "python", root: false, state: "running", firstObservedAt: "2026-11-05T00:00:00.000Z"
+    }]).mockResolvedValue([]);
+    const inputs: Array<{ message: unknown; session?: SessionRef }> = [];
+    prepared.request.onNativeUserInput = (event, session) => { inputs.push({ message: event.message, session }); };
+    let routeSequence = 0;
+    const processTrace = vi.fn(async () => undefined);
+    prepared.onTrace = processTrace;
+    const adapter = new HarnessRuntimeResidentAdapter({ runtime: facade,
+      routeFactory: () => openTestInvocationRoute(configured.descriptor.nativeProtocol, `process-cleanup-${harnessId}-${++routeSequence}`) });
+    const handle = await adapter.open({ ...prepared, turnRequestFactory: async ({ baseRequest, turn }) => ({
+      request: { ...baseRequest, invocationId: turn.invocationId }, onTrace: async () => undefined }) });
+    const identity = structuredClone(handle.initialLease);
+    try {
+      const result = await handle.submit({ inputId: "original-task", invocationId: prepared.request.invocationId, prompt: "Finish the original task" });
+      expect(result.handoff).toContain("-1");
+      expect((await handle.supervisionActions!())[0]).toContain("424242");
+      expect(await handle.supervisionActions!()).toEqual([]);
+      expect(pending).toHaveBeenCalledTimes(2);
+      expect(inputs).toHaveLength(1);
+      expect(processTrace).toHaveBeenCalledWith("status", expect.stringContaining("Native process running"),
+        expect.objectContaining({ nativeProcess: expect.objectContaining({ agentId: "writer", state: "running" }) }));
+      expect(await handle.probe()).toMatchObject({ pid: identity.pid, session: identity.session, state: "waiting" });
+    } finally { await handle.close(); }
+  }, 30_000);
+
+  it("returns the actual native result while unfinished process facts remain observable", async () => {
+    const fixture = await createFixture("pi", new PiAdapter());
+    await fs.writeFile(fixture.launch.executable, fakeSource("pi", true), { mode: 0o700 });
+    const configured = configuredAdapter("pi", fixture.launch.executable);
+    const facade = new HarnessRuntimeFacade({ adapters: [new CodexAdapter(), configured] });
+    const prepared = await highLevelInput(fixture, async () => undefined);
+    const pending = vi.spyOn(facade, "pendingResidentProcesses").mockResolvedValue([{
+      scopeId: "test-scope", projectId: prepared.request.project.id, agentId: "writer", executionId: "exec-fixture",
+      pid: 424242, procPid: 424242, parentProcPid: 424240, processGroupId: 424242, startTicks: "1", bootId: "test-boot",
+      namespace: "test-namespace", command: "python", root: false, state: "running", firstObservedAt: "2026-11-05T00:00:00.000Z"
+    }]);
+    let routes = 0;
+    const turns = vi.spyOn(facade, "submitResidentTurn");
+    const adapter = new HarnessRuntimeResidentAdapter({ runtime: facade,
+      routeFactory: () => openTestInvocationRoute(configured.descriptor.nativeProtocol, `retained-process-${++routes}`) });
+    const handle = await adapter.open({ ...prepared, turnRequestFactory: async ({ baseRequest, turn }) => ({
+      request: { ...baseRequest, invocationId: turn.invocationId }, onTrace: async () => undefined }) });
+    try {
+      await expect(handle.submit({ inputId: "original-task", invocationId: prepared.request.invocationId, prompt: "Finish the original task" }))
+        .resolves.toMatchObject({ handoff: expect.stringContaining("-1") });
+      expect((await handle.supervisionActions!())[0]).toContain("424242");
+      expect(pending).toHaveBeenCalledTimes(1);
+      expect(turns).toHaveBeenCalledTimes(1);
+      expect(await handle.probe()).toMatchObject({ pid: handle.initialLease.pid, session: handle.initialLease.session });
+    } finally { await handle.close(); }
+  });
+
+  it.each(["codex", "pi", "dsh"])("delivers long current instructions directly to %s without requiring a context-detail read", async harnessId => {
+    const native = harnessId === "codex" ? new CodexAdapter() : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
     const fixture = await createFixture(harnessId, native);
     await fs.writeFile(fixture.launch.executable, fakeSource(harnessId, true), { mode: 0o700 });
     const configured = configuredAdapter(harnessId, fixture.launch.executable);
@@ -93,9 +239,8 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       expect(received).toContain("项目入口：");
     } finally { await handle.close(); }
   }, 30_000);
-  it.each(["codex", "claude-code", "pi", "dsh"])("automatically continues the same %s task after a terminal gateway failure", async harnessId => {
-    const native = harnessId === "codex" ? new CodexAdapter() : harnessId === "claude-code" ? new ClaudeCodeAdapter()
-      : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
+  it.each(["codex", "pi", "dsh"])("automatically continues the same %s task after a terminal gateway failure", async harnessId => {
+    const native = harnessId === "codex" ? new CodexAdapter() : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
     const fixture = await createFixture(harnessId, native);
     const source = fakeSource(harnessId)
       .replace("status:'completed',items:", "status:n===1?'failed':'completed',error:{message:'temporary gateway failure'},items:")
@@ -141,9 +286,8 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     } finally { await handle.close(); }
   }, 30_000);
 
-  it.each(["codex", "claude-code", "pi", "dsh"])("sends the current correction and an expandable index instead of a large late-bound %s background body", async harnessId => {
-    const adapter = harnessId === "codex" ? new CodexAdapter() : harnessId === "claude-code" ? new ClaudeCodeAdapter()
-      : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
+  it.each(["codex", "pi", "dsh"])("sends the current correction and an expandable index instead of a large late-bound %s background body", async harnessId => {
+    const adapter = harnessId === "codex" ? new CodexAdapter() : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
     const fixture = await createFixture(harnessId, adapter);
     await fs.writeFile(fixture.launch.executable, fakeSource(harnessId, true), { mode: 0o700 });
     const configured = configuredAdapter(harnessId, fixture.launch.executable);
@@ -213,9 +357,8 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     } finally { release(); controller.abort(); await submitted; await handle.close(); }
   }, 30_000);
 
-  it.each(["codex", "claude-code", "pi", "dsh"])("binds the built-in state service and role guidance to the actual %s resident turn", async harnessId => {
-    const native = harnessId === "codex" ? new CodexAdapter() : harnessId === "claude-code" ? new ClaudeCodeAdapter()
-      : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
+  it.each(["codex", "pi", "dsh"])("binds the built-in state service and role guidance to the actual %s resident turn", async harnessId => {
+    const native = harnessId === "codex" ? new CodexAdapter() : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
     const fixture = await createFixture(harnessId, native);
     const configured = configuredAdapter(harnessId, fixture.launch.executable);
     const facade = new HarnessRuntimeFacade({ adapters: harnessId === "codex" ? [configured] : [new CodexAdapter(), configured] });
@@ -292,9 +435,8 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     } finally { releaseClose(); await submitted; await paused; await handle.close(); }
   });
 
-  it.each(["codex", "claude-code", "pi", "dsh"])("rejects an oversized late-bound %s injection before sending and retains the Session for valid input", async harnessId => {
-    const adapter = harnessId === "codex" ? new CodexAdapter() : harnessId === "claude-code" ? new ClaudeCodeAdapter()
-      : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
+  it.each(["codex", "pi", "dsh"])("rejects an oversized late-bound %s injection before sending and retains the Session for valid input", async harnessId => {
+    const adapter = harnessId === "codex" ? new CodexAdapter() : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
     const fixture = await createFixture(harnessId, adapter);
     await fs.writeFile(fixture.launch.executable, fakeSource(harnessId, true), { mode: 0o700 });
     const configured = configuredAdapter(harnessId, fixture.launch.executable);
@@ -320,10 +462,9 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     } finally { await handle.close(); }
   }, 30_000);
 
-  it.each(["codex", "claude-code", "pi", "dsh"].flatMap(harnessId => [true, false].map(received => ({ harnessId, received }))))(
+  it.each(["codex", "pi", "dsh"].flatMap(harnessId => [true, false].map(received => ({ harnessId, received }))))(
     "delivers a withdrawal accepted after early preparation on the actual retained $harnessId Main weak-route input (native evidence: $received)", async ({ harnessId, received }) => {
-      const adapter = harnessId === "codex" ? new CodexAdapter() : harnessId === "claude-code" ? new ClaudeCodeAdapter()
-        : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
+      const adapter = harnessId === "codex" ? new CodexAdapter() : harnessId === "pi" ? new PiAdapter() : new DshAdapter();
       const fixture = await createFixture(harnessId, adapter, "leader");
       await fs.writeFile(fixture.launch.executable, fakeSource(harnessId, received), { mode: 0o700 });
       const configured = configuredAdapter(harnessId, fixture.launch.executable), processHost = new CommonProcessHost();
@@ -553,21 +694,17 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
 
   it.each([
     { id: "codex", adapter: () => new CodexAdapter() },
-    { id: "claude-code", adapter: () => new ClaudeCodeAdapter() },
     { id: "pi", adapter: () => new PiAdapter() },
     { id: "dsh", adapter: () => new DshAdapter() }
   ])("submits a coordinated report and its bounded supplement with distinct $id native inputs", async (row) => {
     const fixture = await createFixture(row.id, row.adapter());
     const repeatedTool = row.id === "codex"
       ? "s({method:'item/started',params:{threadId:'codex-session',turnId:id,item:{type:'mcpToolCall',id:'reused-native-call',server:'fixture',tool:'inspect_result',status:'started',arguments:{round:n}}}});s({method:'item/completed',params:{threadId:'codex-session',turnId:id,item:{type:'mcpToolCall',id:'reused-native-call',server:'fixture',tool:'inspect_result',status:'completed',result:{content:[{type:'text',text:'result-'+n}]}}}});"
-      : row.id === "claude-code"
-        ? "s({type:'assistant',session_id:q.session_id,message:{role:'assistant',content:[{type:'tool_use',id:'reused-native-call',name:'inspect_result',input:{round:n}}]}});s({type:'user',session_id:q.session_id,message:{role:'user',content:[{type:'tool_result',tool_use_id:'reused-native-call',content:'result-'+n}]}});"
-        : row.id === "pi"
+      : row.id === "pi"
           ? "s({type:'tool_execution_start',toolCallId:'reused-native-call',toolName:'inspect_result',args:{round:n}});s({type:'tool_execution_end',toolCallId:'reused-native-call',toolName:'inspect_result',result:{content:[{type:'text',text:'result-'+n}]},isError:false});"
           : "s({jsonrpc:'2.0',method:'session.event',params:{sessionId:id,event:{type:'tool/call',seq:seq++,data:{callId:'reused-native-call',name:'inspect_result',arguments:{round:n}}}}});s({jsonrpc:'2.0',method:'session.event',params:{sessionId:id,event:{type:'tool/result',seq:seq++,data:{message:{source:{callId:'reused-native-call'},content:[{type:'tool-result',content:[{type:'text',text:'result-'+n}]}]}}}}});";
     const toolAnchor = row.id === "codex" ? "s({method:'thread/tokenUsage/updated'"
-      : row.id === "claude-code" ? "s({type:'assistant'"
-        : row.id === "pi" ? "return s({type:'agent_end'" : "s({jsonrpc:'2.0',method:'session.status',params:{sessionId:id,status:'running'";
+      : row.id === "pi" ? "return s({type:'agent_end'" : "s({jsonrpc:'2.0',method:'session.status',params:{sessionId:id,status:'running'";
     await fs.writeFile(fixture.launch.executable, fakeSource(row.id, true).replace(toolAnchor, repeatedTool + toolAnchor), { mode: 0o700 });
     const configured = configuredAdapter(row.id, fixture.launch.executable);
     const facade = new HarnessRuntimeFacade({
@@ -621,7 +758,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       acceptResult: async (_input, result) => ({ output: result.handoff! })
     });
     try {
-      await expect(invoker.invoke(turn)).resolves.toMatchObject({ output: `${row.id === "claude-code" ? "claude" : row.id}-2`,
+      await expect(invoker.invoke(turn)).resolves.toMatchObject({ output: `${row.id}-2`,
         residentStopConfirmed: true });
       expect(turn.onOpened).toHaveBeenCalledOnce();
       expect(reserveRepair).toHaveBeenCalledExactlyOnceWith(turn, ["github_get_pr or github_create_pr"]);
@@ -655,7 +792,6 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
 
   it.each([
     { id: "codex", permission: "workspace" as const, adapter: () => new CodexAdapter() },
-    { id: "claude-code", permission: "yolo" as const, adapter: () => new ClaudeCodeAdapter() },
     { id: "pi", permission: "compute" as const, adapter: () => new PiAdapter() },
     { id: "dsh", permission: "workspace" as const, adapter: () => new DshAdapter() }
   ].flatMap(row => [true, false].map(nativeReceipt => ({ ...row, nativeReceipt })))
@@ -756,15 +892,13 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     } finally { await handle.close(); await logicalTask; await pausing?.catch(() => undefined); await service.stop(); }
   }, 30_000);
 
-  it.each(["codex", "claude-code"] as const)("confirms a synchronous SII result only through the current %s resident native turn", async harness => {
-    const fixture = await createFixture(harness, harness === "codex" ? new CodexAdapter() : new ClaudeCodeAdapter(),
+  it.each(["codex"] as const)("confirms a synchronous SII result only through the current %s resident native turn", async harness => {
+    const fixture = await createFixture(harness, new CodexAdapter(),
       "delivery", "workspace", false, "prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     const resultPath = path.join(fixture.workspace, "resident-query-result.json");
     const load = `const v=JSON.parse(require('node:fs').readFileSync(${JSON.stringify(resultPath)},'utf8'));`;
-    const nativeResult = harness === "codex"
-      ? `${load}s({method:'item/started',params:{threadId:'codex-session',turnId:id,item:{type:'mcpToolCall',id:'resident-query-call',server:'scienceevolve-sii',tool:'sii_get_experiment',status:'started',arguments:{}}}});s({method:'item/completed',params:{threadId:'codex-session',turnId:id,item:{type:'mcpToolCall',id:'resident-query-call',server:'scienceevolve-sii',tool:'sii_get_experiment',status:'completed',result:v}}});`
-      : `${load}s({type:'assistant',session_id:q.session_id,message:{role:'assistant',content:[{type:'tool_use',id:'resident-query-call',name:'mcp__scienceevolve-sii__sii_get_experiment',input:{}}]}});s({type:'user',session_id:q.session_id,message:{role:'user',content:[{type:'tool_result',tool_use_id:'resident-query-call',content:JSON.stringify(v)}]}});`;
-    const anchor = harness === "codex" ? "s({method:'thread/tokenUsage/updated'" : "s({type:'assistant'";
+    const nativeResult = `${load}s({method:'item/started',params:{threadId:'codex-session',turnId:id,item:{type:'mcpToolCall',id:'resident-query-call',server:'scienceevolve-sii',tool:'sii_get_experiment',status:'started',arguments:{}}}});s({method:'item/completed',params:{threadId:'codex-session',turnId:id,item:{type:'mcpToolCall',id:'resident-query-call',server:'scienceevolve-sii',tool:'sii_get_experiment',status:'completed',result:v}}});`;
+    const anchor = "s({method:'thread/tokenUsage/updated'";
     await fs.writeFile(fixture.launch.executable, fakeSource(harness).replace(anchor, nativeResult + anchor), { mode: 0o700 });
     let terminal = false;
     const runJson = vi.fn(async (args: string[]) => ({ success: true,
@@ -773,7 +907,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       knowledgeRoot: fixture.root, refreshMs: 3_600_000, accountReader: async () => "fixture-account", runJson });
     await service.start(); await service.refreshNow();
     const configured = configuredAdapter(harness, fixture.launch.executable);
-    const facade = new HarnessRuntimeFacade({ adapters: harness === "codex" ? [configured] : [new CodexAdapter(), configured], siiExperiments: service });
+    const facade = new HarnessRuntimeFacade({ adapters: [configured], siiExperiments: service });
     let routeSequence = 0;
     const resident = new HarnessRuntimeResidentAdapter({ runtime: facade,
       routeFactory: async () => openTestInvocationRoute(configured.descriptor.nativeProtocol, `resident-sync-route-${++routeSequence}`) });
@@ -805,7 +939,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
       } }) });
     try {
       await expect(handle.submit({ inputId: "resident-sync-input", invocationId: "inv_resident_sync", prompt: "Inspect the terminal result." }))
-        .resolves.toMatchObject({ handoff: harness === "codex" ? "codex-1" : "claude-1" });
+        .resolves.toMatchObject({ handoff: "codex-1" });
       const doc = await service.document(fixture.projectPath);
       expect(doc.experiments[0]!.acknowledged).toBe(true);
       expect(doc.experiments[0]!.notificationReceipt).toMatchObject({ source: "native_tool_result",
@@ -916,7 +1050,6 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
 
   it.each([
     { id: "codex", adapter: () => new CodexAdapter(), permission: "yolo" as const },
-    { id: "claude-code", adapter: () => new ClaudeCodeAdapter(), permission: "compute" as const },
     { id: "pi", adapter: () => new PiAdapter(), permission: "workspace" as const },
     { id: "dsh", adapter: () => new DshAdapter(), permission: "yolo" as const }
   ])("resumes the original $id session for exact-file closing without inheriting $permission authority", async row => {
@@ -1482,7 +1615,6 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
 
   it.each([
     { id: "codex", adapter: () => new CodexAdapter(), expected: ["app-server", "danger-full-access", "skip_host_skill_discovery"] },
-    { id: "claude-code", adapter: () => new ClaudeCodeAdapter(), expected: ["--input-format", "stream-json", "default", "dontAsk"] },
     { id: "pi", adapter: () => new PiAdapter(), expected: ["--mode", "rpc", "--no-skills"] },
     { id: "dsh", adapter: () => new DshAdapter(), expected: ["--profile", "sdk", "--patch"] }
   ])("launches the real $id resident argv through CommonProcessHost", async (row) => {
@@ -1528,14 +1660,6 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     expect(opened.evidence.args).not.toContain("--effort");
     expect(opened.evidence.args).not.toContain("--thinking");
     expect(opened.evidence.args.join(" ")).not.toContain("model_reasoning_effort");
-    if (row.id === "claude-code") {
-      expect(opened.evidence.args).toContain("--replay-user-messages");
-      expect(opened.evidence.args).not.toContain("--max-turns");
-      expect(launchEnvironment).not.toHaveProperty("CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS");
-      expect(launchEnvironment).not.toHaveProperty("CLAUDE_STREAM_IDLE_TIMEOUT_MS");
-      expect(launchEnvironment).not.toHaveProperty("CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS");
-      expect(launchEnvironment).not.toHaveProperty("API_TIMEOUT_MS");
-    }
     if (row.id === "dsh") {
       const patch = await fs.readFile(path.join(fixture.executionRuntime, "dsh-resident.patch.yml"), "utf8");
       expect(patch).not.toMatch(/tool-bash\n  disabled: true/);
@@ -1616,7 +1740,6 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
   it.each(
     (["workspace", "compute"] as const).flatMap((permission) => [
       { id: "codex", adapter: () => new CodexAdapter() },
-      { id: "claude-code", adapter: () => new ClaudeCodeAdapter() },
       { id: "pi", adapter: () => new PiAdapter() },
       { id: "dsh", adapter: () => new DshAdapter() }
     ].map((adapter) => ({ ...adapter, permission })))
@@ -1689,7 +1812,6 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
 
   it.each([
     { id: "codex", adapter: () => new CodexAdapter() },
-    { id: "claude-code", adapter: () => new ClaudeCodeAdapter() },
     { id: "pi", adapter: () => new PiAdapter() },
     { id: "dsh", adapter: () => new DshAdapter() }
   ])("keeps explicit external MCP configuration reachable for yolo $id", async (row) => {
@@ -1746,9 +1868,13 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     expect(rendered).toContain("http://127.0.0.1:45991/external-mcp");
     expect(rendered).toContain("external-stdio");
     expect(rendered).toContain("/bin/true");
+    expect(launchPlan!.env[NATIVE_PROCESS_SUPPORT_ENV]).toBeUndefined();
     if (row.id === "codex") {
       const servers = parseToml(rendered).mcp_servers as Record<string, object>;
-      expect(servers["external-stdio"]).toMatchObject({ default_tools_approval_mode: "approve" });
+      expect(servers["external-stdio"]).toMatchObject({ default_tools_approval_mode: "approve",
+        env: { [NATIVE_PROCESS_SUPPORT_ENV]: "1" } });
+    } else if (row.id === "dsh") {
+      expect(rendered).toContain(`${NATIVE_PROCESS_SUPPORT_ENV}: "1"`);
     }
     await facade.closeResident({
       executionId: "exec-fixture",
@@ -1991,6 +2117,9 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     const controlEntry = adapterConfig.slice(adapterConfig.indexOf('"openfars-resident-control"'));
     expect(filesystemEntry).toContain('default_tools_approval_mode = "approve"');
     expect(controlEntry).toContain('default_tools_approval_mode = "approve"');
+    for (const row of Object.values(parseToml(adapterConfig).mcp_servers as Record<string, { command?: string; env?: Record<string, string> }>)) {
+      if (row.command) expect(row.env?.[NATIVE_PROCESS_SUPPORT_ENV]).toBe("1");
+    }
     await opened.driver.close();
   }, 30_000);
 
@@ -2084,7 +2213,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     })).rejects.toThrow(/validate staged purpose inputs/);
   });
 
-  it.each(["codex", "claude-code", "pi", "dsh"])("opens the %s management Harness with its exact retained proposal through the public facade", async (harnessId) => {
+  it.each(["codex", "pi", "dsh"])("opens the %s management Harness with its exact retained proposal through the public facade", async (harnessId) => {
     const configured = configuredAdapter(harnessId, "unused");
     const fixture = await createFixture(harnessId, configured, "leader", "workspace", true);
     const proposalRoot = path.join(fixture.workspace, ".scienceevolve", "management", "original-turn", "proposal");
@@ -2161,7 +2290,6 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
 
   it.each([
     { id: "codex", adapter: () => new CodexAdapter() },
-    { id: "claude-code", adapter: () => new ClaudeCodeAdapter() },
     { id: "pi", adapter: () => new PiAdapter() },
     { id: "dsh", adapter: () => new DshAdapter() }
   ])("launches a read-only $id leader with configured Skill, Web, and MCP", async (row) => {
@@ -2229,10 +2357,8 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     if (row.id === "codex") {
       expect(launchPlan?.args).toContain("--search");
       expect(launchPlan?.args.join(" ")).toContain(skillPath);
-    } else if (row.id === "claude-code") {
-      const toolsIndex = launchPlan!.args.indexOf("--tools");
-      expect(launchPlan!.args[toolsIndex + 1]).toBe("default");
-    } else {
+    } else
+{
       expect(rendered).toContain("openfars-web");
       if (row.id === "pi") expect(launchPlan?.args).toContain(skillPath);
     }
@@ -2591,7 +2717,6 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
 
   it.each([
     { id: "codex", adapter: () => new CodexAdapter() },
-    { id: "claude-code", adapter: () => new ClaudeCodeAdapter() },
     { id: "pi", adapter: () => new PiAdapter() },
     { id: "dsh", adapter: () => new DshAdapter() }
   ].flatMap((row) => row.id === "pi"
@@ -3568,7 +3693,6 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
 
   it.each([
     { id: "codex", adapter: () => new CodexAdapter() },
-    { id: "claude-code", adapter: () => new ClaudeCodeAdapter() },
     { id: "pi", adapter: () => new PiAdapter() },
     { id: "dsh", adapter: () => new DshAdapter() }
   ])("stop-confirms and reopens a fresh epoch for recovered $id", async (row) => {
@@ -3998,7 +4122,6 @@ function turn(index: number): ResidentTurn {
 function fakeSource(harnessId: string, replayUserInput = false): string {
   const prelude = "#!/usr/bin/env node\nconst r=require('node:readline').createInterface({input:process.stdin});let n=0;const s=v=>process.stdout.write(JSON.stringify(v)+'\\n');";
   if (harnessId === "codex") return `${prelude}if(process.argv[2]==='debug'&&process.argv[3]==='models'&&process.argv.includes('--bundled')){s({models:[{slug:'fixture-model',use_responses_lite:false,tool_mode:null}]});process.exit(0);}r.on('line',l=>{const q=JSON.parse(l);if(q.method==='initialize')return s({id:q.id,result:{}});if(q.method==='initialized')return;if(q.method==='thread/start'||q.method==='thread/resume'){s({method:'configWarning',params:{summary:'fixture',details:null}});s({method:'mcpServer/startupStatus/updated',params:{threadId:'codex-session',name:'fixture',status:'ready',error:null,failureReason:null}});s({method:'thread/started',params:{thread:{id:'codex-session'}}});s({method:'thread/goal/cleared',params:{threadId:'codex-session'}});s({method:'warning',params:{threadId:'codex-session',message:'fixture warning'}});s({method:'account/rateLimits/updated',params:{rateLimits:{primary:{usedPercent:1}}}});s({method:'deprecationNotice',params:{summary:'fixture',details:'fixture details'}});s({id:q.id,result:{thread:{id:'codex-session'}}});return setTimeout(()=>s({method:'remoteControl/status/changed',params:{status:'disabled',serverName:'fixture',installationId:'fixture',environmentId:null}}),5)}if(q.method==='turn/start'){n++;const id='t'+n,u={totalTokens:2,inputTokens:1,cachedInputTokens:0,outputTokens:1,reasoningOutputTokens:0};s({id:q.id,result:{turn:{id}}});${replayUserInput ? "s({method:'item/completed',params:{threadId:'codex-session',turnId:id,item:{type:'userMessage',id:'user-'+n,content:q.params.input}}});" : ""}s({method:'thread/tokenUsage/updated',params:{threadId:'codex-session',turnId:id,tokenUsage:{total:u,last:u,modelContextWindow:null}}});return s({method:'turn/completed',params:{threadId:'codex-session',turn:{id,status:'completed',items:[{type:'agentMessage',text:'codex-'+n}]}}})}if(q.method==='thread/unsubscribe')s({id:q.id,result:{}})});`;
-  if (harnessId === "claude-code") return `${prelude}r.on('line',l=>{const q=JSON.parse(l);n++;${replayUserInput ? "s({type:'user',session_id:q.session_id,message:q.message});" : ""}s({type:'assistant',session_id:q.session_id,message:{role:'assistant',content:[{type:'text',text:'claude-'+n}]}});s({type:'result',session_id:q.session_id,is_error:false,result:'claude-'+n})});`;
   if (harnessId === "pi") return `${prelude}const fs=require('node:fs'),path=require('node:path'),i=process.argv.indexOf('--session'),file=i>=0?process.argv[i+1]:undefined,sid='pi-official-session';if(file){fs.mkdirSync(path.dirname(file),{recursive:true});if(!fs.existsSync(file))fs.writeFileSync(file,JSON.stringify({type:'session',id:sid,cwd:process.cwd()})+'\\n')}r.on('line',l=>{const q=JSON.parse(l);if(q.type==='get_state')return s({id:q.id,type:'response',command:'get_state',success:true,data:{isStreaming:false,sessionId:sid,sessionFile:file}});if(q.type==='prompt'){n++;s({id:q.id,type:'response',command:'prompt',success:true});${replayUserInput ? "s({type:'message_end',message:{role:'user',content:q.message}});" : ""}return s({type:'agent_end',sessionId:sid})}if(q.type==='get_last_assistant_text')s({id:q.id,type:'response',command:'get_last_assistant_text',success:true,data:{text:'pi-'+n,sessionId:sid}})});`;
   return `${prelude}let seq=0;r.on('line',l=>{const q=JSON.parse(l);if(q.method==='initialize'){if(q.params&&q.params.reasoningEffort!==undefined)return s({jsonrpc:'2.0',id:q.id,error:{code:-32602,message:'provider does not support reasoning effort'}});return s({jsonrpc:'2.0',id:q.id,result:{serverInfo:{name:'deepseek-harness-sdk-runtime',version:'x'}}})}if(q.method==='session/resume'){seq=18;return s({jsonrpc:'2.0',id:q.id,result:{sessionId:q.params.sessionId,lastSequence:17}})}if(q.method==='session/prompt'){n++;const id=q.params.sessionId;s({jsonrpc:'2.0',id:q.id,result:{messageId:'m'+n}});${replayUserInput ? "s({jsonrpc:'2.0',method:'session.event',params:{sessionId:id,event:{type:'user/message',seq:seq++,surfaceOp:'append',data:{id:'user-'+n,role:'user',source:{kind:'user'},content:q.params.contentBlocks}}}});" : ""}s({jsonrpc:'2.0',method:'session.status',params:{sessionId:id,status:'running'}});s({jsonrpc:'2.0',method:'session.event',params:{sessionId:id,event:{type:'turn/start',seq:seq++,data:{turn:n}}}});s({jsonrpc:'2.0',method:'session.event',params:{sessionId:id,event:{type:'assistant/message',seq:seq++,data:{turn:n,message:{role:'assistant',content:[{type:'text',text:'dsh-'+n}]}}}}});s({jsonrpc:'2.0',method:'session.event',params:{sessionId:id,event:{type:'turn/end',seq:seq++,data:{turn:n,reason:{kind:'completed'}}}}});return s({jsonrpc:'2.0',method:'session.status',params:{sessionId:id,status:'idle'}})}if(q.method==='shutdown')s({jsonrpc:'2.0',id:q.id,result:{}})});`;
 }
@@ -4006,9 +4129,6 @@ function fakeSource(harnessId: string, replayUserInput = false): string {
 function configuredAdapter(harnessId: string, executable: string): HarnessAdapter {
   if (harnessId === "codex") {
     return new CodexAdapter({ harnessExecutables: { codex: executable } });
-  }
-  if (harnessId === "claude-code") {
-    return new ClaudeCodeAdapter({ harnessExecutables: { "claude-code": executable } });
   }
   if (harnessId === "pi") {
     return new PiAdapter({ harnessExecutables: { pi: executable } });
@@ -4023,9 +4143,6 @@ async function residentMcpLaunchConfiguration(
 ): Promise<string> {
   if (harnessId === "codex") {
     return plan.args.find((argument) => argument.startsWith("mcp_servers=")) ?? "";
-  }
-  if (harnessId === "claude-code") {
-    return fs.readFile(path.join(executionRuntime, "claude-resident-mcp.json"), "utf8");
   }
   if (harnessId === "pi") return plan.env.SCIENCEEVOLVE_PI_MCP_CONFIG ?? "";
   return fs.readFile(path.join(executionRuntime, "dsh-resident.patch.yml"), "utf8");

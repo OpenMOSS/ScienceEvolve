@@ -180,12 +180,25 @@ export class EventHub {
   }
 
   publishHarnessEvent(projectId: string, agent: AgentName, event: HarnessEvent): void {
-    if (!event.kind.startsWith("tool.")) return;
+    if (!event.kind.startsWith("tool.") && event.kind !== "reasoning.summary" && event.kind !== "activity") return;
+    if (event.kind === "reasoning.summary" && !event.message?.length) return;
     const attempt = Number.isSafeInteger(event.attempt) ? event.attempt! : 0;
-    const key = this.liveHarnessEventKey(projectId, event.invocationId, attempt, event.eventId);
+    const eventKey = this.liveHarnessEventKey(projectId, event.invocationId, attempt, event.eventId);
     // Official callbacks can commit before the matching live callback arrives.
-    if (this.persistedLiveKeys.get(projectId)?.has(key)) return;
+    if (this.persistedLiveKeys.get(projectId)?.has(eventKey)) return;
+    const key = this.harnessSnapshotKey(projectId, event);
     const projectEvents = this.liveHarnessEvents.get(projectId) ?? new Map();
+    const previous = projectEvents.get(key)?.data?.canonicalEvent as HarnessEvent | undefined;
+    if (previous && previous.seq >= event.seq) return;
+    let canonical = structuredClone(event);
+    if (event.kind === "reasoning.summary") {
+      const raw = event.phase === "delta"
+        ? (this.rawLiveContent.get(key) ?? "") + event.message
+        : event.message!;
+      canonical = { ...canonical, message: truncateUnicodePrefix(redactLiveTrace(raw), ASSISTANT_LIVE_LIMIT) };
+      if (!canonical.message?.trim()) return;
+      this.rawLiveContent.set(key, raw.slice(-ASSISTANT_LIVE_LIMIT));
+    }
     projectEvents.set(key, {
       id: `live:${event.eventId}`,
       seq: 8_000_000_000 + attempt * 1_000_000 + event.seq,
@@ -194,12 +207,12 @@ export class EventHub {
       type: "agent.trace",
       level: event.kind === "tool.failed" ? "error" : "info",
       agent,
-      message: event.message ?? event.tool?.name ?? "Tool",
+      message: event.kind === "activity" ? "" : canonical.message ?? event.tool?.name ?? "",
       data: {
-        kind: "tool",
+        kind: event.kind.startsWith("tool.") ? "tool" : event.kind,
         invocationId: event.invocationId,
         liveEphemeral: true,
-        canonicalEvent: structuredClone(event)
+        canonicalEvent: canonical
       }
     });
     this.liveHarnessEvents.set(projectId, projectEvents);
@@ -292,16 +305,20 @@ export class EventHub {
     attempt: number,
     eventId: string
   ): string {
-    return `${projectId}\0${invocationId}\0${attempt}\0${eventId}`;
+    return `${projectId}\0${invocationId}\0${attempt}\0event\0${eventId}`;
   }
 
   private clearHarnessEvents(projectId: string, invocationId: string): void {
     const projectEvents = this.liveHarnessEvents.get(projectId);
-    if (!projectEvents) return;
-    for (const [key, event] of projectEvents) {
-      if (event.data?.invocationId === invocationId) projectEvents.delete(key);
+    for (const [key, event] of projectEvents ?? []) {
+      if (event.data?.invocationId === invocationId) {
+        projectEvents!.delete(key);
+      }
     }
-    if (projectEvents.size === 0) this.liveHarnessEvents.delete(projectId);
+    if (projectEvents?.size === 0) this.liveHarnessEvents.delete(projectId);
+    for (const key of this.rawLiveContent.keys()) {
+      if (key.startsWith(`${projectId}\0${invocationId}\0`)) this.rawLiveContent.delete(key);
+    }
   }
 
   private retirePersistedHarnessEvent(event: TimelineEvent): void {
@@ -313,10 +330,15 @@ export class EventHub {
       typeof canonical.eventId !== "string" || typeof canonical.kind !== "string") return;
     const attempt = Number.isSafeInteger(canonical.attempt) ? canonical.attempt! : 0;
     let key: string;
-    if (canonical.kind.startsWith("tool.")) {
+    if (canonical.kind.startsWith("tool.") || canonical.kind === "reasoning.summary" || canonical.kind === "activity") {
       key = this.liveHarnessEventKey(event.projectId, canonical.invocationId, attempt, canonical.eventId);
       const projectEvents = this.liveHarnessEvents.get(event.projectId);
-      projectEvents?.delete(key);
+      const snapshotKey = this.harnessSnapshotKey(event.projectId, canonical as HarnessEvent);
+      const live = projectEvents?.get(snapshotKey)?.data?.canonicalEvent as HarnessEvent | undefined;
+      if (!live || (canonical.seq !== undefined && live.seq <= canonical.seq)) {
+        projectEvents?.delete(snapshotKey);
+        if (canonical.kind === "reasoning.summary" && canonical.phase !== "delta") this.rawLiveContent.delete(snapshotKey);
+      }
       if (projectEvents?.size === 0) this.liveHarnessEvents.delete(event.projectId);
     } else if (canonical.kind === "assistant.message" && canonical.itemId) {
       key = this.liveStreamKey(event.projectId, canonical.invocationId, attempt, canonical.itemId);
@@ -330,6 +352,13 @@ export class EventHub {
     while (keys.size > PERSISTED_LIVE_KEY_LIMIT) keys.delete(keys.values().next().value!);
     this.persistedLiveKeys.set(event.projectId, keys);
     this.scheduleLiveFlush(event.projectId);
+  }
+
+  private harnessSnapshotKey(projectId: string, event: HarnessEvent): string {
+    const prefix = `${projectId}\0${event.invocationId}\0${event.attempt ?? 0}`;
+    if (event.kind === "activity") return `${prefix}\0activity\0state`;
+    if (event.kind === "reasoning.summary") return `${prefix}\0summary\0${event.itemId ?? event.eventId}`;
+    return this.liveHarnessEventKey(projectId, event.invocationId, event.attempt ?? 0, event.eventId);
   }
 
   private scheduleLiveFlush(projectId: string): void {

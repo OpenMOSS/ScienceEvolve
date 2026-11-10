@@ -19,7 +19,7 @@ export async function withholdR12MergeResponse(input: AcceptanceBoundary & {
     directory: input.directory ?? process.env.OPENFARS_R12_FAULT_DIRECTORY });
   if (!bound) return;
   const { arm } = bound, target = arm.target;
-  const operationId = agentGitOperationId({ execution, envelope,
+  const operationId = await agentGitOperationId({ execution, envelope,
     recordedOperation: id => input.operation?.id === id ? input.operation : undefined }, "merge");
   const op = input.operation;
   if (!op || op.id !== operationId || op.kind !== "pull.merge" || op.status !== "finalized" ||

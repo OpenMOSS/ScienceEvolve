@@ -1,3 +1,5 @@
+import { summarizeFailureAttempts } from "./internal/shared/failure-attempt-history.js";
+import type { ProjectAgentQueueSource } from "./agent-queue-view.js";
 import { beginWorkflowRecovery, checkpointWorkflowRecovery, finishWorkflowRecovery, hasUserWorkflowPause } from "./workflow-recovery.js";
 import { legacyContextBackground } from "./context-injection-budget.js";
 import { validateDisplayArtifacts } from "./display-artifact-validation.js";
@@ -94,6 +96,7 @@ import {
 import { HANDOFF_CHARACTER_LIMIT } from "./content-limits.js";
 import type { HarnessEvent, SessionRef } from "./harness-runtime/contracts.js";
 import {
+  formatHarnessError,
   HarnessRuntimeError,
   harnessRecoveryDelayMs,
   transientHarnessFailure
@@ -587,7 +590,7 @@ export class Orchestrator {
         interruptWaiters: new Map()
       };
       this.runtimes.set(state.id, runtime);
-      if (!state.git?.enabled) this.collaborationRuntime?.prepareSerialWorkflowAdjustments?.(state);
+      if (!state.git?.enabled) await this.collaborationRuntime?.prepareSerialWorkflowAdjustments?.(state);
       if (["paused", "pausing"].includes(state.status) && !hasUserWorkflowPause(state)) {
         state.status = "retrying";
         checkpointWorkflowRecovery(state);
@@ -739,16 +742,17 @@ export class Orchestrator {
         ) ||
         left.state.id.localeCompare(right.state.id)
       )
-      .forEach((runtime) => this.startLoop(runtime));
+      .forEach(runtime => this.startLoop(runtime));
   }
 
-  getQueueSnapshot(): AgentQueueSnapshot {
+  async getQueueSnapshot(): Promise<AgentQueueSnapshot> {
     const states = [...this.runtimes.values()].map(runtime => runtime.state);
-    const formal = states.flatMap(state => {
-      if (!state.git?.enabled || state.archivedAt || ["completed", "cancelled"].includes(state.status)) return [];
-      const source = this.collaborationRuntime?.queueReadModel?.(state);
-      return source ? [source] : [];
-    });
+    const formal: ProjectAgentQueueSource[] = [];
+    for (const state of states) {
+      if (!state.git?.enabled || state.archivedAt || ["completed", "cancelled"].includes(state.status)) continue;
+      const source = await this.collaborationRuntime?.queueReadModel?.(state);
+      if (source) formal.push(source);
+    }
     return buildAgentQueueSnapshot(this.scheduler.snapshot(), states, formal);
   }
 
@@ -899,8 +903,8 @@ export class Orchestrator {
     state.queueOrder = undefined;
   }
 
-  private projectView(state: ProjectState): ProjectView {
-    const liveState = this.collaborationRuntime?.projectReadModel?.(state) ?? state;
+  private async projectView(state: ProjectState): Promise<ProjectView> {
+    const liveState = (await this.collaborationRuntime?.projectReadModel?.(state)) ?? state;
     const project = structuredClone(liveState) as ProjectView;
     // Main is a public first-class Agent. Clone all configurations before
     // exposing the read model so callers cannot mutate runtime state.
@@ -1155,8 +1159,8 @@ export class Orchestrator {
         await this.collaborationRuntime.createProject(state, parsed.git);
       }
     } else {
-      this.collaborationRuntime?.prepareSerialWorkflowAdjustments?.(state);
-      this.collaborationRuntime?.initializeNewProjectState?.(state);
+      await this.collaborationRuntime?.prepareSerialWorkflowAdjustments?.(state);
+      await this.collaborationRuntime?.initializeNewProjectState?.(state);
       await this.emit(runtime, {
         type: "agent.queued",
         agent: firstAgent,
@@ -1164,7 +1168,7 @@ export class Orchestrator {
       });
       this.startLoop(runtime);
     }
-    return this.projectView(state);
+    return await this.projectView(state);
   }
 
   async retryGitInitialization(projectId: string): Promise<ProjectView> {
@@ -1187,7 +1191,7 @@ export class Orchestrator {
       };
     }
     await this.collaborationRuntime.retryInitialization(runtime.state);
-    return this.projectView(runtime.state);
+    return await this.projectView(runtime.state);
   }
 
   /**
@@ -1502,8 +1506,9 @@ export class Orchestrator {
 
   private async readAndValidateAgentOrchestrationProposal(
     state: ProjectState,
-    baseVersion = !state.git?.enabled ? this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment?.(state).version : undefined
+    baseVersion?: WorkflowConfigurationVersion
   ): Promise<AgentOrchestrationProposal> {
+    baseVersion ??= !state.git?.enabled ? (await this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment?.(state))?.version : undefined;
     if (!state.activeInvocationId) throw new Error("Workflow proposal requires the active invocation");
     const raw = await this.storage.readMainAgentOrchestrationSnapshot(
       state.id,
@@ -1558,34 +1563,51 @@ export class Orchestrator {
     assertWorkflowSessionHarnesses(state, proposal.agents);
   }
 
+  async getWorkflowReplayConfigurationHistory(projectId: string) {
+    const runtime = await this.requireRuntime(projectId);
+    if (!this.collaborationRuntime?.workflowReplayConfigurationHistory)
+      throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow revision history is unavailable for this project runtime");
+    return await this.collaborationRuntime.workflowReplayConfigurationHistory(runtime.state);
+  }
+
   async getWorkflowAdjustments(projectId: string) {
     const runtime = await this.requireRuntime(projectId);
     if (!this.collaborationRuntime?.getWorkflowAdjustments || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow adjustments require the project runtime");
-    return this.storage.withStableProjectSnapshot(projectId, async () => this.collaborationRuntime!.getWorkflowAdjustments!(runtime.state));
+    const committed = await this.collaborationRuntime.committedProjectState?.(runtime.state);
+    if (committed) return await this.collaborationRuntime.getWorkflowAdjustments(committed);
+    return this.storage.withStableProjectSnapshot(projectId, async () => await this.collaborationRuntime!.getWorkflowAdjustments!(runtime.state));
   }
 
   async queryWorkflowAdjustments(projectId: string, ifNoneMatch?: string) {
     const runtime = await this.requireRuntime(projectId);
     if (!this.collaborationRuntime?.getWorkflowAdjustments || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow adjustments require the project runtime");
+    const committed = await this.collaborationRuntime.committedProjectState?.(runtime.state);
+    if (committed) return this.collaborationRuntime.queryWorkflowAdjustments
+      ? (await this.collaborationRuntime.queryWorkflowAdjustments(committed, ifNoneMatch))
+      : { context: await this.collaborationRuntime.getWorkflowAdjustments(committed) };
     return this.storage.withStableProjectSnapshot(projectId, async () => this.collaborationRuntime!.queryWorkflowAdjustments
-      ? this.collaborationRuntime!.queryWorkflowAdjustments(runtime.state, ifNoneMatch)
-      : { context: this.collaborationRuntime!.getWorkflowAdjustments!(runtime.state) });
+      ? (await this.collaborationRuntime!.queryWorkflowAdjustments(runtime.state, ifNoneMatch))
+      : { context: await this.collaborationRuntime!.getWorkflowAdjustments!(runtime.state) });
   }
 
   async getWorkflowAdjustmentPage(projectId: string, input: WorkflowAdjustmentPageInput, ifNoneMatch?: string) {
     const runtime = await this.requireRuntime(projectId);
     if (!this.collaborationRuntime?.getWorkflowAdjustmentPage || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow history requires the project runtime");
-    return this.storage.withStableProjectSnapshot(projectId, async () => this.collaborationRuntime!.getWorkflowAdjustmentPage!(runtime.state, input, ifNoneMatch));
+    const committed = await this.collaborationRuntime.committedProjectState?.(runtime.state);
+    if (committed) return await this.collaborationRuntime.getWorkflowAdjustmentPage(committed, input, ifNoneMatch);
+    return this.storage.withStableProjectSnapshot(projectId, async () => await this.collaborationRuntime!.getWorkflowAdjustmentPage!(runtime.state, input, ifNoneMatch));
   }
 
   async getWorkflowAdjustmentDetail(projectId: string, requestId: string, expectedVersion?: string) {
     const runtime = await this.requireRuntime(projectId);
     if (!this.collaborationRuntime?.getWorkflowAdjustmentDetail || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow history requires the project runtime");
-    return this.storage.withStableProjectSnapshot(projectId, async () => this.collaborationRuntime!.getWorkflowAdjustmentDetail!(runtime.state, requestId, expectedVersion));
+    const committed = await this.collaborationRuntime.committedProjectState?.(runtime.state);
+    if (committed) return await this.collaborationRuntime.getWorkflowAdjustmentDetail(committed, requestId, expectedVersion);
+    return this.storage.withStableProjectSnapshot(projectId, async () => await this.collaborationRuntime!.getWorkflowAdjustmentDetail!(runtime.state, requestId, expectedVersion));
   }
 
   async submitWorkflowAdjustment(projectId: string, input: unknown) {
@@ -1597,13 +1619,13 @@ export class Orchestrator {
     // events from clearing the stable read needed by projection publication.
     if (runtime.state.git?.enabled) return this.collaborationRuntime.submitWorkflowAdjustment(runtime.state, input);
     // The serial scheduler still owns its file-state write lane.
-    const result = await this.serializeProjectWrite(runtime, () => this.collaborationRuntime!.submitWorkflowAdjustment!(runtime.state, input));
+    const result = await this.serializeProjectWrite(runtime, async () => this.collaborationRuntime!.submitWorkflowAdjustment!(runtime.state, input));
     try {
       await this.applyWaitingSerialWorkflowAdjustments(runtime);
     } catch (error) {
       await this.deferSerialWorkflowPublicationRecovery(runtime, error, { requestId: result.record.requestId });
     }
-    return this.collaborationRuntime!.getWorkflowAdjustmentSubmissionResult!(runtime.state, result.record.requestId, result.replay);
+    return await this.collaborationRuntime!.getWorkflowAdjustmentSubmissionResult!(runtime.state, result.record.requestId, result.replay);
   }
 
   async withdrawWorkflowAdjustment(projectId: string, input: unknown) {
@@ -1631,21 +1653,23 @@ export class Orchestrator {
     const runtime = this.runtimes.get(projectId);
     if (runtime) {
       if (runtime.state.phase === "storage-recovery-required") {
-        return this.projectView(runtime.state);
+        return await this.projectView(runtime.state);
       }
+      const committed = await this.collaborationRuntime?.committedProjectState?.(runtime.state);
+      if (committed) return await this.projectView(committed);
       return this.storage.withStableProjectSnapshot(projectId, async () =>
-        this.projectView(runtime.state)
+        await this.projectView(runtime.state)
       );
     }
     const state = await this.storage.tryLoadState(projectId);
-    return state ? this.projectView(state) : undefined;
+    return state ? (await this.projectView(state)) : undefined;
   }
 
   async listProjects(includeArchived = false): Promise<ProjectView[]> {
     // Each row needs its own committed snapshot. Independent projects need
     // not reach a shared idle instant before an already captured row can return.
     const projects = await Promise.all(
-      [...this.runtimes.values()].map((runtime) =>
+      [...this.runtimes.values()].map(async (runtime) =>
         this.listingProjectView(runtime)
       )
     );
@@ -1654,20 +1678,21 @@ export class Orchestrator {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  private listingProjectView(runtime: RuntimeProject): Promise<ProjectView> {
+  private async listingProjectView(runtime: RuntimeProject): Promise<ProjectView> {
     // Wait for each project's own writer independently. Queue the expensive
     // projection after that barrier: several barriers can clear together,
     // and must not release a burst of synchronous reads into one microtask turn.
     if (runtime.state.phase === "storage-recovery-required") return this.captureListingProjectView(runtime);
+    if ((await this.collaborationRuntime?.committedProjectState?.(runtime.state))) return this.captureListingProjectView(runtime);
     return this.storage.withStableProjectSnapshot(runtime.state.id, () => this.captureListingProjectView(runtime));
   }
 
   private captureListingProjectView(runtime: RuntimeProject): Promise<ProjectView> {
     return new Promise<ProjectView>((resolve, reject) => {
       const start = this.listingViewTail.then(() => new Promise<void>(release => {
-        setImmediate(() => {
+        setImmediate(async () => {
           try {
-            resolve(this.projectView(runtime.state));
+            resolve((await this.projectView((await this.collaborationRuntime?.committedProjectState?.(runtime.state)) ?? runtime.state)));
           } catch (error) { reject(error); }
           finally { release(); }
         });
@@ -1682,7 +1707,7 @@ export class Orchestrator {
     if (state.git?.enabled) {
       if (!this.collaborationRuntime) throw new Error("Git collaboration runtime is unavailable");
       await this.collaborationRuntime.pauseProject(state);
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     if (
       (state.status === "completed" &&
@@ -1693,7 +1718,7 @@ export class Orchestrator {
       state.status === "paused" ||
       state.status === "pausing"
     ) {
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     state.pauseRequest ??= { requestedAt: nowIso() };
     if (state.currentAgent) {
@@ -1713,7 +1738,7 @@ export class Orchestrator {
           ? "Pause requested; the current agent will finish before pausing"
           : "Project paused"
     });
-    return this.projectView(state);
+    return await this.projectView(state);
   }
 
   async resume(projectId: string, options?: CollaborationProjectResumeOptions): Promise<ProjectView> {
@@ -1724,7 +1749,7 @@ export class Orchestrator {
       if (!this.collaborationRuntime) throw new Error("Git collaboration runtime is unavailable");
       if (options?.preserveRecoveryBudget) await this.collaborationRuntime.resumeProject(state, options);
       else await this.collaborationRuntime.resumeProject(state);
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     if (options?.preserveRecoveryBudget) throw new Error("Cannot resume retained scoped recovery in a non-Git project");
     state.pauseRequest = undefined;
@@ -1779,7 +1804,7 @@ export class Orchestrator {
         }
       });
       this.startLoop(runtime);
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     if (
       state.status !== "paused" &&
@@ -1787,7 +1812,7 @@ export class Orchestrator {
       state.status !== "retrying" &&
       state.status !== "interrupted"
     ) {
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     if (state.status === "interrupted") {
       const checkpointAgent =
@@ -1813,7 +1838,7 @@ export class Orchestrator {
         }
       });
       this.startLoop(runtime);
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     if (state.status === "pausing" && state.currentAgent) {
       state.status = "running";
@@ -1822,7 +1847,7 @@ export class Orchestrator {
         type: "project.status",
         message: `Pause request withdrawn; ${state.currentAgent} continues running`
       });
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     const pendingUserInputIds = state.userInputs
       .filter((input) => input.status === "pending")
@@ -1853,7 +1878,7 @@ export class Orchestrator {
         : {})
     });
     this.startLoop(runtime);
-    return this.projectView(state);
+    return await this.projectView(state);
   }
 
   async respondToUserIntervention(
@@ -1873,7 +1898,7 @@ export class Orchestrator {
       await respond.call(this.collaborationRuntime, runtime.state, {
         message: response
       });
-      return this.projectView(runtime.state);
+      return await this.projectView(runtime.state);
     }
     if (this.storage.hasActiveInvocationCommit(projectId)) {
       await this.storage.waitForInvocationCommit(projectId);
@@ -1968,7 +1993,7 @@ export class Orchestrator {
           : {})
           }
         });
-        return this.projectView(state);
+        return await this.projectView(state);
       });
     } finally {
       releaseMutation();
@@ -2001,7 +2026,7 @@ export class Orchestrator {
         mode,
         ...(normalizedRequestId ? { requestId: normalizedRequestId } : {})
       });
-      return this.projectView(runtime.state);
+      return await this.projectView(runtime.state);
     }
     const inputId = newId("inp");
     const inputCreatedAt = nowIso();
@@ -2027,7 +2052,7 @@ export class Orchestrator {
             const existing = state.userInputs.find(
               (candidate) => candidate.requestId === normalizedRequestId
             );
-            if (existing) return this.projectView(state);
+            if (existing) return await this.projectView(state);
           }
           if (
             state.status === "cancelled" ||
@@ -2209,7 +2234,7 @@ export class Orchestrator {
           }
           inputPersisted = true;
           if (reopensCompletedProject) reopened = true;
-          return this.projectView(state);
+          return await this.projectView(state);
         });
         if (project) {
           result = project;
@@ -2588,12 +2613,12 @@ export class Orchestrator {
         };
         if (
           input.requestId &&
-          collaborationRuntime.isWorkflowRevisionRequestRecorded?.(runtime.state, {
+          (await collaborationRuntime.isWorkflowRevisionRequestRecorded?.(runtime.state, {
             requestId: input.requestId,
             ...requestContext
-          })
+          }))
         ) {
-          return this.projectView(runtime.state);
+          return await this.projectView(runtime.state);
         }
         const next = structuredClone(current);
         const group = (next.collaborations ?? []).find(
@@ -2606,7 +2631,7 @@ export class Orchestrator {
           );
         }
         if (input.action === "rename") {
-          if (group.displayName === input.displayName) return this.projectView(runtime.state);
+          if (group.displayName === input.displayName) return await this.projectView(runtime.state);
           group.displayName = input.displayName;
         } else {
           if (input.expectedWorkflowRevision !== runtime.state.workflowRevision) {
@@ -2623,7 +2648,7 @@ export class Orchestrator {
           ...(input.requestId ? { requestId: input.requestId } : {}),
           requestContext
         });
-        return this.projectView(runtime.state);
+        return await this.projectView(runtime.state);
       });
     } finally {
       releaseMutation();
@@ -2856,7 +2881,7 @@ export class Orchestrator {
               }
             ];
           });
-          if (changes.length === 0) return this.projectView(state);
+          if (changes.length === 0) return await this.projectView(state);
 
           const candidateAgents = structuredClone(state.agents);
           for (const change of changes) {
@@ -2952,7 +2977,7 @@ export class Orchestrator {
             }
             throw error;
           }
-          return this.projectView(state);
+          return await this.projectView(state);
         });
         if (result) return result;
         if (!retryAfterCommit) {
@@ -2990,7 +3015,7 @@ export class Orchestrator {
             runtime.state.computeUsage = previous;
             throw error;
           }
-          return this.projectView(runtime.state);
+          return await this.projectView(runtime.state);
         });
         if (result) return result;
         if (!retryAfterCommit) {
@@ -3008,7 +3033,7 @@ export class Orchestrator {
     if (state.git?.enabled) {
       if (!this.collaborationRuntime) throw new Error("Git collaboration runtime is unavailable");
       await this.collaborationRuntime.cancelProject(state, input);
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     if (
       (state.status === "completed" &&
@@ -3017,7 +3042,7 @@ export class Orchestrator {
     ) {
       if (input.waitForSettlement) await this.waitForIdle(projectId);
       if (state.status === "cancelled" && !runtime.loop) await this.markCancellationSettled(runtime);
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     state.cancelledBy = input.actor ?? "user";
     state.cancelReason = input.reason ?? "user_cancelled";
@@ -3039,41 +3064,41 @@ export class Orchestrator {
     }
     if (!runtime.loop) await this.markCancellationSettled(runtime);
     if (input.waitForSettlement) await this.waitForIdle(projectId);
-    return this.projectView(state);
+    return await this.projectView(state);
   }
 
   async archive(projectId: string): Promise<ProjectView> {
     const runtime = await this.requireRuntime(projectId);
     const { state } = runtime;
-    if (state.archivedAt) return this.projectView(state);
+    if (state.archivedAt) return await this.projectView(state);
     if (state.git?.enabled && this.collaborationRuntime?.archiveProject) {
       await this.collaborationRuntime.archiveProject(state);
-      return this.projectView(state);
+      return await this.projectView(state);
     }
     if (state.status !== "cancelled" && state.status !== "completed") {
       throw new Error("Only completed or cancelled projects can be archived");
     }
-    if (state.archivedAt) return this.projectView(state);
+    if (state.archivedAt) return await this.projectView(state);
     state.archivedAt = nowIso();
     await this.emit(runtime, {
       type: "project.status",
       message: "Terminal project archived; all project data remains available",
       data: { archived: true, archivedAt: state.archivedAt }
     });
-    return this.projectView(state);
+    return await this.projectView(state);
   }
 
   async unarchive(projectId: string): Promise<ProjectView> {
     const runtime = await this.requireRuntime(projectId);
     const { state } = runtime;
-    if (!state.archivedAt) return this.projectView(state);
+    if (!state.archivedAt) return await this.projectView(state);
     state.archivedAt = undefined;
     await this.emit(runtime, {
       type: "project.status",
       message: "Project restored from archive",
       data: { archived: false }
     });
-    return this.projectView(state);
+    return await this.projectView(state);
   }
 
   async deleteArchived(projectId: string, confirmation: string): Promise<void> {
@@ -3170,7 +3195,7 @@ export class Orchestrator {
             runtime.state.status === "retrying" ||
             runtime.state.status === "queued")
         ) {
-          queueMicrotask(() => this.startLoop(runtime));
+          queueMicrotask(async () => this.startLoop(runtime));
         }
       });
     runtime.loop = loop;
@@ -3558,11 +3583,11 @@ export class Orchestrator {
           ? (data.canonicalEvent as Record<string, unknown>).kind
           : undefined;
       const safeMessage = redactTrace(message).slice(
-        canonicalKind === "assistant.message" ? -200_000 : -20_000
+        canonicalKind === "assistant.message" || canonicalKind === "reasoning.summary" ? -200_000 : -20_000
       );
       if (telemetry?.invocationId === invocationId) {
         telemetry.traceTail = [...telemetry.traceTail, `${traceKind}: ${safeMessage}`].slice(-80);
-        if (traceKind === "output" || traceKind === "message") {
+        if (canonicalKind !== "reasoning.summary" && (traceKind === "output" || traceKind === "message")) {
           telemetry.partialOutput = `${telemetry.partialOutput}${safeMessage}`.slice(-40_000);
         }
       }
@@ -3701,7 +3726,7 @@ export class Orchestrator {
         kind === "main" &&
         mainCanReconfigure(state)
       ) {
-        const baseVersion = !state.git?.enabled ? this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment?.(state).version : undefined;
+        const baseVersion = !state.git?.enabled ? (await this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment?.(state))?.version : undefined;
         const proposalPath = await this.storage.writeMainAgentOrchestrationSnapshot(
           state.id,
           MAIN_AGENT_ORCHESTRATION_FILE,
@@ -3713,8 +3738,8 @@ export class Orchestrator {
             state.mcpDefinitions,
             baseVersion
           ),
-          baseVersion ? () => this.collaborationRuntime!.isSerialWorkflowConfigurationCurrent?.(state, baseVersion) ??
-            sameWorkflowConfigurationVersion(this.collaborationRuntime!.prepareSerialMainWorkflowAdjustment!(state).version, baseVersion) : undefined,
+          baseVersion ? async () => (await this.collaborationRuntime!.isSerialWorkflowConfigurationCurrent?.(state, baseVersion)) ??
+            sameWorkflowConfigurationVersion((await this.collaborationRuntime!.prepareSerialMainWorkflowAdjustment!(state)).version, baseVersion) : undefined,
           invocationId
         );
         if (proposalPath !== path.join(workspacePath, MAIN_AGENT_ORCHESTRATION_FILE)) workflowAuthoringPath = proposalPath;
@@ -3801,7 +3826,7 @@ export class Orchestrator {
         ...(mainCapabilities ? { mainCapabilities } : {}),
         requireBridge: true
       };
-      const formalSerialState = this.collaborationRuntime?.serialProjectStateEnabled?.(state) === true;
+      const formalSerialState = (await this.collaborationRuntime?.serialProjectStateEnabled?.(state)) === true;
       if (formalSerialState) { control.projectState = true; control.projectStateReconciliation = false; }
       controlStagingPath = control.stagingPath;
       controlCapabilityPath = path.join(runtimePath, "control-capability.json");
@@ -3830,7 +3855,7 @@ export class Orchestrator {
         capabilityHash: control.capabilityHash,
         expiresAt: control.expiresAt,
         stagingPath: control.stagingPath,
-        ...(formalSerialState ? { projectState: (input: unknown) => this.serializeProjectWrite(runtime, () =>
+        ...(formalSerialState ? { projectState: (input: unknown) => this.serializeProjectWrite(runtime, async () =>
           this.collaborationRuntime!.requestSerialProjectState!(state, { projectId: state.id, agentId: agent, invocationId,
             executionId: agentExecution.executionId, kind }, input)) } : {}),
         revalidate: async (envelope, stagedActions) => {
@@ -3855,12 +3880,12 @@ export class Orchestrator {
               if (!serialWorkflow) await this.readAndValidateAgentOrchestrationProposal(state);
               else {
                 const canonical = stagedActions.find(action => action.action.tool === "apply_workflow") ?? envelope;
-                const existing = this.collaborationRuntime!.getSerialMainWorkflowAdjustment!(state, canonical.invocationId, canonical.callId);
+                const existing = await this.collaborationRuntime!.getSerialMainWorkflowAdjustment!(state, canonical.invocationId, canonical.callId);
                 if (existing) {
                   if (canonical.action.tool !== "apply_workflow" || canonical.action.rationale !== existing.explanation)
                     throw new ControlProtocolError("Original Main workflow call changed on replay");
                 } else if (!serialProposals.has(canonical.callId)) {
-                  const current = this.collaborationRuntime!.prepareSerialMainWorkflowAdjustment!(state);
+                  const current = await this.collaborationRuntime!.prepareSerialMainWorkflowAdjustment!(state);
                   const proposal = await this.readAndValidateAgentOrchestrationProposal(state, current.version);
                   serialProposals.set(canonical.callId, { base: current.version,
                     proposal: { orchestration: structuredClone(proposal.orchestration), ...credentialFreeAgentConfiguration(proposal) } });
@@ -3872,10 +3897,6 @@ export class Orchestrator {
                 primary: envelope.action.primary, items: envelope.action.items ?? []
               }, stagedActions);
             }
-            validateCompletionDisplayContract(state, [
-              ...stagedActions,
-              envelope
-            ]);
           });
         },
         onStaged: async envelope => {
@@ -3883,11 +3904,11 @@ export class Orchestrator {
           await this.serializeProjectWrite(runtime, async () => {
             if (state.activeInvocationId !== invocationId || state.currentAgent !== agent || state.status !== "running")
               throw new ControlProtocolError("Main workflow call no longer owns its original live invocation");
-            const prior = this.collaborationRuntime!.getSerialMainWorkflowAdjustment!(state, envelope.invocationId, envelope.callId);
+            const prior = await this.collaborationRuntime!.getSerialMainWorkflowAdjustment!(state, envelope.invocationId, envelope.callId);
             if (prior) return;
             const captured = serialProposals.get(envelope.callId);
             if (!captured) throw new ControlProtocolError("Main workflow call has no immutable validated original proposal");
-            this.collaborationRuntime!.stageSerialMainWorkflowAdjustment!(state, { ...captured, envelope });
+            await this.collaborationRuntime!.stageSerialMainWorkflowAdjustment!(state, { ...captured, envelope });
           });
         },
         onRejected: async (envelope, error) => {
@@ -4051,10 +4072,10 @@ export class Orchestrator {
             }
           }
         },
-        onTokenUsage: (usage) => {
+        onTokenUsage: async (usage) => {
           if ("inputTokens" in usage) {
             performanceTracker.recordUsage(usage);
-            return onTrace("status", "Gateway token usage", {
+            return await onTrace("status", "Gateway token usage", {
               usageId: usage.usageId,
               protocol: usage.protocol,
               model: usage.model,
@@ -4066,7 +4087,7 @@ export class Orchestrator {
               usageScope: "request"
             });
           }
-          return onTrace("status", "Gateway token usage unknown", {
+          return await onTrace("status", "Gateway token usage unknown", {
             usageId: usage.usageId,
             protocol: usage.protocol,
             model: usage.model,
@@ -4092,9 +4113,9 @@ export class Orchestrator {
           performanceTracker.reset(attempt);
         }
       };
-      this.collaborationRuntime?.decorateSerialWorkflowNotifications?.(state, baseRunRequest);
+      await this.collaborationRuntime?.decorateSerialWorkflowNotifications?.(state, baseRunRequest);
       const runTurn = async (request: AgentRunRequest): Promise<AgentRunResult> => {
-        const runnerPromise = Promise.resolve().then(() => this.runner.run(request, onTrace, controller.signal));
+        const runnerPromise = Promise.resolve().then(async () => this.runner.run(request, onTrace, controller.signal));
         // Keep the underlying promise observed even if a force-termination
         // timeout wins the race; late runner rejection must never become an
         // unhandled process-level error or commit stale control actions.
@@ -4258,7 +4279,7 @@ export class Orchestrator {
       // A signalled process keeps the slot until its runner promise settles.
       releaseLease();
       await traceQueue;
-      await this.serializeProjectWrite(runtime, () => {
+      await this.serializeProjectWrite(runtime, async () => {
         if (runtime.mainInputRefresh) {
           throw new AgentInterruptedError(
             "Agent invocation was superseded before commit by user input for Main"
@@ -4304,7 +4325,7 @@ export class Orchestrator {
       });
       this.storage.hub.finishInvocation(state.id, invocationId, "completed");
       if (isCancelling(state)) {
-        await this.serializeProjectWrite(runtime, () =>
+        await this.serializeProjectWrite(runtime, async () =>
           this.storage.rollbackInvocationCommit(state, invocationId)
         );
         commitStarted = false;
@@ -4312,7 +4333,7 @@ export class Orchestrator {
         this.clearLiveInvocationSoon(state.id, invocationId);
         return;
       }
-      await this.serializeProjectWrite(runtime, () =>
+      await this.serializeProjectWrite(runtime, async () =>
         this.storage.commitInvocationCommit(state, invocationId, {
           abortOnControl:
             state.status === "completed" ||
@@ -4322,10 +4343,10 @@ export class Orchestrator {
       commitStarted = false;
       const workflowAction = receivedControlActions.find(action => action.action.tool === "apply_workflow");
       if (serialWorkflow && workflowAction) {
-        const record = this.collaborationRuntime!.getSerialMainWorkflowAdjustment!(state, invocationId, workflowAction.callId);
+        const record = await this.collaborationRuntime!.getSerialMainWorkflowAdjustment!(state, invocationId, workflowAction.callId);
         if (!record) throw new ControlProtocolError("Committed Main workflow call lost its exact original accepted record");
         try {
-          this.collaborationRuntime!.recordSerialMainWorkflowBoundary!(state, record.requestId, completion);
+          await this.collaborationRuntime!.recordSerialMainWorkflowBoundary!(state, record.requestId, completion);
           await this.applyWaitingSerialWorkflowAdjustments(runtime);
         } catch (error) {
           // The original invocation is already durably committed. Publication
@@ -4379,7 +4400,7 @@ export class Orchestrator {
       }
       if (commitStarted) {
         try {
-          await this.serializeProjectWrite(runtime, () =>
+          await this.serializeProjectWrite(runtime, async () =>
             this.storage.rollbackInvocationCommit(state, invocationId)
           );
           commitStarted = false;
@@ -4918,7 +4939,7 @@ export class Orchestrator {
           }
           await this.storage.saveState(state);
         }
-        const pending = (coordinator.pendingSerialWorkflowAdjustments?.(state) ?? coordinator.pendingSerialMainWorkflowAdjustments!(state))
+        const pending = ((await coordinator.pendingSerialWorkflowAdjustments?.(state)) ?? (await coordinator.pendingSerialMainWorkflowAdjustments!(state)))
           .sort((a, b) => Number(a.source.kind !== "user") - Number(b.source.kind !== "user"));
         if (!pending.length) return;
         for (const original of pending) {
@@ -5013,7 +5034,7 @@ export class Orchestrator {
     const previousOrchestration = state.orchestration;
     const affectedGroupIds = affectedCollaborationGroupIds(previousOrchestration, proposal.orchestration);
     if (state.git?.enabled && affectedGroupIds.length) {
-      this.collaborationRuntime?.assertWorkflowRevisionEditable(state, affectedGroupIds);
+      await this.collaborationRuntime?.assertWorkflowRevisionEditable(state, affectedGroupIds);
     }
     const previousNames = new Set(
       previousOrchestration.agents.map((definition) => definition.name)
@@ -5342,7 +5363,6 @@ export class Orchestrator {
       expectedStateVersion
     );
     validateControlActionSemantics(state, agent, kind, controlActions);
-    validateCompletionDisplayContract(state, controlActions);
 
     const terminal = terminalControlAction(controlActions);
     // finish_task is the Agent's own completion receipt. It ends this native
@@ -5357,7 +5377,7 @@ export class Orchestrator {
       this.collaborationRuntime.stageSerialMainWorkflowAdjustment && this.collaborationRuntime.publishSerialMainWorkflowAdjustment &&
       this.collaborationRuntime.recordSerialMainWorkflowBoundary;
     const serialMainRecord = serialMainCall
-      ? this.collaborationRuntime!.getSerialMainWorkflowAdjustment!(state, invocationId, routingTerminal!.callId) : undefined;
+      ? (await this.collaborationRuntime!.getSerialMainWorkflowAdjustment!(state, invocationId, routingTerminal!.callId)) : undefined;
     if (serialMainCall && (!serialMainRecord || serialMainRecord.source.kind !== "main" || serialMainRecord.source.scope?.kind !== "serial" ||
       routingTerminal!.action.tool !== "apply_workflow" || serialMainRecord.explanation !== routingTerminal!.action.rationale))
       throw new ControlProtocolError("Main workflow commit requires the exact original accepted proposal and explanation");
@@ -6429,34 +6449,6 @@ export class Orchestrator {
       this.startLoop(runtime);
       return;
     }
-    if (
-      (state.artifacts?.length ?? 0) > 0 &&
-      !displayReferencesPublishedArtifacts(state)
-    ) {
-      throw new MainDecisionValidationError(
-        "A project cannot complete with published artifacts until a non-empty display selection referencing published artifacts has been committed"
-      );
-    }
-    if (state.display?.primary) {
-      for (const item of [state.display.primary, ...state.display.items]) {
-        const artifact = state.artifacts?.find(
-          (candidate) =>
-            candidate.agent === item.agent && candidate.path === item.path
-        );
-        if (!artifact) {
-          throw new MainDecisionValidationError(
-            `Displayed artifact is no longer registered: ${item.agent}/${item.path}`
-          );
-        }
-        try {
-          await this.storage.resolvePublishedArtifactRecord(state.id, artifact);
-        } catch {
-          throw new MainDecisionValidationError(
-            `Displayed artifact changed after publication and must be republished: ${item.agent}/${item.path}`
-          );
-        }
-      }
-    }
     await this.completeProjectFromTermination(runtime, mode, sourceAgent, sourceInvocationId);
   }
 
@@ -6509,7 +6501,7 @@ export class Orchestrator {
   ): Promise<void> {
     const { state } = runtime;
     const harnessError = error instanceof HarnessRuntimeError ? error : undefined;
-    const safeError = redactTrace(harnessError?.safeMessage ?? error.message).slice(0, 4_000);
+    const safeError = formatHarnessError(error);
     const failureMetadata = harnessFailureMetadata(error);
     if (state.status === "cancelling") {
       await this.finishCancellation(runtime);
@@ -6878,7 +6870,7 @@ export class Orchestrator {
     const releaseMutation = this.storage.reserveProjectMutation(
       runtime.state.id
     );
-    const result = this.serializeProjectWrite(runtime, () =>
+    const result = this.serializeProjectWrite(runtime, async () =>
       this.storage.appendEvent(runtime.state, draft)
     );
     return result.finally(releaseMutation);
@@ -7046,7 +7038,7 @@ export class Orchestrator {
       }
       return;
     }
-    if (event.kind.startsWith("tool.")) {
+    if (event.kind.startsWith("tool.") || event.kind === "reasoning.summary" || event.kind === "activity") {
       this.storage.hub.publishHarnessEvent(projectId, agent, event);
     }
     if (event.kind === "tool.started" && event.parentItemId) {
@@ -7279,41 +7271,6 @@ function validateControlActionSemantics(
       if (!mainCanComplete(state)) throw new ControlProtocolError("Main cannot complete outside a configured termination context");
     }
   }
-}
-
-function validateCompletionDisplayContract(
-  state: ProjectState,
-  actions: ControlActionEnvelope[]
-): void {
-  if (!actions.some((envelope) => envelope.action.tool === "complete_project")) {
-    return;
-  }
-  if (resultFormatNone(state) && ((state.artifacts?.length ?? 0) > 0 || actions.some((envelope) => envelope.action.tool === "publish_artifact"))) {
-    throw new ControlProtocolError("This project explicitly requests no additional deliverable; remove published artifacts before completing");
-  }
-  const hasPublishedResult =
-    (state.artifacts?.length ?? 0) > 0 ||
-    actions.some((envelope) => envelope.action.tool === "publish_artifact");
-  if (!hasPublishedResult) return;
-
-  const stagesDisplay = actions.some(
-    (envelope) => envelope.action.tool === "select_display"
-  );
-  if (stagesDisplay || displayReferencesPublishedArtifacts(state)) return;
-
-  throw new ControlProtocolError(
-    "A project cannot complete with published artifacts before staging select_display for published artifacts"
-  );
-}
-
-function displayReferencesPublishedArtifacts(state: ProjectState): boolean {
-  if (!state.display?.primary) return false;
-  const artifacts = state.artifacts ?? [];
-  return [state.display.primary, ...state.display.items].every((item) =>
-    artifacts.some(
-      (artifact) => artifact.agent === item.agent && artifact.path === item.path
-    )
-  );
 }
 
 function resultFormatNone(state: ProjectState): boolean {
@@ -7780,13 +7737,8 @@ export function overallProgress(
   state: ProjectState
 ): ProjectView["overallProgress"] {
   const accepted = state.status === "completed";
-  const unresolvedFailures = state.failureSummary?.unresolvedFailures ?? (() => {
-    const latest = new Map<string, FailureAttempt["status"]>();
-    for (const attempt of state.failureAttempts ?? []) {
-      latest.set(`${attempt.scope}\0${attempt.operation}`, attempt.status);
-    }
-    return [...latest.values()].filter((status) => status === "failed").length;
-  })();
+  const unresolvedFailures = state.failureAttempts?.length
+    ? summarizeFailureAttempts(state.failureAttempts).unresolvedFailures : state.failureSummary?.unresolvedFailures ?? 0;
   const workerNames = orchestrationFor(state).agents
     .map((definition) => definition.name)
     .filter((name) => name !== SYSTEM_CONTROLLER_AGENT);
@@ -7815,7 +7767,7 @@ export function overallProgress(
     label = "Main Agent 等待用户介入";
   } else if (accepted) {
     label = unresolvedFailures > 0
-      ? `项目已完成；仍有 ${unresolvedFailures} 项未解决的技术故障`
+      ? `项目已完成；${unresolvedFailures} 组历史失败尚无确认的解决记录`
       : "项目已完成";
   } else if (state.status === "cancelled" || state.status === "cancelling") {
     label = state.status === "cancelled" ? cancellationLabel(state) : "正在取消任务";

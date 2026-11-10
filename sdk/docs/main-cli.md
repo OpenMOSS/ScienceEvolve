@@ -13,7 +13,7 @@ The two input options are mutually exclusive. `--inputs` resolves from the launc
 
 Git-off uses `user_inputs/` in the actual workspace. Git-on uses the private project's `workspaces/user_inputs/`, outside Git worktrees, without automatic publication. See [shared inputs](project-inputs.md) for limits and later additions.
 
-Requires Node.js 24+ and the selected Harness. The package includes pi's JavaScript entry point. Git-on collaboration and Task-level Git operations require Git. The default main runtime also supports a separately installed [Hermes ACP Harness](hermes.md).
+Requires Node.js 24+ and the selected Harness. The package includes pi's JavaScript entry point. Git-on collaboration and Task-level Git operations require Git.
 
 Explicitly select a new absolute `--data-dir`; the old `SCIENCEEVOLVE_DATA_DIR` or implicit default is not used. Data carries engine and actual `runtimeRevision` markers. Do not mix Web data, older SDK data, or preview data from before a fix.
 
@@ -108,13 +108,12 @@ scievolve gateway import --engine main --data-dir D:/runs/main-data `
   --harness pi --model your-model --source env
 ```
 
-Codex, pi, DSH, and Claude Code support env/profile imports; `--source` is mandatory. Environment import reads `SDK_CODEX_*`, `SDK_PI_*`, `SDK_DSH_*`, or `SDK_CLAUDE_CODE_*`. `_BASE_URL` and `_API_KEY` are required; `_PROTOCOL`, `_CONTEXT_WINDOW`, and `_REASONING_JSON` / `_REASONING_FILE` are optional. Profile import accepts an absolute `--profile-path`; otherwise existing `SDK_*_PROFILE` / native-directory discovery applies.
+Codex, pi, and DSH support env/profile imports; `--source` is mandatory. Environment import reads `SDK_CODEX_*`, `SDK_PI_*`, `SDK_DSH_*`. `_BASE_URL` and `_API_KEY` are required; `_PROTOCOL`, `_CONTEXT_WINDOW`, and `_REASONING_JSON` / `_REASONING_FILE` are optional. Profile import accepts an absolute `--profile-path`; otherwise existing `SDK_*_PROFILE` / native-directory discovery applies.
 
 There is no fallback between sources. Import does not change config/auth, CCSwitch, or login state, and does not execute credential shell helpers. It is a one-time copy, not a live binding: the key is saved in private runtime gateway files. Protect the data directory and exclude it from Git and shared material. When configuration or credentials change, explicitly reimport and use the new gateway ID.
 
 Import does not probe models or claim validation. Run `gateway test` before binding the returned ID. OAuth-only profiles are rejected by gateway import; use the separate native route above.
 
-Hermes supports explicit `--harness hermes --source env`, reading `OPENAI_BASE_URL` / `OPENAI_API_KEY`, without reading personal Hermes profiles or OAuth. See [Hermes](hermes.md).
 
 ## GitHub authentication and Git collaboration
 
@@ -294,6 +293,10 @@ Numbers are strictly validated; strings are not coerced. Timeouts must be positi
 
 execution supports retryBaseMs, retryMaxMs, agentConcurrency, interruptForceTimeoutMs, agentActivityIdleWindowMs, and agentToolActivityIdleWindowMs. timeouts supports residentModelInactivityTimeoutMs, residentToolInactivityTimeoutMs, protocolProxyTimeoutMs, dshHandshakeTimeoutMs, and dshTurnIdleTimeoutMs.
 
+The transport budget is capped at 90% of the smallest proxy, Agent model-inactivity, and resident model-inactivity window. Streaming startup gets one third of it; one buffered recovery shares the remaining budget and reserves time for error delivery. Buffered mode is retained only within the invocation. Requests with model output or tool calls are not replayed. Native function argument errors remain available to the original Harness and Agent for correction; final failures preserve their original causes.
+
+Collaboration process records are persisted in batches of up to 128 records or one second, while native live output remains immediate. Tool/lifecycle boundaries, invocation settlement, pause/stop completion, and shutdown drain pending records. One writing batch and one pending batch bound each project's queue; a full pending batch makes producers wait. Checkpoint computation precedes the transaction, with document-version and writer checks inside it. SQLite-busy renewal retries stay within the original confirmed lease expiry and never acquire a replacement lease. Slow-save diagnostics separate preparation, SQL, publication, and commit timings.
+
 Without tokenEnv, Git uses main's credential helper, with no Web OAuth login or accountId mapping. tokenEnv names a variable read for each Git API/transport use, allowing in-process rotation. Optional expectedIdentity must use the real numeric ID and login from preflight, or be omitted. Configuration and output contain no token. The API equivalent is `loadMainRuntimeConfig()`. Programmatic Harness/Skill paths must be absolute; an in-memory credentialResolver is supported.
 
 ## Stop, recovery, and results
@@ -327,4 +330,4 @@ Repository examples no longer use old gatewaySource / reasoningEffort fields. Mo
 
 Shared patches fix Git authorization checkpoints and source MCP; see [migration](main-runtime-migration.md). Unit/package smoke tests use simulated model/providers, separate from real-model records. A single real Windows task does not establish the four-Harness or Linux/macOS matrix. Strict non-yolo Git-on file brokerage currently supports Windows/Linux and explicitly rejects macOS. Git-off accepts workspace binding. Legacy has been removed; old data needs an older release.
 
-Historical records: [API-key profile / Loop](main-profile-loop-test-report-20261005.md), [native OAuth / Git-on Evolver / default entry](main-oauth-git-evolver-default-test-report-20261005.md), and [2026-10-06 workspace acceptance](workspace-main-acceptance-20261006-zh.md) are retained in Chinese. Claude Code was excluded from that last round at the user's request. Ordinary workspace calls can read current Inbox/Memory in chunks with `scienceevolve_read_invocation_input`; it accepts no arbitrary file path and does not grant shell access.
+Historical records: [API-key profile / Loop](main-profile-loop-test-report-20261005.md), [native OAuth / Git-on Evolver / default entry](main-oauth-git-evolver-default-test-report-20261005.md), and [2026-10-06 workspace acceptance](workspace-main-acceptance-20261006-zh.md) are retained in Chinese. Ordinary workspace calls can read current Inbox/Memory in chunks with `scienceevolve_read_invocation_input`; it accepts no arbitrary file path and does not grant shell access.

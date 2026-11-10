@@ -19,12 +19,41 @@ function fixture(): ProjectSchedulingProjection & Partial<Pick<ProjectState, "fa
 const waiting = { status: "queued", phase: "collaboration:scoped-waiting" } as const;
 
 describe("project waiting reasons", () => {
+  it.each([
+    ["EACCES", "recovery"],
+    ["HARNESS_CONTRACT_VIOLATION", "recovery"],
+    ["HARNESS_PROCESS_EXITED", "recovery"],
+    ["SESSION_RESUME_FAILED", "recovery"],
+    ["RESIDENT_STOP_NOT_CONFIRMED", "recovery"],
+    ["PERMISSION_PROMPT_INJECTION_FAILED", "recovery"],
+    ["HARNESS_CONFIGURATION_INVALID", "configuration"],
+    ["HARNESS_CAPABILITY_UNSUPPORTED", "configuration"],
+    ["MODEL_AUTHENTICATION_FAILED", "authorization"]
+  ])("classifies repair %s by its cause as %s", (errorCode, kind) => {
+    const projection = fixture();
+    const reason = "Specific original failure";
+    projection.failureAttempts = [{ status: "failed", errorCode, redactedMessage: reason } as FailureAttempt];
+    const before = structuredClone(projection);
+    expect(deriveProjectRuntimeProjection(projection, { status: "interrupted", phase: "collaboration:repair-required", lastError: reason }).waiting)
+      .toEqual({ kind, reason });
+    expect(projection).toEqual(before);
+  });
+
   function authorizationFailure(): FailureAttempt {
     return { status: "failed", errorCode: "GITHUB_WAITING_FOR_AUTHORIZATION", redactedMessage: "项目绑定的 GitHub 账号需要重新授权",
       attemptId: "auth-1", projectId: "project", scope: "git", operation: "workflow.recovery", retryable: true,
       causeClass: "GitHubAuthorizationError", startedAt: "2026-11-03T08:00:00Z", finishedAt: "2026-11-03T08:00:00Z",
       metadata: { provider: "github", status: 401 } };
   }
+
+  it("does not explain a current repair with an unrelated historical configuration failure", () => {
+    const projection = fixture();
+    projection.failureAttempts = [{ ...authorizationFailure(), errorCode: "HARNESS_CONFIGURATION_INVALID", redactedMessage: "Old configuration failure" }];
+    const before = structuredClone(projection);
+    expect(deriveProjectRuntimeProjection(projection, { status: "interrupted", phase: "collaboration:repair-required", lastError: "Current unrelated failure" }).waiting)
+      .toEqual({ kind: "recovery", reason: "Current unrelated failure" });
+    expect(projection).toEqual(before);
+  });
 
   it("prioritizes the current GitHub authorization blocker over an older final integration incident", () => {
     const projection = fixture();

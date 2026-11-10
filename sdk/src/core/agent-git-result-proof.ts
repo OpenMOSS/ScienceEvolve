@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
-import type { queryAgentGitOperation } from "./agent-git-operation-query.js";
+import type { readAgentGitOperation } from "./agent-git-operation-query.js";
 
-type Query = ReturnType<typeof queryAgentGitOperation>;
+type Query = Awaited<ReturnType<typeof readAgentGitOperation>>;
 const object = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 

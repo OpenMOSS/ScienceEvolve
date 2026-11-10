@@ -111,7 +111,7 @@ export interface ResidentTurnControlAuthority {
   revalidate: (
     envelope: ControlActionEnvelope,
     stagedActions: readonly ControlActionEnvelope[]
-  ) => Promise<void>;
+  ) => Promise<unknown>;
   onRejected?: (
     envelope: ControlActionEnvelope | undefined,
     error: Error
@@ -300,6 +300,7 @@ export interface HarnessRuntimeResidentHandle {
   pause(): Promise<void>;
   resume(): Promise<void>;
   probe(): Promise<ResidentProcessLease>;
+  supervisionActions?(): Promise<string[]>;
   close(): Promise<void>;
 }
 
@@ -527,8 +528,8 @@ class FacadeResidentHandle implements HarnessRuntimeResidentHandle {
     if (this.#logicalSubmit) throw adapterError("This Agent already owns an unfinished native task");
     this.#logicalSubmit = true;
     try {
-      if (!this.#broker.siiEnabled) return await this.#submitWithRecovery(input);
-      let notification = await this.#broker.waitForExperiments(undefined);
+      let notification = this.#broker.siiEnabled ? await this.#broker.waitForExperiments(undefined) : undefined;
+      let experimentNotice = Boolean(notification);
       let round = 0;
       for (;;) {
         this.#assertOpen();
@@ -537,12 +538,16 @@ class FacadeResidentHandle implements HarnessRuntimeResidentHandle {
           await new Promise(resolve => setTimeout(resolve, 250));
           this.#assertOpen();
         }
-        if (notification) await this.#broker.beginExperimentResume();
+        if (notification && experimentNotice) await this.#broker.beginExperimentResume();
         const current = { ...input, inputId: `${input.inputId}${round ? `:sii:${round}` : ""}`, prompt: notification ?? input.prompt,
           ...(notification ? { nativeNotice: notification } : {}) };
         const result = await this.#submitWithRecovery(current);
-        notification = await this.#broker.waitForExperiments(result.handoff);
-        if (!notification) { await this.#broker.assertExperimentsComplete(); await this.#broker.clearExperimentWait(); return result; }
+        notification = this.#broker.siiEnabled ? await this.#broker.waitForExperiments(result.handoff) : undefined;
+        experimentNotice = Boolean(notification);
+        if (!notification) {
+          await this.#broker.assertExperimentsComplete();
+          await this.#broker.clearExperimentWait(); return result;
+        }
         round += 1;
       }
     } finally { this.#logicalSubmit = false; }
@@ -649,6 +654,14 @@ class FacadeResidentHandle implements HarnessRuntimeResidentHandle {
     });
   }
 
+  async supervisionActions(): Promise<string[]> {
+    this.#assertOpen();
+    const pending = await this.#runtime.pendingResidentProcesses(this.#nextAuthority());
+    return pending.length ? ["Processes started by this task are still running: " + JSON.stringify(pending.map(process => ({
+      pid: process.pid, processGroupId: process.processGroupId, command: process.command, firstObservedAt: process.firstObservedAt
+    }))) + ". Inspect and stop obsolete work using the native tools, or explicitly transfer an intentional isolated job with background_job. Managed experiments retain their own lifecycle."] : [];
+  }
+
   close(): Promise<void> {
     return this.#serialized(async () => {
       if (this.#closed) return;
@@ -751,6 +764,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
   assertExperimentsComplete(): Promise<void> { return this.#options.siiBinding?.assertTaskComplete() ?? Promise.resolve(); }
   readonly #options: StableTurnAuthorityBrokerOptions;
   readonly #pending = new Map<string, PreparedTurnAuthority>();
+  readonly #returnedTurns = new Map<string, { turn: ResidentTurn; onTrace: TraceSink }>();
   #current?: PreparedTurnAuthority;
   #tail: Promise<unknown> = Promise.resolve();
   #closed = false;
@@ -1042,6 +1056,18 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
     const prepared = this.#current?.key === key
       ? this.#current
       : this.#pending.get(key);
+    const returned = this.#returnedTurns.get(key);
+    if (!prepared && returned && sameTurnAuthority(returned.turn, turn) &&
+      typeof frame.method === "string") {
+      const params = frame.params && typeof frame.params === "object" && !Array.isArray(frame.params)
+        ? frame.params as Record<string, unknown> : undefined;
+      try { await returned.onTrace("output", JSON.stringify(frame), { diagnostic: true, diagnosticSource: "adapter",
+        late: true, ...(typeof params?.threadId === "string" &&
+          params.threadId !== this.#nativeSession?.nativeId ? { foreignSystemMessage: true } : {}),
+        inputId: turn.inputId, invocationId: turn.invocationId, nativeFrame: frame }); }
+      catch (error) { console.warn(`Late native diagnostic unavailable: ${redactTrace(error instanceof Error ? error.message : String(error)).slice(0, 2000)}`); }
+      return;
+    }
     if (!prepared || !sameTurnAuthority(prepared.nativeTurn ?? prepared.turn, turn)) {
       throw adapterError("Resident protocol frame has no active turn attribution");
     }
@@ -1197,6 +1223,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
     prepared: PreparedTurnAuthority,
     outcome: "completed" | "failed"
   ): Promise<void | readonly ControlActionEnvelope[]> {
+    this.#returnedTurns.set(prepared.key, { turn: prepared.nativeTurn ?? prepared.turn, onTrace: prepared.onTrace });
     if (this.#current === prepared) {
       this.#options.gatewayFrontdoor.rotate(undefined);
       this.#options.controlFrontdoor?.rotate(undefined);
@@ -1204,9 +1231,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
     }
     prepared.control?.service.seal();
     if (outcome === "failed") this.#revoke(prepared);
-    let drainFailure: unknown;
-    try {
-      await Promise.all([
+    const drains = await Promise.allSettled([
         "nativeCodexProfileHome" in prepared.route ? Promise.resolve() : this.#options.gatewayFrontdoor.drain(prepared.route),
         prepared.control && this.#options.controlFrontdoor
           ? this.#options.controlFrontdoor.drain(prepared.control.downstream)
@@ -1214,9 +1239,10 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
         prepared.frameSink.drain(),
         prepared.control?.service.drain() ?? Promise.resolve()
       ]);
-    } catch (error) {
-      drainFailure = error;
-    }
+    const drainFailure = drains.slice(2).find((result): result is PromiseRejectedResult => result.status === "rejected");
+    const cleanupFailures = drains.slice(0, 2).flatMap((result, index) => result.status === "rejected"
+      ? [{ resource: index === 0 ? "gateway" : "control-transport", reason: redactTrace(result.reason instanceof Error ? result.reason.message : String(result.reason)).slice(0, 2000) }]
+      : []);
     this.#revoke(prepared);
     let disposeFailure: unknown;
     try {
@@ -1224,6 +1250,8 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
     } catch (error) {
       disposeFailure = error;
     }
+    if (disposeFailure) cleanupFailures.push({ resource: "turn-transport", reason: redactTrace(
+      disposeFailure instanceof Error ? disposeFailure.message : String(disposeFailure)).slice(0, 2000) });
     const actions = outcome === "completed" && prepared.control
       ? await readStagedControlActions(prepared.control.stagingPath)
       : [];
@@ -1241,14 +1269,15 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
         invocationId: prepared.turn.invocationId,
         inputId: prepared.turn.inputId,
         outcome,
+        ...(cleanupFailures.length ? { resourceCleanupFailed: true, cleanupFailures } : {}),
         controlActionCount: actions.length
       });
     } catch {
       // A completed native turn and durable staged actions must not be lost
       // because diagnostic persistence became unavailable during release.
     }
-    if (drainFailure) throw drainFailure;
-    if (disposeFailure) throw disposeFailure;
+    if (cleanupFailures.length) console.warn("Resident turn transport cleanup incomplete", cleanupFailures);
+    if (drainFailure) throw drainFailure.reason;
     return actions;
   }
 
@@ -1440,6 +1469,8 @@ class StableGatewayFrontdoor {
       }
       const responseHeaders = { ...upstreamResponse.headers };
       stripHopByHopHeaders(responseHeaders);
+      upstreamResponse.once("aborted", () => response.destroy());
+      upstreamResponse.once("error", () => response.destroy());
       response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
       upstreamResponse.pipe(response);
     });

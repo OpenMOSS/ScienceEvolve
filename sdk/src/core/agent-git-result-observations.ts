@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
-import type { CollaborationStateDatabase } from "./collaboration-state/store.js";
+import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import type { AgentNativeSessionBinding } from "./collaboration-state/contracts.js";
 import { agentGitOperationJournal } from "./agent-git-operation-journal.js";
-import { queryAgentGitOperation } from "./agent-git-operation-query.js";
+import { readAgentGitOperation } from "./agent-git-operation-query.js";
 import { controlResultReceipts, sameDurableSession } from "./control-result-receipts.js";
 import { validateSessionRef } from "./harness-runtime/session-ref.js";
 import { OperationStoreViolationError } from "./collaboration-git/errors.js";
@@ -11,16 +11,16 @@ import type { AgentGitFacts } from "./agent-git-tools.js";
 /** Capture already-known results at existing scheduling/input boundaries.
  * This reads original request/journal facts only: no provider, Git, retry,
  * business completion, new ownership, or native receipt is performed here. */
-export function captureKnownAgentGitResults(database: CollaborationStateDatabase, projectId: string): void {
-  const projection = database.projectState(projectId);
+export async function captureKnownAgentGitResults(database: CollaborationStateDatabase, projectId: string): Promise<void> {
+  const projection = await database.projectState(projectId);
   const repository = projection.git.repository;
   if (!repository) return;
   const journal = agentGitOperationJournal(database, projectId);
-  const closingTurns = database.scopedWorktreeClosingTurns(projectId);
+  const closingTurns = await database.scopedWorktreeClosingTurns(projectId);
   for (const operation of projection.operations) {
     if (!operation.ownerExecutionId || !["git.push", "git.revert", "pull.create", "pull.merge", "pull.close", "pull.update"].includes(operation.kind) ||
       !["observed", "finalized", "superseded"].includes(operation.status)) continue;
-    const request = journal.recordedRequest(operation.id);
+    const request = await journal.recordedRequest(operation.id);
     const binding = request?.nativeBinding;
     // Old records without captured provenance cannot acquire an invented
     // original caller/session. Canonical final publishers have their own
@@ -29,7 +29,7 @@ export function captureKnownAgentGitResults(database: CollaborationStateDatabase
     const legacy = projection.executions.find(owner => owner.id === operation.ownerExecutionId);
     const owner = scoped ? { ...scoped, purpose: "delivery" as const } : legacy;
     if (!request || !binding || !owner) continue;
-    const source = database.eventByRequestId(projectId, `agent-native-binding:${request.invocationId}`);
+    const source = await database.eventByRequestId(projectId, `agent-native-binding:${request.invocationId}`);
     const original = source?.payload.binding as unknown as AgentNativeSessionBinding | undefined;
     if (source?.type !== "agent.native_binding.opened" || !isDeepStrictEqual(original, binding) ||
       binding.projectId !== projectId || binding.agentId !== request.agentId || binding.agentId !== owner.agentId ||
@@ -41,7 +41,7 @@ export function captureKnownAgentGitResults(database: CollaborationStateDatabase
     // A/B retain the same execution/epoch and native lineage. Select the
     // independent B synchronization only through its immutable operation
     // binding; neither an invocation name nor an old business receipt suffices.
-    const closingBinding = database.eventByRequestId(projectId, `scoped-worktree-closing-operation:${operation.id}`);
+    const closingBinding = await database.eventByRequestId(projectId, `scoped-worktree-closing-operation:${operation.id}`);
     const closing = closingTurns.find(turn => turn.invocationId === request.invocationId);
     if (closingBinding || closing) {
       if (!scoped || !closing || closingBinding?.type !== "scoped.worktree_closing.operation.bound" ||
@@ -57,23 +57,23 @@ export function captureKnownAgentGitResults(database: CollaborationStateDatabase
         throw new OperationStoreViolationError("Late closing result differs from its separate original invocation binding");
       }
     }
-    const base = database.executionPullBase(projectId, owner.id);
-    const savedFacts = legacy ? database.eventByRequestId(projectId,
-      `agent-git-fact:${owner.id}:${request.ownershipEpoch}:${request.callId}`) : undefined;
+    const base = await database.executionPullBase(projectId, owner.id);
+    const savedFacts = legacy ? (await database.eventByRequestId(projectId,
+      `agent-git-fact:${owner.id}:${request.ownershipEpoch}:${request.callId}`)) : undefined;
     const facts = savedFacts?.type === "execution.agent_git.fact" && savedFacts.executionId === owner.id &&
       savedFacts.ownershipEpoch === request.ownershipEpoch && savedFacts.agentId === request.agentId
       ? savedFacts.payload.facts as AgentGitFacts : undefined;
-    const result = queryAgentGitOperation({ projectId, operationId: operation.id, repository, execution: owner, base,
+    const result = await readAgentGitOperation({ projectId, operationId: operation.id, repository, execution: owner, base,
       ...(facts ? { facts } : {}),
-      recordedOperation: id => database.recordedGitOperation(projectId, id), recordedRequest: journal.recordedRequest,
-      ...(scoped ? { recordedSynchronization: query => database.scopedMergedSynchronization(query, closing?.invocationId) } : {}) });
+      recordedOperation: async id => await database.recordedGitOperation(projectId, id), recordedRequest: journal.recordedRequest,
+      ...(scoped ? { recordedSynchronization: async query => await database.scopedMergedSynchronization(query, closing?.invocationId) } : {}) });
     if (({ git_push: "git.push", github_create_pr: "pull.create", github_merge_pr: "pull.merge",
       github_close_pr: "pull.close", github_update_pr: "pull.update", git_revert: "git.revert" } as const)[request.action.tool] !== operation.kind ||
       "providerNumber" in request.action && request.action.providerNumber !== operation.remoteFact?.providerNumber ||
       request.action.tool === "github_create_pr" && request.action.base !== undefined && request.action.base !== base) {
       throw new OperationStoreViolationError("Late journal result differs from its original Agent Git action");
     }
-    controlResultReceipts(database, { projectId, agentId: binding.agentId, invocationId: binding.invocationId,
+    await controlResultReceipts(database, { projectId, agentId: binding.agentId, invocationId: binding.invocationId,
       session: binding.session, executionContext: binding.executionContext }).recordJournalResult(request, result);
   }
 }

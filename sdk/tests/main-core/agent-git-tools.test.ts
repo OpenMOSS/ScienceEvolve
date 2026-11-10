@@ -32,30 +32,30 @@ function fixture(status: GitHubPullRequestFact["status"], owner: GitExecutionAut
 }
 
 describe("Agent-owned retained PR tools", () => {
-  it.each(["push", "create", "merge", "close"] as const)("bounds a new ordinary scoped %s marker without losing its request identity", suffix => {
+  it.each(["push", "create", "merge", "close"] as const)("bounds a new ordinary scoped %s marker without losing its request identity", async suffix => {
     const owner: GitExecutionAuthority = { ...execution, id: `scoped-exec-${"f".repeat(64)}` };
     const envelope = { projectId: "project", invocationId: "native-turn", callId: `create-pr-${"f".repeat(64)}-epoch3-2` };
     const input = { execution: owner, envelope };
-    const marker = agentGitOperationId(input, suffix);
+    const marker = await agentGitOperationId(input, suffix);
     expect(marker).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/);
-    expect(agentGitOperationId({ ...input, envelope: { ...envelope, invocationId: "same-task-next-native-turn" } }, suffix)).toBe(marker);
-    const other = [
+    expect((await agentGitOperationId({ ...input, envelope: { ...envelope, invocationId: "same-task-next-native-turn" } }, suffix))).toBe(marker);
+    const other = await Promise.all([
       { ...input, envelope: { ...envelope, projectId: "another-project" } },
       { ...input, envelope: { ...envelope, callId: envelope.callId + "-new-call" } },
       { ...input, execution: { ...owner, ownershipEpoch: 3 } },
       { ...input, execution: { ...owner, id: owner.id + "-another-owner" } }
-    ].map(value => agentGitOperationId(value, suffix));
+    ].map(value => agentGitOperationId(value, suffix)));
     expect(new Set([marker, ...other]).size).toBe(5);
   });
 
-  it.each(["request", "operation"] as const)("preserves a recorded oversized ordinary %s marker instead of manufacturing a fresh request", retained => {
+  it.each(["request", "operation"] as const)("preserves a recorded oversized ordinary %s marker instead of manufacturing a fresh request", async retained => {
     const owner: GitExecutionAuthority = { ...execution, id: `scoped-exec-${"f".repeat(64)}` };
     const envelope = { projectId: "project", invocationId: "native-turn", callId: `create-pr-${"f".repeat(64)}-epoch3-2` };
     const legacy = `agent-git-${owner.id}-epoch-2-${envelope.callId}-create`;
     const journal = retained === "request"
       ? { recordedRequest: vi.fn(id => id === legacy ? { operationId: legacy } as any : undefined) }
       : { recordedOperation: vi.fn(id => id === legacy ? { id: legacy, status: "uncertain" } as any : undefined) };
-    expect(agentGitOperationId({ execution: owner, envelope, ...journal }, "create")).toBe(legacy);
+    expect((await agentGitOperationId({ execution: owner, envelope, ...journal }, "create"))).toBe(legacy);
   });
 
   it("preserves a matching completed merge when reconciling an earlier push of the same head", async () => {
@@ -72,15 +72,15 @@ describe("Agent-owned retained PR tools", () => {
     expect(f.git.reconcileMergedPullRequest).toHaveBeenCalledOnce();
     expect(f.git.checkpointAndPush).not.toHaveBeenCalled();
   });
-  it("keeps oversized closing IDs stable and distinct for every original request identity", () => {
+  it("keeps oversized closing IDs stable and distinct for every original request identity", async () => {
     const invocationId = `inv_${"6".repeat(32)}`;
     const owner: GitExecutionAuthority = { ...execution, id: `scoped-exec-${"3".repeat(64)}`,
       restrictedClosing: { invocationId, capabilityHash: "c".repeat(64),
         scope: { kind: "completed-leftovers", reportHeadSha: "a".repeat(40), paths: ["agent-memory/worker/Memory.md"] } } };
     const envelope = { projectId: "project", invocationId, callId: "checker-close-mem-create-pr-642e9065-1" };
-    const input = { execution: owner, envelope }, first = agentGitOperationId(input, "create");
+    const input = { execution: owner, envelope }, first = await agentGitOperationId(input, "create");
     expect(first).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/);
-    expect(agentGitOperationId(structuredClone(input), "create")).toBe(first);
+    expect((await agentGitOperationId(structuredClone(input), "create"))).toBe(first);
     const variants = [
       { ...input, envelope: { ...envelope, projectId: "other-project" } },
       { ...input, envelope: { ...envelope, callId: `${envelope.callId}-retry` } },
@@ -88,7 +88,7 @@ describe("Agent-owned retained PR tools", () => {
       { ...input, execution: { ...owner, ownershipEpoch: 3 } },
       { ...input, execution: { ...owner, restrictedClosing: { ...owner.restrictedClosing!, invocationId: `inv_${"7".repeat(32)}` } } }
     ];
-    const ids = [first, ...variants.map(value => agentGitOperationId(value, "create")), agentGitOperationId(input, "merge")];
+    const ids = [first, ...await Promise.all(variants.map(value => agentGitOperationId(value, "create"))), await agentGitOperationId(input, "merge")];
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(id => /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(id))).toBe(true);
   });
@@ -106,7 +106,7 @@ describe("Agent-owned retained PR tools", () => {
       ? { recordedRequest: vi.fn(id => id === legacy ? { operationId: legacy } as any : undefined) }
       : { recordedOperation: vi.fn(id => id === legacy ? { id: legacy, status: "uncertain" } as any : undefined) };
     await expect(executeAgentGitTool({ git: f.git, repository, execution: owner, base: targetBase,
-      facts: { pushedHeadSha: f.pull.headSha }, ...journal,
+      facts: { pushedHeadSha: f.pull.headSha }, controlCapabilityHash: "c".repeat(64), ...journal,
       envelope: { projectId: "project", agent: "worker", invocationId, callId, capabilityHash: "c".repeat(64), stateVersion: 2,
         receivedAt: repository.observedAt, action: { tool: "github_create_pr", base: targetBase, title: "My B", body: "Keep original A" } } })).rejects.toThrow("Original oversized provider request");
     expect(create).toHaveBeenCalledOnce();
@@ -118,6 +118,7 @@ describe("Agent-owned retained PR tools", () => {
     const authority: GitExecutionAuthority = { ...execution, restrictedClosing: { invocationId, capabilityHash: "c".repeat(64),
       scope: { kind: "bound-report-memory", reportHeadSha: "a".repeat(40), paths: ["agent-memory/worker/Memory.md"] } } };
     await expect(executeAgentGitTool({ git: f.git, repository, execution: authority, base: targetBase, facts: {}, recordRequest,
+      controlCapabilityHash: "c".repeat(64),
       envelope: { projectId: "project", agent: "worker", invocationId: mismatch === "invocation" ? "other-turn" : invocationId,
         capabilityHash: mismatch === "capability" ? "d".repeat(64) : "c".repeat(64), callId: "push", stateVersion: 2,
         receivedAt: repository.observedAt, action: { tool: "git_push", reason: "Save my necessary Memory" } } })).rejects.toThrow("exact native invocation capability");

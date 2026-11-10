@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { enablePiProtocolBackpressure } from "./pi-protocol-stdio.js";
+import { NATIVE_PROCESS_SCOPE_ENV, NATIVE_PROCESS_SUPPORT_ENV } from "../native-processes.js";
 import {
   compileRuntimeMcpToolCatalog,
   modelFacingMcpToolName,
@@ -58,6 +59,8 @@ function mcpClient(definition) {
   const child = spawn(definition.command, definition.args ?? [], {
     cwd: definition.cwd || process.cwd(),
     env: {
+      [NATIVE_PROCESS_SUPPORT_ENV]: "1",
+      ...(process.env[NATIVE_PROCESS_SCOPE_ENV] ? { [NATIVE_PROCESS_SCOPE_ENV]: process.env[NATIVE_PROCESS_SCOPE_ENV] } : {}),
       ...Object.fromEntries(MCP_HOST_ENV_ALLOWLIST.flatMap((key) =>
         process.env[key] === undefined ? [] : [[key, process.env[key]]]
       )),
@@ -251,8 +254,20 @@ export default async function registerOpenFarsMcp(pi) {
                   result
                 });
               }
+              const content = [...result.content];
+              if (result.structuredContent !== undefined) {
+                const structured = JSON.stringify(result.structuredContent);
+                const rendered = content.filter(item => item.type === "text" && typeof item.text === "string").map(item => item.text).join("\n");
+                if (!rendered.includes(structured)) {
+                  const remaining = { ...result.structuredContent };
+                  // Provider payloads may already be printed verbatim while the
+                  // structured wrapper adds the status needed by the model.
+                  if (remaining.result && typeof remaining.result === "object" && rendered.includes(JSON.stringify(remaining.result))) delete remaining.result;
+                  if (Object.keys(remaining).length) content.push({ type: "text", text: JSON.stringify(remaining) });
+                }
+              }
               return {
-                content: result.content,
+                content,
                 details: {
                   server: definition.name,
                   tool: tool.name,

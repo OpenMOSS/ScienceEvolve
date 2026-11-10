@@ -11,7 +11,7 @@ import { harnessCatalogRegistry, toPublicHarnessDescriptor } from "../src/core/h
 
 const examples = fileURLToPath(new URL("../../example/", import.meta.url));
 const names = ["01-ahe-evolve", "02-software-development", "dynamic-research-workflow", "aris", "metaharness", "autoresearch", "funsearch", "agent-laboratory", "sciagents", "robin", "co-scientist", "biomni", "agentrxiv", "scientist-two", "rrsi", "drugevolve"];
-const files = [...names.map(name => path.join(examples, name, "workflow.json")), ...["default-workflow.json", "existing-project/workflow.json", "workflow-reconfiguration/workflow.json", "hermes/workflow.json"]
+const files = [...names.map(name => path.join(examples, name, "workflow.json")), ...["default-workflow.json", "existing-project/workflow.json", "workflow-reconfiguration/workflow.json"]
   .map(name => fileURLToPath(new URL(`../examples/${name}`, import.meta.url)))];
 const roots: string[] = [], sdks: MainResearchSdk[] = [];
 afterEach(async () => {

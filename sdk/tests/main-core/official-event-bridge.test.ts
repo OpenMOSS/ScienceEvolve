@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRunRequest } from "../../src/core/types.js";
 import type {
@@ -8,6 +7,7 @@ import type {
 } from "../../src/core/harness-runtime/contracts.js";
 import {
   ASSISTANT_MESSAGE_LIMIT,
+  emitCanonicalTrace,
   OfficialEventBridge,
   TOOL_RESULT_PREVIEW_LIMIT,
   validateCanonicalHarnessEvent
@@ -15,27 +15,22 @@ import {
 import { BUILTIN_HARNESS_DESCRIPTORS } from "../../src/core/harness-runtime/registry.js";
 import { mapCodexOfficialEvent } from "../../src/core/harness-runtime/adapters/codex-event-mapper.js";
 import { mapPiOfficialEvent } from "../../src/core/harness-runtime/adapters/pi-event-mapper.js";
-import { mapClaudeCodeOfficialEvent } from "../../src/core/harness-runtime/adapters/claude-code-event-mapper.js";
 import { dshOfficialEventMapper } from "../../src/core/harness-runtime/adapters/dsh-event-mapper.js";
 import { CodexAdapter } from "../../src/core/harness-runtime/adapters/codex-adapter.js";
 import { PiAdapter } from "../../src/core/harness-runtime/adapters/pi-adapter.js";
-import { ClaudeCodeAdapter } from "../../src/core/harness-runtime/adapters/claude-code-adapter.js";
 import { DshAdapter } from "../../src/core/harness-runtime/adapters/dsh-adapter.js";
 import type { HarnessAdapter } from "../../src/core/harness-runtime/contracts.js";
 import { exerciseAdapterContract } from "./harness-runtime-contract.js";
 
-const fixtureRoot = path.resolve(process.cwd(), "tests", "main-core", "fixtures", "harness-events");
 const fixtureMappers = {
   codex: mapCodexOfficialEvent,
   pi: mapPiOfficialEvent,
-  "claude-code": mapClaudeCodeOfficialEvent,
   dsh: dshOfficialEventMapper("fixture-session")
 } as const;
 
 const actualAdapters: HarnessAdapter[] = [
   new CodexAdapter({ harnessExecutables: { codex: (process.platform === "win32" ? process.execPath : "/bin/true") } }),
   new PiAdapter({ harnessExecutables: { pi: (process.platform === "win32" ? process.execPath : "/bin/true") } }),
-  new ClaudeCodeAdapter({ harnessExecutables: { "claude-code": (process.platform === "win32" ? process.execPath : "/bin/true") } }),
   new DshAdapter({ harnessExecutables: { dsh: (process.platform === "win32" ? process.execPath : "/bin/true") } })
 ];
 
@@ -62,31 +57,10 @@ const sessionRequest = {
 const validNativeSessionIds: Record<string, string> = {
   codex: "00000000-0000-4000-8000-000000000001",
   pi: "/fixture/project/runtime/harness-sessions/main/pi/sessions/session-7.jsonl",
-  "claude-code": "00000000-0000-4000-8000-000000000003",
   dsh: "prj_fixture-main-g7-fixture"
 };
 
 const canonicalDescriptor = BUILTIN_HARNESS_DESCRIPTORS.find((item) => item.id === "codex")!;
-
-it("retains Claude slow-tool progress without turning it into a result receipt", async () => {
-  const events: HarnessEvent[] = [];
-  const bridge = new OfficialEventBridge({
-    descriptor: BUILTIN_HARNESS_DESCRIPTORS.find(item => item.id === "claude-code")!,
-    invocationId: "inv-slow-tool", mapEvent: mapClaudeCodeOfficialEvent,
-    onEvent: event => { events.push(event); }
-  });
-  await bridge.accept({ type: "assistant", message: { role: "assistant", content: [
-    { type: "tool_use", id: "slow-call", name: "mcp__fixture__delayed", input: {} }
-  ] } });
-  await bridge.accept({ type: "tool_progress", tool_use_id: "slow-call-heartbeat-0", parent_tool_use_id: "slow-call", tool_name: "mcp__fixture__delayed",
-    elapsed_time_seconds: 30, heartbeat: true });
-  await bridge.finish();
-  expect(events.filter(event => event.kind.startsWith("tool."))).toMatchObject([
-    { kind: "tool.started", tool: { callId: "slow-call", status: "started" } },
-    { kind: "tool.updated", sourceType: "tool_progress", itemId: "slow-call-heartbeat-0", tool: { callId: "slow-call", status: "updated" } }
-  ]);
-  expect(events.some(event => event.kind === "tool.completed")).toBe(false);
-});
 
 function canonicalEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -120,7 +94,7 @@ async function officialFixtureEvents(harnessId: keyof typeof fixtureMappers): Pr
     mapEvent: fixtureMappers[harnessId],
     onEvent: (event) => events.push(event)
   });
-  const fixture = await readFile(path.join(fixtureRoot, `${harnessId}.jsonl`));
+  const fixture = await readFile(new URL(`./fixtures/harness-events/${harnessId}.jsonl`, import.meta.url));
   bridge.feed(fixture.subarray(0, 17));
   bridge.feed(fixture.subarray(17));
   await bridge.finish();
@@ -128,7 +102,19 @@ async function officialFixtureEvents(harnessId: keyof typeof fixtureMappers): Pr
 }
 
 describe("OfficialEventBridge", () => {
-  it.each(["codex", "pi", "claude-code", "dsh"])(
+  it("persists only provided visible summaries and body-free activity through the trace sink", async () => {
+    const onTrace = vi.fn();
+    const summary = validateCanonicalHarnessEvent(canonicalEvent({ kind: "reasoning.summary", phase: "completed", message: "Check the evidence." }), canonicalDescriptor);
+    await emitCanonicalTrace(summary, onTrace);
+    expect(onTrace).toHaveBeenLastCalledWith("message", "Check the evidence.", expect.objectContaining({ canonicalEvent: summary }));
+    await emitCanonicalTrace({ ...summary, message: " " }, onTrace);
+    expect(onTrace).toHaveBeenCalledOnce();
+    const activity = validateCanonicalHarnessEvent(canonicalEvent({ kind: "activity", phase: "delta", message: "private" }), canonicalDescriptor);
+    await emitCanonicalTrace(activity, onTrace);
+    expect(onTrace).toHaveBeenLastCalledWith("status", "", expect.objectContaining({ canonicalEvent: activity }));
+    expect(JSON.stringify(activity)).not.toContain("private");
+  });
+  it.each(["codex", "pi", "dsh"])(
     "maps %s official events to the same tool lifecycle",
     async (harnessId) => {
       // Deliberately split UTF-8/event framing across arbitrary chunks.
@@ -155,13 +141,6 @@ describe("OfficialEventBridge", () => {
           event.kind === "tool.updated" && event.tool?.callId === "tool-1"
         )).toBe(true);
       }
-      if (harnessId === "claude-code") {
-        expect(events.filter((event) => event.kind === "assistant.message")).toHaveLength(1);
-        expect(events.find((event) => event.kind === "tool.started")?.tool?.name).toBe("Read");
-        // Claude's official tool_result fixture has no name. The placeholder
-        // is correlated with tool.started by the Harness-neutral trace merge.
-        expect(events.find((event) => event.kind === "tool.completed")?.tool?.name).toBe("tool");
-      }
       if (harnessId === "dsh") {
         expect(events.find((event) => event.kind === "tool.started")).toMatchObject({
           itemId: "dsh:fixture-session:1"
@@ -181,10 +160,6 @@ describe("OfficialEventBridge", () => {
     ["pi", {
       type: "message_update",
       assistantMessageEvent: { type: "thinking_delta", delta: "PI_RAW_REASONING" }
-    }],
-    ["claude-code", {
-      type: "assistant",
-      message: { content: [{ type: "thinking", thinking: "CLAUDE_RAW_REASONING" }] }
     }],
     ["dsh", {
       jsonrpc: "2.0",
@@ -334,16 +309,14 @@ describe("OfficialEventBridge", () => {
     expect(events.every(event => !event.kind.startsWith("tool."))).toBe(true);
   });
 
-  it.each(["codex", "pi", "claude-code", "dsh"] as const)("retains %s actual normal input separately from queued acknowledgements", async harness => {
+  it.each(["codex", "pi", "dsh"] as const)("retains %s actual normal input separately from queued acknowledgements", async harness => {
     const message = "Final result for the original call. ".repeat(1_500) +
       "Authorization: Bearer private-native-input-secret\noriginal-result-tail-sentinel";
     const frame = harness === "codex"
       ? { type: "item.completed", item: { type: "userMessage", id: "native-user", content: [{ type: "text", text: message }] } }
       : harness === "pi"
         ? { type: "message_end", message: { role: "user", content: [{ type: "text", text: message }] } }
-        : harness === "claude-code"
-          ? { type: "user", session_id: "fixture-session", message: { role: "user", content: [{ type: "text", text: message }] } }
-          : { method: "session.event", params: { sessionId: "fixture-session", event: { type: "user/message", seq: 7,
+        : { method: "session.event", params: { sessionId: "fixture-session", event: { type: "user/message", seq: 7,
             surfaceOp: "append", data: { id: "native-user", role: "user", source: { kind: "user" }, content: [{ type: "text", text: message }] } } } };
     const events: HarnessEvent[] = [];
     const nativeInputs: HarnessEvent[] = [];
@@ -456,15 +429,6 @@ describe("OfficialEventBridge", () => {
       result: "x".repeat(TOOL_RESULT_PREVIEW_LIMIT + 50),
       isError: false
     }],
-    ["claude-code", {
-      type: "user",
-      message: { content: [{
-        type: "tool_result",
-        tool_use_id: "tool-large",
-        content: "x".repeat(TOOL_RESULT_PREVIEW_LIMIT + 50),
-        is_error: false
-      }] }
-    }],
     ["dsh", {
       method: "session.event",
       params: {
@@ -502,15 +466,6 @@ describe("OfficialEventBridge", () => {
       toolName: "read",
       result: "failed",
       isError: true
-    }],
-    ["claude-code", {
-      type: "user",
-      message: { content: [{
-        type: "tool_result",
-        tool_use_id: "tool-failed",
-        content: "failed",
-        is_error: true
-      }] }
     }],
     ["dsh", {
       method: "session.event",
@@ -739,14 +694,6 @@ describe("OfficialEventBridge", () => {
       toolName: "read",
       result: "fixture-sentinel",
       isError: false
-    }],
-    ["claude-code started", "claude-code", {
-      type: "assistant",
-      message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "sentinel.txt" } }] }
-    }],
-    ["claude-code completed", "claude-code", {
-      type: "user",
-      message: { content: [{ type: "tool_result", content: "fixture-sentinel", is_error: false }] }
     }],
     ["dsh started", "dsh", {
       method: "session.event",

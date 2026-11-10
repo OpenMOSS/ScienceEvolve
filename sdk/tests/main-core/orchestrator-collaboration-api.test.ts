@@ -112,7 +112,7 @@ describe("Git collaboration public API delegation", () => {
       capacities: { main: 1, worker: 2 }, occupied: { main: 0, worker: 2 }
     }));
     try {
-      const queue = f.orchestrator.getQueueSnapshot();
+      const queue = await f.orchestrator.getQueueSnapshot();
       expect(f.lifecycle.queueReadModel).toHaveBeenCalledWith(expect.objectContaining({ id: f.project.id }));
       expect(queue.worker.activeProjectIds).toEqual([f.project.id]);
       expect(queue.worker.activeTasks?.map(task => task.agentId)).toEqual(["alice", "bob"]);

@@ -1,4 +1,7 @@
+import { failureAttemptHistory } from "./internal/shared/failure-attempt-history.js";
+import { MAX_TASK_REPAIR_WAKEUPS, nextTaskRepair, superviseTask, supervisionError, supervisionHandoff } from "./task-supervision.js";
 import { nativeBackgroundJobLifecycle } from "./harness-runtime/background-jobs.js";
+import type { WorkflowReplayConfigurationHistory } from "./workflow-replay.js";
 import { workflowMessagesText } from "./workflow-input.js";
 import { beginWorkflowRecovery, canAutomaticallyRecoverWorkflow, checkpointWorkflowRecovery, finishWorkflowRecovery, hasUserWorkflowPause } from "./workflow-recovery.js";
 import { deriveProjectRuntimeProjection } from "./project-runtime-projection.js";
@@ -20,6 +23,7 @@ import { controlResultReceipts, sameDurableSession } from "./control-result-rece
 import { workflowAdjustmentNotifications } from "./workflow-adjustment-notifications.js";
 import { executeProjectStateRequest } from "./project-state-service.js";
 import { readOnlyProjectStateDocuments, type ProjectStateDocumentStore, type SerialProjectStateInvocation } from "./project-state-documents.js";
+import { WriterLeaseHeartbeat, type HeartbeatDiagnostics } from "./collaboration-state/writer-lease-heartbeat.js";
 import os from "node:os";
 import type { ProjectAgentQueueSource } from "./agent-queue-view.js";
 import path from "node:path";
@@ -84,7 +88,6 @@ import { restoreSerialWorkflowConfiguration } from "./serial-workflow-projection
 import { materializeProjectSkills } from "./project-skills.js";
 import { buildAgentToolCatalog } from "./agent-tool-catalog.js";
 import {
-  CollaborationStateDatabase,
   CollaborationStateError,
   type AcceptedGroupControlAction,
   type AcceptedMainRouteAction,
@@ -93,6 +96,7 @@ import {
   type GroupActivationOrigin,
   type RuntimeActivity
 } from "./collaboration-state/index.js";
+import { openCollaborationStateWorker, type AsyncCollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import {
   CollaborationGitFacade,
   createCollaborationGitFacade,
@@ -167,7 +171,6 @@ class TerminalPushObservationUnresolvedError extends ResidentRetainedWaitError {
 class CoordinatorSubstitutedError extends Error {}
 class MainRouteRecoveryRequiredError extends Error {}
 type GroupContinuationOutcome = "progressed" | "idle" | "fault-paused";
-class MainRouteMechanismExhaustedError extends Error {}
 class ExecutionArtifactPublicationError extends Error {
   constructor(readonly artifactPath: string, readonly commitSha: string, cause: unknown) {
     super(`Git artifact publication failed for ${artifactPath} at ${commitSha}: ${safeRuntimeError(cause)}`, { cause });
@@ -326,36 +329,38 @@ export interface CollaborationProjectResumeOptions {
 
 export interface CollaborationRuntimeLifecycle {
   initialize(): Promise<void>;
-  initializeNewProjectState?(state: ProjectState): void;
-  serialProjectStateEnabled?(state: ProjectState): boolean;
+  initializeNewProjectState?(state: ProjectState): void | Promise<void>;
+  serialProjectStateEnabled?(state: ProjectState): boolean | Promise<boolean>;
   requestSerialProjectState?(state: ProjectState, identity: SerialProjectStateInvocation, request: unknown): Promise<unknown>;
-  queueReadModel?(state: ProjectState): ProjectAgentQueueSource | undefined;
+  queueReadModel?(state: ProjectState): ProjectAgentQueueSource | undefined | Promise<ProjectAgentQueueSource | undefined>;
   /** SDK-only configuration roll-forward before its original scheduler starts. */
   recoverSerialWorkflowConfiguration?(state: ProjectState, options?: { recoverResultBoundaries?: boolean }): Promise<{ changed: boolean } | undefined>;
-  prepareSerialWorkflowAdjustments?(state: ProjectState): WorkflowAdjustmentContext["current"];
-  pendingSerialWorkflowAdjustments?(state: ProjectState): WorkflowAdjustmentRecord[];
+  prepareSerialWorkflowAdjustments?(state: ProjectState): WorkflowAdjustmentContext["current"] | Promise<WorkflowAdjustmentContext["current"]>;
+  pendingSerialWorkflowAdjustments?(state: ProjectState): WorkflowAdjustmentRecord[] | Promise<WorkflowAdjustmentRecord[]>;
   publishSerialWorkflowAdjustment?(state: ProjectState, requestId: string, authority: SerialWorkflowPublicationAuthority): Promise<WorkflowAdjustmentRecord>;
-  getWorkflowAdjustmentSubmissionResult?(state: ProjectState, requestId: string, replay: boolean): WorkflowAdjustmentSubmissionResult;
-  decorateSerialWorkflowNotifications?(state: ProjectState, request: AgentRunRequest): void;
-  prepareSerialMainWorkflowAdjustment?(state: ProjectState): WorkflowAdjustmentContext["current"];
-  isSerialWorkflowConfigurationCurrent?(state: ProjectState, version: WorkflowConfigurationVersion): boolean;
-  getSerialMainWorkflowAdjustment?(state: ProjectState, invocationId: string, callId: string): WorkflowAdjustmentRecord | undefined;
-  stageSerialMainWorkflowAdjustment?(state: ProjectState, input: Pick<SerialMainWorkflowAdjustmentInput, "base" | "proposal" | "envelope">): WorkflowAdjustmentSubmissionResult;
+  getWorkflowAdjustmentSubmissionResult?(state: ProjectState, requestId: string, replay: boolean): WorkflowAdjustmentSubmissionResult | Promise<WorkflowAdjustmentSubmissionResult>;
+  decorateSerialWorkflowNotifications?(state: ProjectState, request: AgentRunRequest): void | Promise<void>;
+  prepareSerialMainWorkflowAdjustment?(state: ProjectState): WorkflowAdjustmentContext["current"] | Promise<WorkflowAdjustmentContext["current"]>;
+  isSerialWorkflowConfigurationCurrent?(state: ProjectState, version: WorkflowConfigurationVersion): boolean | Promise<boolean>;
+  getSerialMainWorkflowAdjustment?(state: ProjectState, invocationId: string, callId: string): WorkflowAdjustmentRecord | undefined | Promise<WorkflowAdjustmentRecord | undefined>;
+  stageSerialMainWorkflowAdjustment?(state: ProjectState, input: Pick<SerialMainWorkflowAdjustmentInput, "base" | "proposal" | "envelope">): WorkflowAdjustmentSubmissionResult | Promise<WorkflowAdjustmentSubmissionResult>;
   publishSerialMainWorkflowAdjustment?(state: ProjectState, requestId: string, authority: SerialWorkflowPublicationAuthority): Promise<WorkflowAdjustmentRecord>;
-  recordSerialMainWorkflowBoundary?(state: ProjectState, requestId: string, completion: TimelineEvent): void;
+  recordSerialMainWorkflowBoundary?(state: ProjectState, requestId: string, completion: TimelineEvent): void | Promise<void>;
   recoverSerialMainWorkflowBoundaries?(state: ProjectState): Promise<void>;
-  pendingSerialMainWorkflowAdjustments?(state: ProjectState): WorkflowAdjustmentRecord[];
+  pendingSerialMainWorkflowAdjustments?(state: ProjectState): WorkflowAdjustmentRecord[] | Promise<WorkflowAdjustmentRecord[]>;
   /** Build an API/UI view directly from the current SQLite projection. */
-  projectReadModel?(state: ProjectState): ProjectState;
-  getWorkflowAdjustments?(state: ProjectState): WorkflowAdjustmentContext;
-  queryWorkflowAdjustments?(state: ProjectState, ifNoneMatch?: string): WorkflowAdjustmentQueryResult;
-  getWorkflowAdjustmentPage?(state: ProjectState, input: WorkflowAdjustmentPageInput, ifNoneMatch?: string): WorkflowAdjustmentPageResult;
-  getWorkflowAdjustmentDetail?(state: ProjectState, requestId: string, expectedVersion?: string): WorkflowAdjustmentDetail;
+  projectReadModel?(state: ProjectState): ProjectState | Promise<ProjectState>;
+  committedProjectState?(state: ProjectState): ProjectState | undefined | Promise<ProjectState | undefined>;
+  getWorkflowAdjustments?(state: ProjectState): WorkflowAdjustmentContext | Promise<WorkflowAdjustmentContext>;
+  queryWorkflowAdjustments?(state: ProjectState, ifNoneMatch?: string): WorkflowAdjustmentQueryResult | Promise<WorkflowAdjustmentQueryResult>;
+  getWorkflowAdjustmentPage?(state: ProjectState, input: WorkflowAdjustmentPageInput, ifNoneMatch?: string): WorkflowAdjustmentPageResult | Promise<WorkflowAdjustmentPageResult>;
+  getWorkflowAdjustmentDetail?(state: ProjectState, requestId: string, expectedVersion?: string): WorkflowAdjustmentDetail | Promise<WorkflowAdjustmentDetail>;
+  workflowReplayConfigurationHistory?(state: ProjectState): WorkflowReplayConfigurationHistory | Promise<WorkflowReplayConfigurationHistory>;
   submitWorkflowAdjustment?(state: ProjectState, input: unknown): Promise<WorkflowAdjustmentSubmissionResult>;
   withdrawWorkflowAdjustment?(state: ProjectState, input: unknown): Promise<WorkflowAdjustmentWithdrawalResult>;
   recoverProject(state: ProjectState): Promise<boolean>;
   createProject(state: ProjectState, input: ProjectGitInput): Promise<void>;
-  assertWorkflowRevisionEditable(state: ProjectState, affectedGroupIds: string[]): void;
+  assertWorkflowRevisionEditable(state: ProjectState, affectedGroupIds: string[]): void | Promise<void>;
   saveWorkflowRevision(state: ProjectState, input: {
     orchestration: AgentOrchestrationTemplate;
     affectedGroupIds: string[];
@@ -369,7 +374,7 @@ export interface CollaborationRuntimeLifecycle {
     requestId: string;
     kind: "collaboration.rename" | "collaboration.dissolve";
     subjectId: string;
-  }): boolean;
+  }): boolean | Promise<boolean>;
   retryInitialization(state: ProjectState): Promise<void>;
   pauseProject(state: ProjectState): Promise<void>;
   resumeProject(state: ProjectState, options?: CollaborationProjectResumeOptions): Promise<void>;
@@ -397,6 +402,7 @@ export type CollaborationGitRuntime = Pick<CollaborationGitFacade,
     | "observeDeliveryPreparation"
     | "observeExecutionCommit"
     | "observeExecutionWorktree"
+    | "clearExecutionWorktree"
     | "observeRestrictedWorktreeClosing"
     | "observeRestrictedWorktreeClosingTarget"
     | "identifyRestrictedWorktreeClosing"
@@ -420,6 +426,7 @@ export interface CollaborationResidentHandle {
   pause(): Promise<void>;
   resume(): Promise<void>;
   close(): Promise<void>;
+  supervisionActions?(): Promise<string[]>;
 }
 
 export interface CollaborationResidentOpenInput {
@@ -617,7 +624,7 @@ export type CollaborationControlAuthorityFactory = (input: {
   revalidate(
     envelope: ControlActionEnvelope,
     stagedActions: readonly ControlActionEnvelope[]
-  ): Promise<void>;
+  ): Promise<unknown>;
   onRejected?(
     envelope: ControlActionEnvelope | undefined,
     error: Error
@@ -719,6 +726,7 @@ implements CollaborationExecutionInputBuilder {
 
 export interface CollaborationInvocationDispatcher {
   finish?(state: ProjectState, invocationId: string, status: "completed" | "incomplete"): Promise<void>;
+  flush?(projectId?: string): Promise<void>;
   decorate(input: {
     state: ProjectState;
     request: AgentRunRequest;
@@ -740,8 +748,12 @@ export class ProductionCollaborationInvocationDispatcher
 implements CollaborationInvocationDispatcher {
   readonly #queues = new Map<string, Promise<void>>();
   readonly #performance = new Map<string, InvocationPerformanceTracker>();
-  readonly #eventBatches = new Map<string, { state: ProjectState; drafts: ProjectEventDraft[]; timer: ReturnType<typeof setTimeout> }>();
+  readonly #eventBatches = new Map<string, { state: ProjectState; drafts: ProjectEventDraft[];
+    traces: Array<Parameters<ProjectStorage["appendTraces"]>[1][number]>; timer?: ReturnType<typeof setTimeout> }>();
+  readonly #eventFlushes = new Map<string, Promise<void>>();
   readonly #eventBatchFailures = new Map<string, unknown>();
+  readonly #checkpointAt = new Map<string, number>();
+  readonly #pendingCheckpoints = new Map<string, ProjectState>();
 
   constructor(private readonly storage: ProjectStorage) {}
 
@@ -751,6 +763,7 @@ implements CollaborationInvocationDispatcher {
     execution?: MemberExecution;
   }): void {
     const { state, request } = input;
+    if (!this.#checkpointAt.has(state.id)) this.#checkpointAt.set(state.id, Date.now());
     const performanceKey = `${state.id}:${request.invocationId}`;
     const tracker = () => {
       let value = this.#performance.get(performanceKey);
@@ -784,14 +797,13 @@ implements CollaborationInvocationDispatcher {
       // Native character/activity fragments are audit events, not scheduler
       // transitions. Keep their original records but share durable writes.
       // Tool/lifecycle/message boundaries below drain the preceding prefix.
-      if (canonical.kind === "assistant.delta" || canonical.kind === "activity") {
+      if (canonical.kind === "assistant.delta" || canonical.kind === "activity" || canonical.kind === "tool.updated" ||
+          canonical.kind === "usage" || canonical.kind === "reasoning.summary") {
         await this.bufferEvent(state, draft);
         return;
       }
+      await this.bufferEvent(state, draft);
       await this.drainBufferedEvents(state.id);
-      await this.enqueue(state.id, async () => {
-        await this.storage.appendEvent(state, draft);
-      });
     };
     const priorLive = request.onLiveHarnessEvent;
     request.onLiveHarnessEvent = async (event) => {
@@ -803,15 +815,12 @@ implements CollaborationInvocationDispatcher {
       await priorStream?.(event);
       tracker().observe(event);
       if (event.phase === "delta") return;
-      await this.drainBufferedEvents(state.id);
-      await this.enqueue(state.id, async () => {
-        await this.storage.appendEvent(state, {
-          type: "agent.trace",
-          agent: request.agent,
-          message: `Resident model stream ${event.phase}`,
-          invocationId: request.invocationId,
-          data: { resident: true, stream: event }
-        });
+      await this.bufferEvent(state, {
+        type: "agent.trace",
+        agent: request.agent,
+        message: `Resident model stream ${event.phase}`,
+        invocationId: request.invocationId,
+        data: { resident: true, stream: event }
       });
     };
     const priorReset = request.onHarnessAttemptReset;
@@ -848,13 +857,33 @@ implements CollaborationInvocationDispatcher {
     this.storage.hub.clearInvocation(state.id, invocationId);
     const key = `${state.id}:${invocationId}`;
     const tracker = this.#performance.get(key);
-    if (!tracker) return;
+    if (!tracker) { await this.flushCheckpoint(state.id); return; }
     this.#performance.delete(key);
     const performance = tracker.finish(status);
     await this.enqueue(state.id, async () => {
       recordTerminalPerformance(state, performance, status === "completed");
       await this.storage.appendEvent(state, { type: "invocation.performance", agent: performance.agent,
         invocationId, message: "Model performance recorded", data: { performance } });
+      this.#pendingCheckpoints.delete(state.id);
+      this.#checkpointAt.set(state.id, Date.now());
+    });
+  }
+
+  async flush(projectId?: string): Promise<void> {
+    const projects = projectId ? [projectId] : [...new Set([
+      ...this.#eventBatches.keys(), ...this.#eventFlushes.keys(), ...this.#queues.keys(), ...this.#eventBatchFailures.keys(),
+      ...this.#pendingCheckpoints.keys()
+    ])];
+    await Promise.all(projects.map(async id => { await this.drainBufferedEvents(id); await this.flushCheckpoint(id); }));
+  }
+
+  private flushCheckpoint(projectId: string): Promise<void> {
+    return this.enqueue(projectId, async () => {
+      const state = this.#pendingCheckpoints.get(projectId);
+      if (!state) return;
+      await this.storage.saveState(state);
+      this.#pendingCheckpoints.delete(projectId);
+      this.#checkpointAt.set(projectId, Date.now());
     });
   }
 
@@ -864,58 +893,84 @@ implements CollaborationInvocationDispatcher {
     invocationId: string;
   }): TraceSink {
     return async (kind, message, data) => {
-      await this.drainBufferedEvents(input.state.id);
-      await this.enqueue(input.state.id, async () => {
-        await this.storage.appendTrace(
-          input.state,
-          input.agentId,
-          input.invocationId,
-          kind,
-          message
-        );
-        await this.storage.appendEvent(input.state, {
-          type: "agent.trace",
-          level: kind === "stderr" ? "warning" : "info",
-          agent: input.agentId,
-          message,
-          invocationId: input.invocationId,
-          data: { resident: true, traceKind: kind, ...(data ?? {}) }
-        });
-      });
+      await this.bufferEvent(input.state, {
+        type: "agent.trace",
+        level: kind === "stderr" ? "warning" : "info",
+        agent: input.agentId,
+        message,
+        invocationId: input.invocationId,
+        data: { resident: true, traceKind: kind, ...(data ?? {}) }
+      }, { agent: input.agentId, invocationId: input.invocationId, kind, message, timestamp: new Date().toISOString() });
+      if (kind === "tool" || kind === "stderr") await this.drainBufferedEvents(input.state.id);
     };
   }
 
-  private async bufferEvent(state: ProjectState, draft: ProjectEventDraft): Promise<void> {
+  private async bufferEvent(state: ProjectState, draft: ProjectEventDraft,
+    trace?: Parameters<ProjectStorage["appendTraces"]>[1][number]): Promise<void> {
     if (this.#eventBatchFailures.has(state.id)) await this.drainBufferedEvents(state.id);
+    // Keep only one writing batch and one bounded pending batch per project.
+    // Producers wait at capacity instead of queueing an unbounded write tail.
+    while ((this.#eventBatches.get(state.id)?.drafts.length ?? 0) >= 128) await this.drainBufferedEvents(state.id);
     let batch = this.#eventBatches.get(state.id);
     if (!batch) {
-      const timer = setTimeout(() => {
-        // The next native boundary owns this failure. Never detach an
-        // unhandled rejection or silently acknowledge a failed audit write.
-        void this.flushBufferedEvents(state.id).catch(() => undefined);
-      }, 50);
-      batch = { state, drafts: [], timer };
+      batch = { state, drafts: [], traces: [] };
       this.#eventBatches.set(state.id, batch);
+      this.armEventBatch(state.id, batch, 1000);
+    } else if (!batch.timer && !this.#eventFlushes.has(state.id)) {
+      this.armEventBatch(state.id, batch, 1000);
     }
     batch.drafts.push(structuredClone(draft));
+    if (trace) batch.traces.push(trace);
     if (batch.drafts.length >= 128) await this.drainBufferedEvents(state.id);
   }
 
-  private async flushBufferedEvents(projectId: string): Promise<void> {
+  private armEventBatch(projectId: string, batch: { timer?: ReturnType<typeof setTimeout> }, delayMs: number): void {
+    batch.timer = setTimeout(() => {
+      batch.timer = undefined;
+      // Completion of the active write will flush this accumulated prefix.
+      if (this.#eventFlushes.has(projectId) || this.#eventBatchFailures.has(projectId)) return;
+      void this.flushBufferedEvents(projectId).catch(() => undefined);
+    }, delayMs);
+  }
+
+  private flushBufferedEvents(projectId: string): Promise<void> {
+    const active = this.#eventFlushes.get(projectId);
+    if (active) return active;
     const batch = this.#eventBatches.get(projectId);
-    if (!batch) return;
+    if (!batch) return Promise.resolve();
     clearTimeout(batch.timer);
     this.#eventBatches.delete(projectId);
-    try {
-      await this.enqueue(projectId, async () => { await this.storage.appendEvents(batch.state, batch.drafts); });
-    } catch (error) {
+    const writing = this.enqueue(projectId, async () => {
+      await this.storage.appendTraces(batch.state, batch.traces);
+      // The audit log is durable before publication. Full recovery snapshots
+      // are bounded separately; tools need not rewrite all project history.
+      const checkpoint = Date.now() - (this.#checkpointAt.get(projectId) ?? -Infinity) >= 10_000;
+      await this.storage.appendEvents(batch.state, batch.drafts, undefined, { checkpoint });
+      if (checkpoint) {
+        this.#checkpointAt.set(projectId, Date.now());
+        this.#pendingCheckpoints.delete(projectId);
+      } else this.#pendingCheckpoints.set(projectId, batch.state);
+    });
+    const completed = writing.catch(error => {
       if (!this.#eventBatchFailures.has(projectId)) this.#eventBatchFailures.set(projectId, error);
       throw error;
-    }
+    }).finally(() => {
+      if (this.#eventFlushes.get(projectId) === completed) this.#eventFlushes.delete(projectId);
+      const pending = this.#eventBatches.get(projectId);
+      if (pending && this.#eventBatchFailures.has(projectId)) {
+        clearTimeout(pending.timer);
+        pending.timer = undefined;
+      }
+      if (pending && !pending.timer && !this.#eventBatchFailures.has(projectId)) this.armEventBatch(projectId, pending, 0);
+    });
+    this.#eventFlushes.set(projectId, completed);
+    return completed;
   }
 
   private async drainBufferedEvents(projectId: string): Promise<void> {
     try {
+      if (this.#eventBatchFailures.has(projectId)) throw this.#eventBatchFailures.get(projectId);
+      await this.#eventFlushes.get(projectId);
       await this.flushBufferedEvents(projectId);
       await this.#queues.get(projectId);
     } catch (error) {
@@ -968,7 +1023,7 @@ implements CollaborationInvocationDispatcher {
       }
       return;
     }
-    if (event.kind.startsWith("tool.")) {
+    if (event.kind.startsWith("tool.") || event.kind === "reasoning.summary" || event.kind === "activity") {
       this.storage.hub.publishHarnessEvent(projectId, agentId, event);
     }
     if (event.kind === "tool.started" && event.parentItemId) {
@@ -1025,6 +1080,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   readonly #harnessRecoveryDelayMs: (attempt: number) => number;
   #database?: CollaborationStateDatabase;
   #leaseTimer?: NodeJS.Timeout;
+  #leaseRenewal?: Promise<void>;
+  #leaseWorker?: WriterLeaseHeartbeat;
+  #leaseWorkerDiagnostics?: HeartbeatDiagnostics;
+  #leaseFailedAt?: string;
   #leaseHeartbeat?: { intervalMs: number; scheduledAtMs: number; startedAtMs: number; delayMs: number };
   #leaseError?: Error;
   #closed = false;
@@ -1091,83 +1150,109 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (this.#database) return;
     if (this.#closed) throw new Error("Collaboration runtime is closed");
     await fs.mkdir(path.dirname(this.#databasePath), { recursive: true });
-    this.#database = CollaborationStateDatabase.open({
+    this.#database = await openCollaborationStateWorker({
       databasePath: this.#databasePath,
       serviceId: this.#serviceId,
       hostId: this.#hostId,
       topology: "single-host",
       leaseDurationMs: this.#leaseDurationMs,
       ...(this.#now ? { now: this.#now } : {})
-    });
-    try { this.#storage.configureProjectStateStore(this.projectStateDocuments()); }
+    }, error => this.loseWriterLease(error));
+    this.#leaseWorkerDiagnostics = await this.#database.writerLeaseDiagnostics();
+    try { await this.#storage.configureProjectStateStore(this.projectStateDocuments()); }
     catch (error) {
-      try { this.#database.relinquishWriterLease(); } catch { /* Preserve the source registration error. */ }
-      this.#database.close(); this.#database = undefined; throw error;
+      try { await this.#database.relinquishWriterLease(); } catch { /* Preserve the source registration error. */ }
+      await this.#database.close(); this.#database = undefined; throw error;
     }
+    // The injected clock is a deterministic test scheduler. Production uses
+    // an independent thread and a connection attached to this exact lease.
+    if (this.#now) this.startControlledHeartbeat();
+    else {
+      try {
+        this.#leaseWorker = await WriterLeaseHeartbeat.start({ databasePath: this.#databasePath,
+          lease: await this.#database.writerLease(), leaseDurationMs: this.#leaseDurationMs }, async (error, diagnostics) => {
+          this.#leaseWorkerDiagnostics = diagnostics;
+          this.loseWriterLease(error);
+        });
+        await this.#database.bindWriterAvailabilityCheck(() => this.#leaseWorker!.assertHeld(), this.#leaseWorker.sharedState());
+      } catch (error) {
+        try { await this.#database.relinquishWriterLease(); } catch { /* Retain the startup failure. */ }
+        await this.#database.close(); this.#database = undefined;
+        throw error;
+      }
+    }
+  }
+
+  private startControlledHeartbeat(): void {
     const intervalMs = Math.max(500, Math.floor(this.#leaseDurationMs / 3));
     let scheduledAtMs = (this.#now?.() ?? Date.now()) + intervalMs;
     this.#leaseTimer = setInterval(() => {
-      if (!this.#database || this.#leaseError) return;
-      const startedAtMs = this.#now?.() ?? Date.now();
-      this.#leaseHeartbeat = { intervalMs, scheduledAtMs, startedAtMs,
-        delayMs: Math.max(0, startedAtMs - scheduledAtMs) };
-      scheduledAtMs = startedAtMs + intervalMs;
-      try {
-        this.#database.renewWriterLease();
-      } catch (error) {
-        const sqliteErrorCode = error && typeof error === "object" && "errcode" in error
-          ? error.errcode : undefined;
-        if (typeof sqliteErrorCode === "number" && (sqliteErrorCode & 0xff) === 5) {
-          // A DELETE-journal reader can block COMMIT without taking ownership.
-          // Retry at the next heartbeat only while the original lease is still
-          // held. An expired or replaced writer must never reacquire here.
-          try {
-            if (this.#database.writerLeaseDiagnostics().lastRenewalAttempt?.transactionActive) {
-              this.loseWriterLease(error);
+      const database = this.#database;
+      if (!database || this.#leaseError || this.#leaseRenewal) return;
+      this.#leaseRenewal = (async () => {
+        const startedAtMs = this.#now?.() ?? Date.now();
+        this.#leaseHeartbeat = { intervalMs, scheduledAtMs, startedAtMs,
+          delayMs: Math.max(0, startedAtMs - scheduledAtMs) };
+        scheduledAtMs = startedAtMs + intervalMs;
+        try {
+          await database.renewWriterLease();
+          this.#leaseWorkerDiagnostics = await database.writerLeaseDiagnostics();
+        } catch (error) {
+          const sqliteErrorCode = error && typeof error === "object" && "errcode" in error
+            ? error.errcode : undefined;
+          if (typeof sqliteErrorCode === "number" && (sqliteErrorCode & 0xff) === 5) {
+            // A DELETE-journal reader can block COMMIT without taking ownership.
+            // Retry at the next heartbeat only while the original lease is still
+            // held. An expired or replaced writer must never reacquire here.
+            try {
+              if ((await database.writerLeaseDiagnostics()).lastRenewalAttempt?.transactionActive) {
+                this.loseWriterLease(error);
+                return;
+              }
+              await database.assertWriterLeaseHeld();
+              try {
+                console.warn("Collaboration writer lease renewal delayed; original lease still held",
+                  this.writerLeaseFailureDiagnostics(error));
+              } catch { /* Diagnostic sinks cannot change lease ownership. */ }
+              return;
+            } catch (leaseError) {
+              // Keep the first SQLite failure even if confirming the lease
+              // fails too. Report the fencing/check failure separately.
+              this.loseWriterLease(error, leaseError);
               return;
             }
-            this.#database.assertWriterLeaseHeld();
-            try {
-              console.warn("Collaboration writer lease renewal delayed; original lease still held",
-                this.writerLeaseFailureDiagnostics(error));
-            } catch { /* Diagnostic sinks cannot change lease ownership. */ }
-            return;
-          } catch (leaseError) {
-            // Keep the first SQLite failure even if confirming the lease
-            // fails too. Report the fencing/check failure separately.
-            this.loseWriterLease(error, leaseError);
-            return;
           }
+          this.loseWriterLease(error);
         }
-        this.loseWriterLease(error);
-      }
+      })().finally(() => { this.#leaseRenewal = undefined; });
     }, intervalMs);
     this.#leaseTimer.unref();
   }
 
+
   projectStateDocuments(): ProjectStateDocumentStore {
     const source = { protocol: "project-state-v1" as const, kind: "sqlite" as const, databasePath: path.resolve(this.#databasePath) };
     const reader = readOnlyProjectStateDocuments(source);
-    return { source, domain: projectId => this.#database ? this.#database.projectStateDomain(projectId) : reader.domain(projectId),
-      read: (projectId, name) => this.#database ? this.#database.projectStateDocument(projectId, name) : reader.read(projectId, name),
-      write: (projectId, name, value, expectedVersion, publishView) => {
-        this.assertWritable(); return this.database().writeProjectStateDocument(projectId, name, value, expectedVersion, publishView);
+    return { source, domain: async projectId => this.#database ? (await this.#database.projectStateDomain(projectId)) : (await reader.domain(projectId)),
+      read: async (projectId, name) => this.#database ? (await this.#database.projectStateDocument(projectId, name)) : (await reader.read(projectId, name)),
+      write: async (projectId, name, value, expectedVersion, publishView) => {
+        this.assertWritable(); return await this.database().writeProjectStateDocument(projectId, name, value, expectedVersion, publishView);
       } };
   }
 
-  initializeNewProjectState(state: ProjectState): void {
+  async initializeNewProjectState(state: ProjectState): Promise<void> {
     this.assertWritable();
-    this.database().initializeProjectStateDomain({ projectId: state.id, scheduler: state.git?.enabled ? "git" : "serial", checkpoint: state,
+    await this.database().initializeProjectStateDomain({ projectId: state.id, scheduler: state.git?.enabled ? "git" : "serial", checkpoint: state,
       publishView: document => this.#storage.publishProjectStateView(document) });
   }
 
-  serialProjectStateEnabled(state: ProjectState): boolean {
-    return !state.git?.enabled && this.database().projectStateDomain(state.id)?.scheduler === "serial";
+  async serialProjectStateEnabled(state: ProjectState): Promise<boolean> {
+    return !state.git?.enabled && (await this.database().projectStateDomain(state.id))?.scheduler === "serial";
   }
 
   async requestSerialProjectState(state: ProjectState, identity: SerialProjectStateInvocation, request: unknown): Promise<unknown> {
     this.assertWritable();
-    if (identity.projectId !== state.id || !this.serialProjectStateEnabled(state))
+    if (identity.projectId !== state.id || !(await this.serialProjectStateEnabled(state)))
       throw new CollaborationStateError("STATE_SCOPE_DENIED", "Serial state request belongs to another project or scheduler");
     return executeProjectStateRequest(this.database(), { kind: "agent", projectId: state.id,
       agentId: identity.agentId, invocationId: identity.invocationId }, request, { observePullRequest: async () => {
@@ -1175,21 +1260,33 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       } });
   }
 
-  projectReadModel(state: ProjectState): ProjectState {
+  /** Git checkpoints and workflow facts commit in SQLite. A reader can use
+   * that committed state while a later trace prepares its filesystem view. */
+  async committedProjectState(state: ProjectState): Promise<ProjectState | undefined> {
+    if (!state.git?.enabled || !this.#database || state.phase === "storage-recovery-required") return;
+    if ((await this.#database.projectStateDomain(state.id))?.scheduler !== "git") return;
+    const document = await this.#database.projectStateDocument(state.id, "project.checkpoint");
+    if (!document) throw new Error("Registered Git project has no committed checkpoint");
+    return document.value as ProjectState;
+  }
+
+  async projectReadModel(state: ProjectState): Promise<ProjectState> {
     if (!this.#database) return structuredClone(state);
     if (state.phase === "storage-recovery-required") return structuredClone(state);
+    if (this.writerLeaseHealth().status === "unavailable") return this.withWriterLeaseFailure(structuredClone(state));
     if (!state.git?.enabled) {
-      const formal = this.#database.projectStateDomain(state.id);
+      const formal = await this.#database.projectStateDomain(state.id);
       if (!formal) return structuredClone(state);
-      const projection = this.#database.projectState(state.id);
+      const projection = await this.#database.projectState(state.id);
       return { ...structuredClone(state), ...structuredClone(projection.formalState!.checkpoint.lifecycle), collaboration: {
         stateRevision: projection.stateRevision, frozen: projection.frozen, eventSeq: state.collaboration?.eventSeq ?? 0,
         routeOutbox: projection.routeOutbox, usage: projection.usage, businessState: projection.businessState, formalState: projection.formalState } };
     }
-    const projection = this.#database.getProjectState(state.id);
+    const projection = await this.#database.getProjectState(state.id);
     if (!projection) return structuredClone(state);
     const projected = structuredClone(state);
     mergeProjection(projected, projection, projected.collaboration?.eventSeq ?? 0);
+    projected.executionCounts!.main = (await this.#database.agentNativeInvocationCount(state.id, "main"));
     if (projected.runtime) {
       projected.status = projected.runtime.status;
       projected.phase = projected.runtime.phase;
@@ -1201,11 +1298,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     if (!["completed", "cancelled"].includes(projected.status) &&
       (this.#leaseError || state.phase === "collaboration:failure-reporting-failed")) {
+      if (this.#leaseError) return this.withWriterLeaseFailure(projected);
       projected.status = hasUserWorkflowPause(state) ? state.status : "retrying";
-      projected.phase = this.#leaseError ? "collaboration:writer-lease-lost" : state.phase;
-      projected.lastError = this.#leaseError
-        ? "Collaboration writer lease was lost. Restart the backend to reconcile retained executions before continuing."
-        : state.lastError;
+      projected.phase = state.phase;
+      projected.lastError = state.lastError;
       if (projected.runtime) {
         projected.runtime.status = projected.status;
         projected.runtime.phase = projected.phase;
@@ -1214,15 +1310,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return projected;
   }
 
-  queueReadModel(state: ProjectState): ProjectAgentQueueSource | undefined {
+  async queueReadModel(state: ProjectState): Promise<ProjectAgentQueueSource | undefined> {
     if (!state.git?.enabled || !this.#database) return;
-    const lanes = this.#database.laneAvailability(state.id);
+    const lanes = await this.#database.laneAvailability(state.id);
     if (!lanes.length) return;
-    const projection = this.#database.projectSchedulingState(state.id);
+    const projection = await this.#database.projectSchedulingState(state.id);
     if (!projection) return;
     const runtime = deriveProjectRuntimeProjection(projection, state);
-    if (!["completed", "cancelled"].includes(runtime.status) &&
-      (this.#leaseError || state.phase === "collaboration:failure-reporting-failed")) runtime.status = hasUserWorkflowPause(state) ? state.status : "retrying";
+    if (this.writerLeaseHealth().status === "unavailable" && !["completed", "cancelled"].includes(runtime.status)) {
+      const failed = this.withWriterLeaseFailure({ ...state, runtime });
+      Object.assign(runtime, failed.runtime);
+    } else if (state.phase === "collaboration:failure-reporting-failed" && !["completed", "cancelled"].includes(runtime.status))
+      runtime.status = hasUserWorkflowPause(state) ? state.status : "retrying";
     const main = lanes.find(lane => lane.lane === "management");
     const worker = lanes.find(lane => lane.lane === "worker");
     return { state: {
@@ -1246,79 +1345,81 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (state.git?.enabled) return;
     this.assertWritable();
     const database = this.database();
-    const pending = this.pendingSerialMainWorkflowAdjustments(state).filter(record =>
-      !database.serialMainWorkflowBoundaryCommitted(state.id, record.requestId));
+    const pending: WorkflowAdjustmentRecord[] = [];
+    for (const record of await this.pendingSerialMainWorkflowAdjustments(state)) {
+      if (!await database.serialMainWorkflowBoundaryCommitted(state.id, record.requestId)) pending.push(record);
+    }
     if (pending.length) {
       if (this.#storage.hasActiveInvocationCommit(state.id))
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Original result recovery must finish before workflow boundary recovery");
       // Startup has already recovered incomplete original file transactions.
       // Only a surviving, exactly matching original completion is evidence;
       // a queued/paused state or a newly generated event cannot substitute.
-      await this.#storage.replayEvents(state.id, 0, event => {
+      await this.#storage.replayEvents(state.id, 0, async event => {
         if (event.type !== "invocation.completed" || event.agent !== "main") return;
         const record = pending.find(candidate => candidate.source.kind === "main" && candidate.source.scope?.kind === "serial" &&
           candidate.source.invocationId === event.data?.invocationId && candidate.source.scope.agentExecutionId === event.data?.executionId &&
           candidate.source.scope.mainInvocationSeq === event.data?.mainInvocationSeq);
-        if (record) database.recordSerialMainWorkflowBoundary(state.id, record.requestId, event);
+        if (record) await database.recordSerialMainWorkflowBoundary(state.id, record.requestId, event);
       });
     }
   }
 
-  prepareSerialMainWorkflowAdjustment(state: ProjectState): WorkflowAdjustmentContext["current"] {
-    return this.prepareSerialWorkflowAdjustments(state);
+  async prepareSerialMainWorkflowAdjustment(state: ProjectState): Promise<WorkflowAdjustmentContext["current"]> {
+    return await this.prepareSerialWorkflowAdjustments(state);
   }
 
-  isSerialWorkflowConfigurationCurrent(state: ProjectState, version: WorkflowConfigurationVersion): boolean {
-    const current = !state.git?.enabled && this.database().serialWorkflowAdjustmentCurrent(state.id);
+  async isSerialWorkflowConfigurationCurrent(state: ProjectState, version: WorkflowConfigurationVersion): Promise<boolean> {
+    const current = !state.git?.enabled && (await this.database().serialWorkflowAdjustmentCurrent(state.id));
     return Boolean(current && sameWorkflowConfigurationVersion(current.version, version));
   }
 
-  prepareSerialWorkflowAdjustments(state: ProjectState): WorkflowAdjustmentContext["current"] {
+  async prepareSerialWorkflowAdjustments(state: ProjectState): Promise<WorkflowAdjustmentContext["current"]> {
     this.assertWritable();
     if (state.git?.enabled || state.orchestration.schemaVersion === 3)
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "This workflow belongs to another scheduler");
     const database = this.database();
-    if (!database.getProjectState(state.id)) database.createProject({ projectId: state.id, workflowRevision: state.workflowRevision ?? 1,
+    if (!(await database.getProjectState(state.id))) await database.createProject({ projectId: state.id, workflowRevision: state.workflowRevision ?? 1,
       workflowSnapshot: state.orchestration, git: state.git ?? { enabled: false, status: "disabled" }, workerCapacity: 1, managementCapacity: 1,
       requestId: `serial-workflow-project:${state.id}`, ...(state.formalStateProtocol === "project-state-v1" ? {
         formalState: { checkpoint: state, publishView: document => this.#storage.publishProjectStateView(document) }
       } : {}) });
-    if (!database.scopedConfiguration(state.id)) database.initializeScopedConfiguration(state.id, this.workflowAdjustmentSeed(state));
-    database.initializeSerialWorkflowJournal(state.id);
-    const current = database.serialWorkflowAdjustmentCurrent(state.id)!;
+    if (!(await database.scopedConfiguration(state.id))) await database.initializeScopedConfiguration(state.id, this.workflowAdjustmentSeed(state));
+    await database.initializeSerialWorkflowJournal(state.id);
+    const current = (await database.serialWorkflowAdjustmentCurrent(state.id))!;
     if ((state.workflowRevision ?? 1) !== current.version.revision || !isDeepStrictEqual(current.snapshot,
       { orchestration: state.orchestration, ...this.workflowAdjustmentSeed(state) }))
       throw new CollaborationStateError("WORKFLOW_ADJUSTMENT_CONFLICT", "The original scheduler must read the current formal configuration before submitting");
     return current;
   }
 
-  getSerialMainWorkflowAdjustment(state: ProjectState, invocationId: string, callId: string): WorkflowAdjustmentRecord | undefined {
-    return this.database().serialMainWorkflowAdjustment(state.id, invocationId, callId);
+  async getSerialMainWorkflowAdjustment(state: ProjectState, invocationId: string, callId: string): Promise<WorkflowAdjustmentRecord | undefined> {
+    return await this.database().serialMainWorkflowAdjustment(state.id, invocationId, callId);
   }
 
-  recordSerialMainWorkflowBoundary(state: ProjectState, requestId: string, completion: TimelineEvent): void {
+  async recordSerialMainWorkflowBoundary(state: ProjectState, requestId: string, completion: TimelineEvent): Promise<void> {
     this.assertWritable();
     if (this.#storage.hasActiveInvocationCommit(state.id)) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "SDK result transaction is not committed");
-    this.database().recordSerialMainWorkflowBoundary(state.id, requestId, completion);
+    await this.database().recordSerialMainWorkflowBoundary(state.id, requestId, completion);
   }
 
-  pendingSerialMainWorkflowAdjustments(state: ProjectState): WorkflowAdjustmentRecord[] {
-    return this.pendingSerialWorkflowAdjustments(state).filter(record => record.source.kind === "main" && record.source.scope?.kind === "serial");
+  async pendingSerialMainWorkflowAdjustments(state: ProjectState): Promise<WorkflowAdjustmentRecord[]> {
+    return (await this.pendingSerialWorkflowAdjustments(state)).filter(record => record.source.kind === "main" && record.source.scope?.kind === "serial");
   }
 
-  pendingSerialWorkflowAdjustments(state: ProjectState): WorkflowAdjustmentRecord[] {
-    if (state.git?.enabled || !this.database().serialWorkflowAdjustmentCurrent(state.id)) return [];
-    return this.database().activeWorkflowAdjustments(state.id).filter(record => record.status === "pending");
+  async pendingSerialWorkflowAdjustments(state: ProjectState): Promise<WorkflowAdjustmentRecord[]> {
+    if (state.git?.enabled || !(await this.database().serialWorkflowAdjustmentCurrent(state.id))) return [];
+    return (await this.database().activeWorkflowAdjustments(state.id)).filter(record => record.status === "pending");
   }
 
-  stageSerialMainWorkflowAdjustment(state: ProjectState, input: Pick<SerialMainWorkflowAdjustmentInput, "base" | "proposal" | "envelope">): WorkflowAdjustmentSubmissionResult {
+  async stageSerialMainWorkflowAdjustment(state: ProjectState, input: Pick<SerialMainWorkflowAdjustmentInput, "base" | "proposal" | "envelope">): Promise<WorkflowAdjustmentSubmissionResult> {
     this.assertWritable();
     const task = state.activeAgentExecution, envelope = input.envelope;
     if (state.git?.enabled || state.status !== "running" || state.currentAgent !== "main" || state.activeInvocationId !== envelope.invocationId ||
       !task?.startedAt || task.agent !== "main" || task.latestInvocationId !== envelope.invocationId)
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Serial Main workflow acceptance requires its actual live original task");
-    this.database().assertRetainedWorkflowSessionHarnesses(state.id, input.proposal.agents, state);
-    return this.database().stageSerialMainWorkflowAdjustment({ ...structuredClone(input), projectId: state.id, agentExecutionId: task.id,
+    await this.database().assertRetainedWorkflowSessionHarnesses(state.id, input.proposal.agents, state);
+    return await this.database().stageSerialMainWorkflowAdjustment({ ...structuredClone(input), projectId: state.id, agentExecutionId: task.id,
       mainInvocationSeq: state.mainInvocationSeq, ...(state.agentSessions?.main ? { session: state.agentSessions.main } : {}) });
   }
 
@@ -1328,7 +1429,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
   async publishSerialWorkflowAdjustment(state: ProjectState, requestId: string, authority: SerialWorkflowPublicationAuthority): Promise<WorkflowAdjustmentRecord> {
     this.assertWritable();
-    const database = this.database(), prepared = database.prepareSerialWorkflowAdjustmentPublication(state.id, requestId);
+    const database = this.database(), prepared = await database.prepareSerialWorkflowAdjustmentPublication(state.id, requestId);
     if (prepared.ready) {
       try {
         if (!this.#validateWorkflowConfiguration) throw new Error("Serial publication requires the existing resource validator");
@@ -1336,21 +1437,20 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         proposal.agents = restoreAgentConfiguration(proposal, state.agents);
         await this.#validateWorkflowConfiguration(state, proposal);
       } catch (error) {
-        database.recordWorkflowAdjustmentWaiting({ projectId: state.id, requestId, reason: error instanceof Error ? error.message : "Workflow resource validation failed" });
-        return database.workflowAdjustment(state.id, requestId)!;
+        await database.recordWorkflowAdjustmentWaiting({ projectId: state.id, requestId, reason: error instanceof Error ? error.message : "Workflow resource validation failed" });
+        return (await database.workflowAdjustment(state.id, requestId))!;
       }
-      database.publishSerialWorkflowAdjustment(state.id, requestId, prepared.validationToken, { sessions: authority.sessions,
+      await database.publishSerialWorkflowAdjustment(state.id, requestId, prepared.validationToken, { sessions: authority.sessions,
         waitingReason: record => this.#storage.hasActiveInvocationCommit(state.id)
           ? "等待原调用结果事务持久提交后再发布配置"
-          : record.source.kind === "main" && !database.serialMainWorkflowBoundaryCommitted(state.id, record.requestId)
-            ? "等待原 Main 调用结果持久提交及其准确原任务边界" : authority.waitingReason(record) });
+          : authority.waitingReason(record) });
     }
-    const record = database.workflowAdjustment(state.id, requestId)!;
+    const record = (await database.workflowAdjustment(state.id, requestId))!;
     if (record.status === "applied") await restoreSerialWorkflowConfiguration(database, this.#storage, state, this.#validateWorkflowConfiguration);
     return record;
   }
 
-  decorateSerialWorkflowNotifications(state: ProjectState, request: AgentRunRequest): void {
+  async decorateSerialWorkflowNotifications(state: ProjectState, request: AgentRunRequest): Promise<void> {
     if (state.git?.enabled) return;
     this.assertWritable();
     const task = state.activeAgentExecution;
@@ -1359,42 +1459,38 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow notification requires the actual original running task");
     const context: SerialWorkflowNotificationContext = { projectId: state.id, agentId: request.agent, invocationId: request.invocationId,
       agentExecutionId: task.id, ...(request.kind === "main" ? { mainInvocationSeq: state.mainInvocationSeq } : {}) };
-    if (this.serialProjectStateEnabled(state)) {
+    if ((await this.serialProjectStateEnabled(state))) {
       const identity: SerialProjectStateInvocation = { projectId: state.id, agentId: request.agent,
         invocationId: request.invocationId, executionId: task.id, kind: request.kind === "main" ? "main" : "worker" };
-      this.database().bindSerialProjectStateInvocation(identity);
-      request.onProjectStateRequest = input => this.requestSerialProjectState(state, identity, input);
+      await this.database().bindSerialProjectStateInvocation(identity);
+      request.onProjectStateRequest = async input => this.requestSerialProjectState(state, identity, input);
     }
     request.onPrepareWorkflowAdjustmentInput = async input => {
       this.assertWritable();
       if (state.activeAgentExecution?.id !== context.agentExecutionId || state.activeInvocationId !== context.invocationId ||
         state.currentAgent !== context.agentId || !["running", "pausing"].includes(state.status))
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Original workflow input lost its live invocation authority");
-      const notification = this.database().prepareSerialWorkflowAdjustmentInput(context, input.inputId, input.expectedSession);
+      const notification = await this.database().prepareSerialWorkflowAdjustmentInput(context, input.inputId, input.expectedSession);
       if (!notification) return "";
       const details = await input.publishContext?.(workflowAdjustmentContextSources(notification.facts));
       return `${notification.text}${details ? `\n\n${details}` : ""}`;
     };
-    request.onWorkflowAdjustmentInputReceived = (event, session, inputId) => {
+    request.onWorkflowAdjustmentInputReceived = async (event, session, inputId) => {
       this.assertWritable();
-      this.database().confirmSerialWorkflowAdjustmentInput(context, inputId, session, event);
+      await this.database().confirmSerialWorkflowAdjustmentInput(context, inputId, session, event);
     };
   }
 
   async recoverProject(state: ProjectState): Promise<boolean> {
     if (!state.git?.enabled) return false;
-    if (state.status === "interrupted" && state.phase === "collaboration:repair-required") {
-      this.assertWritable();
-      this.clearWorkflowRecoveryTimer(state.id);
-      return true; // Conditions must be repaired and the original task explicitly resumed.
-    }
+    this.#storage.trackCheckpoint(state);
     const savedProjectPause = hasUserWorkflowPause(state);
     if (["paused", "pausing"].includes(state.status) && !savedProjectPause) state.status = "retrying";
     const database = this.database();
     if (this.#credentialResolverForAccount) {
       if (!state.git.account) {
-        if (database.getProjectState(state.id)) {
-          this.appendFailureAttempt(state, {
+        if ((await database.getProjectState(state.id))) {
+          await this.appendFailureAttempt(state, {
             scope: "git",
             operation: "project.recovery.authorization",
             error: new Error("Historical Git project has no bound GitHub account"),
@@ -1412,7 +1508,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       this.#gitAccounts.set(state.id, state.git.account);
     }
-    const restoredProjection = database.getProjectState(state.id);
+    if (state.status === "interrupted" && state.phase === "collaboration:repair-required") {
+      this.assertWritable();
+      this.clearWorkflowRecoveryTimer(state.id);
+      return true; // Retain the repair gate after restoring the bound account for explicit Resume.
+    }
+    const restoredProjection = await database.getProjectState(state.id);
     if (!restoredProjection) {
       // A file state without its authoritative SQLite row must never resume a
       // Git workflow. Preserve it for an operator-visible, idempotent retry.
@@ -1423,15 +1524,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       return true;
     }
     for (const node of restoredProjection.nodeRuns.filter(node => node.status === "completed")) {
-      const attempt = database.latestMainRouteAttempt(state.id, node.id);
+      const attempt = await database.latestMainRouteAttempt(state.id, node.id);
       if (!attempt?.coordinatorEpoch) continue;
-      const response = database.eventByRequestId(state.id, `main-route-response-${node.id}-${attempt.coordinatorEpoch}`);
+      const response = await database.eventByRequestId(state.id, `main-route-response-${node.id}-${attempt.coordinatorEpoch}`);
       if (response?.type === "main.route.response.committed" && typeof response.payload.inputId === "string" &&
-        this.mainRouteTaskCompleted(state.id, node.id, attempt.coordinatorEpoch, response.payload.inputId)) {
-        this.resolveMainRouteFailures(state, node.id, attempt.coordinatorEpoch, response.invocationId);
+        (await this.mainRouteTaskCompleted(state.id, node.id, attempt.coordinatorEpoch, response.payload.inputId))) {
+        await this.resolveMainRouteFailures(state, node.id, attempt.coordinatorEpoch, response.invocationId);
       }
     }
-    const projection = database.projectState(state.id);
+    const projection = await database.projectState(state.id);
     await this.publishProjection(state, projection);
     const activeNode = projection.activeNodeRunId
       ? projection.nodeRuns.find((node) => node.id === projection.activeNodeRunId)
@@ -1440,8 +1541,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       group.nodeRunId === projection.activeNodeRunId &&
       !["completed", "failed", "cancelled"].includes(group.status)
     );
-    const cancellationIntent = database.projectCancellationIntent(state.id);
-    const resumableCancellation = database.resumableProjectCancellationIntent(state.id);
+    const cancellationIntent = await database.projectCancellationIntent(state.id);
+    const resumableCancellation = await database.resumableProjectCancellationIntent(state.id);
     if (state.status === "completed") {
       await this.saveState(state);
       return true;
@@ -1462,7 +1563,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // process first. Once the proof is durable, remain paused until an
     // explicit resume; never re-enter the active collaboration node here.
     if (resumableCancellation) {
-      const stopped = database.eventByRequestId(state.id,
+      const stopped = await database.eventByRequestId(state.id,
         `project-stop-confirmed:${state.id}:${resumableCancellation.seq}`);
       if (stopped?.type === "project.cancellation.stop_confirmed" &&
         stopped.payload.requestedEventSeq === resumableCancellation.seq) {
@@ -1505,7 +1606,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.status = state.pauseRequest.settledAt ? "paused" : "pausing";
       state.phase = state.pauseRequest.settledAt
         ? "collaboration:user-paused" : "collaboration:user-pause-recovery-required";
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
       return true;
     }
     if (activeGroup?.status === "paused" &&
@@ -1521,7 +1622,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       return true;
     }
     const receiptResponse = state.phase === "user-intervention-required" && state.userIntervention?.status === "pending"
-      ? database.terminalPushCoordinationIncidents(state.id).find(incident =>
+      ? (await database.terminalPushCoordinationIncidents(state.id)).find(incident =>
         incident.userResponse?.interventionId === state.userIntervention!.id &&
         incident.userResponse.managerInvocationId === state.userIntervention!.requestedInvocationId)?.userResponse
       : undefined;
@@ -1553,7 +1654,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       await this.saveState(state);
       // A retained technical freeze is retried automatically after backoff.
       try {
-        await this.withProjectLifecycle(state.id, () => this.resumeProjectLocked(state));
+        await this.withProjectLifecycle(state.id, async () => this.resumeProjectLocked(state));
       } catch (error) {
         if (!(error instanceof GitHubAuthorizationError)) throw error;
         await this.recordProjectRecoveryFailure(state, error);
@@ -1604,12 +1705,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // Provider failures belong to the retained project, including a frozen
     // Main's recovery. A lost writer must still fail the service.
     this.assertWritable();
-    this.appendFailureAttempt(state, {
+    await this.appendFailureAttempt(state, {
       scope: "git", operation: "project.recovery.remote-ref", error,
       metadata: { targetBranch: "main", remoteRefConfirmed: false,
         phase: state.phase, projectStatus: state.status }
     });
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     if (await this.cancellationIsDurable(state.id)) return;
     const failure = classifyDurableFailure(error, {});
     state.status = failure.retryable ? "retrying" : "interrupted";
@@ -1626,7 +1727,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       this.#gitAccounts.set(state.id, state.git.account);
     }
-    return this.withProjectLifecycle(state.id, () => this.createProjectLocked(state));
+    return this.withProjectLifecycle(state.id, async () => this.createProjectLocked(state));
   }
 
   private async createProjectLocked(state: ProjectState): Promise<void> {
@@ -1634,8 +1735,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (!state.git?.enabled || !state.git.initialization) {
       throw new Error("Git collaboration state was not initialized by the orchestrator");
     }
-    if (!database.getProjectState(state.id)) {
-      database.createProject({
+    if (!(await database.getProjectState(state.id))) {
+      await database.createProject({
         projectId: state.id,
         workflowRevision: state.workflowRevision ?? 1,
         // Agent configs contain server-only Gateway credentials. The workflow
@@ -1663,12 +1764,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       this.#gitAccounts.set(state.id, state.git.account);
       this.#git.delete(state.id);
     }
-    return this.withProjectLifecycle(state.id, () => this.retryInitializationLocked(state));
+    return this.withProjectLifecycle(state.id, async () => this.retryInitializationLocked(state));
   }
 
   private async retryInitializationLocked(state: ProjectState): Promise<void> {
     await this.assertDurableResumeAllowed(state.id);
-    const projection = this.database().getProjectState(state.id);
+    const projection = await this.database().getProjectState(state.id);
     if (!projection?.git.enabled || projection.git.status === "ready") {
       throw new Error("Project does not have a retryable Git initialization");
     }
@@ -1676,7 +1777,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const attempt = (projection.git.initialization?.attempt ?? 0) + 1;
     const retryId = `git-retry:${operationId}:${attempt}`;
     const authority = this.gitRetrySchedulingAuthority(state);
-    const accepted = this.appendGitRetrySchedulingMilestone(state, {
+    const accepted = await this.appendGitRetrySchedulingMilestone(state, {
       retryId,
       operationId,
       attempt,
@@ -1717,38 +1818,42 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return Object.keys(agentHarnesses).length ? { agentHarnesses } : undefined;
   }
 
-  getWorkflowAdjustments(state: ProjectState): WorkflowAdjustmentContext {
-    return this.database().workflowAdjustmentContext(state.id, this.workflowAdjustmentSeed(state), this.workflowAdjustmentConstraints(state));
+  async workflowReplayConfigurationHistory(state: ProjectState): Promise<WorkflowReplayConfigurationHistory> {
+    return await this.database().workflowReplayConfigurationHistory(state.id);
   }
 
-  getWorkflowAdjustmentSubmissionResult(state: ProjectState, requestId: string, replay: boolean): WorkflowAdjustmentSubmissionResult {
-    const database = this.database(), record = database.workflowAdjustment(state.id, requestId, this.workflowAdjustmentSeed(state));
+  async getWorkflowAdjustments(state: ProjectState): Promise<WorkflowAdjustmentContext> {
+    return await this.database().workflowAdjustmentContext(state.id, this.workflowAdjustmentSeed(state), this.workflowAdjustmentConstraints(state));
+  }
+
+  async getWorkflowAdjustmentSubmissionResult(state: ProjectState, requestId: string, replay: boolean): Promise<WorkflowAdjustmentSubmissionResult> {
+    const database = this.database(), record = await database.workflowAdjustment(state.id, requestId, this.workflowAdjustmentSeed(state));
     if (!record) throw new CollaborationStateError("RECORD_NOT_FOUND", "Accepted workflow adjustment does not exist");
-    return { record, revision: database.projectState(state.id).stateRevision, replay };
+    return { record, revision: (await database.projectState(state.id)).stateRevision, replay };
   }
 
-  queryWorkflowAdjustments(state: ProjectState, ifNoneMatch?: string): WorkflowAdjustmentQueryResult {
-    return this.database().workflowAdjustmentQuery(state.id, this.workflowAdjustmentSeed(state), ifNoneMatch, this.workflowAdjustmentConstraints(state));
+  async queryWorkflowAdjustments(state: ProjectState, ifNoneMatch?: string): Promise<WorkflowAdjustmentQueryResult> {
+    return await this.database().workflowAdjustmentQuery(state.id, this.workflowAdjustmentSeed(state), ifNoneMatch, this.workflowAdjustmentConstraints(state));
   }
 
-  getWorkflowAdjustmentPage(state: ProjectState, input: WorkflowAdjustmentPageInput, ifNoneMatch?: string): WorkflowAdjustmentPageResult {
-    return this.database().workflowAdjustmentPage(state.id, input, this.workflowAdjustmentSeed(state), ifNoneMatch, this.workflowAdjustmentConstraints(state));
+  async getWorkflowAdjustmentPage(state: ProjectState, input: WorkflowAdjustmentPageInput, ifNoneMatch?: string): Promise<WorkflowAdjustmentPageResult> {
+    return await this.database().workflowAdjustmentPage(state.id, input, this.workflowAdjustmentSeed(state), ifNoneMatch, this.workflowAdjustmentConstraints(state));
   }
 
-  getWorkflowAdjustmentDetail(state: ProjectState, requestId: string, expectedVersion?: string): WorkflowAdjustmentDetail {
-    return this.database().workflowAdjustmentDetail(state.id, requestId, expectedVersion, this.workflowAdjustmentSeed(state), this.workflowAdjustmentConstraints(state));
+  async getWorkflowAdjustmentDetail(state: ProjectState, requestId: string, expectedVersion?: string): Promise<WorkflowAdjustmentDetail> {
+    return await this.database().workflowAdjustmentDetail(state.id, requestId, expectedVersion, this.workflowAdjustmentSeed(state), this.workflowAdjustmentConstraints(state));
   }
 
   async submitWorkflowAdjustment(state: ProjectState, raw: unknown): Promise<WorkflowAdjustmentSubmissionResult> {
     const input = structuredClone(workflowAdjustmentSubmissionEnvelopeSchema.parse(raw)) as SubmitUserWorkflowAdjustmentInput;
     if (input.projectId !== state.id) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow adjustment project identity does not match");
-    if (!state.git?.enabled && !this.database().serialWorkflowAdjustmentCurrent(state.id))
+    if (!state.git?.enabled && !(await this.database().serialWorkflowAdjustmentCurrent(state.id)))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow adjustments require registration by the original scheduler");
-    const prepared = this.database().prepareUserWorkflowAdjustment(input, this.workflowAdjustmentSeed(state));
+    const prepared = await this.database().prepareUserWorkflowAdjustment(input, this.workflowAdjustmentSeed(state));
     if (prepared.replay) return prepared.result;
     if (!state.git?.enabled && prepared.proposal.orchestration.schemaVersion === 3)
       throw new CollaborationStateError("UNSAFE_CONFIGURATION", "This project must retain its original scheduler");
-    if (["completed", "cancelled", "archived", "archiving", "cancelling"].includes(state.status) || this.database().projectCancellationIntent(state.id))
+    if (["completed", "cancelled", "archived", "archiving", "cancelling"].includes(state.status) || (await this.database().projectCancellationIntent(state.id)))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "This project no longer accepts new workflow adjustments");
     if (!this.#validateWorkflowConfiguration) throw new CollaborationStateError("UNSAFE_CONFIGURATION", "Workflow adjustments require the existing server configuration validator");
     // Resource validation may enrich only this disposable copy with private
@@ -1756,32 +1861,32 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const proposal = structuredClone(prepared.proposal);
     proposal.agents = restoreAgentConfiguration(proposal, state.agents);
     try {
-      this.assertSessionCompatibleWorkflow(state, prepared.proposal.orchestration, prepared.proposal.agents);
+      await this.assertSessionCompatibleWorkflow(state, prepared.proposal.orchestration, prepared.proposal.agents);
       await this.#validateWorkflowConfiguration(state, proposal);
-      this.assertSessionCompatibleWorkflow(state, prepared.proposal.orchestration, prepared.proposal.agents);
+      await this.assertSessionCompatibleWorkflow(state, prepared.proposal.orchestration, prepared.proposal.agents);
     } catch (error) {
       if (error instanceof ZodError || error instanceof CollaborationStateError) throw error;
       throw new CollaborationStateError("UNSAFE_CONFIGURATION", error instanceof Error ? error.message : "Invalid workflow configuration", {}, { cause: error });
     }
-    if (["completed", "cancelled", "archived", "archiving", "cancelling"].includes(state.status) || this.database().projectCancellationIntent(state.id))
+    if (["completed", "cancelled", "archived", "archiving", "cancelling"].includes(state.status) || (await this.database().projectCancellationIntent(state.id)))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "This project no longer accepts new workflow adjustments");
-    const result = this.database().submitUserWorkflowAdjustment(input, this.workflowAdjustmentSeed(state));
+    const result = await this.database().submitUserWorkflowAdjustment(input, this.workflowAdjustmentSeed(state));
     if (!state.git?.enabled) return result;
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     await this.applyWaitingWorkflowAdjustments(state);
-    return { ...result, revision: this.database().projectState(state.id).stateRevision,
-      record: this.database().workflowAdjustment(state.id, input.requestId, this.workflowAdjustmentSeed(state))! };
+    return { ...result, revision: (await this.database().projectState(state.id)).stateRevision,
+      record: (await this.database().workflowAdjustment(state.id, input.requestId, this.workflowAdjustmentSeed(state)))! };
   }
 
   async withdrawWorkflowAdjustment(state: ProjectState, raw: unknown): Promise<WorkflowAdjustmentWithdrawalResult> {
     const input = withdrawWorkflowAdjustmentSchema.parse(raw);
     if (input.projectId !== state.id) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow withdrawal project identity does not match");
-    if (!state.git?.enabled && !this.database().serialWorkflowAdjustmentCurrent(state.id))
+    if (!state.git?.enabled && !(await this.database().serialWorkflowAdjustmentCurrent(state.id)))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow withdrawal requires registration by the original scheduler");
-    const result = this.database().withdrawWorkflowAdjustment(input);
+    const result = await this.database().withdrawWorkflowAdjustment(input);
     if (state.git?.enabled) {
-      if (!result.replay && result.withdrawn) await this.publishProjection(state, this.database().projectState(state.id));
-      if (result.withdrawn) this.resumeWorkflowAdjustmentDispatch(state);
+      if (!result.replay && result.withdrawn) await this.publishProjection(state, (await this.database().projectState(state.id)));
+      if (result.withdrawn) await this.resumeWorkflowAdjustmentDispatch(state);
     }
     return result;
   }
@@ -1791,60 +1896,60 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   async applyWaitingWorkflowAdjustments(state: ProjectState): Promise<void> {
     const prior = this.#workflowAdjustmentQueues.get(state.id) ?? Promise.resolve();
     const queued = prior.catch(() => undefined).then(async () => {
-      if (!this.canApplyWorkflowAdjustment(state)) return;
-      const record = this.database().activeWorkflowAdjustments(state.id, this.workflowAdjustmentSeed(state), "user").find(item => item.source.kind === "user" &&
+      if (!(await this.canApplyWorkflowAdjustment(state))) return;
+      const record = (await this.database().activeWorkflowAdjustments(state.id, this.workflowAdjustmentSeed(state), "user")).find(item => item.source.kind === "user" &&
         (item.status === "pending" || item.status === "needs_resubmission"));
       if (!record) return;
-      const prepared = this.database().prepareUserWorkflowAdjustmentPublication(state.id, record.requestId);
+      const prepared = await this.database().prepareUserWorkflowAdjustmentPublication(state.id, record.requestId);
       if (prepared.ready) {
         const proposal = structuredClone(prepared.record.proposal);
         proposal.agents = restoreAgentConfiguration(proposal, state.agents);
         try {
           if (!this.#validateWorkflowConfiguration) throw new Error("Workflow adjustments require the existing server configuration validator");
-          this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
+          await this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
           await this.#validateWorkflowConfiguration(state, proposal);
-          if (!this.canApplyWorkflowAdjustment(state)) return;
-          this.assertSessionCompatibleWorkflow(state, prepared.record.proposal.orchestration, prepared.record.proposal.agents);
+          if (!(await this.canApplyWorkflowAdjustment(state))) return;
+          await this.assertSessionCompatibleWorkflow(state, prepared.record.proposal.orchestration, prepared.record.proposal.agents);
         } catch (error) {
-          this.database().recordWorkflowAdjustmentWaiting({ projectId: state.id, requestId: record.requestId,
+          await this.database().recordWorkflowAdjustmentWaiting({ projectId: state.id, requestId: record.requestId,
             reason: `等待运行配置重新校验通过：${safeRuntimeError(error)}` });
-          await this.publishProjection(state, this.database().projectState(state.id));
+          await this.publishProjection(state, (await this.database().projectState(state.id)));
           return;
         }
-        if (!this.canApplyWorkflowAdjustment(state)) return;
-        this.database().publishUserWorkflowAdjustment(state.id, record.requestId, prepared.validationToken, state);
+        if (!(await this.canApplyWorkflowAdjustment(state))) return;
+        await this.database().publishUserWorkflowAdjustment(state.id, record.requestId, prepared.validationToken, state);
       }
-      await this.publishProjection(state, this.database().projectState(state.id));
-      this.resumeWorkflowAdjustmentDispatch(state);
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
+      await this.resumeWorkflowAdjustmentDispatch(state);
     });
     this.#workflowAdjustmentQueues.set(state.id, queued);
     try { await queued; }
     finally { if (this.#workflowAdjustmentQueues.get(state.id) === queued) this.#workflowAdjustmentQueues.delete(state.id); }
   }
 
-  private canApplyWorkflowAdjustment(state: ProjectState): boolean {
+  private async canApplyWorkflowAdjustment(state: ProjectState): Promise<boolean> {
     return !this.#shuttingDown && !state.pauseRequest && !["paused", "completed", "cancelled", "archived", "archiving", "cancelling"].includes(state.status) &&
-      !this.#cancellingProjects.has(state.id) && !this.database().projectCancellationIntent(state.id);
+      !this.#cancellingProjects.has(state.id) && !(await this.database().projectCancellationIntent(state.id));
   }
 
-  private resumeWorkflowAdjustmentDispatch(state: ProjectState): void {
-    if (!this.#workflowAdjustmentDeferredProjects.has(state.id) || !this.canApplyWorkflowAdjustment(state) ||
-      this.database().activeWorkflowAdjustments(state.id, this.workflowAdjustmentSeed(state), "user").some(record => record.source.kind === "user" && record.status === "pending")) return;
+  private async resumeWorkflowAdjustmentDispatch(state: ProjectState): Promise<void> {
+    if (!this.#workflowAdjustmentDeferredProjects.has(state.id) || !(await this.canApplyWorkflowAdjustment(state)) ||
+      (await this.database().activeWorkflowAdjustments(state.id, this.workflowAdjustmentSeed(state), "user")).some(record => record.source.kind === "user" && record.status === "pending")) return;
     this.#workflowAdjustmentDeferredProjects.delete(state.id);
     // Only the original dispatch that actually yielded is resumed. There is
     // no new model turn merely to announce a queue event.
     this.scheduleProjectAfterSettlingRun(state);
   }
 
-  assertWorkflowRevisionEditable(
+  async assertWorkflowRevisionEditable(
     state: ProjectState,
     affectedGroupIds: string[]
-  ): void {
+  ): Promise<void> {
     this.assertWritable();
     if (!state.git?.enabled) {
       throw new Error("Workflow revisions require Git collaboration");
     }
-    this.database().assertWorkflowRevisionEditable(state.id, affectedGroupIds);
+    await this.database().assertWorkflowRevisionEditable(state.id, affectedGroupIds);
   }
 
   async saveWorkflowRevision(state: ProjectState, input: {
@@ -1860,15 +1965,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (!state.git?.enabled) {
       throw new Error("Workflow revisions require Git collaboration");
     }
-    this.assertSessionCompatibleWorkflow(state, input.orchestration);
+    await this.assertSessionCompatibleWorkflow(state, input.orchestration);
     const database = this.database();
-    const projection = database.projectState(state.id);
+    const projection = await database.projectState(state.id);
     if (isDeepStrictEqual(projection.workflowSnapshot, input.orchestration)) {
       await this.publishProjection(state, projection);
       return projection.workflowRevision;
     }
     const workflowRevision = projection.workflowRevision + 1;
-    database.saveWorkflowRevision({
+    await database.saveWorkflowRevision({
       projectId: state.id,
       workflowRevision,
       snapshot: input.orchestration,
@@ -1876,16 +1981,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       ...(input.requestId ? { requestId: input.requestId } : {}),
       ...(input.requestContext ? { requestContext: input.requestContext } : {})
     });
-    await this.publishProjection(state, database.projectState(state.id));
+    await this.publishProjection(state, (await database.projectState(state.id)));
     return workflowRevision;
   }
 
-  isWorkflowRevisionRequestRecorded(state: ProjectState, input: {
+  async isWorkflowRevisionRequestRecorded(state: ProjectState, input: {
     requestId: string;
     kind: "collaboration.rename" | "collaboration.dissolve";
     subjectId: string;
-  }): boolean {
-    const prior = this.database().eventByRequestId(state.id, input.requestId);
+  }): Promise<boolean> {
+    const prior = await this.database().eventByRequestId(state.id, input.requestId);
     if (!prior) return false;
     if (
       prior.type !== "workflow.revision.created" ||
@@ -1897,12 +2002,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return true;
   }
 
-  laneAvailability(projectId: string) {
-    return this.database().laneAvailability(projectId);
+  async laneAvailability(projectId: string) {
+    return await this.database().laneAvailability(projectId);
   }
 
   async pauseProject(state: ProjectState): Promise<void> {
-    return this.withProjectLifecycle(state.id, () => this.pauseProjectLocked(state));
+    return this.withProjectLifecycle(state.id, async () => this.pauseProjectLocked(state));
   }
 
   private async pauseProjectLocked(state: ProjectState): Promise<void> {
@@ -1928,7 +2033,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // not turn a lost HTTP response into lost user intent, or ask the system
     // to finish the Agent's business/Git work on its behalf.
     await this.saveState(state);
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     // Pause is a safe-point operation. Never abort the resident lifetime
     // signal: ProcessHost interprets that as termination and the same PID
     // could not resume. New turns block at waitWhilePaused; an active turn is
@@ -1946,15 +2051,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     state.status = "paused";
     state.phase = "collaboration:user-paused";
     state.lastError = undefined;
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     await this.saveState(state);
   }
 
   async resumeProject(state: ProjectState, options?: CollaborationProjectResumeOptions): Promise<void> {
-    return this.withProjectLifecycle(state.id, async () => {
+    return await this.withProjectLifecycle(state.id, async () => {
+      this.assertWritable();
       if (options?.preserveRecoveryBudget) {
-        this.assertWritable();
-        const database = this.database(), projection = database.projectState(state.id);
+        const database = this.database(), projection = await database.projectState(state.id);
         const node = projection.nodeRuns.find(node => node.id === projection.activeNodeRunId);
         const root = projection.scopedGroupRuns?.find(group => !group.parentGroupRunId && group.activationRequestId === node?.activationRequestId);
         if (!["paused", "retrying"].includes(state.status) || state.userIntervention?.status === "pending" || projection.frozen ||
@@ -1962,22 +2067,27 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           ["completed", "failed", "cancelled"].includes(root.status)) {
           throw new Error("Cannot resume retained scoped recovery outside an unfinished, nonfrozen paused scope");
         }
-        if (database.scopedLeaderTurns(state.id).some(turn => turn.status === "active") ||
-          projection.scopedExecutions?.some(execution => {
-            const turn = database.scopedAgentTurn(state.id, execution.id, execution.ownershipEpoch);
-            return turn && turn.status !== "stopped";
-          }) || database.scopedFinalNativeTurns(state.id).some(turn => turn.status !== "stopped") ||
-          database.scopedWorktreeClosingTurns(state.id).some(turn => turn.status !== "stopped")) {
+        let scopedTurnActive = false;
+        for (const execution of projection.scopedExecutions ?? []) {
+          const turn = await database.scopedAgentTurn(state.id, execution.id, execution.ownershipEpoch);
+          if (turn && turn.status !== "stopped") { scopedTurnActive = true; break; }
+        }
+        if ((await database.scopedLeaderTurns(state.id)).some(turn => turn.status === "active") || scopedTurnActive ||
+          (await database.scopedFinalNativeTurns(state.id)).some(turn => turn.status !== "stopped") ||
+          (await database.scopedWorktreeClosingTurns(state.id)).some(turn => turn.status !== "stopped")) {
           throw new Error("Cannot resume retained scoped recovery before every native stop is confirmed");
         }
       }
       if (["running", "queued"].includes(state.status) && !state.pauseRequest &&
         !this.#pausedProjects.has(state.id) && this.#runs.has(state.id)) {
-        const projection = this.database().projectSchedulingState(state.id);
+        const projection = await this.database().projectSchedulingState(state.id);
         // An automatic continuation can win the race with the user's Resume
         // request. Joining that live run must not queue another management
         // turn or resume its native handle a second time.
-        if (projection && !projection.frozen && projection.git.status === "ready") return;
+        if (projection && !projection.frozen && projection.git.status === "ready") {
+          this.assertWritable();
+          return;
+        }
       }
       await this.resumeProjectLocked(state, !options?.preserveRecoveryBudget, options?.preserveRecoveryBudget);
     });
@@ -1989,13 +2099,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (state.archivedAt) throw new Error("Cannot resume an archived project; unarchive it first");
     if (explicitUserResume) beginWorkflowRecovery(state, { renew: true });
     const renewScopedManagement = !preserveRecoveryBudget && (explicitUserResume || Boolean(state.workflowRecovery));
-    const resumableCancellation = this.database().resumableProjectCancellationIntent(state.id);
+    const resumableCancellation = await this.database().resumableProjectCancellationIntent(state.id);
     if (resumableCancellation) {
-      if (!this.database().projectState(state.id).resumableCancellation?.stoppedAt ||
+      if (!(await this.database().projectState(state.id)).resumableCancellation?.stoppedAt ||
         await this.durableProjectStatus(state.id) !== "paused") {
         throw new Error("Cannot resume before native stop is confirmed");
       }
-      this.database().resumeProjectCancellation({ projectId: state.id, actorAgentId: "main" });
+      await this.database().resumeProjectCancellation({ projectId: state.id, actorAgentId: "main" });
       if (renewScopedManagement) await this.authorizeScopedManagementResume(state, !explicitUserResume);
       state.pauseRequest = undefined;
       this.#pausedProjects.delete(state.id);
@@ -2004,9 +2114,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.status = "queued";
       state.phase = "collaboration:resuming-user-cancelled";
       state.lastError = undefined;
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       await this.saveState(state);
-      if (this.database().projectState(state.id).git.status === "ready") this.scheduleProject(state);
+      if ((await this.database().projectState(state.id)).git.status === "ready") this.scheduleProject(state);
       return;
     }
     await this.assertDurableResumeAllowed(state.id);
@@ -2020,13 +2130,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.pauseRequest = undefined;
       await this.saveState(state);
     }
-    let projection = this.database().projectState(state.id);
+    let projection = await this.database().projectState(state.id);
     if (projection.git.enabled && projection.git.status !== "ready") {
       // The public Resume action is also the recovery affordance rendered by
       // the existing UI. Reuse the persisted operation id and advance only
       // the attempt; never publish a fake queued state while Git is unready.
       await this.retryInitializationLocked(state);
-      if (this.database().projectState(state.id).git.status === "ready") {
+      if ((await this.database().projectState(state.id)).git.status === "ready") {
         this.#pausedProjects.delete(state.id);
         for (const resolve of this.#pauseWaiters.get(state.id) ?? []) resolve();
         this.#pauseWaiters.delete(state.id);
@@ -2042,25 +2152,25 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       // User Resume reopens coordination, not a system-selected business
       // successor. Keep the existing task/PR/context and let the actual
       // Leader choose continuations with the existing assignment tools.
-      this.database().recoverAllMembers({
+      await this.database().recoverAllMembers({
         projectId: state.id,
         groupRunId: allMembersFailed.id,
         coordinatorEpoch: allMembersFailed.coordinatorEpoch,
         requestId: `recover-members-coordinate-${allMembersFailed.id}-${allMembersFailed.coordinatorEpoch}-${projection.stateRevision}`
       });
-      projection = this.database().projectState(state.id);
+      projection = (await this.database().projectState(state.id));
     }
     if (projection.frozen && projection.freezeReason?.startsWith("main_route_")) {
       const recovered = await this.recoverIndependentMainRoute(state, projection, explicitUserResume);
       if (!recovered.recovered) return;
-      projection = this.database().projectState(state.id);
+      projection = (await this.database().projectState(state.id));
     } else if (projection.frozen) {
       const group = projection.groupRuns.find((item) =>
         item.nodeRunId === projection.activeNodeRunId &&
         !["completed", "failed", "cancelled"].includes(item.status)
       );
       if (!group) throw new Error("Frozen collaboration project has no recoverable active group");
-      const priorProof = this.database().coordinatorStopProof(
+      const priorProof = await this.database().coordinatorStopProof(
         state.id,
         group.id,
         group.coordinatorEpoch
@@ -2069,7 +2179,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ? {
             stopped: true,
             evidence: priorProof.payload.evidence as Readonly<Record<string, unknown>>,
-            recovery: this.database().residentRecoverySeed({
+            recovery: await this.database().residentRecoverySeed({
               projectId: state.id,
               scope: "group-leader",
               scopeId: group.id,
@@ -2082,7 +2192,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             executionRuntimePath: this.leaderRuntimePath(state.id, group.id)
           });
       if (observation?.stopped === true && observation.recovery) {
-        this.persistResidentRecoverySeed(observation.recovery, {
+        await this.persistResidentRecoverySeed(observation.recovery, {
           projectId: state.id,
           sourceNodeRunId: group.nodeRunId,
           scope: "group-leader",
@@ -2093,7 +2203,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         });
       }
       if (observation?.stopped === true && !priorProof) {
-        this.database().confirmCoordinatorStopped({
+        await this.database().confirmCoordinatorStopped({
           projectId: state.id,
           groupRunId: group.id,
           coordinatorEpoch: group.coordinatorEpoch,
@@ -2102,14 +2212,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           requestId: `main-stop-proof-${group.id}-${group.coordinatorEpoch}`
         });
       }
-      const recovered = this.database().recoverMain({
+      const recovered = await this.database().recoverMain({
         projectId: state.id,
         groupRunId: group.id,
         priorProcessStopped: observation?.stopped === true,
         requestId: `recover-main-${group.id}-${group.coordinatorEpoch}-${projection.recoveryAttempts + 1}`
       });
       if (!recovered.recovered) {
-        this.appendFailureAttempt(state, {
+        await this.appendFailureAttempt(state, {
           scope: "resident",
           operation: `group-coordinator.recovery:${group.id}`,
           error: new Error(recovered.waitingForUser
@@ -2129,11 +2239,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         state.phase = recovered.waitingForUser
           ? "collaboration:main-recovery-waiting"
           : "collaboration:main-recovery-retryable";
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         await this.saveState(state);
         return;
       }
-      this.appendSuccessfulAttempt(state, {
+      await this.appendSuccessfulAttempt(state, {
         scope: "resident",
         operation: `group-coordinator.recovery:${group.id}`,
         message: "A later group coordinator recovery attempt succeeded",
@@ -2146,13 +2256,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       // authority. A recovered group coordinator must not make a later,
       // independent weak-route failure appear to have exhausted its own
       // retry budget.
-      this.database().resetMainRouteRecovery({
+      await this.database().resetMainRouteRecovery({
         projectId: state.id,
         nodeRunId: group.nodeRunId
       });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
     }
-    projection = this.database().projectState(state.id);
+    projection = (await this.database().projectState(state.id));
     if (projection.git.status === "ready") {
       // Resume owns scheduling for both explicit user recovery and the
       // recoverProject frozen-Main path. Refresh the provider-authoritative
@@ -2178,25 +2288,25 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     await this.saveState(state);
     this.scheduleProjectAfterSettlingRun(
       state,
-      () => this.assertDurableResumeAllowed(state.id)
+      async () => this.assertDurableResumeAllowed(state.id)
     );
   }
 
   private async authorizeScopedManagementResume(state: ProjectState, automaticRecovery = false): Promise<void> {
-    const projection = this.database().projectState(state.id);
+    const projection = await this.database().projectState(state.id);
     const node = projection.nodeRuns.find(node => node.id === projection.activeNodeRunId);
     if (!node || node.node.kind !== "collaboration" || !projection.scopedGroupRuns?.some(group =>
       !group.parentGroupRunId && group.activationRequestId === node.activationRequestId)) return;
-    this.database().resumeScopedManagementRepairs({ projectId: state.id, nodeRunId: node.id,
+    await this.database().resumeScopedManagementRepairs({ projectId: state.id, nodeRunId: node.id,
       expectedRevision: projection.stateRevision, automaticRecovery });
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
   }
 
   async addProjectUserInput(
     state: ProjectState,
     input: CollaborationProjectUserInputRequest
   ): Promise<void> {
-    return this.withProjectLifecycle(state.id, () => this.addProjectUserInputLocked(state, input));
+    return this.withProjectLifecycle(state.id, async () => this.addProjectUserInputLocked(state, input));
   }
 
   private async addProjectUserInputLocked(
@@ -2265,7 +2375,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ].join("\n")
       );
       state.userInputs.push(queued);
-      this.database().appendEvent({
+      await this.database().appendEvent({
         projectId: state.id,
         eventId: `evt_user_input_${createHash("sha256").update(queued.id).digest("hex").slice(0, 32)}`,
         ...(requestId ? { requestId: `user-input-${requestId}` } : {}),
@@ -2287,7 +2397,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         state.cycle += 1;
         state.completionGeneration += 1;
       }
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       await this.saveState(state);
       if (reopensCompletedProject) {
         this.scheduleProjectAfterSettlingRun(state);
@@ -2321,7 +2431,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     state: ProjectState,
     input: CollaborationUserInterventionResponseRequest
   ): Promise<void> {
-    return this.withProjectLifecycle(state.id, () =>
+    return this.withProjectLifecycle(state.id, async () =>
       this.respondToUserInterventionLocked(state, input));
   }
 
@@ -2344,12 +2454,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
     }
     const responseRequestId = `user-response-${pending.id}`;
-    const existingAnswer = this.database().eventByRequestId(state.id, responseRequestId);
+    const existingAnswer = await this.database().eventByRequestId(state.id, responseRequestId);
     if (existingAnswer && (existingAnswer.type !== "user.intervention.answered" || existingAnswer.agentId !== "main" ||
       existingAnswer.invocationId !== pending.requestedInvocationId || existingAnswer.payload.response !== message ||
       existingAnswer.payload.interventionId !== pending.id)) throw new Error("User intervention already has a different formal response");
     const answeredAt = typeof existingAnswer?.payload.answeredAt === "string" ? existingAnswer.payload.answeredAt : new Date().toISOString();
-    this.database().appendEvent({
+    await this.database().appendEvent({
       projectId: state.id,
       eventId: `evt_user_response_${createHash("sha256").update(pending.id).digest("hex").slice(0, 32)}`,
       requestId: responseRequestId,
@@ -2359,14 +2469,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       type: "user.intervention.answered",
       payload: { interventionId: pending.id, answeredAt, response: message }
     });
-    this.database().recordTerminalPushCoordinationUserResponse({ projectId: state.id, interventionId: pending.id });
+    await this.database().recordTerminalPushCoordinationUserResponse({ projectId: state.id, interventionId: pending.id });
     state.userIntervention = { ...pending, status: "answered", answeredAt, response: message };
     this.clearWorkflowRecoveryTimer(state.id);
     beginWorkflowRecovery(state);
     state.status = "queued";
     state.phase = "collaboration:user-response";
     state.lastError = undefined;
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     await this.saveState(state);
     // Recovery restores a durable scoped pause into the in-process fence.
     // Persisting an answered intervention must also release that fence, or
@@ -2382,10 +2492,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       this.assertWritable();
       if (state.archivedAt) return;
       const database = this.database();
-      const retainedStop = this.restoreConfirmedProjectStop(state);
+      const retainedStop = await this.restoreConfirmedProjectStop(state);
       if (!retainedStop && state.status === "paused") {
         await this.cancelProjectLocked(state, { actor: "user", reason: "user_cancelled" });
-        database.confirmProjectCancellationStopped(state.id);
+        await database.confirmProjectCancellationStopped(state.id);
       } else if (!retainedStop && state.status !== "completed" && state.status !== "cancelled") {
         throw new Error("Only completed, cancelled or paused Git projects can be archived");
       }
@@ -2403,19 +2513,19 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     });
   }
 
-  private restoreConfirmedProjectStop(state: ProjectState): boolean {
+  private async restoreConfirmedProjectStop(state: ProjectState): Promise<boolean> {
     if (state.status !== "paused" && state.status !== "cancelling") return false;
     const database = this.database();
-    const intent = database.resumableProjectCancellationIntent(state.id);
+    const intent = await database.resumableProjectCancellationIntent(state.id);
     if (!intent) return false;
-    const stopped = database.eventByRequestId(state.id,
+    const stopped = await database.eventByRequestId(state.id,
       `project-stop-confirmed:${state.id}:${intent.seq}`);
     if (!stopped || stopped.type !== "project.cancellation.stop_confirmed" ||
       stopped.payload.requestedEventSeq !== intent.seq || this.#runs.has(state.id) ||
       [...this.#residents.values()].some(entry => entry.projectId === state.id)) return false;
     // An exact Stop remains valid until explicit Resume. Revalidate native
     // rows before reusing it, without scanning old sessions or replaying history.
-    database.confirmProjectCancellationStopped(state.id);
+    await database.confirmProjectCancellationStopped(state.id);
     state.status = "paused";
     state.phase = "collaboration:user-cancelled";
     return true;
@@ -2438,7 +2548,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     try {
       return await this.withProjectLifecycle(
         state.id,
-        () => this.cancelProjectLocked(state, input)
+        async () => this.cancelProjectLocked(state, input)
       );
     } finally {
       this.#cancellingProjects.delete(state.id);
@@ -2450,7 +2560,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     input: { actor?: string; reason?: string }
   ): Promise<void> {
     this.assertWritable();
-    if (this.restoreConfirmedProjectStop(state)) {
+    if ((await this.restoreConfirmedProjectStop(state))) {
       await this.saveState(state);
       return;
     }
@@ -2463,14 +2573,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const resumableStop = true;
     this.#cancellingProjects.add(state.id);
     const database = this.database();
-    const priorCancellation = database.projectCancellationIntent(state.id);
+    const priorCancellation = await database.projectCancellationIntent(state.id);
     if (!priorCancellation || priorCancellation.payload.resumable !== true) {
-      database.appendEvent({
+      await database.appendEvent({
         projectId: state.id,
         // Each stop after an explicit resume needs a new durable fence. A
         // pending legacy intent is retained in history and upgraded here;
         // completed/cancelled historical projects returned above stay terminal.
-        requestId: `cancel-intent-${state.id}-${database.projectState(state.id).stateRevision}`,
+        requestId: `cancel-intent-${state.id}-${(await database.projectState(state.id)).stateRevision}`,
         workflowRevision: state.workflowRevision ?? 1,
         agentId: input.actor === "system" ? "system" : "main",
         type: "project.cancellation.requested",
@@ -2501,7 +2611,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // intent and before the first await. A provider call that passed an
     // earlier facade check cannot prepare a new create/merge operation after
     // this boundary.
-    let projection = database.projectState(state.id);
+    let projection = await database.projectState(state.id);
     if (state.orchestration.schemaVersion === 3 && projection.nodeRuns.some((node) => node.id === projection.activeNodeRunId &&
       node.node.kind === "collaboration" && projection.scopedGroupRuns?.some((group) => group.activationRequestId === node.activationRequestId))) {
       try { await this.cancelScopedProject(state); }
@@ -2513,9 +2623,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       !["completed", "cancelled", "failed"].includes(group.status)
     );
     if (activeGroup) {
-      const stopIntent = database.resumableProjectCancellationIntent(state.id);
+      const stopIntent = await database.resumableProjectCancellationIntent(state.id);
       if (!stopIntent) throw new Error("Group Stop requires its durable project Stop intent");
-      database.requestGroupCancellation({
+      await database.requestGroupCancellation({
         projectId: state.id,
         groupRunId: activeGroup.id,
         actorAgentId: "main",
@@ -2530,7 +2640,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         item.nodeRunId === projection.activeNodeRunId &&
         !["succeeded", "failed", "cancelled", "stopped", "superseded"].includes(item.status)
       )) {
-        database.requestExecutionStop({
+        await database.requestExecutionStop({
           projectId: state.id,
           executionId: execution.id,
           ownershipEpoch: execution.ownershipEpoch,
@@ -2539,7 +2649,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         });
       }
     }
-    projection = database.projectState(state.id);
+    projection = (await database.projectState(state.id));
     await this.saveState(state);
     try {
       this.#pausedProjects.delete(state.id);
@@ -2574,7 +2684,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         if (item.execution) {
           stopEvidence.set(item.execution.id, { residentClosed: true });
         } else if (activeGroup && key === `leader:${activeGroup.id}`) {
-          database.confirmCoordinatorStopped({
+          await database.confirmCoordinatorStopped({
             projectId: state.id,
             groupRunId: activeGroup.id,
             coordinatorEpoch: activeGroup.coordinatorEpoch,
@@ -2584,7 +2694,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           });
         }
       }
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
       const failedClose = closeResults.find((result) => result.status === "rejected");
       if (failedClose?.status === "rejected") {
         state.lastError = `Cancellation awaits resident stop proof: ${safeRuntimeError(failedClose.reason)}`;
@@ -2597,7 +2707,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       // needs an independent process-group stop proof before provider state
       // can be mutated or the group cancellation settled.
       if (activeGroup && !residentEntries.some(([key]) => key === `leader:${activeGroup.id}`)) {
-        const priorProof = database.coordinatorStopProof(
+        const priorProof = await database.coordinatorStopProof(
           state.id,
           activeGroup.id,
           activeGroup.coordinatorEpoch
@@ -2621,13 +2731,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
                 activeGroup.coordinatorEpoch
               ),
               executionRuntimePath: this.leaderRuntimePath(state.id, activeGroup.id),
-              residentLaunchProtocol: this.leaderLaunchProtocol(state.id, activeGroup)
+              residentLaunchProtocol: await this.leaderLaunchProtocol(state.id, activeGroup)
             });
         if (!leaderObservation.stopped) {
           throw new Error(`Cancellation awaits leader stop proof for group ${activeGroup.id}`);
         }
         if (!priorProof) {
-          database.confirmCoordinatorStopped({
+          await database.confirmCoordinatorStopped({
             projectId: state.id,
             groupRunId: activeGroup.id,
             coordinatorEpoch: activeGroup.coordinatorEpoch,
@@ -2641,7 +2751,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       // A service restart loses in-memory handles but not the stop obligation.
       // Reconcile every orphan through the launcher's process proof before
       // changing provider PR state or settling S cancellation.
-      projection = database.projectState(state.id);
+      projection = (await database.projectState(state.id));
       for (const execution of projection.executions.filter((item) =>
         item.status === "stop_requested" &&
         !this.#residents.has(item.id) &&
@@ -2657,11 +2767,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             state.id,
             execution.invocationId
           ),
-          residentLaunchProtocol: this.executionStopProtocol(state.id, execution)
+          residentLaunchProtocol: await this.executionStopProtocol(state.id, execution)
         });
         if (!observation.stopped) {
           const evidence = observation.evidence;
-          database.confirmExecutionStopped({
+          await database.confirmExecutionStopped({
             projectId: state.id,
             executionId: execution.id,
             ownershipEpoch: execution.ownershipEpoch,
@@ -2686,11 +2796,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       await this.reconcileTerminalPushObservationResidents(state);
 
       if (resumableStop) {
-        projection = database.projectState(state.id);
+        projection = (await database.projectState(state.id));
         for (const execution of projection.executions.filter((item) => item.status === "stop_requested")) {
           const evidence = stopEvidence.get(execution.id);
           if (!evidence) throw new Error(`Cancellation lacks stop proof for execution ${execution.id}`);
-          database.confirmExecutionStopped({
+          await database.confirmExecutionStopped({
             projectId: state.id,
             executionId: execution.id,
             ownershipEpoch: execution.ownershipEpoch,
@@ -2699,18 +2809,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             requestId: executionStopObservationRequestId("cancel-reconcile", execution, true, evidence)
           });
         }
-        database.confirmProjectCancellationStopped(state.id);
+        await database.confirmProjectCancellationStopped(state.id);
         state.status = "paused";
         state.phase = "collaboration:user-cancelled";
         state.cancellationSettledAt = undefined;
         state.cancelledAt = undefined;
         state.lastError = undefined;
-        await this.publishProjection(state, database.projectState(state.id), { stopConfirmed: true });
+        await this.publishProjection(state, (await database.projectState(state.id)), { stopConfirmed: true });
         await this.saveState(state);
         return;
       }
 
-      projection = database.projectState(state.id);
+      projection = (await database.projectState(state.id));
       for (const execution of projection.executions.filter((item) =>
         item.status === "stop_requested"
       )) {
@@ -2727,7 +2837,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         await this.observeExecutionPullForRecovery(
           state,
           execution,
-          executionGroup ? database.executionPullBase(state.id, execution.id) : "main",
+          executionGroup ? (await database.executionPullBase(state.id, execution.id)) : "main",
           new AbortController().signal
         );
         const terminalEvidence = await this.prepareStoppedExecutionForTerminalTransition(
@@ -2737,7 +2847,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           "cancellation"
         );
         const confirmedEvidence = { ...evidence, ...terminalEvidence };
-        database.confirmExecutionStopped({
+        await database.confirmExecutionStopped({
           projectId: state.id,
           executionId: execution.id,
           ownershipEpoch: execution.ownershipEpoch,
@@ -2754,22 +2864,22 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
       // PRs are closed while their stop-requested predecessor still owns the
       // provider fence. A stopped/superseded epoch must never mutate GitHub.
-      const remainingPull = database.projectState(state.id).pullRequests.find((pull) =>
+      const remainingPull = (await database.projectState(state.id)).pullRequests.find((pull) =>
         !["closed", "merged"].includes(pull.status)
       );
       if (remainingPull) {
         throw new Error(`Cancellation awaits pull request ${remainingPull.providerNumber} closure`);
       }
-      projection = database.projectState(state.id);
+      projection = (await database.projectState(state.id));
       if (activeGroup) {
-        database.settleGroupCancellation({
+        await database.settleGroupCancellation({
           projectId: state.id,
           groupRunId: activeGroup.id,
           reason,
           requestId: `cancel-settle-${activeGroup.id}`
         });
       } else if (projection.activeNodeRunId) {
-        database.cancelStandaloneNode({
+        await database.cancelStandaloneNode({
           projectId: state.id,
           nodeRunId: projection.activeNodeRunId,
           reason,
@@ -2780,7 +2890,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.cancelledAt = state.cancellationSettledAt;
       state.status = "cancelled";
       state.phase = "cancelled";
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
       await this.saveState(state);
     } finally {
       // The durable S stop/cancellation facts remain authoritative. This is
@@ -2803,7 +2913,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         `Cannot resume a ${persistedStatus ?? "terminal"} project`
       );
     }
-    const projection = this.database().projectState(projectId);
+    const projection = await this.database().projectState(projectId);
     const activeNode = projection.activeNodeRunId
       ? projection.nodeRuns.find((node) => node.id === projection.activeNodeRunId)
       : undefined;
@@ -2834,10 +2944,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       // A missing state file is possible only during initial creation. The S
       // event below remains the cross-process cancellation authority.
     }
-    const projection = this.database().getProjectState(projectId);
+    const projection = await this.database().getProjectState(projectId);
     if (!projection) return false;
     if (projection.groupRuns.some((group) => group.cancellationRequested)) return true;
-    return this.database().projectCancellationIntent(projectId) !== undefined;
+    return (await this.database().projectCancellationIntent(projectId)) !== undefined;
   }
 
   private async withProjectLifecycle<T>(projectId: string, run: () => Promise<T>): Promise<T> {
@@ -2870,14 +2980,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     transition: "cancellation" | "handoff"
   ): Promise<Readonly<Record<string, unknown>>> {
     const database = this.database();
-    const prior = database.latestExecutionTerminalPreparation(
+    const prior = await database.latestExecutionTerminalPreparation(
       state.id,
       execution.id,
       execution.ownershipEpoch,
       transition
     );
 
-    const git = this.git(state.id);
+    const git = await this.git(state.id);
     const repository = this.repository(state);
     const terminalSignal = new AbortController().signal;
     let checkpointCommit = typeof prior?.payload.checkpointCommit === "string"
@@ -2905,7 +3015,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
     }
 
-    let pull = database.projectState(state.id).pullRequests.find((candidate) =>
+    let pull = (await database.projectState(state.id)).pullRequests.find((candidate) =>
       candidate.ownerExecutionId === execution.id
     );
     if (pull && !["closed", "merged"].includes(pull.status)) {
@@ -2916,7 +3026,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (!observed) {
         throw new Error(`Pull request ${pull.providerNumber} disappeared before ${transition}`);
       }
-      database.observePullRequest({
+      await database.observePullRequest({
         projectId: state.id, executionId: execution.id,
         ownershipEpoch: execution.ownershipEpoch,
         pullRequest: pullRequestRecord(observed),
@@ -2954,7 +3064,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     )) {
       return prior.payload;
     }
-    database.appendEvent({
+    await database.appendEvent({
       projectId: state.id,
       requestId: prior && pull
         ? `${transition}-terminal-stop-reconcile-${executionEpochIdentity(execution)}-${pull.providerNumber}-${pull.status}`
@@ -2989,7 +3099,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (stopped.status !== "fulfilled" || !this.#database) continue;
       if (!entry.activity) continue;
       try {
-        this.#database.closeRuntimeActivity({
+        await this.#database.closeRuntimeActivity({
           projectId: entry.projectId,
           kind: "resident",
           invocationId: entry.activity.invocationId,
@@ -3014,30 +3124,36 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // Only after active submits settle may Stop accounting seal this turn.
     for (const [index, [, entry]] of residentEntries.entries()) {
       if (residentStops[index]?.status === "fulfilled" && entry.observation && this.#database) {
-        try { this.recordTerminalNativeStopped(entry.observation, { residentClosed: true }); }
+        try { await this.recordTerminalNativeStopped(entry.observation, { residentClosed: true }); }
         catch { /* A fenced writer cannot publish another Stop fact. */ }
       }
     }
-    this.#closed = true;
-    if (this.#leaseTimer) clearInterval(this.#leaseTimer);
-    this.#leaseTimer = undefined;
-    if (this.#database) {
-      try {
-        this.#database.relinquishWriterLease();
-      } finally {
-        this.#database.close();
-        this.#database = undefined;
+    try {
+      await this.#invocationDispatcher?.flush?.();
+    } finally {
+      this.#closed = true;
+      if (this.#leaseTimer) clearInterval(this.#leaseTimer);
+      this.#leaseTimer = undefined;
+      await this.#leaseRenewal;
+      await this.#leaseWorker?.stop();
+      if (this.#database) {
+        try {
+          await this.#database.relinquishWriterLease();
+        } finally {
+          await this.#database.close();
+          this.#database = undefined;
+        }
       }
     }
   }
 
-  private appendFailureAttempt(
+  private async appendFailureAttempt(
     state: ProjectState,
     input: DurableFailureAttemptInput
-  ): boolean {
+  ): Promise<boolean> {
     const attemptId = input.attemptId ?? newId("attempt");
     const prior = input.attemptId
-      ? this.database().failureAttempts(state.id)
+      ? (await this.database().failureAttempts(state.id))
         .find((attempt) => attempt.attemptId === input.attemptId)
       : undefined;
     const finishedAt = prior?.finishedAt ?? nowIso();
@@ -3046,7 +3162,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       ...(input.errorCode ? { errorCode: input.errorCode } : {}),
       ...(input.retryable !== undefined ? { retryable: input.retryable } : {})
     });
-    const appended = this.database().appendFailureAttempt({
+    const appended = await this.database().appendFailureAttempt({
       attemptId,
       projectId: state.id,
       scope: classified.scope,
@@ -3078,7 +3194,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return !appended.replay;
   }
 
-  private appendSuccessfulAttempt(state: ProjectState, input: {
+  private async appendSuccessfulAttempt(state: ProjectState, input: {
     attemptId?: string;
     scope: FailureAttempt["scope"];
     operation: string;
@@ -3094,18 +3210,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     ownershipEpoch?: number;
     coordinatorEpoch?: number;
     onlyIfUnresolved?: boolean;
-  }): boolean {
+  }): Promise<boolean> {
     if (input.onlyIfUnresolved !== false &&
-      !this.database().hasUnresolvedFailureAttempt(state.id, input.scope, input.operation)) {
+      !(await this.database().hasUnresolvedFailureAttempt(state.id, input.scope, input.operation, input))) {
       return false;
     }
     const attemptId = input.attemptId ?? newId("attempt");
     const prior = input.attemptId
-      ? this.database().failureAttempts(state.id)
+      ? (await this.database().failureAttempts(state.id))
         .find((attempt) => attempt.attemptId === input.attemptId)
       : undefined;
     const finishedAt = prior?.finishedAt ?? nowIso();
-    const appended = this.database().appendFailureAttempt({
+    const appended = await this.database().appendFailureAttempt({
       attemptId,
       projectId: state.id,
       scope: input.scope,
@@ -3159,7 +3275,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return new Date(Date.parse(at) + GIT_RETRY_SCHEDULE_SLO_MS).toISOString();
   }
 
-  private appendGitRetrySchedulingMilestone(
+  private async appendGitRetrySchedulingMilestone(
     state: ProjectState,
     input: {
       retryId: string;
@@ -3170,8 +3286,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       waitingFor: GitRetrySchedulingWait;
       occurredAt?: string;
     }
-  ): GitRetrySchedulingPoint {
-    return this.database().appendGitRetrySchedulingMilestone({
+  ): Promise<GitRetrySchedulingPoint> {
+    return (await this.database().appendGitRetrySchedulingMilestone({
       projectId: state.id,
       retryId: input.retryId,
       operationId: input.operationId,
@@ -3182,18 +3298,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       epochKind: input.authority.epochKind,
       waitingFor: input.waitingFor,
       ...(input.occurredAt ? { occurredAt: input.occurredAt } : {})
-    }).milestone;
+    })).milestone;
   }
 
   private async recordRetryMainResidentOpened(
     state: ProjectState,
     authority: GitRetrySchedulingContext["authority"]
   ): Promise<void> {
-    const timeline = [...this.database().gitRetryScheduling(state.id)].reverse().find((item) =>
+    const timeline = [...(await this.database().gitRetryScheduling(state.id))].reverse().find((item) =>
       item.scheduleEnqueuedAt !== undefined && item.mainResidentOpenedAt === undefined
     );
     if (!timeline) return;
-    this.appendGitRetrySchedulingMilestone(state, {
+    await this.appendGitRetrySchedulingMilestone(state, {
       retryId: timeline.retryId,
       operationId: timeline.operationId,
       attempt: timeline.attempt,
@@ -3206,44 +3322,43 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         deadlineAt: null
       }
     });
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
   }
 
-  private resolveOperationFailures(
+  private async resolveOperationFailures(
     state: ProjectState,
     operation: string,
     startedAt: string,
     message: string,
     context: Omit<Parameters<CollaborationRuntimeCoordinator["appendSuccessfulAttempt"]>[1],
       "scope" | "operation" | "startedAt" | "message" | "attemptId" | "onlyIfUnresolved"> = {}
-  ): boolean {
+  ): Promise<boolean> {
     let changed = false;
     for (const scope of ["git", "resident", "tool", "control", "usage", "scheduler"] as const) {
-      changed = this.appendSuccessfulAttempt(state, {
+      changed = (await this.appendSuccessfulAttempt(state, {
         ...context,
         scope,
         operation,
         startedAt,
         message
-      }) || changed;
+      })) || changed;
     }
     return changed;
   }
 
-  private resolveMainRouteFailures(state: ProjectState, nodeRunId: string, routeEpoch: number,
-    invocationId?: string): void {
+  private async resolveMainRouteFailures(state: ProjectState, nodeRunId: string, routeEpoch: number,
+    invocationId?: string): Promise<void> {
     const operations = new Set([`main-route:${nodeRunId}`, "main-route.recovery",
       `main-route.recovery:${nodeRunId}`, `main-route.decision:${nodeRunId}`]);
-    const latest = new Map<string, FailureAttempt>();
-    for (const attempt of this.database().failureAttempts(state.id)) {
-      if (operations.has(attempt.operation)) latest.set(`${attempt.scope}\0${attempt.operation}`, attempt);
-    }
-    for (const attempt of latest.values()) {
-      if (attempt.status !== "failed" || attempt.nodeRunId !== nodeRunId) continue;
-      this.appendSuccessfulAttempt(state, {
+    const attempts = await this.database().failureAttempts(state.id);
+    const { resolved } = failureAttemptHistory(attempts);
+    for (const attempt of attempts) {
+      if (attempt.status !== "failed" || attempt.nodeRunId !== nodeRunId ||
+        !operations.has(attempt.operation) || resolved.has(attempt.attemptId)) continue;
+      await this.appendSuccessfulAttempt(state, {
         attemptId: durableAttemptId("main-route-failure-recovered", [attempt.attemptId, nodeRunId, String(routeEpoch)]),
         scope: attempt.scope, operation: attempt.operation, startedAt: attempt.startedAt,
-        message: "The original Main task committed its formal decision and completion receipt",
+        message: "The original Main task committed its formal decision",
         agentId: "main", nodeRunId, coordinatorEpoch: routeEpoch, ...(invocationId ? { invocationId } : {}),
         metadata: { resolvedAttemptId: attempt.attemptId,
           recoveryEvidence: `main-route-response-${nodeRunId}-${routeEpoch}` }
@@ -3258,7 +3373,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   ): Promise<void> {
     this.assertWritable();
     if (await this.cancellationIsDurable(state.id)) return;
-    const prior = this.database().projectState(state.id).git;
+    const prior = (await this.database().projectState(state.id)).git;
     const operationId = prior.initialization?.operationId ?? `git-init-${state.id}`;
     const attempt = requestedAttempt ?? prior.initialization?.attempt ?? 1;
     const startedAt = nowIso();
@@ -3267,7 +3382,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     state.lastError = undefined;
     await this.saveState(state);
 
-    const facade = this.git(state.id);
+    const facade = await this.git(state.id);
     let result: GitInitializationResult;
     try {
       result = await facade.initialize({
@@ -3284,7 +3399,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       // Initializer implementations normally checkpoint and return a failed
       // public state. A thrown infrastructure error still leaves every prior
       // checkpoint intact and must not start the workflow.
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         attemptId: `git-initialization:${operationId}:${attempt}`,
         scope: "git",
         operation: "initialization",
@@ -3299,13 +3414,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.status = "retrying";
       state.phase = "git:failed";
       state.lastError = safeRuntimeError(error);
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       await this.saveState(state);
       return;
     }
     if (await this.cancellationIsDurable(state.id)) return;
     if (result.state.status === "ready") {
-      this.appendSuccessfulAttempt(state, {
+      await this.appendSuccessfulAttempt(state, {
         attemptId: `git-initialization:${operationId}:${attempt}`,
         scope: "git",
         operation: "initialization",
@@ -3321,7 +3436,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     } else {
       const initializationError = result.state.initialization?.error ??
         `Git initialization ended with ${result.state.status}`;
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         attemptId: `git-initialization:${operationId}:${attempt}`,
         scope: "git",
         operation: "initialization",
@@ -3337,7 +3452,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         }
       });
     }
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     if (await this.cancellationIsDurable(state.id)) return;
     if (result.repository) this.#repositories.set(state.id, result.repository);
     if (result.localRepository) this.#mainHeads.set(state.id, result.localRepository.head);
@@ -3361,7 +3476,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       const readyAt = new Date(this.#now?.() ?? Date.now()).toISOString();
       const schedulingDeadlineAt = this.gitRetrySchedulingDeadline(readyAt);
       const hasPriorRun = this.#runs.has(state.id);
-      const gitReady = this.appendGitRetrySchedulingMilestone(state, {
+      const gitReady = await this.appendGitRetrySchedulingMilestone(state, {
         retryId: retry.retryId,
         operationId: retry.operationId,
         attempt: retry.attempt,
@@ -3382,11 +3497,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               deadlineAt: schedulingDeadlineAt
             }
       });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       // Recheck after projection publication: the old run may have settled
       // while the durable ready milestone was being mirrored.
       if (!this.#runs.has(state.id)) {
-        this.appendGitRetrySchedulingMilestone(state, {
+        await this.appendGitRetrySchedulingMilestone(state, {
           retryId: retry.retryId,
           operationId: retry.operationId,
           attempt: retry.attempt,
@@ -3400,7 +3515,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           }
         });
         if (this.scheduleProject(state)) {
-          this.appendGitRetrySchedulingMilestone(state, {
+          await this.appendGitRetrySchedulingMilestone(state, {
             retryId: retry.retryId,
             operationId: retry.operationId,
             attempt: retry.attempt,
@@ -3414,7 +3529,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             }
           });
         }
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         return;
       }
       // The observed nine-minute gap is the prior run's settlement fence.
@@ -3424,7 +3539,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         state,
         async () => {
           const settledAt = new Date(this.#now?.() ?? Date.now()).toISOString();
-          this.appendGitRetrySchedulingMilestone(state, {
+          await this.appendGitRetrySchedulingMilestone(state, {
             retryId: retry.retryId,
             operationId: retry.operationId,
             attempt: retry.attempt,
@@ -3438,11 +3553,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               deadlineAt: this.gitRetrySchedulingDeadline(settledAt)
             }
           });
-          await this.publishProjection(state, this.database().projectState(state.id));
+          await this.publishProjection(state, (await this.database().projectState(state.id)));
         },
         async (scheduled) => {
           if (scheduled) {
-            this.appendGitRetrySchedulingMilestone(state, {
+            await this.appendGitRetrySchedulingMilestone(state, {
               retryId: retry.retryId,
               operationId: retry.operationId,
               attempt: retry.attempt,
@@ -3456,7 +3571,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               }
             });
           }
-          await this.publishProjection(state, this.database().projectState(state.id));
+          await this.publishProjection(state, (await this.database().projectState(state.id)));
         }
       );
     }
@@ -3476,14 +3591,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const run = this.runManagedProjectWithRecovery(state, controller.signal).then(async () => {
       if (this.#shuttingDown || state.status === "paused" || state.status === "interrupted" || state.status === "retrying" || state.status === "cancelled" ||
         state.status === "cancelling") return;
-      const resolvedRun = this.resolveOperationFailures(
+      const resolvedRun = await this.resolveOperationFailures(
         state, "project.run", runStartedAt, "A later scheduled project run succeeded"
       );
-      const resolvedRecovery = this.resolveOperationFailures(
+      const resolvedRecovery = await this.resolveOperationFailures(
         state, "workflow.recovery", runStartedAt, "The original project continued successfully after recovery"
       );
       if (resolvedRun || resolvedRecovery) {
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
       }
     }).catch(async (error: unknown) => {
       originalRunFailure = error;
@@ -3493,23 +3608,23 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         this.#workflowAdjustmentDeferredProjects.add(state.id);
         state.status = "queued";
         state.phase = "collaboration:workflow-adjustment-waiting";
-        await this.publishProjection(state, this.database().projectState(state.id));
-        this.resumeWorkflowAdjustmentDispatch(state);
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
+        await this.resumeWorkflowAdjustmentDispatch(state);
         return;
       }
       if (error instanceof MainRouteRecoveryRequiredError) {
-        const projection = this.database().projectState(state.id);
+        const projection = await this.database().projectState(state.id);
         // The retry timer retains the exact frozen authority until its stop
         // proof can be reconciled; no business action is fabricated here.
         const nodeRunId = projection.activeNodeRunId;
-        const attempt = nodeRunId ? this.database().latestMainRouteAttempt(state.id, nodeRunId) : undefined;
-        this.appendFailureAttempt(state, { scope: "resident", operation: "main-route.recovery",
+        const attempt = nodeRunId ? (await this.database().latestMainRouteAttempt(state.id, nodeRunId)) : undefined;
+        await this.appendFailureAttempt(state, { scope: "resident", operation: "main-route.recovery",
           error, errorCode: "MAIN_ROUTE_RECOVERY_REQUIRED", retryable: true, startedAt: runStartedAt,
           agentId: "main", ...(nodeRunId ? { nodeRunId } : {}),
           ...(attempt?.invocationId ? { invocationId: attempt.invocationId } : {}),
           ...(attempt?.coordinatorEpoch ? { coordinatorEpoch: attempt.coordinatorEpoch } : {}),
           metadata: { phase: state.phase, projectStatus: state.status } });
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         // An accepted Resume queues its replacement against this old run.
         // Preserve it, and any user Pause, rather than writing an older wait.
         const currentRun = this.#runs.get(state.id);
@@ -3522,7 +3637,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         return;
       }
       if (error instanceof GitHubAuthorizationError) {
-        this.appendFailureAttempt(state, {
+        await this.appendFailureAttempt(state, {
           scope: "git",
           operation: "project.run",
           error,
@@ -3535,13 +3650,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             : {}),
           metadata: { phase: state.phase, projectStatus: state.status }
         });
-        let projection = this.database().projectState(state.id);
+        let projection = await this.database().projectState(state.id);
         for (const execution of projection.executions.filter((item) =>
           item.nodeRunId === projection.activeNodeRunId &&
           ["working", "waiting_authorization", "waiting_review", "pr_open", "resolving"]
             .includes(item.status)
         )) {
-          this.database().transitionExecutionStatus({
+          await this.database().transitionExecutionStatus({
             projectId: state.id,
             executionId: execution.id,
             ownershipEpoch: execution.ownershipEpoch,
@@ -3566,13 +3681,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         // under the same initialization operation before publishing file
         // state, otherwise recoverProject could overwrite the pause with the
         // former ready projection and schedule the model again.
-        this.database().checkpointGitInitialization({
+        await this.database().checkpointGitInitialization({
           projectId: state.id,
           operationId: waitingGit.initialization!.operationId,
           attempt: waitingGit.initialization!.attempt,
           state: waitingGit
         });
-        projection = this.database().projectState(state.id);
+        projection = (await this.database().projectState(state.id));
         await this.publishProjection(state, projection).catch(() => undefined);
         if (await this.cancellationIsDurable(state.id)) return;
         state.status = "retrying";
@@ -3581,7 +3696,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         await this.saveState(state);
         return;
       }
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         operation: "project.run",
         error,
         startedAt: runStartedAt,
@@ -3593,7 +3708,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           : {}),
         metadata: { phase: state.phase, projectStatus: state.status }
       });
-      await this.publishProjection(state, this.database().projectState(state.id)).catch(() => undefined);
       if (await this.cancellationIsDurable(state.id)) return;
       const failure = classifyDurableFailure(error, {});
       state.status = failure.retryable ? "retrying" : "interrupted";
@@ -3604,6 +3718,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         finishWorkflowRecovery(state);
         this.clearWorkflowRecoveryTimer(state.id);
       }
+      await this.publishProjection(state, (await this.database().projectState(state.id))).catch(() => undefined);
       await this.saveState(state);
     }).catch(async (error: unknown) => {
       // Failure reporting itself needs the writer fence. An expired/replaced
@@ -3647,7 +3762,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // current run's finally block removes its promise. Queue the replacement
     // after that exact run settles so scheduleProject's duplicate-run fence
     // cannot silently discard an acknowledged continuation.
-    const dispatch = () => {
+    const dispatch = async () => {
       void this.withProjectLifecycle(state.id, async () => {
         await beforeDispatch?.();
         if (state.status === "queued" && !this.#runs.has(state.id) &&
@@ -3661,7 +3776,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   }
 
   private async runManagedProjectWithRecovery(state: ProjectState, signal: AbortSignal): Promise<void> {
-    let pending = this.database().pendingHarnessRecovery(state.id);
+    let pending = await this.database().pendingHarnessRecovery(state.id);
     for (;;) {
       if (pending) {
         const next = typeof pending.payload.nextRetryAt === "string" ? Date.parse(pending.payload.nextRetryAt) : Date.now();
@@ -3674,7 +3789,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state.status = "queued";
           state.phase = "collaboration:recovering";
         }
-        const projection = this.database().projectState(state.id);
+        const projection = await this.database().projectState(state.id);
         if (pending && projection.frozen && projection.freezeReason?.startsWith("main_route_")) {
           const recovered = await this.recoverIndependentMainRoute(state, projection, false);
           if (!recovered.recovered) throw new HarnessRuntimeError("PROTOCOL_ROUTE_FAILED",
@@ -3685,12 +3800,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         await nativeBackgroundJobLifecycle(this.#storage.projectDir(state.id), "resume", () => this.assertWritable());
         await this.runManagedProject(state, signal);
         if (pending && !state.pauseRequest && state.status !== "paused") {
-          this.database().appendEvent({ projectId: state.id, type: "runtime.harness_recovery.completed",
+          await this.database().appendEvent({ projectId: state.id, type: "runtime.harness_recovery.completed",
             requestId: `${pending.requestId}:completed`, payload: { recoveryRequestId: pending.requestId } });
           state.retryAt = undefined;
-          await this.publishProjection(state, this.database().projectState(state.id));
+          await this.publishProjection(state, (await this.database().projectState(state.id)));
         } else if (pending && state.status === "paused" && !state.pauseRequest && !this.#pausedProjects.has(state.id)) {
-          this.database().appendEvent({ projectId: state.id, type: "runtime.harness_recovery.abandoned",
+          await this.database().appendEvent({ projectId: state.id, type: "runtime.harness_recovery.abandoned",
             requestId: `${pending.requestId}:abandoned`, payload: { recoveryRequestId: pending.requestId,
               phase: state.phase, reason: "The transport recovered; a separate durable task condition requires attention" } });
         }
@@ -3698,28 +3813,28 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       } catch (error) {
         const failure = transientHarnessFailure(error);
         if (!failure && pending && !signal.aborted && !state.pauseRequest && !this.#pausedProjects.has(state.id)) {
-          this.database().appendEvent({ projectId: state.id, type: "runtime.harness_recovery.abandoned",
+          await this.database().appendEvent({ projectId: state.id, type: "runtime.harness_recovery.abandoned",
             requestId: `${pending.requestId}:abandoned`, payload: { recoveryRequestId: pending.requestId,
               reason: safeRuntimeError(error) } });
         }
         if (!failure || signal.aborted || this.#shuttingDown || state.pauseRequest ||
           this.#pausedProjects.has(state.id) || await this.cancellationIsDurable(state.id)) throw error;
-        this.appendFailureAttempt(state, { operation: "project.run", error: failure,
+        await this.appendFailureAttempt(state, { operation: "project.run", error: failure,
           metadata: { automaticRecovery: true, phase: state.phase } });
-        const previous = this.database().pendingHarnessRecovery(state.id);
+        const previous = await this.database().pendingHarnessRecovery(state.id);
         const attempt = Number(previous?.payload.attempt ?? 0) + 1;
         const nextRetryAt = new Date(Date.now() + this.#harnessRecoveryDelayMs(attempt)).toISOString();
-        pending = this.database().appendEvent({ projectId: state.id,
+        pending = (await this.database().appendEvent({ projectId: state.id,
           requestId: `harness-auto-recovery:${state.id}:${newId("retry")}`,
           type: "runtime.harness_recovery.scheduled", payload: { attempt, nextRetryAt,
             errorCode: failure.code, message: safeRuntimeError(failure),
-            activeNodeRunId: this.database().projectState(state.id).activeNodeRunId } }).event;
+            activeNodeRunId: (await this.database().projectState(state.id)).activeNodeRunId } })).event;
         await this.forgetStoppedResidents(state);
         state.status = "retrying";
         state.phase = "collaboration:harness-recovery";
         state.retryAt = nextRetryAt;
         state.lastError = safeRuntimeError(failure);
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         await this.saveState(state);
         await this.appendEvent(state, { type: "agent.failed", level: "warning",
           message: "模型或网关暂时失败，正在自动恢复原任务…", data: { attempt, nextRetryAt,
@@ -3735,21 +3850,21 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (entry.projectId !== state.id || entry.handle.closed !== true) continue;
       const execution = entry.execution;
       if (execution && !execution.groupRunId) {
-        const current = this.database().projectState(state.id).executions.find(item => item.id === execution.id);
+        const current = (await this.database().projectState(state.id)).executions.find(item => item.id === execution.id);
         if (current && ["queued", "working", "waiting_authorization", "waiting_review", "pr_open", "resolving", "merged", "stop_requested"].includes(current.status)) {
-          this.database().requestExecutionStop({ projectId: state.id, executionId: current.id,
+          await this.database().requestExecutionStop({ projectId: state.id, executionId: current.id,
             ownershipEpoch: current.ownershipEpoch, reason: "native_turn_recovery",
             requestId: `native-recovery-stop:${current.id}:${current.ownershipEpoch}` });
           const observation = current.invocationId && this.#residentLauncher?.stopForRecovery
             ? await this.#residentLauncher.stopForRecovery({ state: structuredClone(state), execution: current,
                 executionRuntimePath: await this.#storage.invocationRuntimePath(state.id, current.invocationId),
-                residentLaunchProtocol: this.executionStopProtocol(state.id, current) })
+                residentLaunchProtocol: await this.executionStopProtocol(state.id, current) })
             : { stopped: true, evidence: { residentClosed: true }, recovery: undefined };
-          if (observation.recovery) this.persistResidentRecoverySeed(observation.recovery, {
+          if (observation.recovery) await this.persistResidentRecoverySeed(observation.recovery, {
             projectId: state.id, sourceNodeRunId: current.nodeRunId, scope: "member", scopeId: current.id,
             agentId: current.agentId, harnessId: state.agents[current.agentId]!.harness,
             stoppedEpoch: current.ownershipEpoch });
-          this.database().confirmExecutionStopped({ projectId: state.id, executionId: current.id,
+          await this.database().confirmExecutionStopped({ projectId: state.id, executionId: current.id,
             ownershipEpoch: current.ownershipEpoch, stopped: observation.stopped, evidence: observation.evidence,
             requestId: `native-recovery-confirm:${current.id}:${current.ownershipEpoch}` });
           if (!observation.stopped) throw new Error("Original native process stop is not confirmed");
@@ -3765,7 +3880,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   private async runManagedProject(state: ProjectState, signal: AbortSignal): Promise<void> {
     const launcherCheckStartedAt = nowIso();
     if (!this.#residentLauncher) {
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         scope: "resident",
         operation: "launcher.available",
         error: new Error("The trusted collaboration resident launcher is unavailable"),
@@ -3774,26 +3889,27 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         startedAt: launcherCheckStartedAt,
         metadata: { phase: state.phase }
       });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       state.status = "retrying";
       state.phase = "collaboration:resident-launcher-required";
       state.lastError = "The trusted collaboration resident launcher is unavailable";
       await this.saveState(state);
       return;
     }
-    if (this.appendSuccessfulAttempt(state, {
+    if ((await this.appendSuccessfulAttempt(state, {
       scope: "resident",
       operation: "launcher.available",
       startedAt: launcherCheckStartedAt,
       message: "The trusted collaboration resident launcher is available"
-    })) {
-      await this.publishProjection(state, this.database().projectState(state.id));
+    }))) {
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
     }
-    let projection = this.database().projectState(state.id);
+    let projection = await this.database().projectState(state.id);
     if (projection.git.status !== "ready") return;
+    if (state.orchestration.schemaVersion === 3) await this.worktreeClosingRuntime(state, signal).discover();
     try { await this.advanceTerminalPushObservations(state, signal); }
     catch (error) {
-      const active = this.database().projectState(state.id).nodeRuns.find(node => node.id === projection.activeNodeRunId);
+      const active = (await this.database().projectState(state.id)).nodeRuns.find(node => node.id === projection.activeNodeRunId);
       // Existing scoped managers or an authorized Main receive the facts.
       // No business route or request_user decision is selected by the system.
       if (!(error instanceof TerminalPushObservationUnresolvedError) ||
@@ -3802,20 +3918,20 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     if (state.status === "paused" || state.status === "retrying") return;
     if (await this.drainPendingRoutes(state, signal)) return;
-    projection = this.database().projectState(state.id);
+    projection = (await this.database().projectState(state.id));
     if (state.status === "completed") return;
     if (projection.activeNodeRunId) {
       await this.reconcileActiveExecution(state, projection, signal);
       return;
     }
-    const preparation = this.database().scopedGroupActivationPreparations(state.id).find(record => record.status === "preparing" && !record.input.parentGroupRunId);
+    const preparation = (await this.database().scopedGroupActivationPreparations(state.id)).find(record => record.status === "preparing" && !record.input.parentGroupRunId);
     if (preparation) {
-      const scoped = this.scopedRuntime(state, signal);
+      const scoped = await this.scopedRuntime(state, signal);
       const activated = await scoped.activate(preparation.input);
       await this.advanceScopedGroup(state, activated.groupRun, signal, scoped);
       return;
     }
-    this.restoreReceivedRootMainInputs(state);
+    await this.restoreReceivedRootMainInputs(state);
     const pendingInputs = state.userInputs.filter((input) => input.status === "pending");
     // Preserve this activation's task for recovery. Pending user inputs are
     // delivered to Main below, rather than replayed as the original request.
@@ -3843,26 +3959,36 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (state.status === "completed") return;
     await this.reconcileTerminalPushObservationResidents(state);
     const database = this.database();
-    captureKnownAgentGitResults(database, state.id);
-    if (database.terminalPushCoordinationIncidents(state.id).length) {
-      await this.receiptCoordinatorRuntime(state, signal).advance();
-      if (state.status === "paused" || state.status === "retrying") return;
-    }
-    for (const candidate of database.terminalPushObservationCandidates(state.id)) {
+    await captureKnownAgentGitResults(database, state.id);
+    for (const candidate of (await database.terminalPushObservationCandidates(state.id))) {
+      if ((await database.executionSupervisionResult(state.id, candidate.executionId))) {
+        await database.retireExecutionSupervisionIssues(state.id, candidate.executionId, "Task supervision ended; retained tool outcomes remain factual records");
+        continue;
+      }
+      const explicit = await database.terminalPushObservationContinuation(state.id, candidate.executionId, candidate.operation.id);
+      if (!explicit) {
+        await database.appendEvent({ projectId: state.id, agentId: candidate.agentId,
+          type: "execution.supervision.finished", payload: { outcome: "unconfirmed", missing: [
+            `Retained operation ${candidate.operation.id} has an unfinished or unreceived result`],
+            executionId: candidate.executionId, ownershipEpoch: candidate.ownershipEpoch,
+            reason: "The original task ended; no additional automatic task is created for a historical tool result" } });
+        await database.retireExecutionSupervisionIssues(state.id, candidate.executionId, "Historical receipt remains recorded without another automatic wakeup");
+        continue;
+      }
       while (!signal.aborted) {
         await this.waitWhilePaused(state.id, signal);
-        const operation = database.recordedGitOperation(state.id, candidate.operation.id)!;
-        const prior = database.terminalPushObservationTurns(state.id).filter(turn => turn.executionId === candidate.executionId).at(-1);
-        const receipt = database.terminalPushObservationTurns(state.id).filter(turn => turn.executionId === candidate.executionId && turn.operation.id === candidate.operation.id).at(-1);
-        const coordination = database.terminalPushObservationContinuation(state.id,candidate.executionId,candidate.operation.id);
-        const pendingResults = database.terminalPushObservationPendingResults(state.id, candidate.executionId);
+        const operation = (await database.recordedGitOperation(state.id, candidate.operation.id))!;
+        const prior = (await database.terminalPushObservationTurns(state.id)).filter(turn => turn.executionId === candidate.executionId).at(-1);
+        const receipt = (await database.terminalPushObservationTurns(state.id)).filter(turn => turn.executionId === candidate.executionId && turn.operation.id === candidate.operation.id).at(-1);
+        const coordination = await database.terminalPushObservationContinuation(state.id,candidate.executionId,candidate.operation.id);
+        const pendingResults = await database.terminalPushObservationPendingResults(state.id, candidate.executionId);
         if (operation.status === "failed" || ["finalized", "superseded"].includes(operation.status) && (!receipt || receipt.completion && receipt.result) && !pendingResults.length) break;
-        if (!coordination && (receipt?.completion && receipt.result && !pendingResults.length || database.terminalPushObservationRepairCount(state.id, candidate.executionId) >= 2)) {
+        if (!coordination && (receipt?.completion && receipt.result && !pendingResults.length || (await database.terminalPushObservationRepairCount(state.id, candidate.executionId)) >= MAX_TASK_REPAIR_WAKEUPS)) {
           const nativeInvocationId = prior?.invocationId ?? candidate.originalInvocationId;
           const nativeRuntimePath = prior?.runtimePath ?? await this.#storage.invocationRuntimePath(state.id,nativeInvocationId);
           const stopped = await this.observeTerminalNativeStop(state,candidate,nativeRuntimePath);
           const unresolvedRequestId = `terminal-push-unresolved:${candidate.executionId}:${candidate.operation.id}:${nativeInvocationId}`;
-          if (!database.eventByRequestId(state.id,unresolvedRequestId)) database.appendEvent({ projectId: state.id, agentId: candidate.agentId, nodeRunId: candidate.nodeRunId,
+          if (!(await database.eventByRequestId(state.id,unresolvedRequestId))) await database.appendEvent({ projectId: state.id, agentId: candidate.agentId, nodeRunId: candidate.nodeRunId,
             requestId: unresolvedRequestId,
             type: "agent.terminal_push_observation.unresolved",
             payload: { executionId: candidate.executionId, ownershipEpoch: candidate.ownershipEpoch,
@@ -3870,12 +3996,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               nativeStop: { invocationId: nativeInvocationId, runtimePath: nativeRuntimePath, evidence: stopped.evidence },
               ...(receipt?.result ? { result: receipt.result } : {}),
               pendingResults: pendingResults.map(event => event.payload.receipt),
-              repairCount: database.terminalPushObservationRepairCount(state.id, candidate.executionId) } });
-          const issue = database.recordTerminalPushObservationGroupIssue({ projectId: state.id, executionId: candidate.executionId,
+              repairCount: await database.terminalPushObservationRepairCount(state.id, candidate.executionId) } });
+          const issue = await database.recordTerminalPushObservationGroupIssue({ projectId: state.id, executionId: candidate.executionId,
             ownershipEpoch: candidate.ownershipEpoch, operationId: candidate.operation.id, unresolvedRequestId });
-          await this.publishProjection(state, database.projectState(state.id));
-          if (!issue && state.orchestration.schemaVersion === 3 && database.latestAgentNativeSessionBinding(state.id, "main")) {
-            database.recordTerminalPushCoordinationIncident({ projectId: state.id, executionId: candidate.executionId,
+          await this.publishProjection(state, (await database.projectState(state.id)));
+          if (!issue && state.orchestration.schemaVersion === 3 && (await database.latestAgentNativeSessionBinding(state.id, "main"))) {
+            await database.recordTerminalPushCoordinationIncident({ projectId: state.id, executionId: candidate.executionId,
               ownershipEpoch: candidate.ownershipEpoch, operationId: candidate.operation.id, unresolvedRequestId });
             await this.receiptCoordinatorRuntime(state, signal).advance();
             if (state.status === "paused" || state.status === "retrying") return;
@@ -3891,11 +4017,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         await this.waitWhilePaused(state.id, signal);
         const invocationId = newId("inv");
         const runtimePath = path.join(path.dirname(previousRuntimePath), invocationId);
-        const observation = database.beginTerminalPushObservation({ ...candidate, invocationId,
+        const observation = await database.beginTerminalPushObservation({ ...candidate, invocationId,
           operationId: candidate.operation.id, previousInvocationId, previousRuntimePath, runtimePath,
           residentStopConfirmed: true, evidence: stopped.evidence, ...(coordination ? { coordination } : {}) });
         if (!observation) return; // A competing owner/pause/fence never consumes another wake.
-        await this.publishProjection(state, database.projectState(state.id));
+        await this.publishProjection(state, (await database.projectState(state.id)));
         await this.runTerminalPushObservation(state, observation, signal);
       }
       signal.throwIfAborted();
@@ -3918,31 +4044,31 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return result;
   }
 
-  private recordTerminalNativeStopped(observation: TerminalPushObservationTurn, evidence: Readonly<Record<string, unknown>>): void {
+  private async recordTerminalNativeStopped(observation: TerminalPushObservationTurn, evidence: Readonly<Record<string, unknown>>): Promise<void> {
     const database = this.database();
-    if (database.terminalPushObservationTurns(observation.projectId).find(turn => turn.invocationId === observation.invocationId)?.status === "stopped") return;
-    if (observation.writerLeaseEpoch === database.writerLease().epoch) {
-      database.stopTerminalPushObservation({ ...observation, residentStopConfirmed: true, evidence });
+    if ((await database.terminalPushObservationTurns(observation.projectId)).find(turn => turn.invocationId === observation.invocationId)?.status === "stopped") return;
+    if (observation.writerLeaseEpoch === (await database.writerLease()).epoch) {
+      await database.stopTerminalPushObservation({ ...observation, residentStopConfirmed: true, evidence });
     } else {
-      database.reconcileTerminalPushObservation({ ...observation, priorWriterLeaseEpoch: observation.writerLeaseEpoch,
+      await database.reconcileTerminalPushObservation({ ...observation, priorWriterLeaseEpoch: observation.writerLeaseEpoch,
         residentStopConfirmed: true, evidence });
     }
   }
 
   private async reconcileTerminalPushObservationResidents(state: ProjectState): Promise<void> {
     const database = this.database();
-    if (database.terminalPushCoordinatorTurns(state.id).length) await this.receiptCoordinatorRuntime(state, new AbortController().signal).reconcile();
-    for (const turn of database.terminalPushObservationTurns(state.id)) {
+    if ((await database.terminalPushCoordinatorTurns(state.id)).length) await this.receiptCoordinatorRuntime(state, new AbortController().signal).reconcile();
+    for (const turn of (await database.terminalPushObservationTurns(state.id))) {
       if (turn.completion) await this.#storage.saveTerminalPushObservationCompletion(turn.completion);
       if (turn.status === "stopped" || this.#residents.has(`terminal:${turn.invocationId}`)) continue;
       const stopped = await this.observeTerminalNativeStop(state, turn, turn.runtimePath);
-      this.recordTerminalNativeStopped(turn, stopped.evidence);
+      await this.recordTerminalNativeStopped(turn, stopped.evidence);
     }
-    await this.publishProjection(state, database.projectState(state.id));
+    await this.publishProjection(state, (await database.projectState(state.id)));
   }
 
   private receiptCoordinatorRuntime(state: ProjectState, signal: AbortSignal): TerminalPushCoordinatorRuntime {
-    const assertCurrent = () => {
+    const assertCurrent = async () => {
       this.assertWritable();
       if (this.#shuttingDown || this.#cancellingProjects.has(state.id) ||
         this.#pausedProjects.has(state.id) && !(this.#activeTurns.get(state.id) ?? 0)) {
@@ -3951,9 +4077,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     };
     return new TerminalPushCoordinatorRuntime({ state, signal, database: this.database(), storage: this.#storage,
       launcher: this.#residentLauncher!, builder: this.#executionInputBuilder, assertCurrent,
-      wait: () => this.waitWhilePaused(state.id, signal), publish: () => this.publishProjection(state, this.database().projectState(state.id)),
-      inputs: (agent, invocation, inbox, runtime) => this.stageLeaderManagementInputs(state, invocation, inbox, runtime, agent),
-      filesystem: () => this.filesystemAuthorityInput(state), decorate: request => this.attachRuntimeCallbacks(state, request),
+      wait: () => this.waitWhilePaused(state.id, signal), publish: async () => this.publishProjection(state, (await this.database().projectState(state.id))),
+      inputs: async (agent, invocation, inbox, runtime) => this.stageLeaderManagementInputs(state, invocation, inbox, runtime, agent),
+      filesystem: async () => this.filesystemAuthorityInput(state), decorate: async request => await this.attachRuntimeCallbacks(state, request),
       trace: (agent, invocation) => this.traceSink(state, agent, invocation), turnRequestFactory: request => this.turnRequestFactory(state, request),
       hasResident: key => this.#residents.has(key),
       register: (key, coordination, handle) => { this.#residents.set(key, { projectId: state.id, coordination, handle }); },
@@ -3974,7 +4100,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       },
       requestUser: async (incident, decision) => {
         if (decision.agent !== "main" || decision.action.tool !== "request_user") throw new Error("Only the original Main can author a receipt user request");
-        const nodeRunId = this.database().terminalPushOwnerNodeRunId(state.id, incident.executionId);
+        const nodeRunId = await this.database().terminalPushOwnerNodeRunId(state.id, incident.executionId);
         await this.pauseForMainIntervention(state, nodeRunId, decision.callId, decision.action,
           { incidentId: incident.id, managerInvocationId: decision.invocationId });
       } });
@@ -3984,7 +4110,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const database = this.database();
     const launcher = this.#residentLauncher!;
     const runtimePath = await this.#storage.invocationRuntimePath(state.id, observation.invocationId);
-    const previous = database.terminalPushObservationTurns(state.id).filter(turn => turn.executionId === observation.executionId && turn.invocationId !== observation.invocationId).at(-1);
+    const previous = (await database.terminalPushObservationTurns(state.id)).filter(turn => turn.executionId === observation.executionId && turn.invocationId !== observation.invocationId).at(-1);
     const sources = new AgentContextSources();
     const assignment = [
       "Your original business task is already complete. Continue in its original durable session only to receive saved tool results or supply its historical push receipt.",
@@ -4012,7 +4138,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       inboxPath, projectPath: fallback.projectPath, worktreePath: observation.worktreePath, runtimePath,
       terminalPushObservation: scope }) : fallback;
     request.contextSources = sources.sources;
-    this.attachRuntimeCallbacks(state, request);
+    await this.attachRuntimeCallbacks(state, request);
     const key = `terminal:${observation.invocationId}`;
     let handle: CollaborationResidentHandle | undefined;
     try {
@@ -4020,18 +4146,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       handle = await launcher.open({ request, executionRuntimePath: observation.runtimePath,
         filesystemAuthorityInput: await this.filesystemAuthorityInput(state), signal,
         onTrace: this.traceSink(state, observation.agentId, observation.invocationId),
-        onOpened: async () => { database.markTerminalPushObservationOpened({ ...observation, nativeProcessOpened: true });
-          await this.publishProjection(state, database.projectState(state.id)); },
+        onOpened: async () => { await database.markTerminalPushObservationOpened({ ...observation, nativeProcessOpened: true });
+          await this.publishProjection(state, (await database.projectState(state.id))); },
         sameEpochReopen: { previousRuntimePath: observation.previousRuntimePath,
-          revalidate: () => { this.assertWritable(); signal.throwIfAborted();
-            database.assertTerminalPushObservationLaunch({ ...observation, runtimePath: observation.runtimePath }); } },
+          revalidate: async () => { this.assertWritable(); signal.throwIfAborted();
+            await database.assertTerminalPushObservationLaunch({ ...observation, runtimePath: observation.runtimePath }); } },
         turnRequestFactory: this.turnRequestFactory(state, request),
         controlScope: { projectId: state.id, nodeRunId: observation.nodeRunId, executionId: observation.executionId,
           agentId: observation.agentId, ownershipEpoch: observation.ownershipEpoch,
           role: "execution-artifact", terminalPushObservation: scope },
         controlAuthorityFactory: terminalPushObservationControlAuthorityFactory({ state, database, storage: this.#storage,
-          observation, git: this.git(state.id), repository: this.repository(state), signal,
-          assertCurrent: () => { this.assertWritable();
+          observation, git: await this.git(state.id), repository: this.repository(state), signal,
+          assertCurrent: async () => { this.assertWritable();
             // A pending Pause lets the current model reach its safe point;
             // new turns cannot acquire tools until the user resumes.
             if (this.#shuttingDown || this.#cancellingProjects.has(state.id) ||
@@ -4047,8 +4173,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         if (typeof result.handoff === "string" && result.handoff.trim()) {
           const output = redactTrace(result.handoff);
           const handoffPath = await this.#storage.writeHandoff(state, observation.agentId, observation.invocationId, output);
-          database.recordTerminalPushObservationResult({ ...observation, output, handoffPath });
-          await this.publishProjection(state, database.projectState(state.id));
+          await database.recordTerminalPushObservationResult({ ...observation, output, handoffPath });
+          await this.publishProjection(state, (await database.projectState(state.id)));
         }
       } finally {
         const remaining = Math.max(0, (this.#activeTurns.get(state.id) ?? 1) - 1);
@@ -4060,7 +4186,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       await this.waitWhilePaused(state.id, signal);
     } catch (error) {
       if (!signal.aborted && !this.#shuttingDown && !this.#cancellingProjects.has(state.id)) {
-        database.appendEvent({ projectId: state.id, agentId: observation.agentId, invocationId: observation.invocationId,
+        await database.appendEvent({ projectId: state.id, agentId: observation.agentId, invocationId: observation.invocationId,
           requestId: `terminal-observation-failure:${observation.invocationId}`,
           type: "agent.terminal_push_observation.failed", payload: { executionId: observation.executionId,
             ownershipEpoch: observation.ownershipEpoch, error: safeRuntimeError(error) } });
@@ -4068,16 +4194,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     } finally {
       // open may fail after spawning. Only a real handle.close or the trusted
       // exact-native reconciliation can release this reservation.
-      if (handle) { await handle.close(); this.recordTerminalNativeStopped(observation, { residentClosed: true }); }
+      if (handle) { await handle.close(); await this.recordTerminalNativeStopped(observation, { residentClosed: true }); }
       else { const stopped = await this.observeTerminalNativeStop(state, observation, observation.runtimePath);
-        this.recordTerminalNativeStopped(observation, stopped.evidence); }
+        await this.recordTerminalNativeStopped(observation, stopped.evidence); }
       this.#residents.delete(key);
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
     }
   }
 
   private async drainPendingRoutes(state: ProjectState, signal: AbortSignal): Promise<boolean> {
-    const pending = this.database().pendingRoutes(state.id, 100);
+    const pending = await this.database().pendingRoutes(state.id, 100);
     if (pending.length === 0) return false;
     for (const outbox of pending) {
       if (outbox.sourceGroupRunId) {
@@ -4088,12 +4214,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ? outbox.payload.output
         : "Recovered collaboration route";
       if (outbox.targetNodeId === "finish") {
-        this.database().deliverRoute({
+        await this.database().deliverRoute({
           projectId: state.id,
           routeEmissionId: outbox.routeEmissionId,
           activationRequestId: `finish-${outbox.routeEmissionId}`
         });
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         state.status = "completed";
         state.phase = "completed";
         state.completedAt ??= new Date().toISOString();
@@ -4101,7 +4227,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         await this.saveState(state);
         continue;
       }
-      const projection = this.database().projectState(state.id);
+      const projection = await this.database().projectState(state.id);
       const existingConsumer = projection.nodeRuns.find((node) =>
         node.activationRequestId === activationRequestId
       );
@@ -4109,12 +4235,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         // The consumer activation committed before a crash but its outbox ACK
         // did not. ACK that durable fact and let normal active-run recovery
         // resume it; never create a second execution.
-        this.database().deliverRoute({
+        await this.database().deliverRoute({
           projectId: state.id,
           routeEmissionId: outbox.routeEmissionId,
           activationRequestId
         });
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         continue;
       }
       const sourceNode = projection.nodeRuns.find((node) => node.id === outbox.sourceNodeRunId);
@@ -4144,12 +4270,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           ? { sourceRouteSelectedByAgentId: outbox.selectedByAgentId }
           : {})
       }, signal, async () => {
-        this.database().deliverRoute({
+        await this.database().deliverRoute({
           projectId: state.id,
           routeEmissionId: outbox.routeEmissionId,
           activationRequestId
         });
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
       });
       return true;
     }
@@ -4198,12 +4324,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           true
         );
         if (recovered) {
-          if (this.recordStandaloneRecoverySuccess(state, stopped, recoveryOperation, recoveryStartedAt)) {
-            await this.publishProjection(state, this.database().projectState(state.id));
+          if ((await this.recordStandaloneRecoverySuccess(state, stopped, recoveryOperation, recoveryStartedAt))) {
+            await this.publishProjection(state, (await this.database().projectState(state.id)));
           }
           return;
         }
-        this.appendFailureAttempt(state, {
+        await this.appendFailureAttempt(state, {
           scope: "resident",
           operation: recoveryOperation,
           error: new Error("Stop-confirmed standalone ownership could not reopen safely"),
@@ -4220,7 +4346,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         state.status = "retrying";
         state.phase = "collaboration:resident-stopped";
         state.lastError = "Stop-confirmed standalone ownership could not reopen safely";
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         await this.saveState(state);
         return;
       }
@@ -4271,7 +4397,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         }, signal);
         return;
       }
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         scope: "resident",
         operation: `standalone.reconciliation:${projection.activeNodeRunId ?? "unknown"}`,
         error: new Error("Active collaboration ownership requires resident reconciliation"),
@@ -4283,7 +4409,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.status = "retrying";
       state.phase = "collaboration:recovery-required";
       state.lastError = "Active collaboration ownership requires resident reconciliation";
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       await this.saveState(state);
       return;
     }
@@ -4302,12 +4428,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         signal
       );
       if (recovered) {
-        if (this.recordStandaloneRecoverySuccess(state, execution, recoveryOperation, recoveryStartedAt)) {
-          await this.publishProjection(state, this.database().projectState(state.id));
+        if ((await this.recordStandaloneRecoverySuccess(state, execution, recoveryOperation, recoveryStartedAt))) {
+          await this.publishProjection(state, (await this.database().projectState(state.id)));
         }
         return;
       }
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         scope: "resident",
         operation: recoveryOperation,
         error: new Error("Resident process stop could not be proven; ownership remains fenced"),
@@ -4324,7 +4450,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.status = "retrying";
       state.phase = "collaboration:resident-stopped";
       state.lastError = "Resident process stop could not be proven; ownership remains fenced";
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       await this.saveState(state);
       return;
     }
@@ -4348,7 +4474,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         execution.waitReason ?? "Resume the retained Git operation after authorization",
         handle,
         signal,
-        this.persistedStandaloneRouteDecision(state.id, execution)
+        (await this.persistedStandaloneRouteDecision(state.id, execution))
       );
       await this.dispatchStandaloneOutcome(state, outcome, signal);
       return;
@@ -4359,7 +4485,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // assignment and losing the original completion/route bindings.
     if (state.taskCompletions?.[execution.id] && execution.output) {
       const outcome = await this.integrateStandalone(state, execution, execution.output, handle, signal,
-        this.persistedStandaloneRouteDecision(state.id, execution));
+        (await this.persistedStandaloneRouteDecision(state.id, execution)));
       await this.dispatchStandaloneOutcome(state, outcome, signal);
       return;
     }
@@ -4367,7 +4493,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       inputId: `input-${execution.id}-recovery-${execution.ownershipEpoch}-${newId("turn")}`,
       invocationId,
       prompt: `Resume the retained execution after coordinator recovery.\n\n${task?.assignment ?? execution.waitReason ?? state.requirement}`
-    }, this.executionActivityAuthority(state.id, execution));
+    }, (await this.executionActivityAuthority(state.id, execution)));
     await this.persistArtifactPublicationIntents(state, execution, result);
     const outcome = await this.integrateStandalone(
       state,
@@ -4379,17 +4505,17 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     await this.dispatchStandaloneOutcome(state, outcome, signal);
   }
 
-  private recordStandaloneRecoverySuccess(
+  private async recordStandaloneRecoverySuccess(
     state: ProjectState,
     predecessor: MemberExecution,
     operation: string,
     startedAt: string
-  ): boolean {
-    const current = this.database().projectState(state.id).executions.find((item) => item.id === predecessor.id);
+  ): Promise<boolean> {
+    const current = (await this.database().projectState(state.id)).executions.find((item) => item.id === predecessor.id);
     if (!current || current.ownershipEpoch < predecessor.ownershipEpoch) {
       throw new Error("Recovered standalone execution lost its current ownership record");
     }
-    return this.appendSuccessfulAttempt(state, {
+    return await this.appendSuccessfulAttempt(state, {
       scope: "resident",
       operation,
       startedAt,
@@ -4421,8 +4547,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   ): Promise<boolean> {
     const launcher = this.#residentLauncher;
     const durablePrelaunch = Boolean(
-      this.executionPrelaunchProtocol(state.id, predecessor)
-    ) && !this.executionLaunchStarted(state.id, predecessor);
+      (await this.executionPrelaunchProtocol(state.id, predecessor))
+    ) && !(await this.executionLaunchStarted(state.id, predecessor));
     if (!launcher || (!alreadyStopped && !durablePrelaunch &&
       (!launcher.stopForRecovery || !predecessor.invocationId))) {
       return false;
@@ -4441,18 +4567,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         `Recovered standalone pull request ${remotePull.providerNumber} is closed; refusing to reuse its execution identity`
       );
     }
-    const authorizationResume = !remotePull && this.hasRecoverableAuthorizationOutput(
+    const authorizationResume = !remotePull && (await this.hasRecoverableAuthorizationOutput(
       state.id,
       predecessor
-    );
-    let recoverySeed = database.residentRecoverySeed({
+    ));
+    let recoverySeed = await database.residentRecoverySeed({
       projectId: state.id,
       scope: "member",
       scopeId: predecessor.id,
       stoppedEpoch: predecessor.ownershipEpoch
     });
     if (!alreadyStopped && !durablePrelaunch) {
-      database.requestExecutionStop({
+      await database.requestExecutionStop({
         projectId: state.id,
         executionId: predecessor.id,
         ownershipEpoch: predecessor.ownershipEpoch,
@@ -4466,7 +4592,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state.id,
           predecessor.invocationId!
         ),
-        residentLaunchProtocol: this.executionStopProtocol(state.id, predecessor)
+        residentLaunchProtocol: await this.executionStopProtocol(state.id, predecessor)
       });
       const terminalEvidence = observation.stopped && !remotePull
         ? await this.prepareStoppedExecutionForTerminalTransition(
@@ -4477,7 +4603,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           )
         : {};
       if (observation.stopped && observation.recovery) {
-        recoverySeed = this.persistResidentRecoverySeed(observation.recovery, {
+        recoverySeed = (await this.persistResidentRecoverySeed(observation.recovery, {
           projectId: state.id,
           sourceNodeRunId: predecessor.nodeRunId,
           scope: "member",
@@ -4485,9 +4611,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           agentId: predecessor.agentId,
           harnessId: state.agents[predecessor.agentId]!.harness,
           stoppedEpoch: predecessor.ownershipEpoch
-        });
+        }));
       }
-      database.confirmExecutionStopped({
+      await database.confirmExecutionStopped({
         projectId: state.id,
         executionId: predecessor.id,
         ownershipEpoch: predecessor.ownershipEpoch,
@@ -4507,39 +4633,39 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       : newId("inv");
     let recovered = durablePrelaunch
       ? predecessor
-      : database.recoverStandaloneExecution({
+      : (await database.recoverStandaloneExecution({
           projectId: state.id,
           executionId: predecessor.id,
           predecessorOwnershipEpoch: predecessor.ownershipEpoch,
           invocationId,
           residentLaunchProtocol: "trusted-supervisor-v1",
           requestId: `restart-owner-${predecessor.id}-${predecessor.ownershipEpoch + 1}`
-        }).execution;
+        })).execution;
     await this.claimWorkerLaneWithWait(state.id, recovered, signal);
-    await this.git(state.id).sessionBegin(
+    await (await this.git(state.id)).sessionBegin(
       recovered,
       recovered.ownershipEpoch,
       { kind: "delivery", base: { kind: "main" } },
       signal
     );
     if (recovered.status === "queued") {
-      recovered = database.transitionExecutionStatus({
+      recovered = (await database.transitionExecutionStatus({
         projectId: state.id,
         executionId: recovered.id,
         ownershipEpoch: recovered.ownershipEpoch,
         status: "working",
         invocationId,
         requestId: `execution-running-${recovered.id}-${recovered.ownershipEpoch}`
-      }).execution;
+      })).execution;
     }
-    const residentAuthority = this.executionActivityAuthority(state.id, recovered);
+    const residentAuthority = await this.executionActivityAuthority(state.id, recovered);
     await this.startRuntimeActivity(state, residentAuthority, {
       kind: "resident",
       phase: "resident:starting",
       invocationId,
       requestId: `runtime-resident-start-${recovered.id}-${recovered.ownershipEpoch}`
     });
-    const projection = database.projectState(state.id);
+    const projection = await database.projectState(state.id);
     const node = projection.nodeRuns.find((item) => item.id === recovered.nodeRunId);
     const task = projection.tasks.find((item) => item.id === recovered.taskId);
     if (!node || node.node.kind !== "agent" || !task) {
@@ -4597,9 +4723,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           runtimePath
         })
       : fallback;
-    this.attachRuntimeCallbacks(state, request, recovered);
+    await this.attachRuntimeCallbacks(state, request, recovered);
     const candidates = this.workerRouteCandidates(state, recovered.agentId);
-    database.appendEvent({
+    await database.appendEvent({
       projectId: state.id,
       requestId: `execution-launch-${recovered.id}-${recovered.ownershipEpoch}`,
       workflowRevision: state.workflowRevision ?? 1,
@@ -4660,15 +4786,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       activity: { ...residentAuthority, invocationId },
       handle
     });
-    const pull = database.projectState(state.id).pullRequests.find((item) =>
+    const pull = (await database.projectState(state.id)).pullRequests.find((item) =>
       item.ownerExecutionId === recovered.id && !["closed"].includes(item.status)
     );
     let outcome: StandaloneIntegrationOutcome;
     if (pull) {
       outcome = await this.resumeStandalonePullRequest(state, recovered, pull, handle, signal);
-    } else if (authorizationResume || this.hasRecoverableAuthorizationOutput(state.id, recovered)) {
+    } else if (authorizationResume || (await this.hasRecoverableAuthorizationOutput(state.id, recovered))) {
       const writable = recovered.status === "waiting_authorization"
-        ? database.transitionExecutionStatus({
+        ? (await database.transitionExecutionStatus({
             projectId: state.id,
             executionId: recovered.id,
             ownershipEpoch: recovered.ownershipEpoch,
@@ -4676,7 +4802,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             waitReason: recovered.waitReason,
             invocationId: recovered.invocationId,
             requestId: `authorization-resume-${recovered.id}-${recovered.ownershipEpoch}`
-          }).execution
+          })).execution
         : recovered;
       outcome = await this.integrateStandalone(
         state,
@@ -4684,16 +4810,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         writable.waitReason ?? "Resume the persisted Git operation after authorization",
         handle,
         signal,
-        this.persistedStandaloneRouteDecision(state.id, writable)
+        (await this.persistedStandaloneRouteDecision(state.id, writable))
       );
     } else {
       const result = await this.submitResident(state, handle, signal, {
         inputId: `input-${recovered.id}-recovery-${recovered.ownershipEpoch}`,
         invocationId,
         prompt: `Resume this stop-confirmed execution after service recovery.\n\n${businessAssignment}`
-      }, this.executionActivityAuthority(state.id, recovered));
+      }, (await this.executionActivityAuthority(state.id, recovered)));
       await this.persistArtifactPublicationIntents(state, recovered, result);
-      const routeDecision = this.persistStandaloneRouteDecision(state, recovered, result);
+      const routeDecision = await this.persistStandaloneRouteDecision(state, recovered, result);
       outcome = await this.integrateStandalone(
         state,
         recovered,
@@ -4714,11 +4840,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     signal: AbortSignal
   ): Promise<PullRequestRecord | undefined> {
     const database = this.database();
-    const projection = database.projectState(state.id);
+    const projection = await database.projectState(state.id);
     const persisted = projection.pullRequests.find((item) =>
       item.ownerExecutionId === execution.id
     );
-    const git = this.git(state.id);
+    const git = await this.git(state.id);
     let observed: GitHubPullRequestFact | undefined;
     if (persisted) {
       observed = await git.observePullRequest({
@@ -4763,7 +4889,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         `Remote pull request ${observed.providerNumber} does not match the fenced execution head/base`
       );
     }
-    const recorded = database.observePullRequest({
+    const recorded = await database.observePullRequest({
       projectId: state.id,
       executionId: execution.id,
       ownershipEpoch: execution.ownershipEpoch,
@@ -4796,7 +4922,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // side effect. Reconcile that crash window before opening any resident;
     // beginGroup is journaled under the same stable operation id and must
     // either observe the expected ref or fail closed on divergent history.
-    const reconciledGroup = await this.git(state.id).beginGroup({
+    const reconciledGroup = await (await this.git(state.id)).beginGroup({
       repository: this.repository(state),
       groupRunId: group.id,
       baseCommit: group.baseCommit,
@@ -4808,10 +4934,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       reconciledGroup.remote.sha !== group.baseCommit) {
       throw new Error("Recovered group branch diverged from its fenced activation base");
     }
-    const observeRemoteRef = this.git(state.id).observeRemoteRef;
+    const observeRemoteRef = (await this.git(state.id)).observeRemoteRef;
     const currentGroupRef = observeRemoteRef
       ? await observeRemoteRef.call(
-          this.git(state.id),
+          (await this.git(state.id)),
           this.repository(state),
           group.groupBranch,
           signal
@@ -4834,14 +4960,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       // Obtain and persist stop evidence now, but do not advance the
       // coordinator epoch or open a new management authority until every
       // member writer below has also been observed and fenced.
-      const priorProof = this.database().coordinatorStopProof(
+      const priorProof = await this.database().coordinatorStopProof(
         state.id,
         currentGroup.id,
         currentGroup.coordinatorEpoch
       );
       const stopLeaderForRecovery = this.#residentLauncher?.stopLeaderForRecovery;
       if (!priorProof && !stopLeaderForRecovery) {
-        this.appendFailureAttempt(state, {
+        await this.appendFailureAttempt(state, {
           scope: "resident",
           operation: leaderRecoveryOperation,
           error: new Error("Active group leader lacks stop-confirm recovery"),
@@ -4861,7 +4987,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         state.status = "retrying";
         state.phase = "collaboration:group-leader-recovery-required";
         state.lastError = "Active group leader lacks stop-confirm recovery";
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         await this.saveState(state);
         return;
       }
@@ -4869,7 +4995,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ? {
             stopped: true,
             evidence: (priorProof.payload.evidence ?? {}) as Readonly<Record<string, unknown>>,
-            recovery: this.database().residentRecoverySeed({
+            recovery: await this.database().residentRecoverySeed({
               projectId: state.id,
               scope: "group-leader",
               scopeId: currentGroup.id,
@@ -4886,10 +5012,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               currentGroup.coordinatorEpoch
             ),
             executionRuntimePath: this.leaderRuntimePath(state.id, currentGroup.id),
-            residentLaunchProtocol: this.leaderLaunchProtocol(state.id, currentGroup)
+            residentLaunchProtocol: await this.leaderLaunchProtocol(state.id, currentGroup)
           });
       if (!observation.stopped) {
-        this.appendFailureAttempt(state, {
+        await this.appendFailureAttempt(state, {
           scope: "resident",
           operation: leaderRecoveryOperation,
           error: new Error("Active group leader process is not stop-confirmed"),
@@ -4910,12 +5036,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         state.status = "retrying";
         state.phase = "collaboration:group-leader-recovery-required";
         state.lastError = "Active group leader process is not stop-confirmed";
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         await this.saveState(state);
         return;
       }
       const persistedLeaderRecovery = observation.recovery
-        ? this.persistResidentRecoverySeed(observation.recovery, {
+        ? (await this.persistResidentRecoverySeed(observation.recovery, {
             projectId: state.id,
             sourceNodeRunId: currentGroup.nodeRunId,
             scope: "group-leader",
@@ -4925,10 +5051,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               currentGroup.actingCoordinatorId ?? currentGroup.leaderAgentId
             ]!.harness,
             stoppedEpoch: currentGroup.coordinatorEpoch
-          })
+          }))
         : undefined;
       if (!priorProof) {
-        this.database().confirmCoordinatorStopped({
+        await this.database().confirmCoordinatorStopped({
           projectId: state.id,
           groupRunId: currentGroup.id,
           coordinatorEpoch: currentGroup.coordinatorEpoch,
@@ -4943,12 +5069,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       };
     }
 
-    const activeExecutions = projection.executions.filter((execution) => {
+    const activeExecutions: MemberExecution[] = [];
+    for (const execution of projection.executions) {
       if (execution.groupRunId !== currentGroup.id ||
         ["succeeded", "failed", "cancelled", "superseded"].includes(execution.status)) {
-        return false;
+        continue;
       }
-      if (execution.status !== "stopped") return true;
+      if (execution.status !== "stopped") { activeExecutions.push(execution); continue; }
       const task = projection.tasks.find((item) => item.id === execution.taskId);
       const hasRemotePullBoundary = projection.pullRequests.some((pull) =>
         pull.ownerExecutionId === execution.id
@@ -4963,16 +5090,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         currentGroup,
         execution
       ) !== undefined;
-      const authorizationOutputRetry = this.hasRecoverableAuthorizationOutput(
+      const authorizationOutputRetry = await this.hasRecoverableAuthorizationOutput(
         state.id,
         execution
       );
-      return task?.status === "continuation_pending" &&
+      if (task?.status === "continuation_pending" &&
         task.currentExecutionId === execution.id &&
         (hasRemotePullBoundary || canonicalPrePullRetry || authorizationOutputRetry ||
-          this.hasExactRestartStopProvenance(state.id, execution) ||
-          this.database().executionHasResumableStopProvenance(state.id, execution.id, execution.ownershipEpoch));
-    });
+          (await this.hasExactRestartStopProvenance(state.id, execution)) ||
+          (await this.database().executionHasResumableStopProvenance(state.id, execution.id, execution.ownershipEpoch)))) activeExecutions.push(execution);
+    }
     const recoveryPlans: Array<{
       execution: MemberExecution;
       task: WorkTask | undefined;
@@ -5007,18 +5134,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         canonicalFinalRepairForExecution(projection, currentGroup, execution)
       );
       const durableCreationPrelaunch = Boolean(
-        this.executionPrelaunchProtocol(state.id, execution)
-      ) && !this.executionLaunchStarted(state.id, execution);
-      const authorizationResume = this.hasRecoverableAuthorizationOutput(
+        (await this.executionPrelaunchProtocol(state.id, execution))
+      ) && !(await this.executionLaunchStarted(state.id, execution));
+      const authorizationResume = await this.hasRecoverableAuthorizationOutput(
         state.id,
         execution
       );
       let prelaunched = !retained && !alreadyStopped && execution.status !== "stop_requested" && (
         durableCreationPrelaunch ||
-        durableCanonicalPrelaunch && !this.executionLaunchStarted(state.id, execution) ||
+        durableCanonicalPrelaunch && !(await this.executionLaunchStarted(state.id, execution)) ||
         this.#prelaunchExecutions.delete(execution.id)
       );
-      let recoverySeed = this.database().residentRecoverySeed({
+      let recoverySeed = await this.database().residentRecoverySeed({
         projectId: state.id,
         scope: "member",
         scopeId: execution.id,
@@ -5027,7 +5154,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (
         durableCanonicalPrelaunch &&
         !retained &&
-        this.executionLaunchStarted(state.id, execution)
+        (await this.executionLaunchStarted(state.id, execution))
       ) {
         const stopForRecovery = this.#residentLauncher?.stopForRecovery;
         if (!stopForRecovery || !invocationId) {
@@ -5035,7 +5162,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             `Queued canonical execution ${execution.id} has launch intent but no stop-confirm recovery`
           );
         }
-        this.database().requestExecutionStop({
+        await this.database().requestExecutionStop({
           projectId: state.id,
           executionId: execution.id,
           ownershipEpoch: execution.ownershipEpoch,
@@ -5046,7 +5173,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state: structuredClone(state),
           execution: structuredClone(execution),
           executionRuntimePath: await this.#storage.invocationRuntimePath(state.id, invocationId),
-          residentLaunchProtocol: this.executionStopProtocol(state.id, execution)
+          residentLaunchProtocol: await this.executionStopProtocol(state.id, execution)
         });
         if (!observation.stopped) {
           throw new Error(
@@ -5060,7 +5187,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           "handoff"
         );
         if (observation.stopped && observation.recovery) {
-          recoverySeed = this.persistResidentRecoverySeed(observation.recovery, {
+          recoverySeed = (await this.persistResidentRecoverySeed(observation.recovery, {
             projectId: state.id,
             sourceNodeRunId: execution.nodeRunId,
             scope: "member",
@@ -5068,9 +5195,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             agentId: execution.agentId,
             harnessId: state.agents[execution.agentId]!.harness,
             stoppedEpoch: execution.ownershipEpoch
-          });
+          }));
         }
-        this.database().confirmExecutionStopped({
+        await this.database().confirmExecutionStopped({
           projectId: state.id,
           executionId: execution.id,
           ownershipEpoch: execution.ownershipEpoch,
@@ -5081,7 +5208,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         alreadyStopped = true;
         prelaunched = false;
       }
-      const expectedBase = this.database().executionPullBase(state.id, execution.id);
+      const expectedBase = await this.database().executionPullBase(state.id, execution.id);
       const remotePull = await this.observeExecutionPullForRecovery(
         state,
         execution,
@@ -5093,7 +5220,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         if (!stopForRecovery) {
           throw new Error(`Active group execution ${execution.id} lacks stop-confirm recovery`);
         }
-        this.database().requestExecutionStop({
+        await this.database().requestExecutionStop({
           projectId: state.id,
           executionId: execution.id,
           ownershipEpoch: execution.ownershipEpoch,
@@ -5104,13 +5231,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state: structuredClone(state),
           execution: structuredClone(execution),
           executionRuntimePath: await this.#storage.invocationRuntimePath(state.id, invocationId!),
-          residentLaunchProtocol: this.executionStopProtocol(state.id, execution)
+          residentLaunchProtocol: await this.executionStopProtocol(state.id, execution)
         });
-        const stopReason = this.database().latestExecutionStopRequest(
+        const stopReason = (await this.database().latestExecutionStopRequest(
           state.id,
           execution.id,
           execution.ownershipEpoch
-        )?.payload.reason;
+        ))?.payload.reason;
         const terminalEvidence = observation.stopped &&
           ((!remotePull || remotePull.status === "closed") ||
             stopReason !== "service_restart_reconcile")
@@ -5122,7 +5249,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             )
           : {};
         if (observation.stopped && observation.recovery) {
-          recoverySeed = this.persistResidentRecoverySeed(observation.recovery, {
+          recoverySeed = (await this.persistResidentRecoverySeed(observation.recovery, {
             projectId: state.id,
             sourceNodeRunId: execution.nodeRunId,
             scope: "member",
@@ -5130,9 +5257,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             agentId: execution.agentId,
             harnessId: state.agents[execution.agentId]!.harness,
             stoppedEpoch: execution.ownershipEpoch
-          });
+          }));
         }
-        this.database().confirmExecutionStopped({
+        await this.database().confirmExecutionStopped({
           projectId: state.id,
           executionId: execution.id,
           ownershipEpoch: execution.ownershipEpoch,
@@ -5167,7 +5294,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (!leaderRecoveryObservation?.stopped) {
         throw new Error("Recovered group leader lacks durable stop confirmation");
       }
-      currentGroup = this.database().recoverCoordinatorOwnership({
+      currentGroup = (await this.database().recoverCoordinatorOwnership({
         projectId: state.id,
         groupRunId: currentGroup.id,
         expectedCoordinatorEpoch: currentGroup.coordinatorEpoch,
@@ -5181,7 +5308,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ),
         leaderRuntimePath: this.leaderRuntimePath(state.id, currentGroup.id),
         requestId: `restart-leader-${currentGroup.id}-${currentGroup.coordinatorEpoch}`
-      }).groupRun;
+      })).groupRun;
       leader = (await this.openGroupCoordinatorResident(
         state,
         currentGroup,
@@ -5190,14 +5317,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         leaderRecoveryObservation.recovery
       )).leader;
     } else {
-      this.database().claimManagementLane({
+      await this.database().claimManagementLane({
         projectId: state.id,
         groupRunId: currentGroup.id,
         agentId: currentGroup.actingCoordinatorId ?? currentGroup.leaderAgentId,
         coordinatorEpoch: currentGroup.coordinatorEpoch
       });
     }
-    if (this.appendSuccessfulAttempt(state, {
+    if ((await this.appendSuccessfulAttempt(state, {
       scope: "resident",
       operation: leaderRecoveryOperation,
       startedAt: leaderRecoveryStartedAt,
@@ -5211,8 +5338,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         currentGroup.coordinatorEpoch
       ),
       coordinatorEpoch: currentGroup.coordinatorEpoch
-    })) {
-      await this.publishProjection(state, this.database().projectState(state.id));
+    }))) {
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
     }
     const leaderEntry = this.#residents.get(leaderKey);
     this.#residents.set(leaderKey, {
@@ -5227,12 +5354,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // first resumed turn then fails for real, the untouched peers remain
     // healthy survivors instead of being mistaken for an all-members failure.
     for (const plan of recoveryPlans) {
-      const current = this.database().projectState(state.id).executions.find((candidate) =>
+      const current = (await this.database().projectState(state.id)).executions.find((candidate) =>
         candidate.id === plan.execution.id
       );
       if (current?.status === "stopped" &&
-        this.hasExactRestartStopProvenance(state.id, current)) {
-        this.database().restoreRestartStoppedMemberEligibility({
+        (await this.hasExactRestartStopProvenance(state.id, current))) {
+        await this.database().restoreRestartStoppedMemberEligibility({
           projectId: state.id,
           groupRunId: currentGroup.id,
           executionId: current.id,
@@ -5245,17 +5372,19 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // may need one of those healthy-but-busy members after its current writer
     // settles; treating temporary busyness as all-members-failed deadlocks the
     // same oldest recovery plan on every restart.
-    const recoveryPriority = (plan: (typeof recoveryPlans)[number]): number => {
+    const recoveryPriority = async (plan: (typeof recoveryPlans)[number]): Promise<number> => {
       if (plan.retained || plan.prelaunched) return 0;
       if (plan.execution.status !== "stopped") return 1;
-      const stopReason = this.database().latestExecutionStopRequest(
+      const stopReason = (await this.database().latestExecutionStopRequest(
         state.id,
         plan.execution.id,
         plan.execution.ownershipEpoch
-      )?.payload.reason;
+      ))?.payload.reason;
       return stopReason === "service_restart_reconcile" ? 1 : 2;
     };
-    recoveryPlans.sort((left, right) => recoveryPriority(left) - recoveryPriority(right));
+    const priorities = new Map<(typeof recoveryPlans)[number], number>();
+    for (const plan of recoveryPlans) priorities.set(plan, await recoveryPriority(plan));
+    recoveryPlans.sort((left, right) => priorities.get(left)! - priorities.get(right)!);
     for (const plan of recoveryPlans) {
       const {
         execution,
@@ -5266,12 +5395,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         remotePull,
         recoverySeed
       } = plan;
-      const recoveryStopReason = this.database().latestExecutionStopRequest(
+      const recoveryStopReason = (await this.database().latestExecutionStopRequest(
         state.id,
         execution.id,
         execution.ownershipEpoch
-      )?.payload.reason;
-      const resumableStop = this.database().executionHasResumableStopProvenance(
+      ))?.payload.reason;
+      const resumableStop = await this.database().executionHasResumableStopProvenance(
         state.id, execution.id, execution.ownershipEpoch
       );
       // A provider observation is input for the original Agent. Even a
@@ -5290,7 +5419,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             currentGroup,
             execution,
             `Resume the retained group pull after coordinator recovery.\n\n${task?.assignment ?? execution.waitReason ?? "Complete the assigned group task."}`,
-            this.database().executionPullBase(state.id, execution.id),
+            (await this.database().executionPullBase(state.id, execution.id)),
             signal,
             retained,
             undefined,
@@ -5307,13 +5436,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               settled.id
             );
             if (continued === "fault-paused") return;
-            if (continued === "idle" && this.database().projectState(state.id).groupRuns.some((candidate) =>
+            if (continued === "idle" && (await this.database().projectState(state.id)).groupRuns.some((candidate) =>
               candidate.id === currentGroup.id && candidate.status === "paused"
             )) return;
           }
           continue;
         }
-        await this.git(state.id).sessionBegin(
+        await (await this.git(state.id)).sessionBegin(
           execution,
           execution.ownershipEpoch,
           execution.purpose === "final-integration"
@@ -5326,7 +5455,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           currentGroup,
           execution,
           `Resume the retained group execution after coordinator recovery.\n\n${task?.assignment ?? execution.waitReason ?? "Complete the assigned group task."}`,
-          this.database().executionPullBase(state.id, execution.id),
+          (await this.database().executionPullBase(state.id, execution.id)),
           signal,
           retained,
           undefined,
@@ -5342,7 +5471,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             settled.id
           );
           if (continued === "fault-paused") return;
-          if (continued === "idle" && this.database().projectState(state.id).groupRuns.some((candidate) =>
+          if (continued === "idle" && (await this.database().projectState(state.id)).groupRuns.some((candidate) =>
             candidate.id === currentGroup.id && candidate.status === "paused"
           )) return;
         }
@@ -5350,7 +5479,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       if (prelaunched) {
         await this.claimWorkerLaneWithWait(state.id, execution, signal);
-        await this.git(state.id).sessionBegin(
+        await (await this.git(state.id)).sessionBegin(
           execution,
           execution.ownershipEpoch,
           execution.purpose === "final-integration"
@@ -5363,7 +5492,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           currentGroup,
           execution,
           `Resume durable prelaunch task ownership at epoch ${execution.ownershipEpoch}.\n\n${task?.assignment ?? execution.waitReason ?? "Complete the recovered group task."}`,
-          this.database().executionPullBase(state.id, execution.id),
+          (await this.database().executionPullBase(state.id, execution.id)),
           signal,
           undefined,
           undefined,
@@ -5383,7 +5512,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             settled.id
           );
           if (continued === "fault-paused") return;
-          if (continued === "idle" && this.database().projectState(state.id).groupRuns.some((candidate) =>
+          if (continued === "idle" && (await this.database().projectState(state.id)).groupRuns.some((candidate) =>
             candidate.id === currentGroup.id && candidate.status === "paused"
           )) return;
         }
@@ -5395,7 +5524,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           "inv",
           `restart-authorization:${execution.id}:${execution.ownershipEpoch + 1}`
         );
-        const recovered = this.database().recoverGroupExecution({
+        const recovered = (await this.database().recoverGroupExecution({
           projectId: state.id,
           groupRunId: currentGroup.id,
           executionId: execution.id,
@@ -5403,9 +5532,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           invocationId,
           residentLaunchProtocol: "trusted-supervisor-v1",
           requestId: `restart-authorization-${execution.id}-${execution.ownershipEpoch + 1}`
-        }).execution;
+        })).execution;
         await this.claimWorkerLaneWithWait(state.id, recovered, signal);
-        await this.git(state.id).sessionBegin(
+        await (await this.git(state.id)).sessionBegin(
           recovered,
           recovered.ownershipEpoch,
           recovered.purpose === "final-integration"
@@ -5417,14 +5546,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state,
           currentGroup,
           recovered,
-          this.groupMemberAssignment(
+          (await this.groupMemberAssignment(
             state,
             currentGroup,
             recovered,
             task?.assignment ?? "Resume the persisted Git operation after authorization.",
             `Authorization output recovery at ownership epoch ${recovered.ownershipEpoch}`
-          ),
-          this.database().executionPullBase(state.id, recovered.id),
+          )),
+          (await this.database().executionPullBase(state.id, recovered.id)),
           signal,
           undefined,
           recoverySeed,
@@ -5440,7 +5569,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             settled.id
           );
           if (continued === "fault-paused") return;
-          if (continued === "idle" && this.database().projectState(state.id).groupRuns.some((candidate) =>
+          if (continued === "idle" && (await this.database().projectState(state.id)).groupRuns.some((candidate) =>
             candidate.id === currentGroup.id && candidate.status === "paused"
           )) return;
         }
@@ -5448,7 +5577,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       if (!remotePull && (recoveryStopReason === "service_restart_reconcile" || resumableStop) &&
         canonicalFinalRepairForExecution(
-          this.database().projectState(state.id),
+          (await this.database().projectState(state.id)),
           currentGroup,
           execution
       )) {
@@ -5456,7 +5585,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           "inv",
           `restart-canonical-final:${execution.id}:${execution.ownershipEpoch + 1}`
         );
-        const recovered = this.database().recoverCanonicalFinalRetry({
+        const recovered = (await this.database().recoverCanonicalFinalRetry({
           projectId: state.id,
           groupRunId: currentGroup.id,
           executionId: execution.id,
@@ -5464,9 +5593,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           invocationId,
           residentLaunchProtocol: "trusted-supervisor-v1",
           requestId: `restart-canonical-final-${execution.id}-${execution.ownershipEpoch + 1}`
-        }).execution;
+        })).execution;
         await this.claimWorkerLaneWithWait(state.id, recovered, signal);
-        await this.git(state.id).sessionBegin(
+        await (await this.git(state.id)).sessionBegin(
           recovered,
           recovered.ownershipEpoch,
           { kind: "final-integration", groupRunId: currentGroup.id },
@@ -5476,13 +5605,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state,
           currentGroup,
           recovered,
-          this.groupMemberAssignment(
+          (await this.groupMemberAssignment(
             state,
             currentGroup,
             recovered,
             task?.assignment ?? "Publish the repaired group branch to main.",
             `Canonical pre-PR restart recovery at ownership epoch ${recovered.ownershipEpoch}`
-          ),
+          )),
           "main",
           signal,
           undefined,
@@ -5499,17 +5628,17 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             settled.id
           );
           if (continued === "fault-paused") return;
-          if (continued === "idle" && this.database().projectState(state.id).groupRuns.some((candidate) =>
+          if (continued === "idle" && (await this.database().projectState(state.id)).groupRuns.some((candidate) =>
             candidate.id === currentGroup.id && candidate.status === "paused"
           )) return;
         }
         continue;
       }
       if (!remotePull && (recoveryStopReason === "service_restart_reconcile" || resumableStop) &&
-        !this.database().legacyV1FinalRepairRequiresFreshHandoff(
+        !(await this.database().legacyV1FinalRepairRequiresFreshHandoff(
           state.id,
           execution.id
-        )) {
+        ))) {
         // Restart or an explicitly resumed mechanical Stop retains the exact
         // Agent, task and checkout. The Agent continues its own work/tools;
         // the system must not turn this lifecycle into a business handoff.
@@ -5517,7 +5646,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           "inv",
           `restart-no-remote:${execution.id}:${execution.ownershipEpoch + 1}`
         );
-        const recovered = this.database().recoverGroupExecution({
+        const recovered = (await this.database().recoverGroupExecution({
           projectId: state.id,
           groupRunId: currentGroup.id,
           executionId: execution.id,
@@ -5525,9 +5654,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           invocationId,
           residentLaunchProtocol: "trusted-supervisor-v1",
           requestId: `restart-no-remote-${execution.id}-${execution.ownershipEpoch + 1}`
-        }).execution;
+        })).execution;
         await this.claimWorkerLaneWithWait(state.id, recovered, signal);
-        await this.git(state.id).sessionBegin(
+        await (await this.git(state.id)).sessionBegin(
           recovered,
           recovered.ownershipEpoch,
           recovered.purpose === "final-integration"
@@ -5539,14 +5668,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state,
           currentGroup,
           recovered,
-          this.groupMemberAssignment(
+          (await this.groupMemberAssignment(
             state,
             currentGroup,
             recovered,
             task?.assignment ?? "Resume the exact pre-PR execution after service recovery.",
             `Pre-PR ${resumableStop ? "explicit Stop/Resume" : "service-restart"} recovery at ownership epoch ${recovered.ownershipEpoch}`
-          ),
-          this.database().executionPullBase(state.id, recovered.id),
+          )),
+          (await this.database().executionPullBase(state.id, recovered.id)),
           signal,
           undefined,
           recoverySeed
@@ -5561,7 +5690,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             settled.id
           );
           if (continued === "fault-paused") return;
-          if (continued === "idle" && this.database().projectState(state.id).groupRuns.some((candidate) =>
+          if (continued === "idle" && (await this.database().projectState(state.id)).groupRuns.some((candidate) =>
             candidate.id === currentGroup.id && candidate.status === "paused"
           )) return;
         }
@@ -5579,10 +5708,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         );
         if (continued === "progressed") continue;
         if (continued === "fault-paused") return;
-        if (this.database().projectState(state.id).groupRuns.some((candidate) =>
+        if ((await this.database().projectState(state.id)).groupRuns.some((candidate) =>
           candidate.id === currentGroup.id && candidate.status === "paused"
         )) return;
-        if (this.groupHasHealthyBusyMember(state.id, currentGroup)) continue;
+        if ((await this.groupHasHealthyBusyMember(state.id, currentGroup))) continue;
         throw new Error(`Remote pull execution ${execution.id} could not reopen at a fresh epoch`);
       }
       const continued = await this.resumeContinuationTask(
@@ -5596,15 +5725,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       );
       if (continued === "fault-paused") return;
       if (continued === "idle") {
-        if (this.database().projectState(state.id).groupRuns.some((candidate) =>
+        if ((await this.database().projectState(state.id)).groupRuns.some((candidate) =>
           candidate.id === currentGroup.id && candidate.status === "paused"
         )) return;
-        if (this.groupHasHealthyBusyMember(state.id, currentGroup)) continue;
+        if ((await this.groupHasHealthyBusyMember(state.id, currentGroup))) continue;
         throw new Error(`Active group execution ${execution.id} could not advance to a fresh epoch`);
       }
     }
 
-    let refreshed = this.database().projectState(state.id);
+    let refreshed = await this.database().projectState(state.id);
     let refreshedGroup = refreshed.groupRuns.find((item) => item.id === currentGroup.id) ?? currentGroup;
     const tasks = refreshed.tasks.filter((task) => task.groupRunId === currentGroup.id);
     if (tasks.length === 0 && !refreshedGroup.integrationOwnerExecutionId) {
@@ -5619,7 +5748,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         .find((candidate) => candidate.tool === "assign_group_tasks");
       if (!action) throw new Error("Recovered group leader did not assign its first task batch");
       await this.commitGroupAssignments(state, refreshedGroup, action);
-      refreshed = this.database().projectState(state.id);
+      refreshed = (await this.database().projectState(state.id));
       refreshedGroup = refreshed.groupRuns.find((item) => item.id === currentGroup.id) ?? refreshedGroup;
     }
     await this.continueGroupRun(
@@ -5639,19 +5768,19 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   ): Promise<string> {
     const completed = await this.completeAgentOwnedExecution(state, execution,
       execution.waitReason ?? execution.output ?? "Resume retained group delivery", resident, signal,
-      this.database().executionPullBase(state.id, execution.id), undefined, pull);
-    await this.publishProjection(state, this.database().projectState(state.id));
+      (await this.database().executionPullBase(state.id, execution.id)), undefined, pull);
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     return completed.output;
   }
 
-  private groupHasHealthyBusyMember(projectId: string, group: GroupRun): boolean {
+  private async groupHasHealthyBusyMember(projectId: string, group: GroupRun): Promise<boolean> {
     const database = this.database();
-    const projection = database.projectState(projectId);
+    const projection = await database.projectState(projectId);
     const activeAgents = new Set(projection.executions
       .filter((execution) => execution.groupRunId === group.id &&
         !["succeeded", "failed", "cancelled", "stopped", "superseded"].includes(execution.status))
       .map((execution) => execution.agentId));
-    const healthy = new Set(database.eligibleDeliveryMembers(projectId, group.id));
+    const healthy = new Set((await database.eligibleDeliveryMembers(projectId, group.id)));
     return group.memberSnapshot.some((agentId) =>
       agentId !== group.leaderAgentId && healthy.has(agentId) && activeAgents.has(agentId)
     );
@@ -5680,12 +5809,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ? { sourceRouteSelectedByAgentId: next.selectedByAgentId }
         : {})
     }, signal, async () => {
-      this.database().deliverRoute({
+      await this.database().deliverRoute({
         projectId: state.id,
         routeEmissionId: next.routeEmissionId,
         activationRequestId: `route-${next.routeEmissionId}`
       });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
     });
   }
 
@@ -5701,7 +5830,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const reopened = state.phase === "collaboration:reopened";
     await this.applyWaitingWorkflowAdjustments(state);
     if (initialProjectInput) {
-      const projection = this.database().projectState(state.id);
+      const projection = await this.database().projectState(state.id);
       if (!projection.nodeRuns.some(node => node.activationRequestId === input.activationRequestId) &&
         !projection.scopedGroupActivationPreparations?.some(record => record.input.activationRequestId === input.activationRequestId))
         nodeId = reopened ? "main" : state.orchestration.input.target;
@@ -5711,7 +5840,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const database = this.database();
     const enteredLoop = state.orchestration.loops?.find((loop) => loop.to === nodeId);
     if (enteredLoop && input.sourceNodeRunId) {
-      const source = database.projectState(state.id).nodeRuns.find((item) => item.id === input.sourceNodeRunId);
+      const source = (await database.projectState(state.id)).nodeRuns.find((item) => item.id === input.sourceNodeRunId);
       if (source && source.node.nodeId !== enteredLoop.from) {
         state.loopIterations = { ...(state.loopIterations ?? {}), [enteredLoop.id]: 0 };
         await this.saveState(state);
@@ -5719,7 +5848,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     if (node.kind === "collaboration") {
       if (state.orchestration.schemaVersion === 3) {
-        const scoped = this.scopedRuntime(state, signal);
+        const scoped = await this.scopedRuntime(state, signal);
         const activated = await scoped.activate({ projectId: state.id,
           groupRunId: stableRuntimeId("group", input.activationRequestId), groupId: node.groupId,
           activationRequestId: input.activationRequestId, workflowRevision: state.workflowRevision ?? 1,
@@ -5733,7 +5862,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       return;
     }
     const nodeRunId = stableRuntimeId("node", input.activationRequestId);
-    const activated = database.activateNode({
+    const activated = await database.activateNode({
       projectId: state.id,
       nodeRunId,
       node,
@@ -5764,7 +5893,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const worktreePath = executionWorktreePath(
       this.#storage.projectDir(state.id), state.orchestration, node.agentId, executionId
     );
-    const started = database.startStandaloneExecution({
+    const started = await database.startStandaloneExecution({
       projectId: state.id,
       nodeRunId: activated.nodeRun.id,
       taskId,
@@ -5779,22 +5908,22 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     });
     let execution = started.execution;
     await this.claimWorkerLaneWithWait(state.id, execution, signal);
-    const git = this.git(state.id);
+    const git = await this.git(state.id);
     await git.sessionBegin(execution, execution.ownershipEpoch, {
       kind: "delivery",
       base: { kind: "main" }
     });
     if (execution.status === "queued") {
-      execution = database.transitionExecutionStatus({
+      execution = (await database.transitionExecutionStatus({
         projectId: state.id,
         executionId: execution.id,
         ownershipEpoch: execution.ownershipEpoch,
         status: "working",
         invocationId,
         requestId: `execution-running-${execution.id}-${execution.ownershipEpoch}`
-      }).execution;
+      })).execution;
     }
-    const residentAuthority = this.executionActivityAuthority(state.id, execution);
+    const residentAuthority = await this.executionActivityAuthority(state.id, execution);
     await this.startRuntimeActivity(state, residentAuthority, {
       kind: "resident",
       phase: "resident:starting",
@@ -5853,10 +5982,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           runtimePath: executionRuntimePath
         })
       : fallbackRequest;
-    this.attachRuntimeCallbacks(state, request, execution);
+    await this.attachRuntimeCallbacks(state, request, execution);
     const launcher = this.#residentLauncher;
     if (!launcher) throw new Error("The trusted collaboration resident launcher is unavailable");
-    this.database().appendEvent({
+    await this.database().appendEvent({
       projectId: state.id,
       requestId: `execution-launch-${execution.id}-${execution.ownershipEpoch}`,
       workflowRevision: state.workflowRevision ?? 1,
@@ -5919,9 +6048,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         inputId: `input-${executionId}-1`,
         invocationId,
         prompt: businessAssignment
-      }, this.executionActivityAuthority(state.id, execution));
+      }, (await this.executionActivityAuthority(state.id, execution)));
       await this.persistArtifactPublicationIntents(state, execution, result);
-      const routeDecision = this.persistStandaloneRouteDecision(state, execution, result);
+      const routeDecision = await this.persistStandaloneRouteDecision(state, execution, result);
       // A completed turn only advances to the Git gate. S remains the sole
       // authority that can mark the execution/node successful.
       const outcome = await this.integrateStandalone(
@@ -5950,12 +6079,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             ? { sourceRouteSelectedByAgentId: next.selectedByAgentId }
             : {})
         }, signal, async () => {
-          this.database().deliverRoute({
+          await this.database().deliverRoute({
             projectId: state.id,
             routeEmissionId: next.routeEmissionId,
             activationRequestId: `route-${next.routeEmissionId}`
           });
-          await this.publishProjection(state, this.database().projectState(state.id));
+          await this.publishProjection(state, (await this.database().projectState(state.id)));
         });
       }
     } finally {
@@ -5975,7 +6104,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const edges = workflowRoutesForAgent(state.orchestration, nodeRun.node.nodeId);
     const candidates = [...new Set([
       ...edges.map((edge) => edge.target),
-      ...(this.mainCanComplete(state) ? ["finish" as const] : [])
+      ...((await this.mainCanComplete(state)) ? ["finish" as const] : [])
     ])];
     const routeAttemptStartedAt = nowIso();
     const routeAttemptOperation = `main-route.decision:${nodeRun.id}`;
@@ -5991,7 +6120,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       decision?.intervention !== undefined ||
       Boolean(decision && candidates.includes(decision.targetNodeId));
     if (validRouteDecision) {
-      this.appendSuccessfulAttempt(state, {
+      await this.appendSuccessfulAttempt(state, {
         scope: "scheduler",
         operation: routeAttemptOperation,
         startedAt: routeAttemptStartedAt,
@@ -6000,12 +6129,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         nodeRunId: nodeRun.id,
         metadata: { sourceAgentId, candidateCount: candidates.length }
       });
+      state.lastError = undefined;
     }
     if (decision?.decisionAction?.tool === "apply_workflow") {
       const routeEmissionId = `route-${nodeRun.id}-workflow-${state.workflowRevision ?? 1}`;
       const output = decision.output?.trim() ||
         `Workflow reconfigured: ${decision.decisionAction.rationale}`;
-      database.completeManagementNode({
+      await database.completeManagementNode({
         projectId: state.id,
         nodeRunId: nodeRun.id,
         output,
@@ -6018,7 +6148,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         },
         requestId: `main-node-workflow-${nodeRun.id}-${state.workflowRevision ?? 1}`
       });
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
       await this.activateAndRunNode(state, "main", {
         activationRequestId: `route-${routeEmissionId}`,
         inputSnapshotRef: `workflow:${state.workflowRevision ?? 1}`,
@@ -6028,12 +6158,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         sourceAgentId: "main",
         sourceRouteKind: "weak"
       }, signal, async () => {
-        database.deliverRoute({
+        await database.deliverRoute({
           projectId: state.id,
           routeEmissionId,
           activationRequestId: `route-${routeEmissionId}`
         });
-        await this.publishProjection(state, database.projectState(state.id));
+        await this.publishProjection(state, (await database.projectState(state.id)));
       });
       return;
     }
@@ -6053,7 +6183,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         requestedInvocationId: decision.decisionRequestId,
         requestKind: "main"
       };
-      database.appendEvent({
+      await database.appendEvent({
         projectId: state.id,
         eventId: `evt_${interventionId}`,
         requestId: `intervention-${interventionId}`,
@@ -6071,12 +6201,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.status = "retrying";
       state.phase = "user-intervention-required";
       state.lastError = undefined;
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
       await this.saveState(state);
       return;
     }
     if (!decision || !candidates.includes(decision.targetNodeId)) {
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         scope: "scheduler",
         operation: routeAttemptOperation,
         error: new Error("Main management node awaits a fenced route or completion decision"),
@@ -6093,10 +6223,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           ...(decision ? { selectedTarget: decision.targetNodeId } : {})
         }
       });
-      state.status = "retrying";
+      state.status = "running";
       state.phase = "collaboration:main-route-required";
       state.lastError = "Main management node awaits a fenced route or completion decision";
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
       await this.saveState(state);
       return;
     }
@@ -6111,7 +6241,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           decisionRequestId: decision.decisionRequestId
         };
     const routeEmissionId = `route-${nodeRun.id}`;
-    database.completeManagementNode({
+    await database.completeManagementNode({
       projectId: state.id,
       nodeRunId: nodeRun.id,
       output: managementOutput,
@@ -6119,14 +6249,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       route,
       requestId: `main-node-complete-${nodeRun.id}`
     });
-    await this.publishProjection(state, database.projectState(state.id));
+    await this.publishProjection(state, (await database.projectState(state.id)));
     if (decision.targetNodeId === "finish") {
-      database.deliverRoute({
+      await database.deliverRoute({
         projectId: state.id,
         routeEmissionId,
         activationRequestId: `finish-${routeEmissionId}`
       });
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
       state.status = "completed";
       state.phase = "completed";
       state.completedAt = new Date().toISOString();
@@ -6146,12 +6276,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ? { sourceRouteSelectedByAgentId: route.selectedByAgentId }
         : {})
     }, signal, async () => {
-      database.deliverRoute({
+      await database.deliverRoute({
         projectId: state.id,
         routeEmissionId,
         activationRequestId: `route-${routeEmissionId}`
       });
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
     });
   }
 
@@ -6180,9 +6310,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       requestedInvocationId: receiptCoordination?.managerInvocationId ?? decisionRequestId,
       requestKind: "main"
     };
-    const node = this.database().projectState(state.id).nodeRuns
+    const node = (await this.database().projectState(state.id)).nodeRuns
       .find((item) => item.id === nodeRunId);
-    this.database().appendEvent({
+    await this.database().appendEvent({
       projectId: state.id,
       eventId: `evt_${interventionId}`,
       requestId: `intervention-${interventionId}`,
@@ -6201,7 +6331,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     state.status = "retrying";
     state.phase = "user-intervention-required";
     state.lastError = undefined;
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     await this.saveState(state);
   }
 
@@ -6218,11 +6348,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       .find((group) => group.id === node.groupId);
     if (!groupDefinition) throw new Error(`Unknown collaboration group ${node.groupId}`);
     const database = this.database();
-    const git = this.git(state.id);
+    const git = await this.git(state.id);
     const nodeRunId = stableRuntimeId("node", input.activationRequestId);
     const groupRunId = stableRuntimeId("group", input.activationRequestId);
     const groupBranch = `groups/${groupRunId}`;
-    const baseCommit = this.mainHead(state);
+    const baseCommit = await this.mainHead(state);
     const initialLeaderInvocationId = groupLeaderInvocationId(state.id, groupRunId, 1);
     const initialLeaderRuntimePath = this.leaderRuntimePath(state.id, groupRunId);
     const activationOrigin = groupActivationOrigin(input);
@@ -6232,7 +6362,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (input.activatedByAgentId !== activationLeader) {
       throw new Error("Group activation actor does not match its durable activation origin");
     }
-    const activated = database.activateGroup({
+    const activated = await database.activateGroup({
       projectId: state.id,
       nodeRunId,
       groupRunId,
@@ -6260,7 +6390,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       signal
     });
     this.#branchHeads.set(`${state.id}:${groupBranch}`, baseCommit);
-    await this.publishProjection(state, database.projectState(state.id));
+    await this.publishProjection(state, (await database.projectState(state.id)));
     // The branch operation may finish after a user Pause has settled.
     while (this.#pausedProjects.has(state.id)) await this.waitWhilePaused(state.id, signal);
     state.status = "running";
@@ -6286,7 +6416,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       const assignmentAction = plan.controlActions
         ?.map((envelope) => envelope.action)
         .find((action) => action.tool === "assign_group_tasks");
-      if (!assignmentAction || assignmentAction.groupRunId !== groupRunId ||
+      if (!assignmentAction) return;
+      if (assignmentAction.groupRunId !== groupRunId ||
         assignmentAction.coordinatorEpoch !== activated.groupRun.coordinatorEpoch) {
         throw new Error("Group leader did not commit a fenced assign_group_tasks action");
       }
@@ -6322,7 +6453,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     signal: AbortSignal
   ): Promise<void> {
     const database = this.database();
-    const group = database.projectState(state.id).groupRuns.find((item) => item.id === groupRunId);
+    const group = (await database.projectState(state.id)).groupRuns.find((item) => item.id === groupRunId);
     if (!group || group.actingCoordinatorId !== "main") {
       throw new Error("Failed collaboration leader was not fenced before Main substitution");
     }
@@ -6332,7 +6463,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       assignment,
       signal
     );
-    if (!database.projectState(state.id).tasks.some((task) => task.groupRunId === groupRunId)) {
+    if (!(await database.projectState(state.id)).tasks.some((task) => task.groupRunId === groupRunId)) {
       const plan = await this.submitGroupLeader(state, group, leader, signal, {
         inputId: `input-${groupRunId}-substitute-plan-${group.coordinatorEpoch}`,
         invocationId,
@@ -6400,7 +6531,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       group.coordinatorEpoch
     );
     const runtimePath = this.leaderRuntimePath(state.id, group.id);
-    const priorLaunch = this.database().latestGroupLeaderLaunch(
+    const priorLaunch = await this.database().latestGroupLeaderLaunch(
       state.id, group.id, coordinator, group.coordinatorEpoch
     );
     // Recovery preserves the Agent's working context; it must not move a
@@ -6416,7 +6547,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // This durable protocol fact precedes every async preparation and the
     // launcher call. A missing resident claim is safe only for this exact
     // epoch: trusted-supervisor-v1 creates its claim before any process spawn.
-    this.database().appendEvent({
+    await this.database().appendEvent({
       projectId: state.id,
       requestId: `group-leader-launch-${group.id}-${group.coordinatorEpoch}`,
       workflowRevision: priorLaunch?.coordinatorEpoch === group.coordinatorEpoch ? priorLaunch.workflowRevision : state.workflowRevision ?? 1,
@@ -6433,7 +6564,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         managementWorkspaceName
       }
     });
-    this.database().claimManagementLane({
+    await this.database().claimManagementLane({
       projectId: state.id,
       groupRunId: group.id,
       agentId: coordinator,
@@ -6496,8 +6627,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           runtimePath
         })
       : fallback;
-    this.attachRuntimeCallbacks(state, request);
-    Object.assign(inputs, await prepareWorkflowContext(request, inputs, this.database().authoritativeWorkflowFiles(state.id)));
+    await this.attachRuntimeCallbacks(state, request);
+    Object.assign(inputs, await prepareWorkflowContext(request, inputs, (await this.database().authoritativeWorkflowFiles(state.id))));
     const leader = await this.#residentLauncher!.open({
       request,
       executionRuntimePath: runtimePath,
@@ -6547,7 +6678,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       .update(JSON.stringify(action.tasks.map((task) => task.taskId)))
       .digest("hex")
       .slice(0, 20);
-    this.database().assignTasks({
+    await this.database().assignTasks({
       projectId: state.id,
       groupRunId: group.id,
       actorAgentId: coordinator,
@@ -6560,7 +6691,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       })),
       requestId: `assign-${group.id}-${taskFingerprint}`
     });
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
   }
 
   private async continueGroupRun(
@@ -6574,22 +6705,22 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   ): Promise<void> {
     const database = this.database();
     const coordinator = group.actingCoordinatorId ?? group.leaderAgentId;
-    let currentGroup = database.projectState(state.id).groupRuns.find((item) => item.id === group.id) ?? group;
+    let currentGroup = (await database.projectState(state.id)).groupRuns.find((item) => item.id === group.id) ?? group;
     let finalExecution = currentGroup.integrationOwnerExecutionId
-      ? database.projectState(state.id).executions.find((item) =>
+      ? (await database.projectState(state.id)).executions.find((item) =>
           item.id === currentGroup.integrationOwnerExecutionId
         )
       : undefined;
     let finalOutput = finalExecution?.output;
     const retainedFinalPull = finalExecution
-      ? database.projectState(state.id).pullRequests.find((pull) =>
+      ? (await database.projectState(state.id)).pullRequests.find((pull) =>
           pull.ownerExecutionId === finalExecution!.id
         )
       : undefined;
     const migratedLegacyDirectMain = Boolean(
       finalExecution && retainedFinalPull &&
       finalExecution.executionBranch !== currentGroup.groupBranch &&
-      database.executionPullBase(state.id, finalExecution.id) === currentGroup.integrationTarget &&
+      (await database.executionPullBase(state.id, finalExecution.id)) === currentGroup.integrationTarget &&
       currentGroup.finalPullRequestId === retainedFinalPull.id &&
       retainedFinalPull.status === "merged" &&
       retainedFinalPull.head === finalExecution.executionBranch &&
@@ -6606,7 +6737,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       finalExecution.executionBranch !== currentGroup.groupBranch &&
       !migratedLegacyDirectMain
     ) {
-      const repairTask = database.projectState(state.id).tasks.find((task) =>
+      const repairTask = (await database.projectState(state.id)).tasks.find((task) =>
         task.id === finalExecution!.taskId
       );
       const canonicalRetry = await this.runCanonicalFinalRetryAfterRepair(
@@ -6628,7 +6759,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           undefined,
           finalExecution.id
         )) !== "progressed") return;
-        const afterCanonicalRecovery = database.projectState(state.id);
+        const afterCanonicalRecovery = await database.projectState(state.id);
         const afterCanonicalGroup = afterCanonicalRecovery.groupRuns.find((item) =>
           item.id === group.id
         );
@@ -6637,7 +6768,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ) ?? finalExecution;
       }
       finalOutput = finalExecution.output;
-      currentGroup = database.projectState(state.id).groupRuns.find((item) =>
+      currentGroup = (await database.projectState(state.id)).groupRuns.find((item) =>
         item.id === group.id
       ) ?? currentGroup;
     }
@@ -6646,16 +6777,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       // Derive the next durable input identity from committed assignment
       // batches. A coordinator restart after round N must not reuse round 1
       // and accidentally replay an older native/session turn.
-      let managementRound = database.groupTaskAssignmentCount(state.id, group.id);
+      let managementRound = await database.groupTaskAssignmentCount(state.id, group.id);
       let integrationAction: Extract<ControlAction, { tool: "request_group_integration" }> | undefined;
       while (!signal.aborted && !integrationAction) {
         while (!signal.aborted) {
-          const groupTasks = database.projectState(state.id).tasks
+          const groupTasks = (await database.projectState(state.id)).tasks
             .filter((task) => task.groupRunId === group.id);
           if (groupTasks.length > 0 && groupTasks.every((task) =>
             ["succeeded", "failed", "cancelled"].includes(task.status)
           )) break;
-          const attempts = await Promise.allSettled(groupDefinition.memberAgentIds.map((agentId) =>
+          const attempts = await Promise.allSettled(groupDefinition.memberAgentIds.map(async (agentId) =>
             this.runGroupMemberOnce(state, currentGroup, agentId, signal)
           ));
           const held = attempts.find((attempt) => attempt.status === "rejected" &&
@@ -6663,14 +6794,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           const rejected = attempts.find((attempt) => attempt.status === "rejected" &&
             !(attempt.reason instanceof CollaborationStateError && attempt.reason.code === "WORKFLOW_ADJUSTMENT_PENDING"));
           if (rejected?.status === "rejected") throw rejected.reason;
-          const latestGroup = database.projectState(state.id).groupRuns
+          const latestGroup = (await database.projectState(state.id)).groupRuns
             .find((item) => item.id === group.id);
           if (latestGroup?.status === "paused") {
             state.status = "retrying";
             state.phase = latestGroup.pauseReason === "all_members_failed"
               ? "collaboration:all-members-failed"
               : "collaboration:group-paused";
-            await this.publishProjection(state, database.projectState(state.id));
+            await this.publishProjection(state, (await database.projectState(state.id)));
             await this.saveState(state);
             return;
           }
@@ -6684,11 +6815,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             // may already have accepted a new intent and changed the group to
             // running; only the replacement run may act on that intent.
             if (continuation === "fault-paused") return;
-            const afterContinuation = database.projectState(state.id).groupRuns
+            const afterContinuation = (await database.projectState(state.id)).groupRuns
               .find((item) => item.id === group.id);
             if (afterContinuation?.status === "paused") return;
             if (held?.status === "rejected") throw held.reason;
-            const blocked = database.projectState(state.id).tasks
+            const blocked = (await database.projectState(state.id)).tasks
               .filter((task) => task.groupRunId === group.id &&
                 !["succeeded", "failed", "cancelled"].includes(task.status));
             throw new Error(
@@ -6698,11 +6829,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         }
         managementRound += 1;
         const invocationId = newId("inv");
-        const currentBatch = new Set(database.latestGroupAssignmentTaskIds(state.id, group.id));
+        const currentBatch = new Set((await database.latestGroupAssignmentTaskIds(state.id, group.id)));
         const result = await this.submitGroupLeader(state, currentGroup, leader, signal, {
           inputId: `input-${group.id}-post-delivery-${managementRound}`,
           invocationId,
-          prompt: workflowMessagesText(database.projectState(state.id).executions
+          prompt: workflowMessagesText((await database.projectState(state.id)).executions
             .filter(execution => execution.groupRunId === group.id && currentBatch.has(execution.taskId) && execution.output !== undefined && execution.status === "succeeded")
             .map(execution => ({ sender: execution.agentId, body: execution.output! })))
         });
@@ -6710,9 +6841,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           ?.map((envelope) => envelope.action)
           .find((candidate) => candidate.tool === "assign_group_tasks" ||
             candidate.tool === "request_group_integration");
-        if (!action) {
-          throw new Error("Group leader did not assign more work or request final integration");
-        }
+        if (!action) return;
         if (action.tool === "assign_group_tasks") {
           await this.commitGroupAssignments(state, currentGroup, action);
           continue;
@@ -6734,7 +6863,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       );
       const finalInvocationId = stableRuntimeId("inv", `final:${group.id}:${finalExecutionId}`);
       await this.applyWaitingWorkflowAdjustments(state);
-      const final = database.startFinalIntegration({
+      const final = await database.startFinalIntegration({
         projectId: state.id,
         groupRunId: group.id,
         actorAgentId: coordinator,
@@ -6751,11 +6880,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       });
       finalExecution = final.execution;
       await this.claimWorkerLaneWithWait(state.id, finalExecution, signal);
-      await this.git(state.id).sessionBegin(finalExecution, finalExecution.ownershipEpoch, {
+      await (await this.git(state.id)).sessionBegin(finalExecution, finalExecution.ownershipEpoch, {
         kind: "final-integration",
         groupRunId: group.id
       }, signal);
-      const finalAssignment = this.groupMemberAssignment(
+      const finalAssignment = await this.groupMemberAssignment(
         state,
         currentGroup,
         finalExecution,
@@ -6772,7 +6901,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       );
       finalOutput = finalExecution.output;
       if (finalExecution.status !== "succeeded") {
-        let recoveredProjection = database.projectState(state.id);
+        let recoveredProjection = await database.projectState(state.id);
         let recoveredGroup = recoveredProjection.groupRuns.find((item) => item.id === group.id);
         finalExecution = recoveredProjection.executions.find((item) =>
           item.id === recoveredGroup?.integrationOwnerExecutionId
@@ -6784,7 +6913,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           if ((await this.resumeContinuationTask(state, currentGroup, leader, signal)) !== "progressed") {
             return;
           }
-          recoveredProjection = database.projectState(state.id);
+          recoveredProjection = (await database.projectState(state.id));
           recoveredGroup = recoveredProjection.groupRuns.find((item) => item.id === group.id);
           finalExecution = recoveredProjection.executions.find((item) =>
             item.id === recoveredGroup?.integrationOwnerExecutionId
@@ -6792,11 +6921,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         }
         finalOutput = finalExecution.output;
       }
-      currentGroup = database.projectState(state.id).groupRuns.find((item) => item.id === group.id) ?? currentGroup;
+      currentGroup = (await database.projectState(state.id)).groupRuns.find((item) => item.id === group.id) ?? currentGroup;
     }
 
     if (!finalExecution || finalExecution.status !== "succeeded") {
-      finalExecution = database.projectState(state.id).executions.find((item) =>
+      finalExecution = (await database.projectState(state.id)).executions.find((item) =>
         item.id === currentGroup.integrationOwnerExecutionId
       );
     }
@@ -6804,7 +6933,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       throw new Error("Recovered group final integration is not terminal");
     }
     finalOutput ??= finalExecution.output ?? "Final integration completed";
-    currentGroup = database.projectState(state.id).groupRuns
+    currentGroup = (await database.projectState(state.id)).groupRuns
       .find((item) => item.id === group.id) ?? currentGroup;
     let completionOutput = currentGroup.leaderDecision === "complete"
       ? currentGroup.output
@@ -6819,12 +6948,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       const completionAction = completion.controlActions
         ?.map((envelope) => envelope.action)
         .find((action) => action.tool === "complete_group");
-      if (!completionAction || completionAction.groupRunId !== group.id ||
+      if (!completionAction) return;
+      if (completionAction.groupRunId !== group.id ||
         completionAction.coordinatorEpoch !== currentGroup.coordinatorEpoch) {
         throw new Error("Group leader did not commit a fenced complete_group action");
       }
       completionOutput = completionAction.output;
-      database.decideGroupCompletion({
+      await database.decideGroupCompletion({
         projectId: state.id,
         groupRunId: group.id,
         actorAgentId: coordinator,
@@ -6880,7 +7010,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     const routeEmissionId = `route-${currentGroup.nodeRunId}`;
     this.#residents.delete(leaderKey);
-    database.completeGroup({
+    await database.completeGroup({
       projectId: state.id,
       groupRunId: group.id,
       nodeRunId: currentGroup.nodeRunId,
@@ -6890,14 +7020,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       requestId: `group-complete-${group.id}`
     });
     await this.releaseCompletedGroupWorktree(state, group.id, signal);
-    await this.publishProjection(state, database.projectState(state.id));
+    await this.publishProjection(state, (await database.projectState(state.id)));
     if (target === "finish") {
-      database.deliverRoute({
+      await database.deliverRoute({
         projectId: state.id,
         routeEmissionId,
         activationRequestId: `finish-${routeEmissionId}`
       });
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
       state.status = "completed";
       state.phase = "completed";
       state.completedAt = new Date().toISOString();
@@ -6918,12 +7048,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ? { sourceRouteSelectedByAgentId: route.selectedByAgentId }
         : {})
     }, signal, async () => {
-      database.deliverRoute({
+      await database.deliverRoute({
         projectId: state.id,
         routeEmissionId,
         activationRequestId: `route-${routeEmissionId}`
       });
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
     });
   }
 
@@ -6932,9 +7062,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     groupRunId: string,
     signal: AbortSignal
   ): Promise<void> {
-    const release = this.git(state.id).releaseFinalIntegrationWorktree;
+    const release = (await this.git(state.id)).releaseFinalIntegrationWorktree;
     if (!release) return;
-    const projection = this.database().projectState(state.id);
+    const projection = await this.database().projectState(state.id);
     const group = projection.groupRuns.find((item) => item.id === groupRunId);
     if (!group || group.status !== "completed" || !group.integrationOwnerExecutionId) return;
     const execution = projection.executions.find((item) =>
@@ -6944,7 +7074,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     );
     if (!execution) return;
     await release.call(
-      this.git(state.id),
+      (await this.git(state.id)),
       execution,
       execution.ownershipEpoch,
       signal
@@ -6963,12 +7093,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const database = this.database();
     let target = targetPredecessorExecutionId;
     let chainTaskId = target
-      ? database.projectState(state.id).executions.find((item) => item.id === target)?.taskId
+      ? (await database.projectState(state.id)).executions.find((item) => item.id === target)?.taskId
       : undefined;
     let progressed = false;
     const transitionLimit = Math.max(8, group.memberSnapshot.length * 4);
     for (let transition = 0; transition < transitionLimit; transition += 1) {
-      const projection = database.projectState(state.id);
+      const projection = await database.projectState(state.id);
       group = projection.groupRuns.find((item) => item.id === group.id) ?? group;
       const task = projection.tasks.find((item) =>
         item.groupRunId === group.id && item.status === "continuation_pending" &&
@@ -6980,16 +7110,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         : undefined;
 
       if (!task || !predecessor || predecessor.status !== "stopped") {
-        const repair = group.integrationOwnerExecutionId
-          ? projection.executions.find((item) =>
-              item.id === group.integrationOwnerExecutionId &&
-              item.purpose === "final-integration" &&
-              item.status === "succeeded" &&
-              (!chainTaskId || item.taskId === chainTaskId) &&
-              item.executionBranch !== group.groupBranch &&
-              database.executionPullBase(state.id, item.id) === group.groupBranch
-            )
-          : undefined;
+        let repair: MemberExecution | undefined;
+        for (const item of projection.executions) {
+          if (item.id === group.integrationOwnerExecutionId && item.purpose === "final-integration" && item.status === "succeeded" &&
+            (!chainTaskId || item.taskId === chainTaskId) && item.executionBranch !== group.groupBranch &&
+            await database.executionPullBase(state.id, item.id) === group.groupBranch) { repair = item; break; }
+        }
         if (!repair) return progressed ? "progressed" : "idle";
         const repairTask = projection.tasks.find((item) => item.id === repair.taskId);
         const canonical = await this.runCanonicalFinalRetryAfterRepair(
@@ -7008,21 +7134,21 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       chainTaskId ??= task.id;
 
-      const expectedBase = database.executionPullBase(state.id, predecessor.id);
+      const expectedBase = await database.executionPullBase(state.id, predecessor.id);
       let remotePull = await this.observeExecutionPullForRecovery(
         state,
         predecessor,
         expectedBase,
         new AbortController().signal
       );
-      const stopReason = database.latestExecutionStopRequest(
+      const stopReason = (await database.latestExecutionStopRequest(
         state.id,
         predecessor.id,
         predecessor.ownershipEpoch
-      )?.payload.reason;
+      ))?.payload.reason;
       let coordinationRequestId: string | undefined;
       if (remotePull && remotePull.status !== "closed" && stopReason !== "service_restart_reconcile" &&
-        !database.executionHasResumableStopProvenance(state.id, predecessor.id, predecessor.ownershipEpoch)) {
+        !(await database.executionHasResumableStopProvenance(state.id, predecessor.id, predecessor.ownershipEpoch))) {
         // Wait for all business writers to settle before waking management.
         // Preserve the PR: only the actual Leader can decide to resume its
         // original Agent, using the existing assignment/handoff protocol.
@@ -7053,7 +7179,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       if (remotePull && remotePull.status !== "closed") {
         const invocationId = newId("inv");
-        const recovered = database.recoverGroupExecution({
+        const recovered = (await database.recoverGroupExecution({
           projectId: state.id,
           groupRunId: group.id,
           executionId: predecessor.id,
@@ -7062,9 +7188,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           ...(coordinationRequestId ? { coordinationRequestId } : {}),
           residentLaunchProtocol: "trusted-supervisor-v1",
           requestId: `restart-owner-${predecessor.id}-${predecessor.ownershipEpoch + 1}`
-        }).execution;
+        })).execution;
         await this.claimWorkerLaneWithWait(state.id, recovered, signal);
-        await this.git(state.id).sessionBegin(
+        await (await this.git(state.id)).sessionBegin(
           recovered,
           recovered.ownershipEpoch,
           recovered.purpose === "final-integration"
@@ -7072,7 +7198,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             : { kind: "delivery", base: { kind: "group", groupRunId: group.id } },
           signal
         );
-        const pull = database.projectState(state.id).pullRequests.find((item) =>
+        const pull = (await database.projectState(state.id)).pullRequests.find((item) =>
           item.ownerExecutionId === recovered.id
         );
         if (!pull) throw new Error(`Recovered execution ${recovered.id} lost its remote pull fact`);
@@ -7080,13 +7206,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state,
           group,
           recovered,
-          this.groupMemberAssignment(
+          (await this.groupMemberAssignment(
             state,
             group,
             recovered,
-            database.projectState(state.id).tasks.find((item) => item.id === task.id)?.assignment ?? task.assignment,
+            (await database.projectState(state.id)).tasks.find((item) => item.id === task.id)?.assignment ?? task.assignment,
             `${coordinationRequestId ? "Leader-authorized original Agent continuation" : "Remote pull reconciliation"} at ownership epoch ${recovered.ownershipEpoch}`
-          ),
+          )),
           expectedBase,
           signal,
           undefined,
@@ -7100,11 +7226,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         continue;
       }
 
-      const activeAgents = new Set(database.projectState(state.id).executions
+      const activeAgents = new Set((await database.projectState(state.id)).executions
         .filter((execution) => execution.groupRunId === group.id &&
           !["succeeded", "failed", "cancelled", "stopped", "superseded"].includes(execution.status))
         .map((execution) => execution.agentId));
-      const stateEligible = new Set(database.eligibleDeliveryMembers(state.id, group.id));
+      const stateEligible = new Set((await database.eligibleDeliveryMembers(state.id, group.id)));
       const healthyAgents = group.memberSnapshot.filter((candidate) =>
         candidate !== group.leaderAgentId &&
         stateEligible.has(candidate)
@@ -7116,18 +7242,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         // until that writer settles instead of falsely declaring all members
         // failed (which S correctly rejects while a healthy member remains).
         if (healthyAgents.length !== 0) return "idle";
-        database.pauseAllMembersFailed({
+        await database.pauseAllMembersFailed({
           projectId: state.id,
           groupRunId: group.id,
           actorAgentId: coordinator,
           coordinatorEpoch: group.coordinatorEpoch,
           requestId: `all-members-failed-${group.id}-${group.coordinatorEpoch}`
         });
-        await this.publishProjection(state, database.projectState(state.id));
+        await this.publishProjection(state, (await database.projectState(state.id)));
         // Publication yields to lifecycle requests. A durable Resume/Cancel
         // accepted in that interval owns the newer state, even before save.
         if (await this.cancellationIsDurable(state.id) || state.pauseRequest ||
-          database.projectState(state.id).groupRuns.find(item => item.id === group.id)?.status !== "paused") return "fault-paused";
+          (await database.projectState(state.id)).groupRuns.find(item => item.id === group.id)?.status !== "paused") return "fault-paused";
         state.status = "retrying";
         state.phase = "collaboration:all-members-failed";
         state.lastError = undefined;
@@ -7162,7 +7288,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
 
       if (predecessor.purpose === "final-integration" && candidate !== predecessor.agentId) {
-        const git = this.git(state.id);
+        const git = await this.git(state.id);
         const release = git.releaseFailedFinalIntegrationWorktree ??
           git.releaseFinalIntegrationWorktree;
         if (!release) {
@@ -7171,7 +7297,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         await release.call(git, predecessor, predecessor.ownershipEpoch, signal);
       }
       if (candidate === predecessor.agentId) {
-        const recovered = database.recoverGroupExecution({
+        const recovered = (await database.recoverGroupExecution({
           projectId: state.id,
           groupRunId: group.id,
           executionId: predecessor.id,
@@ -7180,15 +7306,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           coordinationRequestId: acceptedGroupControlIdentity(state.id, group.nodeRunId, group, arrangementInput).requestId,
           residentLaunchProtocol: "trusted-supervisor-v1",
           requestId: `original-owner-${predecessor.id}-${predecessor.ownershipEpoch + 1}`
-        }).execution;
+        })).execution;
         await this.claimWorkerLaneWithWait(state.id, recovered, signal);
-        await this.git(state.id).sessionBegin(recovered, recovered.ownershipEpoch,
+        await (await this.git(state.id)).sessionBegin(recovered, recovered.ownershipEpoch,
           recovered.purpose === "final-integration"
             ? { kind: "final-integration", groupRunId: group.id }
             : { kind: "delivery", base: { kind: "group", groupRunId: group.id } }, signal);
         const settled = await this.runGroupExecutionWithRecovery(state, group, recovered,
-          this.groupMemberAssignment(state, group, recovered, arrangedTask.assignment,
-            `Leader-authorized original Agent continuation at ownership epoch ${recovered.ownershipEpoch}`),
+          (await this.groupMemberAssignment(state, group, recovered, arrangedTask.assignment,
+            `Leader-authorized original Agent continuation at ownership epoch ${recovered.ownershipEpoch}`)),
           expectedBase, signal, undefined, recoverySeed, resumeAfterAuthorization);
         progressed = true;
         target = settled.status === "stopped" ? settled.id : undefined;
@@ -7208,13 +7334,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         this.#storage.projectDir(state.id), state.orchestration,
         candidate, successorExecutionId
       );
-      const retainedCheckpoint = database.latestExecutionTerminalPreparation(
+      const retainedCheckpoint = (await database.latestExecutionTerminalPreparation(
         state.id,
         predecessor.id,
         predecessor.ownershipEpoch,
         "handoff"
-      )?.payload.checkpointCommit;
-      const successor = database.handoffExecution({
+      ))?.payload.checkpointCommit;
+      const successor = (await database.handoffExecution({
         projectId: state.id,
         groupRunId: group.id,
         taskId: task.id,
@@ -7229,9 +7355,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         actorAgentId: coordinator,
         coordinatorEpoch: group.coordinatorEpoch,
         requestId: `continue-${predecessor.id}-${predecessor.ownershipEpoch + 1}`
-      }).successor;
+      })).successor;
       await this.claimWorkerLaneWithWait(state.id, successor, signal);
-      await this.git(state.id).sessionBegin(
+      await (await this.git(state.id)).sessionBegin(
         successor,
         successor.ownershipEpoch,
         predecessor.purpose === "final-integration"
@@ -7245,14 +7371,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         state,
         group,
         successor,
-        this.groupMemberAssignment(
+        (await this.groupMemberAssignment(
           state,
           group,
           successor,
           task.assignment,
           `Leader-arranged stop-confirmed continuation at ownership epoch ${successor.ownershipEpoch}`
-        ),
-        database.executionPullBase(state.id, successor.id),
+        )),
+        (await database.executionPullBase(state.id, successor.id)),
         signal,
         undefined,
         undefined,
@@ -7274,28 +7400,28 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     signal: AbortSignal
   ): Promise<MemberExecution | undefined> {
     const coordinator = group.actingCoordinatorId ?? group.leaderAgentId;
-    const projection = this.database().projectState(state.id);
+    const projection = await this.database().projectState(state.id);
     const activeAgents = new Set(projection.executions
       .filter((execution) => execution.groupRunId === group.id &&
         !["succeeded", "failed", "cancelled", "stopped", "superseded"].includes(execution.status))
       .map((execution) => execution.agentId));
-    const stateEligible = new Set(this.database().eligibleDeliveryMembers(state.id, group.id));
+    const stateEligible = new Set((await this.database().eligibleDeliveryMembers(state.id, group.id)));
     const eligibleAgents = group.memberSnapshot.filter((candidate) =>
       candidate !== group.leaderAgentId &&
       !activeAgents.has(candidate) &&
       stateEligible.has(candidate)
     );
     if (eligibleAgents.length === 0) {
-      this.database().pauseAllMembersFailed({
+      await this.database().pauseAllMembersFailed({
         projectId: state.id,
         groupRunId: group.id,
         actorAgentId: coordinator,
         coordinatorEpoch: group.coordinatorEpoch,
         requestId: `all-members-failed-after-repair-${group.id}-${repair.id}`
       });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       if (await this.cancellationIsDurable(state.id) || state.pauseRequest ||
-        this.database().projectState(state.id).groupRuns.find(item => item.id === group.id)?.status !== "paused") return undefined;
+        (await this.database().projectState(state.id)).groupRuns.find(item => item.id === group.id)?.status !== "paused") return undefined;
       state.status = "retrying";
       state.phase = "collaboration:all-members-failed";
       state.lastError = undefined;
@@ -7337,7 +7463,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       "inv",
       `canonical-final:${repair.id}:${repair.ownershipEpoch + 1}`
     );
-    const canonical = this.database().startCanonicalFinalRetry({
+    const canonical = (await this.database().startCanonicalFinalRetry({
       projectId: state.id,
       groupRunId: group.id,
       repairExecutionId: repair.id,
@@ -7354,9 +7480,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       actorAgentId: coordinator,
       coordinatorEpoch: group.coordinatorEpoch,
       requestId: `canonical-final-${repair.id}-${repair.ownershipEpoch + 1}`
-    }).execution;
+    })).execution;
     await this.claimWorkerLaneWithWait(state.id, canonical, signal);
-    await this.git(state.id).sessionBegin(
+    await (await this.git(state.id)).sessionBegin(
       canonical,
       canonical.ownershipEpoch,
       { kind: "final-integration", groupRunId: group.id },
@@ -7366,20 +7492,20 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state,
       group,
       canonical,
-      this.groupMemberAssignment(
+      (await this.groupMemberAssignment(
         state,
         group,
         canonical,
         assignment,
         `Canonical group-to-main retry after repair ${repair.id}`
-      ),
+      )),
       "main",
       signal,
       undefined,
       undefined,
       true
     );
-    return this.database().projectState(state.id).executions.find((execution) =>
+    return (await this.database().projectState(state.id)).executions.find((execution) =>
       execution.id === canonical.id
     ) ?? settled;
   }
@@ -7393,13 +7519,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     await this.applyWaitingWorkflowAdjustments(state);
     const database = this.database();
     if (signal.aborted) return false;
-    const workerLane = database.laneAvailability(state.id).find((lane) => lane.lane === "worker");
+    const workerLane = (await database.laneAvailability(state.id)).find((lane) => lane.lane === "worker");
     if (!workerLane || workerLane.available < 1) return false;
     const executionId = `execution-${newId("run")}`;
     const worktreePath = executionWorktreePath(
       this.#storage.projectDir(state.id), state.orchestration, agentId, executionId
     );
-    const claimed = database.claimNextTask({
+    const claimed = await database.claimNextTask({
         projectId: state.id,
         groupRunId: group.id,
         agentId,
@@ -7412,7 +7538,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       });
     if (!claimed) return false;
     await this.claimWorkerLaneWithWait(state.id, claimed.execution, signal);
-    await this.git(state.id).sessionBegin(
+    await (await this.git(state.id)).sessionBegin(
       claimed.execution,
       claimed.execution.ownershipEpoch,
       { kind: "delivery", base: { kind: "group", groupRunId: group.id } },
@@ -7422,13 +7548,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state,
       group,
       claimed.execution,
-      this.groupMemberAssignment(
+      (await this.groupMemberAssignment(
         state,
         group,
         claimed.execution,
         claimed.task.assignment,
         "Preclaimed by the trusted FIFO scheduler; complete only this assignment"
-      ),
+      )),
       group.groupBranch,
       signal
     );
@@ -7442,11 +7568,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   ): Promise<void> {
     const database = this.database();
     const reason = safeRuntimeError(cause);
-    const current = database.projectState(state.id).executions.find((item) => item.id === failed.id);
+    const current = (await database.projectState(state.id)).executions.find((item) => item.id === failed.id);
     if (!current || ["succeeded", "failed", "cancelled", "stopped", "superseded"].includes(current.status)) {
       throw cause;
     }
-    this.appendFailureAttempt(state, {
+    await this.appendFailureAttempt(state, {
       attemptId: durableAttemptId("execution-failure", [
         state.id,
         failed.id,
@@ -7464,7 +7590,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       ownershipEpoch: failed.ownershipEpoch,
       metadata: { executionStatus: current.status, purpose: failed.purpose }
     });
-    database.requestExecutionStop({
+    await database.requestExecutionStop({
       projectId: state.id,
       executionId: failed.id,
       ownershipEpoch: failed.ownershipEpoch,
@@ -7477,7 +7603,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       try {
         await residentEntry.handle.close();
       } catch (closeError) {
-        database.confirmExecutionStopped({
+        await database.confirmExecutionStopped({
           projectId: state.id,
           executionId: failed.id,
           ownershipEpoch: failed.ownershipEpoch,
@@ -7492,7 +7618,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     } else {
       const stopForRecovery = this.#residentLauncher?.stopForRecovery;
       if (!stopForRecovery || !failed.invocationId ||
-        !this.executionLaunchStarted(state.id, failed)) {
+        !(await this.executionLaunchStarted(state.id, failed))) {
         throw new Error(`Failed execution ${failed.id} has no resident stop authority`, { cause });
       }
       const observation = await stopForRecovery({
@@ -7502,10 +7628,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           state.id,
           failed.invocationId
         ),
-        residentLaunchProtocol: this.executionStopProtocol(state.id, failed)
+        residentLaunchProtocol: await this.executionStopProtocol(state.id, failed)
       });
       if (!observation.stopped) {
-        database.confirmExecutionStopped({
+        await database.confirmExecutionStopped({
           projectId: state.id,
           executionId: failed.id,
           ownershipEpoch: failed.ownershipEpoch,
@@ -7517,7 +7643,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       residentStopEvidence = observation.evidence;
     }
-    const residentActivity = residentEntry?.activity ?? database.projectState(state.id)
+    const residentActivity = residentEntry?.activity ?? (await database.projectState(state.id))
       .runtimeActivities.find((activity) =>
         activity.kind === "resident" && activity.executionId === failed.id &&
         activity.ownershipEpoch === failed.ownershipEpoch
@@ -7539,7 +7665,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const observedPull = await this.observeExecutionPullForRecovery(
       state,
       failed,
-      database.executionPullBase(state.id, failed.id),
+      (await database.executionPullBase(state.id, failed.id)),
       new AbortController().signal
     );
     const terminalEvidence = await this.prepareStoppedExecutionForTerminalTransition(
@@ -7548,7 +7674,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       reason,
       "handoff"
     );
-    database.confirmExecutionStopped({
+    await database.confirmExecutionStopped({
       projectId: state.id,
       executionId: failed.id,
       ownershipEpoch: failed.ownershipEpoch,
@@ -7563,7 +7689,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // Stop proof and remote observations only preserve the failed owner's
     // facts. The original Agent must process them and explicitly finish;
     // the service cannot complete a task merely because its PR was merged.
-    await this.publishProjection(state, database.projectState(state.id));
+    await this.publishProjection(state, (await database.projectState(state.id)));
   }
 
   /**
@@ -7597,7 +7723,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         resumeAfterAuthorization,
         recoveredPull
       );
-      if (this.resolveOperationFailures(
+      if ((await this.resolveOperationFailures(
         state,
         `task:${execution.taskId}`,
         execution.startedAt ?? nowIso(),
@@ -7611,8 +7737,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           ...(execution.invocationId ? { invocationId: execution.invocationId } : {}),
           ownershipEpoch: execution.ownershipEpoch
         }
-      )) {
-        await this.publishProjection(state, this.database().projectState(state.id));
+      ))) {
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
       }
     } catch (error) {
       if (error instanceof ResidentRetainedWaitError ||
@@ -7623,19 +7749,19 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       await this.recoverFailedGroupExecution(state, execution, error);
     }
-    return this.database().projectState(state.id).executions.find((candidate) =>
+    return (await this.database().projectState(state.id)).executions.find((candidate) =>
       candidate.id === execution.id
     ) ?? execution;
   }
 
-  private groupMemberAssignment(
+  private async groupMemberAssignment(
     state: ProjectState,
     group: GroupRun,
     execution: MemberExecution,
     assignment: string,
     phase: string
-  ): string {
-    const projection = this.database().projectState(state.id);
+  ): Promise<string> {
+    const projection = await this.database().projectState(state.id);
     const current = projection.tasks.find(task => task.id === execution.taskId);
     const messages = [{ sender: group.actingCoordinatorId ?? group.leaderAgentId,
       body: current?.assignment ?? assignment }];
@@ -7654,7 +7780,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   ): Promise<void> {
     while (!signal.aborted) {
       try {
-        this.database().claimWorkerLane({
+        await this.database().claimWorkerLane({
           projectId,
           executionId: execution.id,
           ownershipEpoch: execution.ownershipEpoch
@@ -7687,12 +7813,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
   }
 
-  private executionActivityAuthority(
+  private async executionActivityAuthority(
     projectId: string,
     execution: MemberExecution
-  ): RuntimeActivityAuthority {
+  ): Promise<RuntimeActivityAuthority> {
     const group = execution.groupRunId
-      ? this.database().projectState(projectId).groupRuns
+      ? (await this.database().projectState(projectId)).groupRuns
           .find((candidate) => candidate.id === execution.groupRunId)
       : undefined;
     if (execution.groupRunId && !group) {
@@ -7729,7 +7855,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       requestId: string;
     }
   ): Promise<void> {
-    this.database().startRuntimeActivity({
+    await this.database().startRuntimeActivity({
       projectId: state.id,
       ...authority,
       ...input
@@ -7738,13 +7864,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // pure projection directly; state.json waits for the next compatibility
     // publication so sibling member launches are never serialized by file I/O.
     const runtime = deriveProjectRuntimeProjection(
-      this.database().projectState(state.id),
+      (await this.database().projectState(state.id)),
       state
     );
     state.runtime = runtime;
     await publishAuthoritativeWorkflowFiles(
       this.#storage.projectDir(state.id),
-      this.database().authoritativeWorkflowFiles(state.id),
+      (await this.database().authoritativeWorkflowFiles(state.id)),
       () => this.assertWritable()
     );
     this.assertWritable();
@@ -7761,7 +7887,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       requestId: string;
     }
   ): Promise<void> {
-    this.database().closeRuntimeActivity({
+    await this.database().closeRuntimeActivity({
       projectId: state.id,
       kind: input.kind,
       invocationId: input.invocationId,
@@ -7778,13 +7904,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       requestId: input.requestId
     });
     const runtime = deriveProjectRuntimeProjection(
-      this.database().projectState(state.id),
+      (await this.database().projectState(state.id)),
       state
     );
     state.runtime = runtime;
     await publishAuthoritativeWorkflowFiles(
       this.#storage.projectDir(state.id),
-      this.database().authoritativeWorkflowFiles(state.id),
+      (await this.database().authoritativeWorkflowFiles(state.id)),
       () => this.assertWritable()
     );
     this.assertWritable();
@@ -7797,13 +7923,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   ): Promise<AgentRunResult> {
     let status: "completed" | "incomplete" = "incomplete";
     try {
-      const notice = this.latestFailureNotice(state);
+      const notice = await this.latestFailureNotice(state);
       const result = await resident.submit(notice ? { ...turn, prompt: `${notice}\n\n${turn.prompt}` } : turn);
       status = "completed";
       return result;
     } finally {
-      await this.#invocationDispatcher?.finish?.(state, turn.invocationId, status);
+      await this.finishInvocationDiagnostics(state, turn.invocationId, status);
     }
+  }
+
+  private async finishInvocationDiagnostics(state: ProjectState, invocationId: string, status: "completed" | "incomplete"): Promise<void> {
+    try { await this.#invocationDispatcher?.finish?.(state, invocationId, status); }
+    catch (error) { console.warn(`Invocation diagnostics were not saved (${invocationId}): ${supervisionError(error)}`); }
   }
 
   private async submitResident(
@@ -7829,23 +7960,23 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       this.#activeResidentTurns.add(turnKey);
       let nativeStatus: "completed" | "incomplete" = "incomplete";
       try {
-        const notice = this.latestFailureNotice(state, authority);
+        const notice = await this.latestFailureNotice(state, authority);
         result = await resident.submit(notice ? { ...input, prompt: `${notice}\n\n${input.prompt}` } : input);
         nativeStatus = "completed";
       } finally {
         // Metrics persistence must not extend a returned turn's tool authority.
         this.#activeResidentTurns.delete(turnKey);
-        await this.#invocationDispatcher?.finish?.(state, input.invocationId, nativeStatus);
+        await this.finishInvocationDiagnostics(state, input.invocationId, nativeStatus);
       }
       if (authority.executionId && authority.ownershipEpoch !== undefined && typeof result.handoff === "string") {
         // Persist only the Agent's actual output before acknowledging a safe
         // Pause. A later shutdown may abort the orchestration wait; it must
         // not discard this return or fabricate accepted business actions.
-        this.database().recordExecutionOutput({ projectId: state.id,
+        await this.database().recordExecutionOutput({ projectId: state.id,
           executionId: authority.executionId, ownershipEpoch: authority.ownershipEpoch,
           agentId: authority.agentId, inputId: input.inputId, invocationId: input.invocationId,
           output: result.handoff });
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
       }
       outcome = "completed";
     } finally {
@@ -7868,6 +7999,55 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   }
 
   private async submitGroupLeader(
+    state: ProjectState, group: GroupRun, resident: CollaborationResidentHandle, signal: AbortSignal,
+    input: { inputId: string; invocationId: string; prompt: string }
+  ): Promise<AgentRunResult> {
+    const database = this.database(), coordinator = group.actingCoordinatorId ?? group.leaderAgentId;
+    const identity = acceptedGroupControlIdentity(state.id, group.nodeRunId, group, input);
+    const completionKey = groupTaskCompletionKey(group, input.inputId);
+    const accepted = async () => await database.acceptedGroupControlAction({ projectId: state.id, requestId: identity.requestId,
+      nodeRunId: group.nodeRunId, groupRunId: group.id, coordinatorEpoch: group.coordinatorEpoch,
+      actorAgentId: coordinator, inputId: input.inputId, semanticInputHash: identity.semanticInputHash });
+    const completed = async () => Boolean((await database.eventByRequestId(state.id, groupTaskCompletionRequestId(completionKey))));
+    const prior = await accepted();
+    if (prior && (await database.eventByRequestId(state.id, `group-round-complete-${identity.semanticInputHash}`))) return acceptedGroupControlResult(prior);
+    const initial = (await database.groupControlRepairCount(state.id, group.id, coordinator)) >= MAX_TASK_REPAIR_WAKEUPS
+      ? prior ? acceptedGroupControlResult(prior) : { handoff: "No formal group decision was supplied" }
+      : await this.submitGroupLeaderTurn(state, group, resident, signal, input);
+    const supervised = await superviseTask({ key: `${state.id}:group:${group.id}:${input.inputId}`, value: initial, signal,
+      inspect: async () => [!(await accepted()) && "formal group control decision", !(await completed()) && "finish_task",
+        ...await resident.supervisionActions?.() ?? []].filter((item): item is string => Boolean(item)),
+      reserve: async missing => {
+        await this.waitWhilePaused(state.id, signal); signal.throwIfAborted();
+        const count = await database.groupControlRepairCount(state.id, group.id, coordinator);
+        if (count >= MAX_TASK_REPAIR_WAKEUPS || resident.closed) return undefined;
+        await database.appendEvent({ projectId: state.id, groupRunId: group.id, nodeRunId: group.nodeRunId, agentId: coordinator,
+          coordinatorEpoch: group.coordinatorEpoch, requestId: `group-control-repair-${group.id}-${identity.semanticInputHash}-${count + 1}`,
+          type: "group.control.mechanism_repair.requested", payload: { attempt: count + 1, inputId: input.inputId, missing,
+            semanticInputHash: identity.semanticInputHash } });
+        return count + 1;
+      },
+      invoke: async attempt => this.submitGroupLeaderTurn(state, group, resident, signal, { ...input, invocationId: newId("inv") }, attempt),
+      record: async (outcome, missing, reason) => {
+        await database.appendEvent({ projectId: state.id, groupRunId: group.id, nodeRunId: group.nodeRunId, agentId: coordinator,
+          coordinatorEpoch: group.coordinatorEpoch,
+          type: "group.control.supervision.finished", payload: { inputId: input.inputId, outcome, missing, ...(reason ? { reason } : {}) } });
+      }
+    });
+    const decision = await accepted();
+    if (decision) {
+      await database.appendEvent({ projectId: state.id, groupRunId: group.id, nodeRunId: group.nodeRunId,
+        agentId: coordinator, coordinatorEpoch: group.coordinatorEpoch,
+        requestId: `group-round-complete-${identity.semanticInputHash}`, type: "group.control.round.completed",
+        payload: { inputId: input.inputId, completionKey, acceptedRequestId: identity.requestId } });
+      return { ...acceptedGroupControlResult(decision), handoff: supervisionHandoff(supervised.value.handoff ?? "", supervised) };
+    }
+    const entry = [...this.#residents].find(([, value]) => value.projectId === state.id && value.handle === resident);
+    if (entry) await this.closeResidentForTerminal(state, entry[0], resident);
+    return { ...supervised.value, handoff: supervisionHandoff(supervised.value.handoff ?? "", supervised) };
+  }
+
+  private async submitGroupLeaderTurn(
     state: ProjectState,
     group: GroupRun,
     resident: CollaborationResidentHandle,
@@ -7884,8 +8064,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       group,
       input
     );
-    const accepted = (): AcceptedGroupControlAction | undefined =>
-      this.database().acceptedGroupControlAction({
+    const accepted = async (): Promise<AcceptedGroupControlAction | undefined> =>
+      await this.database().acceptedGroupControlAction({
         projectId: state.id,
         requestId: identity.requestId,
         nodeRunId: group.nodeRunId,
@@ -7895,9 +8075,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         inputId: input.inputId,
         semanticInputHash: identity.semanticInputHash
       });
-    const prior = accepted();
+    const prior = await accepted();
     const rebound = !prior && group.coordinatorEpoch > 1
-      ? this.database().rebindAcceptedGroupControlAction({
+      ? (await this.database().rebindAcceptedGroupControlAction({
           projectId: state.id,
           groupRunId: group.id,
           sourceCoordinatorEpoch: group.coordinatorEpoch - 1,
@@ -7906,30 +8086,27 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           requestId: identity.requestId,
           inputId: input.inputId,
           invocationId: input.invocationId,
-          stateVersion: this.database().projectState(state.id).stateRevision,
+          stateVersion: (await this.database().projectState(state.id)).stateRevision,
           semanticInputHash: identity.semanticInputHash
-        })
+        }))
       : undefined;
     const completionKey = groupTaskCompletionKey(group, input.inputId);
-    const completed = () => {
-      const event = this.database().eventByRequestId(state.id, groupTaskCompletionRequestId(completionKey));
+    const completed = async () => {
+      const event = await this.database().eventByRequestId(state.id, groupTaskCompletionRequestId(completionKey));
       return event?.type === "group.task_completion.committed" && event.agentId === coordinator &&
         event.groupRunId === group.id && event.coordinatorEpoch === group.coordinatorEpoch &&
         event.payload.taskId === completionKey;
     };
-    const consume = (fact: AcceptedGroupControlAction): AgentRunResult => {
-      this.database().appendEvent({ projectId: state.id, groupRunId: group.id, nodeRunId: group.nodeRunId,
+    const consume = async (fact: AcceptedGroupControlAction): Promise<AgentRunResult> => {
+      await this.database().appendEvent({ projectId: state.id, groupRunId: group.id, nodeRunId: group.nodeRunId,
         agentId: coordinator, coordinatorEpoch: group.coordinatorEpoch,
         requestId: `group-round-complete-${identity.semanticInputHash}`, type: "group.control.round.completed",
         payload: { inputId: input.inputId, completionKey, acceptedRequestId: identity.requestId } });
       return acceptedGroupControlResult(fact);
     };
-    if ((prior || rebound) && completed()) return consume((prior ?? rebound)!);
+    if ((prior || rebound) && (await completed())) return await consume((prior ?? rebound)!);
     let result: AgentRunResult;
     try {
-      if (reservedRepair === undefined && this.database().groupControlRepairCount(state.id, group.id, coordinator) >= 2) {
-        throw new Error("Group coordinator still lacks required formal actions after two retained-session mechanism repairs");
-      }
       this.#managementTaskInputs.set(input.invocationId, input.inputId);
       result = await this.submitResident(
         state,
@@ -7955,7 +8132,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       // Preserve any earlier accepted decision as recovery input, but a
       // failed native turn still needs stop proof before business can start.
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         attemptId: durableAttemptId("coordinator-failure", [
           state.id,
           group.id,
@@ -7995,16 +8172,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         });
       }
       if (coordinator === "main") {
-        this.database().freezeForMainFailure({
+        await this.database().freezeForMainFailure({
           projectId: state.id,
           groupRunId: group.id,
           expectedFacts: mainRecoveryFacts(group),
           requestId: `freeze-main-${group.id}-${group.coordinatorEpoch}`
         });
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
         throw error;
       }
-      const substituted = this.database().substituteMainForFailedLeader({
+      const substituted = await this.database().substituteMainForFailedLeader({
           projectId: state.id,
           groupRunId: group.id,
           expectedCoordinatorEpoch: group.coordinatorEpoch,
@@ -8017,13 +8194,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           leaderRuntimePath: this.leaderRuntimePath(state.id, group.id),
           requestId: `substitute-main-${group.id}-${group.coordinatorEpoch}`
       });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       throw new CoordinatorSubstitutedError(
         `Coordinator ${coordinator} failed; Main assumed epoch ${substituted.groupRun.coordinatorEpoch}`,
         { cause: error }
       );
     }
-    if (this.resolveOperationFailures(
+    if ((await this.resolveOperationFailures(
       state,
       `group-coordinator:${group.id}`,
       attemptStartedAt,
@@ -8036,20 +8213,20 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         coordinatorEpoch: group.coordinatorEpoch,
         metadata: { inputId: input.inputId }
       }
-    )) {
-      await this.publishProjection(state, this.database().projectState(state.id));
+    ))) {
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
     }
     const decisionEnvelope = result.controlActions?.find((envelope) =>
       envelope.action.tool === "assign_group_tasks" ||
       envelope.action.tool === "request_group_integration" ||
       envelope.action.tool === "complete_group"
     );
-    if (!accepted() && decisionEnvelope && (
+    if (!(await accepted()) && decisionEnvelope && (
       decisionEnvelope.action.tool === "assign_group_tasks" ||
       decisionEnvelope.action.tool === "request_group_integration" ||
       decisionEnvelope.action.tool === "complete_group"
     )) {
-      this.database().revalidateGroupControl({
+      await this.database().revalidateGroupControl({
         projectId: state.id,
         groupRunId: group.id,
         actorAgentId: coordinator,
@@ -8065,9 +8242,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         action: decisionEnvelope.action
       });
     }
-    const committed = accepted();
-    if (!committed || !completed()) {
-      this.database().appendEvent({
+    const committed = await accepted();
+    if (!committed || !(await completed())) {
+      await this.database().appendEvent({
         projectId: state.id,
         requestId: `group-no-decision-${identity.semanticInputHash}-${input.invocationId}`,
         workflowRevision: state.workflowRevision ?? 1,
@@ -8086,68 +8263,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           )
         }
       });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       if (signal.aborted || this.#shuttingDown ||
         this.#pausedProjects.has(state.id) || this.#cancellingProjects.has(state.id)) {
         throw new Error("Collaboration decision continuation was cancelled");
       }
-      const repairCount = this.database().groupControlRepairCount(state.id, group.id, coordinator);
-      if (repairCount < 2) this.database().appendEvent({
-        projectId: state.id, groupRunId: group.id, nodeRunId: group.nodeRunId, agentId: coordinator,
-        coordinatorEpoch: group.coordinatorEpoch,
-        requestId: `group-control-repair-${group.id}-${identity.semanticInputHash}-${repairCount + 1}`,
-        type: "group.control.mechanism_repair.requested",
-        payload: { attempt: repairCount + 1, inputId: input.inputId,
-          missing: [!committed && "formal group control decision", !completed() && "finish_task"].filter(Boolean),
-          semanticInputHash: identity.semanticInputHash }
-      });
-      // At exhaustion enter the same native-failure path, which proves stop
-      // and escalates to Main (or freezes Main). No extra model call runs.
-      return this.submitGroupLeader(state, group, resident, signal, {
-        inputId: input.inputId,
-        invocationId: newId("inv"),
-        prompt: input.prompt
-      }, repairCount < 2 ? repairCount + 1 : undefined);
+      return result;
     }
-    return consume(committed);
-  }
-
-  /** Implements the Agent's live finish_task request. Do not call this as a
-   * natural-return/replay hook: memory content and retries belong to Agent. */
-  private async commitGroupTaskMemory(
-    state: ProjectState,
-    group: GroupRun,
-    inputId: string,
-    content: { summary?: string; memory?: string }
-  ): Promise<void> {
-    const git = this.git(state.id);
-    if (!git.commitManagementMemory) return;
-    const coordinator = group.actingCoordinatorId ?? group.leaderAgentId;
-    const snapshot = await this.optionalManagementMemorySnapshot(state.id);
-    const document = [
-      "# Collaboration coordinator memory",
-      "",
-      `Project: ${state.id}`,
-      `Group run: ${group.id}`,
-      `Coordinator: ${coordinator}`,
-      `Coordinator epoch: ${group.coordinatorEpoch}`,
-      `Input: ${inputId}`,
-      "",
-      "## Agent-authored completion memory",
-      "",
-      content.memory ?? content.summary ?? "Agent requested completion of this management round.",
-      ""
-    ].join("\n");
-    const operationId = `management-${createHash("sha256")
-      .update(groupTaskCompletionKey(group, inputId))
-      .digest("hex")
-      .slice(0, 40)}`;
-    await git.commitManagementMemory(
-      coordinator,
-      operationId,
-      document,
-      snapshot?.commitSha
-    );
+    return await consume(committed);
   }
 
   private groupControlAuthorityFactory(
@@ -8160,7 +8283,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (this.#pausedProjects.has(state.id) || this.#cancellingProjects.has(state.id)) {
         throw new Error("Collaboration control authority is paused or cancelling");
       }
-      const projection = this.database().projectState(state.id);
+      const projection = await this.database().projectState(state.id);
       const group = projection.groupRuns.find((item) => item.id === groupRunId);
       if (!group || projection.activeNodeRunId !== nodeRunId) {
         throw new Error("Collaboration group control scope is no longer active");
@@ -8235,36 +8358,32 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
                 { field: envelopeField }
               );
             }
+            let completion: unknown;
             if (action.tool === "finish_task") {
               const authority = { projectId: state.id, groupRunId, actorAgentId: coordinator,
                 coordinatorEpoch: group.coordinatorEpoch, stateVersion: control.stateVersion, action };
-              this.database().revalidateGroupControl(authority);
+              await this.database().revalidateGroupControl(authority);
               const taskId = groupTaskCompletionKey(group, taskInputId);
-              const committed = this.database().eventByRequestId(state.id, groupTaskCompletionRequestId(taskId));
+              const committed = await this.database().eventByRequestId(state.id, groupTaskCompletionRequestId(taskId));
               const receipt = await this.#storage.requestTaskCompletion(state, taskId, envelope);
+              completion = receipt;
               if (receipt.summary !== action.summary || receipt.memory !== action.memory) {
                 throw new Error("Repeat management finish_task must preserve its accepted summary and memory");
               }
               if (!committed) {
-                await this.commitGroupTaskMemory(state, group, taskInputId, receipt);
-                this.database().revalidateGroupControl(authority);
-                this.database().appendEvent({ projectId: state.id, nodeRunId, groupRunId, agentId: coordinator,
+                await this.database().revalidateGroupControl(authority);
+                await this.database().appendEvent({ projectId: state.id, nodeRunId, groupRunId, agentId: coordinator,
                   coordinatorEpoch: group.coordinatorEpoch, invocationId: turn.invocationId,
                   requestId: groupTaskCompletionRequestId(taskId), type: "group.task_completion.committed",
                   payload: { taskId, inputId: taskInputId, nativeInputId: turn.inputId, callId: envelope.callId } });
               }
             } else {
-              if (action.tool === "complete_group" && !this.database().eventByRequestId(state.id,
-                groupTaskCompletionRequestId(groupTaskCompletionKey(group, taskInputId)))) {
-                throw new CollaborationStateError("INVALID_STATE_TRANSITION",
-                  "Leader must explicitly finish_task for its own management round before complete_group");
-              }
-              const prior = this.database().acceptedGroupControlForInput({ projectId: state.id, groupRunId,
+              const prior = await this.database().acceptedGroupControlForInput({ projectId: state.id, groupRunId,
                 actorAgentId: coordinator, coordinatorEpoch: group.coordinatorEpoch, inputId: taskInputId });
               if (prior && acceptedControlHash(prior.action) !== acceptedControlHash(action)) {
                 throw new CollaborationStateError("IDEMPOTENCY_CONFLICT", "The management round's accepted decision cannot be replaced");
               }
-              this.database().revalidateGroupControl({
+              await this.database().revalidateGroupControl({
                 projectId: state.id,
                 groupRunId,
                 actorAgentId: coordinator,
@@ -8273,7 +8392,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
                 action
               });
             }
-            this.appendSuccessfulAttempt(state, {
+            await this.appendSuccessfulAttempt(state, {
               attemptId: durableAttemptId("control-success", [
                 state.id,
                 turn.invocationId,
@@ -8293,11 +8412,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
                 stateVersion: envelope.stateVersion
               }
             });
+            return completion;
           } catch (error) {
             if (error instanceof ControlActionRejectedError) throw error;
             let current = projection;
             try {
-              current = this.database().projectState(state.id);
+              current = (await this.database().projectState(state.id));
             } catch {
               // The invocation snapshot is still a useful fail-closed revision
               // if shutdown raced the diagnostic lookup.
@@ -8319,7 +8439,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           }
         },
         onRejected: async (envelope, error) => {
-          this.appendFailureAttempt(state, {
+          await this.appendFailureAttempt(state, {
             ...(envelope ? {
               attemptId: durableAttemptId("control-failure", [
                 state.id,
@@ -8364,13 +8484,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   }
 
   /** Mirror the legacy Main completion gate for Git-owned management nodes. */
-  private mainCanComplete(state: ProjectState): boolean {
+  private async mainCanComplete(state: ProjectState): Promise<boolean> {
     if (state.orchestration.termination.agent !== "main") return false;
-    if (this.database().terminalPushObservationCandidates(state.id).length) return false;
     const delegable = workflowRoutesForAgent(state.orchestration, "main")
       .some((edge) => edge.target !== "main" && edge.target !== "finish");
     if (!delegable) return true;
-    return this.database().projectState(state.id).nodeRuns.some((nodeRun) =>
+    return (await this.database().projectState(state.id)).nodeRuns.some((nodeRun) =>
       nodeRun.status === "completed" &&
       (nodeRun.node.kind === "collaboration" || nodeRun.node.agentId !== "main")
     );
@@ -8409,7 +8528,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         .update(`${turn.inputId}\0${turn.invocationId}`)
         .digest("hex")
         .slice(0, 32);
-      const stateVersion = this.database().projectState(state.id).stateRevision;
+      const stateVersion = (await this.database().projectState(state.id)).stateRevision;
       const control: ControlMcpRequest = {
         stagingPath: path.join(request.runtimePath, "control-turns", turnKey, "actions.json"),
         capability,
@@ -8450,13 +8569,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           });
           if (isAgentGitAction(envelope.action.tool)) return;
           if (envelope.action.tool === "finish_task") {
-            await this.#storage.requestTaskCompletion(state, execution.id, envelope,
-              execution.purpose !== "final-integration" || execution.executionBranch !== `groups/${execution.groupRunId}`
-                ? { executionWorktree: execution.worktreePath } : {});
-            return;
+            return await this.#storage.requestTaskCompletion(state, execution.id, envelope);
           } else if (envelope.action.tool === "publish_artifact") {
             await this.validateExecutionPublicationIntent(state, execution, envelope, staged);
-            this.appendSuccessfulAttempt(state, {
+            await this.appendSuccessfulAttempt(state, {
               attemptId: durableAttemptId("control-success", [
                 state.id,
                 turn.invocationId,
@@ -8479,7 +8595,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           if (envelope.action.tool !== "route_to_agent") {
             throw new Error("Standalone execution may only publish artifacts or select its fenced route");
           }
-          this.database().revalidateStandaloneRouteControl({
+          await this.database().revalidateStandaloneRouteControl({
             projectId: state.id,
             nodeRunId,
             executionId: execution.id,
@@ -8488,7 +8604,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             candidateNodeIds: candidates,
             action: envelope.action
           });
-          this.appendSuccessfulAttempt(state, {
+          await this.appendSuccessfulAttempt(state, {
             attemptId: durableAttemptId("control-success", [
               state.id,
               turn.invocationId,
@@ -8508,33 +8624,33 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           });
         },
         execute: async (envelope, signal) => {
-          const facts = this.standaloneGitFacts(state, execution);
+          const facts = await this.standaloneGitFacts(state, execution);
           try {
-            const result = await executeAgentGitTool({ git: this.git(state.id), repository: this.repository(state),
-              execution, base: this.database().executionPullBase(state.id, execution.id), facts, envelope, signal,
+            const result = await executeAgentGitTool({ git: await this.git(state.id), repository: this.repository(state),
+              execution, base: await this.database().executionPullBase(state.id, execution.id), facts, envelope, signal,
               ...agentGitOperationJournal(this.database(), state.id),
-              recordedOperation: id => this.database().recordedGitOperation(state.id, id),
-              deliveryStatus: () => agentGitDeliveryStatus({ executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
+              recordedOperation: async id => await this.database().recordedGitOperation(state.id, id),
+              deliveryStatus: async () => agentGitDeliveryStatus({ executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
                 headSha: facts.pushedHeadSha, pull: facts.pullRequest,
-                synchronized: agentGitFactsSynchronized(facts, this.database().executionPullBase(state.id, execution.id)),
-                operations: this.database().projectState(state.id).operations }) });
+                synchronized: agentGitFactsSynchronized(facts, (await this.database().executionPullBase(state.id, execution.id))),
+                operations: (await this.database().projectState(state.id)).operations }) });
             if (envelope.action.tool === "git_push" && facts.pushResult?.status === "not_committed") {
-              this.persistExecutionGitStage(state, execution, "not_committed", facts.pushResult.checkpoint.commitSha);
+              await this.persistExecutionGitStage(state, execution, "not_committed", facts.pushResult.checkpoint.commitSha);
             }
             return result;
           } catch (error) {
-            this.appendFailureAttempt(state, { scope: "git", operation: `agent.${envelope.action.tool}`,
-              error, retryable: true, agentId: execution.agentId, nodeRunId: execution.nodeRunId,
+            await this.appendFailureAttempt(state, { scope: "git", operation: `agent.${envelope.action.tool}`,
+              error, agentId: execution.agentId, nodeRunId: execution.nodeRunId,
               executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
               invocationId: envelope.invocationId, metadata: { callId: envelope.callId } });
             throw error;
           } finally {
             const factDigest = createHash("sha256").update(JSON.stringify(facts)).digest("hex").slice(0, 24);
-            this.database().appendEvent({ projectId: state.id, executionId: execution.id,
+            await this.database().appendEvent({ projectId: state.id, executionId: execution.id,
               ownershipEpoch: execution.ownershipEpoch, agentId: execution.agentId,
               requestId: `agent-git-fact:${execution.id}:${execution.ownershipEpoch}:${envelope.callId}:${factDigest}`,
               type: "execution.agent_git.fact", payload: { facts: structuredClone(facts) } });
-            if (facts.pullRequest) this.database().observeStandaloneDeliveryPullRequest({ projectId: state.id,
+            if (facts.pullRequest) await this.database().observeStandaloneDeliveryPullRequest({ projectId: state.id,
               executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
               pullRequest: pullRequestRecord(facts.pullRequest),
               requestId: `agent-pull:${execution.id}:${execution.ownershipEpoch}:${envelope.callId}:${factDigest}` });
@@ -8545,7 +8661,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           }
         },
         onRejected: async (envelope, error) => {
-          this.appendFailureAttempt(state, {
+          await this.appendFailureAttempt(state, {
             ...(envelope ? {
               attemptId: durableAttemptId("control-failure", [
                 state.id,
@@ -8589,16 +8705,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     };
   }
 
-  private persistStandaloneRouteDecision(
+  private async persistStandaloneRouteDecision(
     state: ProjectState,
     execution: MemberExecution,
     result: AgentRunResult
-  ): { targetNodeId: string; decisionRequestId: string } | undefined {
+  ): Promise<{ targetNodeId: string; decisionRequestId: string } | undefined> {
     const candidates = this.workerRouteCandidates(state, execution.agentId);
     if (candidates.length === 0) return undefined;
     const envelope = result.controlActions?.find((item) => item.action.tool === "route_to_agent");
     if (!envelope) {
-      this.database().appendEvent({
+      await this.database().appendEvent({
         projectId: state.id,
         requestId: `route-no-decision-${execution.id}-${execution.ownershipEpoch}`,
         workflowRevision: state.workflowRevision ?? 1,
@@ -8624,7 +8740,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       !candidates.includes(envelope.action.target)) {
       throw new Error("Agent-owned weak route returned an invalid route_to_agent decision");
     }
-    this.database().appendEvent({
+    await this.database().appendEvent({
       projectId: state.id,
       eventId: `evt-route-${envelope.callId}`,
       requestId: envelope.callId,
@@ -8647,17 +8763,17 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     };
   }
 
-  private persistArtifactPublicationIntent(
+  private async persistArtifactPublicationIntent(
     state: ProjectState,
     execution: MemberExecution,
     envelope: ControlActionEnvelope
-  ): void {
+  ): Promise<void> {
     if (envelope.action.tool !== "publish_artifact") return;
     const action = envelope.action;
     const intentKey = createHash("sha256")
       .update(`${execution.id}\0${execution.ownershipEpoch}\0${envelope.callId}`)
       .digest("hex");
-    this.database().appendEvent({
+    await this.database().appendEvent({
       projectId: state.id,
       eventId: `evt-artifact-${intentKey.slice(0, 32)}`,
       requestId: `artifact-${intentKey}`,
@@ -8689,15 +8805,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     for (const envelope of result.controlActions ?? []) {
       if (envelope.action.tool !== "publish_artifact") continue;
       await this.validateExecutionPublicationIntent(state, execution, envelope, [], false);
-      this.persistArtifactPublicationIntent(state, execution, envelope);
+      await this.persistArtifactPublicationIntent(state, execution, envelope);
     }
   }
 
-  private executionPublicationEvents(projectId: string): CollaborationEvent[] {
+  private async executionPublicationEvents(projectId: string): Promise<CollaborationEvent[]> {
     const events: CollaborationEvent[] = [];
     let cursor = 0;
     for (;;) {
-      const page = this.database().eventsAfter(projectId, cursor, EVENT_PAGE_SIZE);
+      const page = await this.database().eventsAfter(projectId, cursor, EVENT_PAGE_SIZE);
       events.push(...page.filter((event) => event.type === "artifact.publication.staged"));
       if (page.length < EVENT_PAGE_SIZE) return events;
       cursor = page.at(-1)!.seq;
@@ -8716,7 +8832,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (oldPath !== action.replacesPath || oldPath === action.path) {
         throw new Error("replacesPath must be the exact different pending publication path");
       }
-      const prior = this.executionPublicationEvents(state.id).some((event) =>
+      const prior = (await this.executionPublicationEvents(state.id)).some((event) =>
         event.executionId === execution.id && event.ownershipEpoch !== undefined &&
         event.ownershipEpoch <= execution.ownershipEpoch && event.payload.path === oldPath);
       const stagedPrior = staged.some((item) => item.action.tool === "publish_artifact" && item.action.path === oldPath);
@@ -8725,10 +8841,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         throw new Error("replacesPath cannot remove an already published artifact");
       }
     }
-    const pull = this.standaloneGitFacts(state, execution).merged;
+    const pull = (await this.standaloneGitFacts(state, execution)).merged;
     if (verifyAcceptedCommit && pull?.status === "merged" && pull.headSha) {
       const verification = structuredClone(state);
-      mergeProjection(verification, this.database().projectState(state.id), verification.collaboration?.eventSeq ?? 0);
+      mergeProjection(verification, (await this.database().projectState(state.id)), verification.collaboration?.eventSeq ?? 0);
       const record: ArtifactRecord = { id: `candidate:${envelope.callId}`, agent: execution.agentId,
         invocationId: envelope.invocationId, path: action.path, title: action.title, kind: action.kind,
         description: action.description, size: 0, updatedAt: envelope.receivedAt,
@@ -8740,10 +8856,56 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
   }
 
+  private async commitUnchangedMergedArtifactIntents(
+    state: ProjectState, publisher: MemberExecution, base: string
+  ): Promise<void> {
+    const intents = inheritedArtifactPublicationIntents((await this.executionPublicationEvents(state.id)), publisher);
+    if (!intents.length) return;
+    const projection = await this.database().projectState(state.id);
+    const source = [...projection.pullRequests, ...(projection.additionalPullRequests ?? [])]
+      .filter(pull => pull.status === "merged" && pull.base === base && pull.headSha &&
+        pull.ownerExecutionId !== publisher.id && projection.executions.some(execution =>
+          execution.id === pull.ownerExecutionId && execution.agentId === publisher.agentId &&
+          ["merged", "succeeded"].includes(execution.status)))
+      .sort((left, right) => right.observedAt.localeCompare(left.observedAt))[0];
+    if (!source) return;
+    const owner = projection.executions.find(execution => execution.id === source.ownerExecutionId)!;
+    const verification = structuredClone(state);
+    mergeProjection(verification, projection, verification.collaboration?.eventSeq ?? 0);
+    const latest = new Map<string, CollaborationEvent>();
+    for (const event of intents) {
+      if (typeof event.payload.path !== "string") throw new Error("Publication intent lost its artifact path");
+      latest.set(event.payload.path, event);
+    }
+    // A registration task can publish unchanged, already-merged files. Its
+    // request does not acquire the source execution's PR or Git readiness.
+    for (const [artifactPath, event] of latest) {
+      try {
+        if (typeof event.invocationId !== "string" || typeof event.payload.title !== "string" ||
+          typeof event.payload.kind !== "string" || typeof event.payload.description !== "string") {
+          throw new Error("Publication intent lost its invocation or artifact metadata");
+        }
+        const candidate = await this.#storage.resolveExecutionArtifactCandidate(state.id, publisher, artifactPath);
+        const record: ArtifactRecord = { id: `candidate:${event.requestId}`, agent: owner.agentId,
+          invocationId: event.invocationId, path: artifactPath, title: event.payload.title,
+          kind: event.payload.kind, description: event.payload.description, size: 0, updatedAt: event.ts,
+          gitSource: { executionId: owner.id, ownershipEpoch: owner.ownershipEpoch, worktreePath: owner.worktreePath,
+            commitSha: source.headSha!, pullRequestId: source.id, acceptedBase: base } };
+        const immutable = await this.#storage.validateGitArtifactRecord(verification, record);
+        const [requestedBytes, acceptedBytes] = await Promise.all([fs.readFile(candidate.sourcePath), fs.readFile(immutable.sourcePath)]);
+        if (!requestedBytes.equals(acceptedBytes)) throw new Error("Requested publication differs from the observed merged version");
+      } catch (cause) {
+        throw new ExecutionArtifactPublicationError(artifactPath, source.headSha!, cause);
+      }
+    }
+    await this.commitMergedExecutionArtifacts(state, owner, source, [...latest.values()]);
+  }
+
   private async commitMergedExecutionArtifacts(
     state: ProjectState,
     execution: MemberExecution,
-    pull: Pick<PullRequestRecord, "id" | "base" | "headSha" | "status" | "ownerExecutionId">
+    pull: Pick<PullRequestRecord, "id" | "base" | "headSha" | "status" | "ownerExecutionId">,
+    publicationEvents?: readonly CollaborationEvent[]
   ): Promise<void> {
     if (pull.status !== "merged" || pull.ownerExecutionId !== execution.id || !pull.headSha) {
       throw new Error("Artifact publication requires an observed merged pull request head");
@@ -8752,7 +8914,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     let stopConfirmed = false;
     let cursor = 0;
     while (true) {
-      const page = this.database().eventsAfter(state.id, cursor, EVENT_PAGE_SIZE);
+      const page = await this.database().eventsAfter(state.id, cursor, EVENT_PAGE_SIZE);
       for (const event of page) {
         if (event.type === "artifact.publication.staged") stagedEvents.push(event);
         if (
@@ -8766,13 +8928,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (page.length < EVENT_PAGE_SIZE) break;
       cursor = page.at(-1)!.seq;
     }
-    const staged = inheritedArtifactPublicationIntents(stagedEvents, execution);
+    const staged = publicationEvents ?? inheritedArtifactPublicationIntents(stagedEvents, execution);
     if (staged.length === 0) return;
     const latestByPath = new Map<string, typeof staged[number]>();
     for (const event of staged) {
       if (typeof event.payload.path === "string") latestByPath.set(event.payload.path, event);
     }
-    const projection = this.database().projectState(state.id);
+    const projection = await this.database().projectState(state.id);
     const verificationState = structuredClone(state);
     mergeProjection(
       verificationState,
@@ -8870,6 +9032,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           artifactId: record.id,
           executionId: execution.id,
           ownershipEpoch: execution.ownershipEpoch,
+          ...(publicationEvents ? { publicationExecutionId: event.executionId } : {}),
           commitSha: pull.headSha,
           pullRequestId: pull.id,
           path: record.path
@@ -8878,14 +9041,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
   }
 
-  private persistedStandaloneRouteDecision(
+  private async persistedStandaloneRouteDecision(
     projectId: string,
     execution: MemberExecution
-  ): { targetNodeId: string; decisionRequestId: string } | undefined {
+  ): Promise<{ targetNodeId: string; decisionRequestId: string } | undefined> {
     // A restart advances the writer epoch but retains the execution's already
     // committed model decision. Reusing that immutable event avoids rerunning
     // the model after its PR has opened or merged.
-    const event = this.database().standaloneRouteDecision(
+    const event = await this.database().standaloneRouteDecision(
       projectId,
       execution.id,
       execution.ownershipEpoch
@@ -8897,28 +9060,28 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       : undefined;
   }
 
-  private hasRecoverableAuthorizationOutput(
+  private async hasRecoverableAuthorizationOutput(
     projectId: string,
     execution: MemberExecution
-  ): boolean {
-    return this.database().executionHasRecoverableAuthorizationOutput(
+  ): Promise<boolean> {
+    return await this.database().executionHasRecoverableAuthorizationOutput(
       projectId,
       execution.id,
       execution.ownershipEpoch
     );
   }
 
-  private executionLaunchProtocol(
+  private async executionLaunchProtocol(
     projectId: string,
     execution: MemberExecution
-  ): "trusted-supervisor-v1" | undefined {
+  ): Promise<"trusted-supervisor-v1" | undefined> {
     if (!execution.invocationId) return undefined;
     const runtimePath = path.join(
       this.#storage.projectDir(projectId),
       "runtime",
       execution.invocationId
     );
-    const event = this.database().executionLaunchStartedFact(
+    const event = await this.database().executionLaunchStartedFact(
       projectId,
       execution.id,
       execution.ownershipEpoch
@@ -8930,12 +9093,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       : undefined;
   }
 
-  private executionPrelaunchProtocol(
+  private async executionPrelaunchProtocol(
     projectId: string,
     execution: MemberExecution
-  ): "trusted-supervisor-v1" | undefined {
+  ): Promise<"trusted-supervisor-v1" | undefined> {
     if (!execution.invocationId) return undefined;
-    const event = this.database().executionPrelaunchFact(
+    const event = await this.database().executionPrelaunchFact(
       projectId,
       execution.id,
       execution.ownershipEpoch
@@ -8960,43 +9123,43 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       : undefined;
   }
 
-  private executionStopProtocol(
+  private async executionStopProtocol(
     projectId: string,
     execution: MemberExecution
-  ): "trusted-supervisor-v1" | undefined {
-    const launched = this.executionLaunchProtocol(projectId, execution);
+  ): Promise<"trusted-supervisor-v1" | undefined> {
+    const launched = await this.executionLaunchProtocol(projectId, execution);
     if (launched) return launched;
-    return this.executionLaunchStarted(projectId, execution)
+    return (await this.executionLaunchStarted(projectId, execution))
       ? undefined
-      : this.executionPrelaunchProtocol(projectId, execution);
+      : (await this.executionPrelaunchProtocol(projectId, execution));
   }
 
-  private executionLaunchStarted(projectId: string, execution: MemberExecution): boolean {
-    return this.database().executionLaunchStartedFact(
+  private async executionLaunchStarted(projectId: string, execution: MemberExecution): Promise<boolean> {
+    return (await this.database().executionLaunchStartedFact(
       projectId,
       execution.id,
       execution.ownershipEpoch
-    ) !== undefined;
+    )) !== undefined;
   }
 
-  private hasExactRestartStopProvenance(
+  private async hasExactRestartStopProvenance(
     projectId: string,
     execution: MemberExecution
-  ): boolean {
-    return this.database().executionHasExactRestartStopProvenance(
+  ): Promise<boolean> {
+    return await this.database().executionHasExactRestartStopProvenance(
       projectId,
       execution.id,
       execution.ownershipEpoch
     );
   }
 
-  private leaderLaunchProtocol(
+  private async leaderLaunchProtocol(
     projectId: string,
     group: GroupRun
-  ): "trusted-supervisor-v1" | undefined {
+  ): Promise<"trusted-supervisor-v1" | undefined> {
     const invocationId = groupLeaderInvocationId(projectId, group.id, group.coordinatorEpoch);
     const runtimePath = this.leaderRuntimePath(projectId, group.id);
-    const evidence = this.database().groupLeaderLaunchEvidence(
+    const evidence = await this.database().groupLeaderLaunchEvidence(
       projectId,
       group.id,
       group.coordinatorEpoch
@@ -9046,7 +9209,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (!launcher) throw new Error("The trusted collaboration resident launcher is unavailable");
     const invocationId = execution.invocationId ?? newId("inv");
     if (!recoveredResident && execution.status === "queued") {
-      execution = this.database().transitionExecutionStatus({
+      execution = (await this.database().transitionExecutionStatus({
         projectId: state.id,
         executionId: execution.id,
         ownershipEpoch: execution.ownershipEpoch,
@@ -9054,9 +9217,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         invocationId,
         waitReason: execution.waitReason,
         requestId: `execution-running-${execution.id}-${execution.ownershipEpoch}`
-      }).execution;
+      })).execution;
     }
-    const residentAuthority = this.executionActivityAuthority(state.id, execution);
+    const residentAuthority = await this.executionActivityAuthority(state.id, execution);
     const businessAssignment = await this.businessAssignmentWithOwnManagement(
       state,
       execution.agentId,
@@ -9112,9 +9275,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             runtimePath
           })
         : fallbackRequest;
-      this.attachRuntimeCallbacks(state, request, execution);
-      if (!this.executionLaunchStarted(state.id, execution)) {
-        this.database().appendEvent({
+      await this.attachRuntimeCallbacks(state, request, execution);
+      if (!(await this.executionLaunchStarted(state.id, execution))) {
+        await this.database().appendEvent({
           projectId: state.id,
           requestId: `execution-launch-${execution.id}-${execution.ownershipEpoch}`,
           workflowRevision: state.workflowRevision ?? 1,
@@ -9190,22 +9353,22 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           inputId: `input-${execution.id}-1`,
           invocationId,
           prompt: businessAssignment
-        }, this.executionActivityAuthority(state.id, execution));
+        }, (await this.executionActivityAuthority(state.id, execution)));
     if (result) await this.persistArtifactPublicationIntents(state, execution, result);
     const output = result?.handoff ?? execution.waitReason ??
       `${execution.agentId} returned from its assigned work`;
     const completed = await this.completeAgentOwnedExecution(state, execution, output, resident, signal, pullBase);
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     return completed.output;
   }
 
-  private persistExecutionGitStage(
+  private async persistExecutionGitStage(
     state: ProjectState,
     execution: MemberExecution,
     stage: "model_output_persisted" | "checkpoint_pending" | "not_committed" | "pull_request_pending" | "merge_pending",
     output: string
-  ): void {
-    this.database().appendEvent({
+  ): Promise<void> {
+    await this.database().appendEvent({
       projectId: state.id,
       requestId: `git-stage-${execution.id}-${execution.ownershipEpoch}-${stage}`,
       workflowRevision: state.workflowRevision ?? 1,
@@ -9224,15 +9387,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     });
   }
 
-  private recordExecutionCheckpoint(
+  private async recordExecutionCheckpoint(
     state: ProjectState,
     execution: MemberExecution,
     checkpoint: { commitSha: string; changed: boolean },
     operationId: string,
     checkpointKind: "checkpoint" | "conflict-resolution"
-  ): void {
+  ): Promise<void> {
     if (!checkpoint.changed) return;
-    this.database().appendEvent({
+    await this.database().appendEvent({
       projectId: state.id,
       requestId: `checkpoint-recorded-${operationId}`,
       workflowRevision: state.workflowRevision ?? 1,
@@ -9263,30 +9426,36 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     ]);
   }
 
-  /** A successful close is the trusted launcher's process-stop proof. */
+  /** Session retirement and native resource cleanup retain separate facts. */
   private async closeResidentForTerminal(
     state: ProjectState,
     residentKey: string,
     resident: CollaborationResidentHandle,
     forget = true
-  ): Promise<void> {
+  ): Promise<boolean> {
     const entry = this.#residents.get(residentKey);
     try {
       await resident.close();
     } catch (error) {
-      throw new ResidentRetainedWaitError(
-        `Resident stop could not be confirmed before terminal commit: ${safeRuntimeError(error)}`
-      );
+      if (forget) this.#residents.delete(residentKey);
+      try {
+        await this.database().appendEvent({ projectId: state.id, agentId: entry?.activity?.agentId,
+          executionId: entry?.execution?.id, invocationId: entry?.activity?.invocationId,
+          ...(entry?.execution ? { ownershipEpoch: entry.execution.ownershipEpoch } : {}),
+          type: "execution.resource_cleanup.failed", payload: { residentKey, reason: supervisionError(error), nativeStopConfirmed: false } });
+      } catch (recordError) { console.warn(`Resource cleanup record unavailable: ${supervisionError(recordError)}`); }
+      return false;
     }
     if (entry?.activity) {
-      await this.closeRuntimeActivity(state, entry.activity, {
+      try { await this.closeRuntimeActivity(state, entry.activity, {
         kind: "resident",
         invocationId: entry.activity.invocationId,
         outcome: "completed",
         requestId: `runtime-resident-close-${residentKey}-${entry.activity.ownershipEpoch ?? entry.activity.coordinatorEpoch ?? 1}`
-      });
+      }); } catch (error) { console.warn(`Resident cleanup diagnostics were not saved (${residentKey}): ${supervisionError(error)}`); }
     }
     if (forget) this.#residents.delete(residentKey);
+    return true;
   }
 
   /**
@@ -9319,14 +9488,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (!isPathInside(realProjectRoot, realWorktreeRoot)) {
       throw new Error("Project worktree root resolves outside the project");
     }
-    const projection = this.database().projectState(state.id);
+    const projection = await this.database().projectState(state.id);
     // Compute authority is project-wide, not active-run-wide. Every retained
     // execution worktree recorded by this project's authoritative S database
     // is eligible; path containment still excludes every other project and
     // shared repository metadata.
     const candidates = [...new Set([...projection.executions, ...(projection.scopedExecutions ?? [])]
       .map((execution) => path.resolve(execution.worktreePath))
-      .concat(this.database().scopedLeaderTurns(state.id).map((turn) =>
+      .concat((await this.database().scopedLeaderTurns(state.id)).map((turn) =>
         path.join(projectWorktreeRoot, "agents", safeAgentId(turn.agentId))))
       .filter((worktree) => isPathInside(projectWorktreeRoot, worktree)))];
     const projectWorktrees: string[] = [];
@@ -9370,7 +9539,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       content,
       { runtimeOnly: true }
     );
-    this.database().appendEvent({
+    await this.database().appendEvent({
       projectId: state.id,
       requestId: `execution-memory-${execution.id}-${execution.ownershipEpoch}-${snapshot.sha256}`,
       workflowRevision: state.workflowRevision ?? 1,
@@ -9423,41 +9592,45 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // after the pause fence.
     await activeRun;
     await this.reconcileTerminalPushObservationResidents(state);
-    const runtime = this.scopedRuntime(state, new AbortController().signal);
+    const runtime = await this.scopedRuntime(state, new AbortController().signal);
     await runtime.reconcileResidents();
     const database = this.database();
     // F13 deliberately performs no PR discovery, close, checkpoint, push,
     // merge, or cleanup. Provider facts and retained worktrees remain exactly
     // as observed; only the durable local scheduling projection is paused.
-    database.retainScopedProjectCancellation(state.id);
-    database.confirmProjectCancellationStopped(state.id);
+    await database.retainScopedProjectCancellation(state.id);
+    await database.confirmProjectCancellationStopped(state.id);
     state.status = "paused";
     state.phase = "collaboration:user-cancelled";
     state.cancellationSettledAt = undefined;
     state.cancelledAt = undefined;
     state.lastError = undefined;
-    await this.publishProjection(state, database.projectState(state.id), { stopConfirmed: true });
+    await this.publishProjection(state, (await database.projectState(state.id)), { stopConfirmed: true });
     await this.saveState(state);
   }
 
   private worktreeClosingRuntime(state: ProjectState, signal: AbortSignal): ScopedWorktreeClosingRuntime {
     return new ScopedWorktreeClosingRuntime({ state, database: this.database(), storage: this.#storage, signal,
       launcher: this.#residentLauncher!, builder: this.#executionInputBuilder, repository: this.repository(state),
-      observeGit: { identifyRestrictedWorktreeClosing: async (...args) => {
-        const git = this.git(state.id);
+      observeGit: { clearExecutionWorktree: async (...args) => {
+        const git = await this.git(state.id);
+        if (!git.clearExecutionWorktree) throw new Error("Trusted worktree lifecycle cleanup is unavailable");
+        return git.clearExecutionWorktree(...args);
+      }, identifyRestrictedWorktreeClosing: async (...args) => {
+        const git = await this.git(state.id);
         if (!git.identifyRestrictedWorktreeClosing) throw new Error("Closing requires trusted exact-file discovery");
         return git.identifyRestrictedWorktreeClosing(...args);
       }, observeRestrictedWorktreeClosing: async (...args) => {
-        const git = this.git(state.id);
+        const git = await this.git(state.id);
         if (!git.observeRestrictedWorktreeClosing) throw new Error("Closing requires trusted exact-file Git observation");
         return git.observeRestrictedWorktreeClosing(...args);
       }, observeRestrictedWorktreeClosingTarget: async (...args) => {
-        const git = this.git(state.id);
+        const git = await this.git(state.id);
         if (!git.observeRestrictedWorktreeClosingTarget) throw new Error("Closing requires trusted actual group-target inclusion");
         return git.observeRestrictedWorktreeClosingTarget(...args);
       } },
-      gitForClosing: turn => {
-        const git = this.git(state.id, { invocationId: turn.invocationId, capabilityHash: turn.capabilityHash,
+      gitForClosing: async turn => {
+        const git = await this.git(state.id, { invocationId: turn.invocationId, capabilityHash: turn.capabilityHash,
           scope: { kind: turn.kind, reportHeadSha: turn.reportHeadSha, paths: [...turn.paths] } });
         if (!git.observeRestrictedWorktreeClosing) throw new Error("Closing requires its independently bound Git facade");
         return { checkpointAndPush: git.checkpointAndPush.bind(git), createPullRequest: git.createPullRequest.bind(git),
@@ -9467,15 +9640,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           ...(git.reconcilePushOperation ? { reconcilePushOperation: git.reconcilePushOperation.bind(git) } : {}),
           ...(git.reconcileMergedPullRequest ? { reconcileMergedPullRequest: git.reconcileMergedPullRequest.bind(git) } : {}) };
       },
-      assertCurrent: () => { this.assertWritable();
+      assertCurrent: async () => { this.assertWritable();
         if (this.#shuttingDown || this.#cancellingProjects.has(state.id) ||
           this.#pausedProjects.has(state.id) && !(this.#activeTurns.get(state.id) ?? 0)) throw new Error("Original closing authority was revoked"); },
-      wait: () => this.waitWhilePaused(state.id, signal), publish: () => this.publishProjection(state, this.database().projectState(state.id)),
-      filesystem: () => this.filesystemAuthorityInput(state), decorate: request => this.attachRuntimeCallbacks(state, request),
+      wait: () => this.waitWhilePaused(state.id, signal), publish: async () => this.publishProjection(state, (await this.database().projectState(state.id))),
+      filesystem: async () => this.filesystemAuthorityInput(state), decorate: async request => await this.attachRuntimeCallbacks(state, request),
       trace: (agent, invocation) => this.traceSink(state, agent, invocation), turnRequestFactory: request => this.turnRequestFactory(state, request),
       hasResident: key => this.#residents.has(key), register: (key, handle) => { this.#residents.set(key, { projectId: state.id, handle }); },
       unregister: key => { this.#residents.delete(key); },
-      submit: (handle, turn, retain) => this.submitScopedNativeTurn(state, signal, handle, turn, retain) });
+      submit: async (handle, turn, retain) => this.submitScopedNativeTurn(state, signal, handle, turn, retain) });
   }
 
   private async submitScopedNativeTurn(state: ProjectState, signal: AbortSignal, handle: CollaborationResidentHandle,
@@ -9515,25 +9688,25 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     };
   }
 
-  private scopedRuntime(state: ProjectState, signal: AbortSignal): ScopedProjectRuntime {
+  private async scopedRuntime(state: ProjectState, signal: AbortSignal): Promise<ScopedProjectRuntime> {
     if (!this.#residentLauncher) throw new Error("Scoped workflow requires the trusted resident launcher");
-    const git = this.git(state.id);
+    const git = await this.git(state.id);
     for (const key of ["observeRemoteRef", "observeRetainedExecution", "observeExecutionWorktree", "createGroupFinalPullRequest", "mergeGroupFinalPullRequest",
       "reconcileGroupFinalPullRequest", "prepareAgentManagementWorkspace", "checkpointGroupCompletion"] as const) {
       if (typeof git[key] !== "function") throw new Error(`Scoped workflow requires trusted Git method ${key}`);
     }
-    return new ScopedProjectRuntime({ state, database: this.database(), storage: this.#storage,
+    return await ScopedProjectRuntime.create({ state, database: this.database(), storage: this.#storage,
       git: git as ScopedWorkflowGit & ScopedAgentExecutionGit, repository: this.repository(state), launcher: this.#residentLauncher,
       inputBuilder: this.#executionInputBuilder, signal,
-      filesystem: () => this.filesystemAuthorityInput(state), decorate: (request) => this.attachRuntimeCallbacks(state, request),
+      filesystem: async () => this.filesystemAuthorityInput(state), decorate: async (request) => await this.attachRuntimeCallbacks(state, request),
       trace: (agentId, invocationId) => this.traceSink(state, agentId, invocationId),
-      publish: () => this.publishProjection(state, this.database().projectState(state.id)),
+      publish: async () => this.publishProjection(state, (await this.database().projectState(state.id))),
       applyWaitingWorkflowAdjustments: () => this.applyWaitingWorkflowAdjustments(state),
-      assertManagementActive: () => {
+      assertManagementActive: async () => {
         this.assertWritable();
         if (this.#shuttingDown || this.#cancellingProjects.has(state.id) ||
           this.#pausedProjects.has(state.id) || state.pauseRequest ||
-          this.database().projectCancellationIntent(state.id)) {
+          (await this.database().projectCancellationIntent(state.id))) {
           throw new ScopedManagementDeferredError();
         }
       },
@@ -9558,9 +9731,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           }
         }
       },
-      reconcileWorktreeClosings: () => this.worktreeClosingRuntime(state, signal).reconcile(),
-      discoverWorktreeClosings: () => this.worktreeClosingRuntime(state, signal).discover(),
-      continueWorktreeClosings: () => this.worktreeClosingRuntime(state, signal).advance(),
+      reconcileWorktreeClosings: async () => this.worktreeClosingRuntime(state, signal).reconcile(),
+      discoverWorktreeClosings: async () => this.worktreeClosingRuntime(state, signal).discover(),
+      continueWorktreeClosings: async () => this.worktreeClosingRuntime(state, signal).advance(),
       continueTerminalPushObservations: async () => {
         try { await this.advanceTerminalPushObservations(state,signal); }
         catch (error) {
@@ -9569,17 +9742,17 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           // existing hierarchy; managers must make their next decision.
         }
       },
-      managementInputs: (group, invocationId, inbox, runtime, allowEdit) =>
+      managementInputs: async (group, invocationId, inbox, runtime, allowEdit) =>
         this.stageLeaderManagementInputs(state, invocationId, inbox, runtime, group.leaderAgentId, "management-workspace", allowEdit),
       register: (key, handle) => { this.#residents.set(key, { projectId: state.id, handle }); },
       unregister: (key) => { this.#residents.delete(key); },
       validateConfiguration: async (proposal) => {
-        this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
+        await this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
         if (!this.#validateWorkflowConfiguration) throw new Error("Shared Agent editing requires the existing configuration validator");
         await this.#validateWorkflowConfiguration(state, proposal);
-        this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
+        await this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
       },
-      submit: (handle, turn, retain) => this.submitScopedNativeTurn(state, signal, handle, turn, retain)
+      submit: async (handle, turn, retain) => this.submitScopedNativeTurn(state, signal, handle, turn, retain)
     });
   }
 
@@ -9593,11 +9766,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
    * error is not enough: the arrival/execution must have progressed, the
    * group must have completed, or the exact persisted incident must be gone.
    */
-  private scopedRuntimeRecoveryEvidence(
+  private async scopedRuntimeRecoveryEvidence(
     state: ProjectState,
     result: ScopedRuntimeAdvanceResult,
     attempt: FailureAttempt
-  ): Readonly<Record<string, unknown>> | undefined {
+  ): Promise<Readonly<Record<string, unknown>> | undefined> {
     const metadata = attempt.metadata;
     const rootGroupRunId = typeof metadata.rootGroupRunId === "string"
       ? metadata.rootGroupRunId : undefined;
@@ -9605,7 +9778,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       ? metadata.groupRunId : undefined;
     if (!rootGroupRunId || rootGroupRunId !== result.groupRun.id || !groupRunId) return undefined;
 
-    const projection = this.database().projectState(state.id);
+    const projection = await this.database().projectState(state.id);
     const group = projection.scopedGroupRuns?.find((item) => item.id === groupRunId);
     if (!group || ["failed", "cancelled"].includes(group.status)) return undefined;
     const arrivalRequestId = typeof metadata.arrivalRequestId === "string"
@@ -9657,10 +9830,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
   /** Keep transient queue waits out of the durable failure ledger while
    * recording each real scoped runtime fault and its later recovery. */
-  private reconcileScopedRuntimeFailures(
+  private async reconcileScopedRuntimeFailures(
     state: ProjectState,
     result: ScopedRuntimeAdvanceResult
-  ): { unresolvedMessages: string[] } {
+  ): Promise<{ unresolvedMessages: string[] }> {
     const failures = result.issues.filter((issue) =>
       issue.severity === "failure" || issue.kind === "failure"
     );
@@ -9668,11 +9841,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     for (const issue of failures) {
       const operation = this.scopedRuntimeFailureOperation(issue);
       failureOperations.add(operation);
-      const prior = this.database().failureAttempts(state.id)
+      const prior = (await this.database().failureAttempts(state.id))
         .filter((attempt) => attempt.scope === "scheduler" && attempt.operation === operation)
         .at(-1);
       if (prior?.status === "failed" && prior.redactedMessage === issue.message) continue;
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         scope: "scheduler",
         operation,
         error: new Error(issue.message),
@@ -9691,15 +9864,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // Resolve only the latest failure for this exact root graph, and retain a
     // machine-readable link to both the failure and the observed transition.
     const latestFailures = new Map<string, FailureAttempt>();
-    for (const attempt of this.database().failureAttempts(state.id)) {
+    for (const attempt of (await this.database().failureAttempts(state.id))) {
       if (attempt.scope !== "scheduler" || !attempt.operation.startsWith("scoped.runtime:") ||
         attempt.status !== "failed" || failureOperations.has(attempt.operation)) continue;
       latestFailures.set(attempt.operation, attempt);
     }
     for (const attempt of latestFailures.values()) {
-      const recoveryEvidence = this.scopedRuntimeRecoveryEvidence(state, result, attempt);
+      const recoveryEvidence = await this.scopedRuntimeRecoveryEvidence(state, result, attempt);
       if (!recoveryEvidence) continue;
-      this.appendSuccessfulAttempt(state, {
+      await this.appendSuccessfulAttempt(state, {
         attemptId: durableAttemptId("scoped-runtime-recovery", [attempt.attemptId]),
         scope: "scheduler",
         operation: attempt.operation,
@@ -9718,7 +9891,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       });
     }
 
-    const unresolved = this.database().failureAttempts(state.id)
+    const unresolved = (await this.database().failureAttempts(state.id))
       .filter((attempt) => attempt.scope === "scheduler" && attempt.operation.startsWith("scoped.runtime:"))
       .reduce((latest, attempt) => latest.set(attempt.operation, attempt), new Map<string, FailureAttempt>());
     const unresolvedMessages = [...unresolved.values()]
@@ -9735,12 +9908,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   }
 
   private async advanceScopedGroup(state: ProjectState, root: ScopedGroupRunRecord, signal: AbortSignal,
-    runtime = this.scopedRuntime(state, signal)): Promise<void> {
+    runtime?: ScopedProjectRuntime): Promise<void> {
+    runtime ??= await this.scopedRuntime(state, signal);
     const result = await runtime.advance(root.id);
     const transient = result.issues.find(issue => issue.transientFailure)?.transientFailure;
     if (transient) throw transient;
-    const failureState = this.reconcileScopedRuntimeFailures(state, result);
-    await this.publishProjection(state, this.database().projectState(state.id));
+    const failureState = await this.reconcileScopedRuntimeFailures(state, result);
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     // A management job may have settled while Pause was waiting for its last
     // native safe point. Preserve that lifecycle projection after the scoped
     // pump returns; its ordinary waiting result must not write queued or route
@@ -9779,7 +9953,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (failureState.unresolvedMessages.length === 0 && state.phase.startsWith("collaboration:scoped-")) {
       state.lastError = undefined;
     }
-    const projection = this.database().projectState(state.id);
+    const projection = await this.database().projectState(state.id);
     const node = projection.nodeRuns.find((item) => item.activationRequestId === root.activationRequestId)!;
     const output = scopedGroupOutput(projection, root.id);
     const edges = state.orchestration.routes[root.groupId] ?? [];
@@ -9788,7 +9962,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const weakCandidates = edges.filter((edge) => edge.kind === "weak").map((edge) => edge.target);
     let decision: Awaited<ReturnType<typeof this.decideMainRoute>> | undefined;
     if (!fixed && groupDefinition?.decisionBy === "agent") {
-      const route = this.database().scopedRootRouteDecision(state.id, node.id);
+      const route = await this.database().scopedRootRouteDecision(state.id, node.id);
       if (route) decision = { targetNodeId: route.targetNodeId, decisionRequestId: route.decisionRequestId };
     } else if (!fixed) {
       decision = await this.decideMainRoute(state, node.id, "main", output, weakCandidates, signal);
@@ -9803,13 +9977,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       await this.saveState(state);
       return;
     }
-    this.database().completeScopedRootRoute({ projectId: state.id, groupRunId: root.id, nodeRunId: node.id,
+    await this.database().completeScopedRootRoute({ projectId: state.id, groupRunId: root.id, nodeRunId: node.id,
       routeEmissionId: `scoped-root-route-${root.id}`, output,
       route: fixed ? { kind: "fixed", targetNodeId: fixed.target }
         : { kind: "weak", targetNodeId: decision!.targetNodeId,
           selectedByAgentId: groupDefinition?.decisionBy === "agent" ? groupDefinition.leaderAgentId : "main",
           decisionRequestId: decision!.decisionRequestId } });
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     await this.drainPendingRoutes(state, signal);
   }
 
@@ -9827,9 +10001,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       throw new Error("Management proposal snapshot identity is invalid");
     }
     const fixed = state.orchestration.schemaVersion === 3;
-    const prepare = this.git(state.id).prepareAgentManagementWorkspace;
+    const prepare = (await this.git(state.id)).prepareAgentManagementWorkspace;
     if (fixed && !prepare) throw new Error("Scoped management requires the canonical Agent workspace service");
-    const workspacePath = fixed ? await prepare!.call(this.git(state.id), coordinatorAgentId)
+    const workspacePath = fixed ? await prepare!.call((await this.git(state.id)), coordinatorAgentId)
       : path.join(runtimePath, workspaceName);
     await fs.mkdir(workspacePath, { recursive: true, mode: 0o700 });
     // Read-only inputs belong to an invocation, whereas the resumed native
@@ -9873,16 +10047,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       )
     ]);
     let workflowAuthoringPath: string | undefined;
-    const authoringBase = allowWorkflowAuthoring ? this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state)) : undefined;
+    const authoringBase = allowWorkflowAuthoring ? (await this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state))) : undefined;
     const authoringAgents = authoringBase
       ? restoreAgentConfiguration(authoringBase.snapshot, state.agents)
       : undefined;
     if (authoringBase) await this.#storage.writeManagementWorkflowCurrentSnapshot(authoringRoot,
       fixed ? mainAgentOrchestrationDocument(state.id, authoringBase.snapshot.orchestration, authoringAgents!, authoringBase.snapshot.skillDefinitions, authoringBase.snapshot.mcpDefinitions, authoringBase.version)
         : mainWorkflowDocument(state.id, authoringBase.snapshot.orchestration, authoringBase.version),
-      () => {
+      async () => {
         this.assertWritable();
-        return sameWorkflowConfigurationVersion(this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state)).version, authoringBase.version);
+        return sameWorkflowConfigurationVersion((await this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state))).version, authoringBase.version);
       });
     if (fixed && allowWorkflowAuthoring) {
       // Current Inbox/Memory snapshots rotate with native authority. The
@@ -9914,10 +10088,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     projectId: string,
     signal?: AbortSignal
   ): Promise<ManagementMemorySnapshot | undefined> {
-    const read = this.git(projectId).managementMemorySnapshot;
+    const read = (await this.git(projectId)).managementMemorySnapshot;
     if (!read) return undefined;
     try {
-      return await read.call(this.git(projectId), signal);
+      return await read.call((await this.git(projectId)), signal);
     } catch (error) {
       if (error instanceof Error && error.message.includes("Required Git ref is missing")) {
         return undefined;
@@ -9936,11 +10110,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return assignment;
   }
 
-  private attachRuntimeCallbacks(
+  private async attachRuntimeCallbacks(
     state: ProjectState,
     request: AgentRunRequest,
     execution?: MemberExecution
-  ): void {
+  ): Promise<void> {
     const priorResidentActivity = request.onResidentTurnActivity;
     request.onResidentTurnActivity = activity => {
       const key = JSON.stringify([state.id, activity.invocationId, activity.inputId]);
@@ -9952,12 +10126,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     request.onHarnessRecovery = async event => {
       this.assertWritable();
       const context = request.executionContext;
-      this.database().appendEvent({ projectId: state.id, agentId: request.agent, invocationId: request.invocationId,
+      await this.database().appendEvent({ projectId: state.id, agentId: request.agent, invocationId: request.invocationId,
         requestId: `harness-recovery:${request.invocationId}:${createHash("sha256").update(JSON.stringify([event.inputId, event.attempt, event.phase])).digest("hex").slice(0, 24)}`,
         type: `runtime.harness_recovery.${event.phase}`, payload: { ...event,
           ...(context ? { executionContext: context } : {}), runtimePath: request.runtimePath,
           worktreePath: request.workspacePath } });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       await priorRecovery?.(event);
     };
     const priorRecoveryWait = request.onHarnessRecoveryWait;
@@ -10009,7 +10183,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       request.onResidentNativeOpened = async binding => {
         await priorNativeOpened?.(binding);
         this.assertWritable();
-        this.database().recordAgentNativeSessionBinding({ projectId: state.id, agentId: request.agent,
+        await this.database().recordAgentNativeSessionBinding({ projectId: state.id, agentId: request.agent,
           invocationId: request.invocationId, runtimePath: binding.runtimePath, worktreePath: request.workspacePath,
           executionContext: request.executionContext!, session: binding.session });
       };
@@ -10027,11 +10201,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ? ("routeScopeId" in context ? context.routeScopeId : context.groupRunId)
         : context.executionId;
       const epoch = leader ? context.coordinatorEpoch : context.ownershipEpoch;
-      const original = scopeId ? this.database().recordedResidentSession({
+      const original = scopeId ? (await this.database().recordedResidentSession({
         projectId: state.id, sourceNodeRunId: context.nodeRunId,
         scope: leader ? ("routeScopeId" in context ? "main-route" : "group-leader") : "member",
         scopeId, agentId: request.agent, nativeId: persisted.nativeId, throughEpoch: epoch
-      }) : undefined;
+      })) : undefined;
       if (original && original.harnessId === persisted.harnessId &&
         original.adapterVersion === persisted.adapterVersion && original.durable === persisted.durable &&
         (original.generation !== persisted.generation || original.createdAt !== persisted.createdAt)) {
@@ -10057,45 +10231,50 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       projectId: state.id, agentId: request.agent, invocationId: request.invocationId,
       session, ...(request.executionContext ? { executionContext: request.executionContext } : {})
     });
-    request.onControlResult = (input, session) => {
+    request.onControlResult = async (input, session) => {
       this.assertWritable();
-      return receipts(session).record(input);
+      return await receipts(session).record(input);
     };
-    request.onProjectStateRequest = input => {
+    request.onProjectStateRequest = async input => {
       this.assertWritable();
-      return executeProjectStateRequest(this.database(), { kind: "agent", projectId: state.id,
-        agentId: request.agent, invocationId: request.invocationId }, input, { observePullRequest: preparation => {
+      return await executeProjectStateRequest(this.database(), { kind: "agent", projectId: state.id,
+        agentId: request.agent, invocationId: request.invocationId }, input, { observePullRequest: async preparation => {
         const repository = this.repository(state);
         if (repository.owner !== preparation.repository.owner || repository.name !== preparation.repository.name)
           throw new Error("Project repository changed before its exact PR observation");
-        return this.git(state.id).observePullRequest({ repository, providerNumber: preparation.providerNumber,
+        return (await this.git(state.id)).observePullRequest({ repository, providerNumber: preparation.providerNumber,
           ownerExecutionId: preparation.executionId });
       } });
     };
-    request.onPendingControlResults = (inputId, session) => {
+    request.onPendingControlResults = async (inputId, session) => {
       this.assertWritable();
-      captureKnownAgentGitResults(this.database(), state.id);
-      return receipts(session).prepareNotification(inputId);
+      await captureKnownAgentGitResults(this.database(), state.id);
+      return await receipts(session).prepareNotification(inputId);
     };
     request.onPendingWorkflowAdjustments = async (inputId, session, publishContext) => {
       this.assertWritable();
       const notifications = workflowNotifications(session);
-      const text = notifications.prepare(inputId);
-      if (!text) return "";
-      const details = await publishContext?.(notifications.details(inputId));
-      return `${text}${details ? `\n\n${details}` : ""}`;
+      const text = await notifications.prepare(inputId);
+      const sources = await notifications.details(inputId);
+      const messages = request.agent === "main" ? (await this.database().unexpectedSystemMessages(state.id)) : [];
+      if (messages.length) sources.push({ key: "unexpected-system-messages", label: "Unexpected late system messages",
+        records: messages.map(event => ({ ...event.payload, recordedAt: event.ts })) });
+      if (!text && !messages.length) return "";
+      const details = await publishContext?.(sources);
+      return [text, messages.length ? `Unexpected system messages from known other native Agents are available (${messages.length}). Read them during this normal task if useful; they do not assign a repair, confirm Git success or renew any original task allowance.` : "",
+        details ?? (messages.length ? JSON.stringify(sources.at(-1)!.records) : "")].filter(Boolean).join("\n\n");
     };
     const priorOfficial = request.onOfficialHarnessEvent;
     request.onOfficialHarnessEvent = async (event, nativeSession) => {
       await priorOfficial?.(event);
       // Only the trusted resident broker supplies an actually opened Session.
       // A persisted result, queued input, or one-shot event is not reception.
-      if (nativeSession) { receipts(nativeSession).observeNative(event); workflowNotifications(nativeSession).observe(event); }
+      if (nativeSession) { await receipts(nativeSession).observeNative(event); await workflowNotifications(nativeSession).observe(event); }
     };
     const priorNativeInput = request.onNativeUserInput;
     request.onNativeUserInput = async (event, nativeSession) => {
       await priorNativeInput?.(event, nativeSession);
-      if (nativeSession) { receipts(nativeSession).observeNative(event); workflowNotifications(nativeSession).observe(event); }
+      if (nativeSession) { await receipts(nativeSession).observeNative(event); await workflowNotifications(nativeSession).observe(event); }
     };
     const priorSession = request.onDurableSessionStarted;
     request.onDurableSessionStarted = async (session: SessionRef, legacyId: string) => {
@@ -10152,8 +10331,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       const context = request.executionContext;
       const scopedGroup = context && "groupRunId" in context && context.groupRunId
-        ? this.database().scopedGroupRun(state.id, context.groupRunId) : undefined;
-      const appended = this.database().appendUsage({
+        ? (await this.database().scopedGroupRun(state.id, context.groupRunId)) : undefined;
+      const appended = await this.database().appendUsage({
         ...(scopedGroup ? { scopeKind: "scoped" as const } : {}),
         usageId: usage.usageId,
         requestId: usage.usageId,
@@ -10175,7 +10354,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         model: usage.model,
         protocol: usage.protocol
       });
-      this.appendSuccessfulAttempt(state, {
+      await this.appendSuccessfulAttempt(state, {
         attemptId: `usage-persistence-success:${createHash("sha256")
           .update(`${state.id}\0${request.invocationId}\0${usage.usageId}`)
           .digest("hex")
@@ -10253,7 +10432,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         .digest("hex")
         .slice(0, 32);
       const safeFailure = safeRuntimeError(failure.error);
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         attemptId: `usage-persistence:${failureIdentity}`,
         scope: "usage",
         operation: `persistence:${failure.usageId}`,
@@ -10276,7 +10455,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           ...(routeScopeId ? { routeScopeId } : {})
         }
       });
-      this.database().appendEvent({
+      await this.database().appendEvent({
         projectId: state.id,
         eventId: `evt-usage-persistence-failed-${failureIdentity}`,
         requestId: `usage-persistence-failed-${failureIdentity}`,
@@ -10299,7 +10478,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           } : {})
         }
       });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       await priorUsageFailure?.(failure);
     };
   }
@@ -10361,7 +10540,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       delete request.onHarnessRecoveryWait;
       delete request.onResidentTurnActivity;
       delete request.onHarnessAttemptReset;
-      this.attachRuntimeCallbacks(state, request, execution);
+      await this.attachRuntimeCallbacks(state, request, execution);
       let durableRehydrate: ResidentDurableRehydrateProvenance | undefined;
       if (recovery && !recoveryConsumed) {
         const context = lockedBaseRequest.executionContext;
@@ -10379,7 +10558,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           targetEpoch !== recovery.stoppedEpoch + 1) {
           throw new Error("Resident recovery proof does not match its locked process authority");
         }
-        const persistedRecovery = this.persistResidentRecoverySeed(recovery, {
+        const persistedRecovery = await this.persistResidentRecoverySeed(recovery, {
           projectId: state.id,
           sourceNodeRunId: context.nodeRunId,
           scope: recovery.scope,
@@ -10388,11 +10567,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           harnessId: state.agents[lockedBaseRequest.agent]!.harness,
           stoppedEpoch: recovery.stoppedEpoch
         });
-        const existing = this.database().residentRecoveryProofForSeed(
+        const existing = await this.database().residentRecoveryProofForSeed(
           state.id,
           persistedRecovery.seedId
         );
-        const recorded = this.database().recordResidentRecoveryProof(
+        const recorded = (await this.database().recordResidentRecoveryProof(
           existing ?? bindResidentRecoveryProof({
             seed: persistedRecovery,
             newInvocationId: turn.invocationId,
@@ -10400,8 +10579,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             inputId: turn.inputId,
             createdAt: new Date().toISOString()
           })
-        ).proof;
-        const consumed = this.database().consumeResidentRecoveryProof({
+        )).proof;
+        const consumed = (await this.database().consumeResidentRecoveryProof({
           projectId: state.id,
           proofId: recorded.proofId,
           seedId: recorded.seedId,
@@ -10411,7 +10590,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           newInvocationId: turn.invocationId,
           routeEpoch: targetEpoch,
           inputId: turn.inputId
-        }).proof;
+        })).proof;
         recoveryConsumed = true;
         durableRehydrate = consumed.durableRehydrate;
       }
@@ -10423,7 +10602,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     };
   }
 
-  private persistResidentRecoverySeed(
+  private async persistResidentRecoverySeed(
     input: ResidentRecoveryProofSeed,
     expected: Pick<ResidentRecoveryProofSeed,
       | "projectId"
@@ -10433,7 +10612,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       | "agentId"
       | "stoppedEpoch">
     & { harnessId?: string }
-  ): ResidentRecoveryProofSeed {
+  ): Promise<ResidentRecoveryProofSeed> {
     const recovery = assertResidentRecoveryProofSeed(input);
     if (
       recovery.projectId !== expected.projectId ||
@@ -10447,30 +10626,32 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     ) {
       throw new Error("Resident recovery observation does not match its stopped authority");
     }
-    return this.database().recordResidentRecoverySeed(recovery).seed;
+    return (await this.database().recordResidentRecoverySeed(recovery)).seed;
   }
 
   private traceSink(state: ProjectState, agent: string, invocationId: string): TraceSink {
-    if (this.#invocationDispatcher) {
-      return this.#invocationDispatcher.trace({ state, agentId: agent, invocationId });
-    }
+    const sink: TraceSink = this.#invocationDispatcher
+      ? this.#invocationDispatcher.trace({ state, agentId: agent, invocationId })
+      : async (kind, message, data) => {
+        await this.#storage.appendTrace(state, agent, invocationId, kind, message);
+        await this.appendEvent(state, { type: "agent.trace", level: kind === "stderr" ? "warning" : "info",
+          agent, message, invocationId, data: { resident: true, traceKind: kind, ...(data ?? {}) } });
+      };
     return async (kind, message, data) => {
-      await this.#storage.appendTrace(state, agent, invocationId, kind, message);
-      await this.appendEvent(state, {
-        type: "agent.trace",
-        level: kind === "stderr" ? "warning" : "info",
-        agent,
-        message,
-        invocationId,
-        data: { resident: true, traceKind: kind, ...(data ?? {}) }
-      });
+      await sink(kind, message, data);
+      if (data?.late !== true || data.foreignSystemMessage !== true) return;
+      const source = { sourceAgentId: agent, sourceInvocationId: invocationId,
+        inputId: data.inputId, message: redactTrace(message), recipient: "main" };
+      await this.database().appendEvent({ projectId: state.id, agentId: agent, invocationId,
+        requestId: `late-system-message:${createHash("sha256").update(JSON.stringify(source)).digest("hex")}`,
+        type: "native.system_message.late", payload: source });
     };
   }
 
-  private mainHead(state: ProjectState): string {
+  private async mainHead(state: ProjectState): Promise<string> {
     const retained = this.#mainHeads.get(state.id);
     if (retained) return retained;
-    const projection = this.database().projectState(state.id);
+    const projection = await this.database().projectState(state.id);
     const mergedOperationHead = projection.operations
       .filter((item) =>
         item.kind === "pull.merge" && item.status === "finalized" &&
@@ -10506,7 +10687,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   }
 
   private async refreshMainHeadFromRemote(state: ProjectState): Promise<void> {
-    const git = this.git(state.id);
+    const git = await this.git(state.id);
     if (!git.observeRemoteRef) return;
     const observed = await git.observeRemoteRef(this.repository(state), "main");
     if (observed.status !== "present" || !observed.sha) {
@@ -10516,11 +10697,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     this.#branchHeads.set(`${state.id}:main`, observed.sha);
   }
 
-  private branchHead(state: ProjectState, branch: string): string {
+  private async branchHead(state: ProjectState, branch: string): Promise<string> {
     const key = `${state.id}:${branch}`;
     const retained = this.#branchHeads.get(key);
     if (retained) return retained;
-    const projection = this.database().projectState(state.id);
+    const projection = await this.database().projectState(state.id);
     const recordedMerge = projection.operations.filter(item => item.kind === "pull.merge" && item.status === "finalized"
       && item.expectedBase === branch && typeof item.remoteFact?.mergeCommitSha === "string"
       && /^[a-f0-9]{40}$/u.test(item.remoteFact.mergeCommitSha)).at(-1)?.remoteFact?.mergeCommitSha;
@@ -10529,8 +10710,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       .filter((pull) => pull.base === branch && pull.status === "merged" && pull.mergeCommitSha)
       .at(-1)?.mergeCommitSha;
     const initial = branch === "main"
-      ? this.mainHead(state)
-      : this.database().projectState(state.id).groupRuns
+      ? (await this.mainHead(state))
+      : (await this.database().projectState(state.id)).groupRuns
           .find((group) => group.groupBranch === branch)?.baseCommit;
     const head = typeof recordedMerge === "string" ? recordedMerge : merged ?? initial;
     if (!head) throw new Error(`Authoritative head for ${branch} is unavailable`);
@@ -10538,11 +10719,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return head;
   }
 
-  private standaloneGitFacts(state: ProjectState, execution: MemberExecution): AgentGitFacts {
+  private async standaloneGitFacts(state: ProjectState, execution: MemberExecution): Promise<AgentGitFacts> {
     const key = `${state.id}:${execution.id}:${execution.ownershipEpoch}`;
     let facts = this.#agentGitFacts.get(key);
     if (!facts) {
-      facts = this.database().latestAgentGitFacts(state.id, execution.id, execution.ownershipEpoch) ?? {};
+      facts = (await this.database().latestAgentGitFacts(state.id, execution.id, execution.ownershipEpoch)) ?? {};
       this.#agentGitFacts.set(key, facts);
     }
     return facts;
@@ -10550,8 +10731,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
   /** Only mechanism checks belong here. Wake the original Agent to supply
    * missing actions; never push, create/merge a PR or resolve its conflicts. */
-  private latestFailureNotice(state: ProjectState, authority?: RuntimeActivityAuthority): string {
-    const attempts = this.database().failureAttempts(state.id).filter(item =>
+  private async latestFailureNotice(state: ProjectState, authority?: RuntimeActivityAuthority): Promise<string> {
+    const attempts = (await this.database().failureAttempts(state.id)).filter(item =>
       (!authority || (!item.agentId || item.agentId === authority.agentId) &&
         (!item.executionId || !authority.executionId || item.executionId === authority.executionId)));
     const latest = new Map<string, FailureAttempt>();
@@ -10571,73 +10752,74 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     routeDecision?: { targetNodeId: string; decisionRequestId: string }, retainedPull?: PullRequestRecord): Promise<{
       output: string; routeDecision?: { targetNodeId: string; decisionRequestId: string }
     }> {
-    const missing = async () => {
-      const facts = this.standaloneGitFacts(state, execution);
-      const receipt = state.taskCompletions?.[execution.id];
-      const synchronized = agentGitFactsSynchronized(facts, base);
-      const delivery = agentGitDeliveryStatus({ executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
-        headSha: facts.pushedHeadSha, pull: facts.pullRequest, synchronized,
-        operations: this.database().projectState(state.id).operations });
-      return [!receipt && "finish_task", ...delivery.missingActions.map(action => action === "git_push" && retainedPull
-        ? `github_get_pr for retained PR #${retainedPull.providerNumber}; confirm and finish its original Git delivery` : action),
-        ...await executionWorktreeClosingActions(this.git(state.id), execution, signal)].filter(Boolean) as string[];
-    };
-    // Reuse the existing persisted two-attempt budget, including files left
-    // by an artifact correction. The original Agent owns every file decision.
-    const repairMechanisms = async () => {
-      let remaining = await missing();
-      for (let attempt = 1; remaining.length && attempt <= 2; attempt += 1) {
+    const current = (await this.database().projectState(state.id)).executions.find(item => item.id === execution.id);
+    if (current?.status === "succeeded") return { output: current.output ?? output, routeDecision };
+    let repairInvocationId: string | undefined;
+    const supervision = await superviseTask<AgentRunResult>({
+      key: `${state.id}:${execution.id}`, value: { handoff: output }, signal,
+      inspect: async () => {
+        const facts = await this.standaloneGitFacts(state, execution);
+        const synchronized = agentGitFactsSynchronized(facts, base);
+        const delivery = agentGitDeliveryStatus({ executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
+          headSha: facts.pushedHeadSha, pull: facts.pullRequest, synchronized,
+          operations: (await this.database().projectState(state.id)).operations });
+        const missing = [!state.taskCompletions?.[execution.id] && "finish_task",
+          ...delivery.missingActions.map(action => action === "git_push" && retainedPull
+            ? `Observe the retained PR #${retainedPull.providerNumber} and finish its original delivery` : action),
+        ...await executionWorktreeClosingActions((await this.git(state.id)), execution, signal),
+        ...await resident.supervisionActions?.() ?? []].filter(Boolean) as string[];
+        try {
+          if (facts.merged) await this.commitMergedExecutionArtifacts(state, execution, pullRequestRecord(facts.merged));
+          else await this.commitUnchangedMergedArtifactIntents(state, execution, base);
+        } catch (error) {
+          if (!(error instanceof ExecutionArtifactPublicationError)) throw error;
+          missing.push(`Pending publication ${error.artifactPath} at ${error.commitSha}: ${error.message}. Inspect the file and correct your publication intent with publish_artifact and replacesPath if appropriate.`);
+        }
+        return missing;
+      },
+      reserve: async missing => {
+        await this.waitWhilePaused(state.id, signal);
         signal.throwIfAborted();
-        const round = state.workflowRecovery?.attempt ?? 0;
-        const requestId = round > 0
-          ? `agent-delivery-repair:${execution.id}:${execution.ownershipEpoch}:round-${round}:${attempt}`
-          : `agent-delivery-repair:${execution.id}:${execution.ownershipEpoch}:${attempt}`;
-        if (this.database().eventByRequestId(state.id, requestId)) continue;
-        this.database().appendEvent({ projectId: state.id, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
-          agentId: execution.agentId, requestId, type: "execution.mechanism_repair.requested", payload: { missing: remaining, attempt } });
-        const result = await this.submitResident(state, resident, signal, { inputId: requestId, invocationId: newId("inv"),
-          prompt: `Continue the same task in its retained session and directory. Missing formal mechanism actions: ${remaining.join(", ")}. Use your Git/GitHub tools and inspect their real results. Prepare Memory with finish_task before the final commit and deliver this round through one PR. A prior successful merge needs observation/synchronization, not another PR for bookkeeping. Verify the retained operation with current tool results before reporting the same blocker; a historical permission or transport error alone does not establish that the current turn is blocked. Ordinary business git_push does not stage files or create a commit. When changes need committing, git_stage and git_commit are provided by the platform Git MCP; if not visible, use the Harness's existing tool discovery within current permissions. Follow the applicable publication or closing tool description; an unchanged publication needs no empty commit. Control-action recording or persistence does not prove Git success. Existing facts: ${JSON.stringify({ ...this.standaloneGitFacts(state, execution), taskInstructions: this.database().projectState(state.id).tasks.find((task) => task.id === execution.taskId)?.assignment, ...(retainedPull ? { retainedPull } : {}) })}. If blocked, report the actual result for coordination. Preserve business work and the existing PR.` },
-          this.executionActivityAuthority(state.id, execution));
+        if (this.#shuttingDown || this.#cancellingProjects.has(state.id)) throw new Error("Task supervision was cancelled");
+        if (resident.closed) throw new Error("The original resident session is closed; no additional wakeup was sent");
+        repairInvocationId = newId("inv");
+        return await this.database().reserveExecutionSupervisionRepair({ projectId: state.id, executionId: execution.id,
+          ownershipEpoch: execution.ownershipEpoch, invocationId: repairInvocationId, missing });
+      },
+      invoke: async (attempt, missing) => this.submitResident(state, resident, signal, {
+        inputId: `execution-supervision:${execution.id}:${attempt}`, invocationId: repairInvocationId!,
+        prompt: `Continue the original task in this session and directory. Current remaining facts: ${missing.join("; ")}. Inspect the available tool results and do what you can to correct these omissions. Preserve confirmed operations and the existing PR; do not repeat a successful merge. Return the available result and the actual remaining limitations if you cannot finish. Existing task and Git evidence: ${JSON.stringify({
+          ...(await this.standaloneGitFacts(state, execution)), worktreePath: execution.worktreePath,
+          taskInstructions: (await this.database().projectState(state.id)).tasks.find(task => task.id === execution.taskId)?.assignment })}.`
+      }, (await this.executionActivityAuthority(state.id, execution))),
+      accept: async result => {
+        await this.database().appendEvent({ projectId: state.id, executionId: execution.id,
+          ownershipEpoch: execution.ownershipEpoch, agentId: execution.agentId, invocationId: repairInvocationId,
+          requestId: `execution-supervision-returned:${repairInvocationId}`, type: "execution.supervision.returned", payload: {} });
         await this.persistArtifactPublicationIntents(state, execution, result);
-        routeDecision = this.persistStandaloneRouteDecision(state, execution, result) ?? routeDecision;
-        output = result.handoff ?? output;
-        remaining = await missing();
+        routeDecision = (await this.persistStandaloneRouteDecision(state, execution, result)) ?? routeDecision;
+      },
+      record: async (outcome, missing, reason) => {
+        await this.database().appendEvent({ projectId: state.id, executionId: execution.id,
+          ownershipEpoch: execution.ownershipEpoch, agentId: execution.agentId,
+          requestId: `execution-supervision-result:${execution.id}:${outcome}`, type: "execution.supervision.finished",
+          payload: { outcome, missing, ...(reason ? { reason } : {}) } });
       }
-      if (remaining.length) throw new Error(`Agent delivery remains incomplete after bounded retained-session repair: ${remaining.join(", ")}${this.standaloneGitFacts(state, execution).pushResult ? `; last push result: ${this.standaloneGitFacts(state, execution).pushResult!.status}` : ""}`);
-    };
-    await repairMechanisms();
-    for (let attempt = 1; ; attempt += 1) {
-      const pull = this.standaloneGitFacts(state, execution).merged!;
-      try {
-        await this.commitMergedExecutionArtifacts(state, execution, pullRequestRecord(pull));
-        break;
-      } catch (error) {
-        if (!(error instanceof ExecutionArtifactPublicationError) || attempt > 2) throw error;
-        signal.throwIfAborted();
-        const digest = createHash("sha256").update(`${error.artifactPath}\0${error.commitSha}`).digest("hex").slice(0, 16);
-        const round = state.workflowRecovery?.attempt ?? 0;
-        const requestId = `agent-publication-repair:${execution.id}:${execution.ownershipEpoch}:${digest}:round-${round}:${attempt}`;
-        if (this.database().eventByRequestId(state.id, requestId)) continue;
-        this.database().appendEvent({ projectId: state.id, executionId: execution.id,
-          ownershipEpoch: execution.ownershipEpoch, agentId: execution.agentId, requestId,
-          type: "execution.mechanism_repair.requested", payload: { missing: ["valid artifact publication"],
-            path: error.artifactPath, commitSha: error.commitSha, reason: error.message, attempt } });
-        const result = await this.submitResident(state, resident, signal, { inputId: requestId, invocationId: newId("inv"),
-          prompt: `Continue your original task in its retained session and directory. Your pending Git artifact publication was rejected: ${error.message}. Inspect the accepted commit and your prior tool results. To correct the pending record, call publish_artifact with your chosen committed deliverable path and replacesPath=${JSON.stringify(error.artifactPath)}; use a new callId. Internal Agent memory is not a deliverable. The system has not removed the old intent or chosen a replacement. Do not repeat an already merged PR. If you cannot correct it, report the actual blocker for coordination.` },
-          this.executionActivityAuthority(state.id, execution));
-        await this.persistArtifactPublicationIntents(state, execution, result);
-        routeDecision = this.persistStandaloneRouteDecision(state, execution, result) ?? routeDecision;
-        output = result.handoff ?? output;
-        await repairMechanisms();
+    });
+    output = supervisionHandoff(supervision.value.handoff ?? output, supervision);
+    const nativeStopConfirmed = await this.closeResidentForTerminal(state, execution.id, resident);
+    const postStop = await nextTaskRepair({ key: `${state.id}:${execution.id}:retirement`, signal,
+      inspect: async () => executionWorktreeClosingActions((await this.git(state.id)), execution, signal), reserve: () => undefined,
+      record: async (outcome, missing, reason) => {
+        if (outcome === "resolved") return;
+        await this.database().appendEvent({ projectId: state.id, executionId: execution.id, agentId: execution.agentId, ownershipEpoch: execution.ownershipEpoch,
+          type: "execution.supervision.finished", payload: { outcome: outcome === "exhausted" ? "unavailable" : outcome,
+            missing, nativeStopConfirmed, source: "session_retirement", ...(reason ? { reason } : {}) } });
       }
-    }
-    await this.closeResidentForTerminal(state, execution.id, resident);
-    // A model safe point alone cannot prove a clean checkout: the trusted
-    // close must finish first. A late write retains this execution for the
-    // existing stopped-owner recovery path, before any task/route release.
-    const stoppedMissing = await executionWorktreeClosingActions(this.git(state.id), execution, signal);
-    if (stoppedMissing.length) throw new Error(`Original Agent worktree remains incomplete after confirmed native stop: ${stoppedMissing.join(", ")}`);
-    this.database().completeExecution({ projectId: state.id, executionId: execution.id,
+    });
+    if ("outcome" in postStop && postStop.outcome !== "resolved") output = supervisionHandoff(output,
+      { remaining: postStop.remaining, outcome: postStop.outcome === "exhausted" ? "unavailable" : postStop.outcome });
+    await this.database().completeExecution({ projectId: state.id, executionId: execution.id,
       ownershipEpoch: execution.ownershipEpoch, output, requestId: `complete-${executionEpochIdentity(execution)}` });
     return { output, routeDecision };
   }
@@ -10668,7 +10850,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     suppliedRouteDecision?: { targetNodeId: string; decisionRequestId: string }
   ): Promise<StandaloneIntegrationOutcome> {
     const database = this.database();
-    const projection = database.projectState(state.id);
+    const projection = await database.projectState(state.id);
     const node = projection.nodeRuns.find((item) => item.id === execution.nodeRunId);
     if (!node) throw new Error("Standalone node disappeared during completion");
     const routeEmissionId = `route-${node.id}`;
@@ -10732,12 +10914,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       target = strong[0].target;
       route = { kind: "fixed", targetNodeId: target };
     } else if (this.workerRouteCandidates(state, execution.agentId).length > 0 && (
-      suppliedRouteDecision ?? this.persistedStandaloneRouteDecision(state.id, execution)
+      suppliedRouteDecision ?? (await this.persistedStandaloneRouteDecision(state.id, execution))
     )) {
-      const persisted = suppliedRouteDecision ?? this.persistedStandaloneRouteDecision(
+      const persisted = suppliedRouteDecision ?? (await this.persistedStandaloneRouteDecision(
         state.id,
         execution
-      );
+      ));
       const candidates = this.workerRouteCandidates(state, execution.agentId);
       if (!persisted || !candidates.includes(persisted.targetNodeId)) {
         throw new Error("Agent-owned weak route has an invalid fenced route_to_agent decision");
@@ -10761,7 +10943,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         signal
       );
       if (decision?.intervention) {
-        this.appendSuccessfulAttempt(state, {
+        await this.appendSuccessfulAttempt(state, {
           scope: "scheduler",
           operation: routeAttemptOperation,
           startedAt: routeAttemptStartedAt,
@@ -10783,7 +10965,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         return { terminal: true };
       }
       if (!decision || !edges.some((edge) => edge.target === decision.targetNodeId)) {
-        this.appendFailureAttempt(state, {
+        await this.appendFailureAttempt(state, {
           scope: "scheduler",
           operation: routeAttemptOperation,
           error: new Error("Merged execution awaits a fenced Main route decision"),
@@ -10804,14 +10986,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             ...(decision ? { selectedTarget: decision.targetNodeId } : {})
           }
         });
-        state.status = "retrying";
+        state.status = "running";
         state.phase = "collaboration:main-route-required";
         state.lastError = "Merged execution awaits a fenced Main route decision";
-        await this.publishProjection(state, database.projectState(state.id));
+        await this.publishProjection(state, (await database.projectState(state.id)));
         await this.saveState(state);
         return { terminal: true };
       }
-      this.appendSuccessfulAttempt(state, {
+      await this.appendSuccessfulAttempt(state, {
         scope: "scheduler",
         operation: routeAttemptOperation,
         startedAt: routeAttemptStartedAt,
@@ -10832,7 +11014,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         decisionRequestId: decision.decisionRequestId
       };
     }
-    database.completeStandaloneNode({
+    await database.completeStandaloneNode({
       projectId: state.id,
       nodeRunId: node.id,
       executionId: execution.id,
@@ -10858,17 +11040,17 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       };
       await this.saveState(state);
     }
-    await this.publishProjection(state, database.projectState(state.id));
+    await this.publishProjection(state, (await database.projectState(state.id)));
     if (target === "finish") {
       // deliverRoute first persists the terminal downstream-activation fact in
       // the authoritative database. The legacy completed flag is only its
       // read-model projection and must never be the consumption authority.
-      database.deliverRoute({
+      await database.deliverRoute({
         projectId: state.id,
         routeEmissionId,
         activationRequestId: `finish-${routeEmissionId}`
       });
-      await this.publishProjection(state, database.projectState(state.id));
+      await this.publishProjection(state, (await database.projectState(state.id)));
       state.status = "completed";
       state.phase = "completed";
       state.completedAt = new Date().toISOString();
@@ -10898,7 +11080,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const attemptStartedAt = nowIso();
     const sourceNodeRunId = projection.activeNodeRunId;
     if (!sourceNodeRunId) {
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         scope: "scheduler",
         operation: "main-route.recovery",
         error: new Error("Frozen independent Main has no active node authority"),
@@ -10908,7 +11090,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         agentId: "main",
         metadata: { stateRevision: projection.stateRevision }
       });
-      await this.publishProjection(state, this.database().projectState(state.id));
+      await this.publishProjection(state, (await this.database().projectState(state.id)));
       state.status = "retrying";
       state.phase = "collaboration:main-recovery-waiting";
       state.lastError = "Frozen independent Main has no active node authority";
@@ -10917,7 +11099,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     const routeEpoch = Math.max(
       1,
-      this.database().latestMainRouteAttempt(state.id, sourceNodeRunId)
+      (await this.database().latestMainRouteAttempt(state.id, sourceNodeRunId))
         ?.coordinatorEpoch ?? 0
     );
     const routeScopeId = `main-route-${sourceNodeRunId}`;
@@ -10930,7 +11112,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       executionRuntimePath: runtimePath
     });
     const recovery = observation?.stopped && observation.recovery
-      ? this.persistResidentRecoverySeed(observation.recovery, {
+      ? (await this.persistResidentRecoverySeed(observation.recovery, {
           projectId: state.id,
           sourceNodeRunId,
           scope: "main-route",
@@ -10938,9 +11120,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           agentId: "main",
           harnessId: state.agents.main!.harness,
           stoppedEpoch: routeEpoch
-        })
+        }))
       : undefined;
-    const recovered = this.database().recoverMainRoute({
+    const recovered = await this.database().recoverMainRoute({
       projectId: state.id,
       nodeRunId: sourceNodeRunId,
       routeEpoch,
@@ -10952,7 +11134,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       // Reopening an owner proves transport recovery, not a successful Main
       // decision. Resolve its failure ledger at the actual decision commit.
     } else {
-      this.appendFailureAttempt(state, {
+      await this.appendFailureAttempt(state, {
         scope: "scheduler",
         operation: `main-route.recovery:${sourceNodeRunId}`,
         error: new Error(observation?.stopped === true
@@ -10969,7 +11151,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         metadata: { priorProcessStopped: observation?.stopped === true }
       });
     }
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     if (!recovered.recovered) {
       state.status = "retrying";
       state.phase = recovered.waitingForUser
@@ -11000,11 +11182,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     routeEpoch: number;
     runtimePath: string;
     error: unknown;
-    allowRetry?: boolean;
   }): Promise<IndependentMainRouteRecovery> {
     const attemptStartedAt = nowIso();
     const failure = safeRuntimeError(input.error);
-    this.appendFailureAttempt(input.state, {
+    await this.appendFailureAttempt(input.state, {
       scope: "resident",
       operation: `main-route:${input.sourceNodeRunId}`,
       error: input.error,
@@ -11014,7 +11195,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       coordinatorEpoch: input.routeEpoch,
       metadata: { routeScopeId: input.routeScopeId }
     });
-    const frozen = this.database().freezeMainRouteFailure({
+    const frozen = await this.database().freezeMainRouteFailure({
       projectId: input.state.id,
       nodeRunId: input.sourceNodeRunId,
       routeEpoch: input.routeEpoch,
@@ -11023,7 +11204,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     });
     await this.publishProjection(
       input.state,
-      this.database().projectState(input.state.id)
+      (await this.database().projectState(input.state.id))
     );
     // The old lifetime cap is now a cadence boundary. Yield the native
     // recovery recursion to the durable scheduler after the fast attempts;
@@ -11042,30 +11223,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       routeEpoch: input.routeEpoch,
       executionRuntimePath: input.runtimePath
     });
-    if (input.allowRetry === false) {
-      // Main is the top Agent. Exhausted missing-tool repairs preserve its
-      // facts/session and pause for user input after exact stop observation.
-      // Do not reset the budget or manufacture an orchestration decision.
-      const stoppedInvocation = this.database().latestMainRouteAttempt(input.state.id, input.sourceNodeRunId)?.invocationId;
-      if (observation?.stopped && stoppedInvocation) {
-        await this.closeRuntimeActivity(input.state, { agentId: "main", nodeRunId: input.sourceNodeRunId,
-          coordinatorEpoch: input.routeEpoch }, { kind: "resident", invocationId: stoppedInvocation,
-          outcome: "stopped", requestId: `runtime-main-resident-close-${input.sourceNodeRunId}-${input.routeEpoch}` });
-      }
-      this.database().appendEvent({ projectId: input.state.id, nodeRunId: input.sourceNodeRunId,
-        agentId: "main", coordinatorEpoch: input.routeEpoch,
-        requestId: `main-mechanism-exhausted-${input.sourceNodeRunId}-${input.routeEpoch}`,
-        type: "main.route.mechanism_repair.exhausted",
-        payload: { priorProcessStopped: observation?.stopped === true, error: failure } });
-      input.state.status = "retrying";
-      input.state.phase = "collaboration:main-recovery-waiting";
-      input.state.lastError = failure;
-      await this.saveState(input.state);
-      await this.publishProjection(input.state, this.database().projectState(input.state.id));
-      return { recovered: false, priorProcessStopped: observation?.stopped === true };
-    }
     const recovery = observation?.stopped && observation.recovery
-      ? this.persistResidentRecoverySeed(observation.recovery, {
+      ? (await this.persistResidentRecoverySeed(observation.recovery, {
           projectId: input.state.id,
           sourceNodeRunId: input.sourceNodeRunId,
           scope: "main-route",
@@ -11073,9 +11232,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           agentId: "main",
           harnessId: input.state.agents.main!.harness,
           stoppedEpoch: input.routeEpoch
-        })
+        }))
       : undefined;
-    const recovered = this.database().recoverMainRoute({
+    const recovered = await this.database().recoverMainRoute({
       projectId: input.state.id,
       nodeRunId: input.sourceNodeRunId,
       routeEpoch: input.routeEpoch,
@@ -11084,7 +11243,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     });
     await this.publishProjection(
       input.state,
-      this.database().projectState(input.state.id)
+      (await this.database().projectState(input.state.id))
     );
     if (!recovered.recovered) {
       input.state.status = "retrying";
@@ -11101,7 +11260,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // success in the failure ledger requires the actual formal decision.
     await this.publishProjection(
       input.state,
-      this.database().projectState(input.state.id)
+      (await this.database().projectState(input.state.id))
     );
     return { recovered: true, ...(recovery ? { recovery } : {}) };
   }
@@ -11114,7 +11273,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     semanticInputHash: string;
   }): Promise<void> {
     if (this.#locallyAcceptedMainRoutes.has(input.semanticInputHash)) return;
-    if (this.database().mainRouteHasConfirmedRecovery(input.state.id, input.sourceNodeRunId, input.fact.routeEpoch)) {
+    if ((await this.database().mainRouteHasConfirmedRecovery(input.state.id, input.sourceNodeRunId, input.fact.routeEpoch))) {
       this.#locallyAcceptedMainRoutes.add(input.semanticInputHash);
       return;
     }
@@ -11134,9 +11293,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     this.#locallyAcceptedMainRoutes.add(input.semanticInputHash);
   }
 
-  private restoreReceivedRootMainInputs(state: ProjectState): void {
+  private async restoreReceivedRootMainInputs(state: ProjectState): Promise<void> {
     for (const input of state.userInputs.filter(entry => entry.status === "pending")) {
-      const received = this.database().eventByRequestId(state.id, `main-route-user-input-received:${input.id}`);
+      const received = await this.database().eventByRequestId(state.id, `main-route-user-input-received:${input.id}`);
       if (!received) continue;
       if (received.type !== "user.input.delivered" || received.agentId !== "main" || received.payload.inputId !== input.id ||
         received.payload.messageDigest !== createHash("sha256").update(input.message).digest("hex") ||
@@ -11156,25 +11315,25 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const priorNativeInput = request.onNativeUserInput;
     request.onNativeUserInput = async (event, session) => {
       await priorNativeInput?.(event, session);
-      const binding = this.database().latestAgentNativeSessionBinding(state.id, "main");
+      const binding = await this.database().latestAgentNativeSessionBinding(state.id, "main");
       if (!session || !binding || event.kind !== "user.message" || event.invocationId !== request.invocationId ||
         event.harnessId !== session.harnessId || typeof event.eventId !== "string" || !event.eventId ||
         typeof event.message !== "string" || binding.invocationId !== request.invocationId ||
         binding.runtimePath !== request.runtimePath || binding.worktreePath !== request.workspacePath ||
         !isDeepStrictEqual(binding.executionContext, context) || !sameDurableSession(binding.session, session) ||
-        this.database().latestMainRouteAttempt(state.id, context.nodeRunId)?.coordinatorEpoch !== context.coordinatorEpoch) return;
+        (await this.database().latestMainRouteAttempt(state.id, context.nodeRunId))?.coordinatorEpoch !== context.coordinatorEpoch) return;
       this.assertWritable();
       for (const input of pendingInputs) {
         if (!event.message.includes(redactTrace(input.text))) continue;
         const requestId = `main-route-user-input-received:${input.id}`;
-        if (this.database().eventByRequestId(state.id, requestId)) continue;
-        this.database().appendEvent({ projectId: state.id, agentId: "main", nodeRunId: context.nodeRunId,
+        if ((await this.database().eventByRequestId(state.id, requestId))) continue;
+        await this.database().appendEvent({ projectId: state.id, agentId: "main", nodeRunId: context.nodeRunId,
           invocationId: request.invocationId, coordinatorEpoch: context.coordinatorEpoch, requestId,
           type: "user.input.delivered", payload: { inputId: input.id,
             messageDigest: createHash("sha256").update(input.message).digest("hex"), eventId: event.eventId,
             sourceType: event.sourceType, session } });
       }
-      this.restoreReceivedRootMainInputs(state);
+      await this.restoreReceivedRootMainInputs(state);
       await this.saveState(state);
     };
   }
@@ -11200,23 +11359,23 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (!decideRoute) return undefined;
     const previousWorkflowRevision = state.workflowRevision;
     await this.applyWaitingWorkflowAdjustments(state);
-    const adjustment = this.database().rootMainWorkflowAdjustmentAdmission(state.id, sourceNodeRunId);
+    const adjustment = await this.database().rootMainWorkflowAdjustmentAdmission(state.id, sourceNodeRunId);
     if (adjustment) throw new CollaborationStateError("WORKFLOW_ADJUSTMENT_PENDING", `等待用户修改在下一管理任务前重新评估：${adjustment.requestId}`,
       { projectId: state.id, requestId: adjustment.requestId });
     const routeScopeId = `main-route-${sourceNodeRunId}`;
-    const sourceNode = this.database().projectState(state.id).nodeRuns
+    const sourceNode = (await this.database().projectState(state.id)).nodeRuns
       .find((nodeRun) => nodeRun.id === sourceNodeRunId);
     const sourceIsMain = sourceNode?.node.kind === "agent" &&
       sourceNode.node.agentId === "main";
     if (sourceNode && previousWorkflowRevision !== state.workflowRevision) {
       const edges = state.orchestration.routes[sourceNode.node.nodeId] ?? [];
-      candidates = sourceIsMain ? [...new Set([...edges.map(edge => edge.target), ...(this.mainCanComplete(state) ? ["finish"] : [])])]
+      candidates = sourceIsMain ? [...new Set([...edges.map(edge => edge.target), ...((await this.mainCanComplete(state)) ? ["finish"] : [])])]
         : edges.filter(edge => edge.kind === "weak").map(edge => edge.target);
     }
     // Main still needs its existing request_user coordination capability
     // when a receipt blocks completion and there are no business routes.
     if (candidates.length === 0 && !sourceIsMain) return undefined;
-    this.restoreReceivedRootMainInputs(state);
+    await this.restoreReceivedRootMainInputs(state);
     const pendingInputs = state.userInputs.filter((input) => input.status === "pending")
       .map(input => ({ ...structuredClone(input), text: projectUserInputText(input) }));
     const answeredIntervention = state.userIntervention?.status === "answered"
@@ -11231,14 +11390,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       ...pendingInputs.map(input => ({ sender: "user", body: input.message })),
       ...(answeredIntervention ? [{ sender: "user", body: answeredIntervention.response ?? "" }] : [])
     ]);
-    const latestAttempt = this.database().latestMainRouteAttempt(state.id, sourceNodeRunId);
+    const latestAttempt = await this.database().latestMainRouteAttempt(state.id, sourceNodeRunId);
     const priorAccepted = latestAttempt
-      ? this.database().acceptedMainRouteActions({
+      ? (await this.database().acceptedMainRouteActions({
           projectId: state.id,
           nodeRunId: sourceNodeRunId,
           ...(typeof latestAttempt.payload.semanticInputHash === "string"
             ? { semanticInputHash: latestAttempt.payload.semanticInputHash } : {})
-        })
+        }))
       : [];
     const answeredPriorRequest = answeredIntervention && priorAccepted.some((fact) => fact.action.tool === "request_user" && fact.callId === answeredIntervention.requestedInvocationId);
     const retainedAccepted = !answeredPriorRequest ? priorAccepted : [];
@@ -11250,7 +11409,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         fact: priorAccepted[0]!,
         semanticInputHash: priorAccepted[0]!.semanticInputHash
       });
-      const consumable = this.database().acceptedMainRouteActions({
+      const consumable = await this.database().acceptedMainRouteActions({
         projectId: state.id,
         nodeRunId: sourceNodeRunId,
         semanticInputHash: priorAccepted[0]!.semanticInputHash
@@ -11258,7 +11417,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (!consumable.some((fact) => fact.action.tool !== "select_display")) {
         throw new Error("Accepted Main control sequence disappeared after stop-confirmed recovery");
       }
-      if (this.mainRouteTaskCompleted(state.id, sourceNodeRunId, consumable[0]!.routeEpoch, consumable[0]!.inputId)) {
+      if ((await this.mainRouteTaskMayReturn(state.id, sourceNodeRunId, consumable[0]!.routeEpoch, consumable[0]!.inputId))) {
         return this.finishMainRouteDecision({
           state,
           sourceNodeRunId,
@@ -11274,17 +11433,27 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         });
       }
     }
-    const recoverySeed = this.database().residentRecoverySeed({
+    let newUserRequest = false;
+    for (const input of pendingInputs) {
+      const queued = await this.database().eventById(state.id,
+        `evt_user_input_${createHash("sha256").update(input.id).digest("hex").slice(0, 32)}`);
+      if (queued?.type === "user.input.queued" && queued.payload.inputId === input.id &&
+        (!latestAttempt || queued.seq > latestAttempt.seq)) { newUserRequest = true; break; }
+    }
+    // A new explicit User request admits an ordinary Main turn. Re-reading
+    // that same queued input cannot renew the ended task's repair allowance.
+    if (!newUserRequest && (await this.database().mainRouteControlRepairCount(state.id, sourceNodeRunId)) >= MAX_TASK_REPAIR_WAKEUPS) return undefined;
+    const recoverySeed = await this.database().residentRecoverySeed({
       projectId: state.id,
       scope: "main-route",
       scopeId: routeScopeId,
       sourceNodeRunId
     });
-    if (latestAttempt && !recoverySeed && !this.database().mainRouteAttemptSettled(
+    if (latestAttempt && !recoverySeed && !(await this.database().mainRouteAttemptSettled(
       state.id,
       sourceNodeRunId,
       latestAttempt.coordinatorEpoch ?? 0
-    )) {
+    ))) {
       const recovered = await this.freezeAndRecoverIndependentMainRoute({
         state,
         sourceNodeRunId,
@@ -11310,7 +11479,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     try { await this.advanceTerminalPushObservations(state, signal); }
     catch (error) {
       if (!(error instanceof TerminalPushObservationUnresolvedError)) throw error;
-      const facts = this.database().authoritativeWorkflowFiles(state.id).currentState;
+      const facts = (await this.database().authoritativeWorkflowFiles(state.id)).currentState;
       contextSources.fields("main-route-receipts", "Original Agent receipt records", { stateRevision: facts.stateRevision,
         terminalPushObservations: facts.terminalPushObservations ?? [],
         terminalPushObservationIssues: facts.terminalPushObservationIssues ?? [],
@@ -11319,7 +11488,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     const priorAttempt = latestAttempt?.coordinatorEpoch ?? 0;
     const pendingProof = recoverySeed
-      ? this.database().residentRecoveryProofForSeed(state.id, recoverySeed.seedId)
+      ? (await this.database().residentRecoveryProofForSeed(state.id, recoverySeed.seedId))
       : undefined;
     const attempt = pendingProof?.routeEpoch ??
       (recoverySeed ? recoverySeed.stoppedEpoch + 1 : priorAttempt + 1);
@@ -11358,8 +11527,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     // Retain the last durably bound proposal when upgrading old task records;
     // never search old files for a business edit or choose one on Main's behalf.
-    const priorTaskClosed = latestAttempt && this.database().eventByRequestId(state.id,
-      `main-route-response-${sourceNodeRunId}-${latestAttempt.coordinatorEpoch ?? 0}`)?.type === "main.route.response.committed";
+    const priorTaskClosed = latestAttempt && (await this.database().eventByRequestId(state.id,
+      `main-route-response-${sourceNodeRunId}-${latestAttempt.coordinatorEpoch ?? 0}`))?.type === "main.route.response.committed";
     const workflowAuthoringInvocationId = !priorTaskClosed && latestAttempt
       ? latestAttempt.payload.workflowAuthoringInvocationId ?? latestAttempt.invocationId ?? invocationId
       : invocationId;
@@ -11369,7 +11538,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (reservedRecovery && latestAttempt.payload.semanticInputHash !== acceptedIdentity.semanticInputHash) {
       throw new MainRouteRecoveryRequiredError("Reserved Main recovery input changed; preserve its original invocation and reconcile the current task");
     }
-    if (!reservedRecovery) this.database().appendEvent({
+    if (!reservedRecovery) await this.database().appendEvent({
       projectId: state.id,
       eventId: `evt-main-route-${sourceNodeRunId}-${attempt}`,
       requestId: `main-route-${sourceNodeRunId}-${attempt}`,
@@ -11383,7 +11552,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         semanticInputHash: acceptedIdentity.semanticInputHash, inputId: turnInputId, managementWorkspaceName,
         workflowAuthoringInvocationId, ...(recoverySeed ? { recoverySeedId: recoverySeed.seedId } : {}) }
     });
-    await this.publishProjection(state, this.database().projectState(state.id));
+    await this.publishProjection(state, (await this.database().projectState(state.id)));
     const authorityInbox = await this.#storage.writeInbox(
       state,
       "main",
@@ -11406,7 +11575,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       workflowAuthoringInvocationId
     );
     if (sourceIsMain && state.orchestration.allowMainReconfiguration === true && !inputs.workflowAuthoringPath) {
-      const current = this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state));
+      const current = await this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state));
       await ensureMainWorkflowProposalFile(
         inputs.workflowAuthoringPath ?? path.join(inputs.workspacePath, MAIN_WORKFLOW_FILE),
         `${JSON.stringify(mainWorkflowDocument(state.id, current.snapshot.orchestration, current.version), null, 2)}\n`
@@ -11449,21 +11618,21 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         })
       : fallback;
     const canComplete = sourceIsMain &&
-      this.mainCanComplete(state) && candidates.includes("finish");
+      (await this.mainCanComplete(state)) && candidates.includes("finish");
     const allowFinishRoute = !sourceIsMain && candidates.includes("finish");
     const routeCandidates = [...candidates];
     request.workflowContext = { scope: "global", sourceNodeId: sourceNode?.node.nodeId ?? sourceAgentId,
       purpose: "outer-routing", candidates: routeCandidates };
     request.contextSources = contextSources.sources;
     request.nativeInputNotices = pendingInputs.map(input => input.text);
-    Object.assign(inputs, await prepareWorkflowContext(request, inputs, this.database().authoritativeWorkflowFiles(state.id)));
+    Object.assign(inputs, await prepareWorkflowContext(request, inputs, (await this.database().authoritativeWorkflowFiles(state.id))));
     const tasklessRouteTargets = routeCandidates.filter((candidate) =>
       candidate !== "finish" &&
       workflowTargetAllowsTasklessActivation(state.orchestration, candidate));
     const allowUserIntervention = state.orchestration.allowUserIntervention;
     const allowWorkflowReconfiguration = sourceIsMain &&
       state.orchestration.allowMainReconfiguration === true;
-    this.attachRuntimeCallbacks(state, request);
+    await this.attachRuntimeCallbacks(state, request);
     this.attachRootMainInputReception(state, request, pendingInputs);
     const routeTurnRequestFactory = this.turnRequestFactory(state, request, undefined, recoverySeed);
     // Transport current capability/receipt facts, never choose Main's action.
@@ -11537,14 +11706,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       requestId: `runtime-main-turn-start-${sourceNodeRunId}-${attempt}`
     });
     try {
-      if (this.database().mainRouteControlRepairCount(state.id, sourceNodeRunId) >= 2) {
-        throw new MainRouteMechanismExhaustedError("Main still lacks required formal control or finish_task after two retained-session mechanism repairs");
-      }
       // Stop-confirmed recovery carries the Agent's immutable prior choice,
       // never invents another choice, and never reuses its old finish receipt.
       for (const fact of retainedAccepted) {
         if (fact.routeEpoch + 1 !== attempt) throw new Error("Retained Main decision does not belong to the immediately stopped authority");
-        this.database().revalidateMainRouteControl({ projectId: state.id, nodeRunId: sourceNodeRunId,
+        await this.database().revalidateMainRouteControl({ projectId: state.id, nodeRunId: sourceNodeRunId,
           routeEpoch: attempt, stateVersion: attempt, invocationId, candidateNodeIds: candidates, tasklessRouteNodeIds: tasklessRouteTargets,
           canComplete, allowFinishRoute, action: fact.action,
           accepted: { requestId: acceptedMainControlRequestId(acceptedIdentity.semanticInputHash, fact.sequence),
@@ -11607,7 +11773,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           if (signal.aborted || this.#shuttingDown || this.#cancellingProjects.has(state.id)) {
             throw new Error("Main mechanism continuation was cancelled");
           }
-          await this.#invocationDispatcher?.finish?.(state, completedTurn.invocationId, "completed");
+          await this.finishInvocationDiagnostics(state, completedTurn.invocationId, "completed");
           await this.commitMainRouteStaging({ state, nodeRunId: sourceNodeRunId, routeEpoch: attempt,
             inputId: turnInputId, invocationId: completedTurn.invocationId, semanticInputHash: acceptedIdentity.semanticInputHash,
             candidates, canComplete, allowFinishRoute, sourceIsMain, workspacePath: inputs.workspacePath,
@@ -11618,30 +11784,40 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               outcome: "completed", requestId: `runtime-main-turn-close-${completedTurn.invocationId}` });
             activeRouteTurnClosed = true;
           }
-          const accepted = this.database().acceptedMainRouteActions({ projectId: state.id, nodeRunId: sourceNodeRunId,
+          const accepted = await this.database().acceptedMainRouteActions({ projectId: state.id, nodeRunId: sourceNodeRunId,
             semanticInputHash: acceptedIdentity.semanticInputHash });
           const missing = [
             !accepted.some((fact) => fact.action.tool !== "select_display") && "formal Main orchestration action",
-            !this.mainRouteTaskCompleted(state.id, sourceNodeRunId, attempt, turnInputId) && "finish_task"
+            !(await this.mainRouteTaskCompleted(state.id, sourceNodeRunId, attempt, turnInputId)) && "finish_task"
           ].filter((item): item is string => Boolean(item));
-          if (!missing.length) return undefined;
-          const repairCount = this.database().mainRouteControlRepairCount(state.id, sourceNodeRunId);
-          if (repairCount >= 2) throw new MainRouteMechanismExhaustedError(
-            `Main still lacks ${missing.join(" and ")} after two retained-session mechanism repairs`);
           const repairInvocationId = newId("inv");
-          activeRouteTurn = { inputId: `${turnInputId}-mechanism-repair-${repairInvocationId}`, invocationId: repairInvocationId, prompt: [
-            assignment, `Your previous turn ended without: ${missing.join(", ")}. Continue in the same session and management role and call the assigned missing tools. The system cannot decide the action for you.`,
-            ...managementToolInstructions(this.mainRouteTaskCompleted(state.id, sourceNodeRunId, attempt, turnInputId)),
-            ...(accepted.length ? ["Preserve the accepted formal actions; do not replace them.",
-              `Accepted actions: ${JSON.stringify(accepted.map((fact) => fact.action))}.`] : [])
-          ].join("\n\n") };
-          this.database().appendEvent({ projectId: state.id, nodeRunId: sourceNodeRunId, agentId: "main",
-            invocationId: activeRouteTurn.invocationId, coordinatorEpoch: attempt,
-            requestId: `main-control-repair-${acceptedIdentity.semanticInputHash}-${repairCount + 1}`,
-            type: "main.route.mechanism_repair.requested",
-            payload: { attempt: repairCount + 1, inputId: turnInputId, nativeInputId: activeRouteTurn.inputId,
-              previousInvocationId: completedTurn.invocationId, missing } });
-          await this.publishProjection(state, this.database().projectState(state.id));
+          const step = await nextTaskRepair({ key: `${state.id}:main:${sourceNodeRunId}`, signal,
+            inspect: async () => [...missing, ...await this.#residents.get(residentKey)?.handle.supervisionActions?.() ?? []],
+            reserve: async remaining => {
+              const count = await this.database().mainRouteControlRepairCount(state.id, sourceNodeRunId);
+              if (count >= MAX_TASK_REPAIR_WAKEUPS) return undefined;
+              await this.database().appendEvent({ projectId: state.id, nodeRunId: sourceNodeRunId, agentId: "main",
+                invocationId: repairInvocationId, coordinatorEpoch: attempt,
+                requestId: `main-control-repair-${sourceNodeRunId}-${turnInputId}-${count + 1}`,
+                type: "main.route.mechanism_repair.requested",
+                payload: { attempt: count + 1, inputId: turnInputId, nativeInputId: `${turnInputId}:supervision:${count + 1}`,
+                  previousInvocationId: completedTurn.invocationId, missing: remaining } });
+              return count + 1;
+            },
+            record: async (outcome, remaining, reason) => {
+              await this.database().appendEvent({ projectId: state.id, nodeRunId: sourceNodeRunId, agentId: "main",
+                coordinatorEpoch: attempt, type: "main.route.supervision.finished",
+                payload: { inputId: turnInputId, outcome, missing: remaining, ...(reason ? { reason } : {}) } });
+            }
+          });
+          if (!("attempt" in step)) return undefined;
+          activeRouteTurn = { inputId: `${turnInputId}:supervision:${step.attempt}`, invocationId: repairInvocationId,
+            prompt: [assignment, `Continue the same management task. Remaining facts: ${step.remaining.join("; ")}.`,
+              ...managementToolInstructions((await this.mainRouteTaskCompleted(state.id, sourceNodeRunId, attempt, turnInputId))),
+              "Preserve accepted actions and actual tool results. Do what you can and return the existing result and actual limitations if anything remains.",
+              ...(accepted.length ? [`Accepted actions: ${JSON.stringify(accepted.map(fact => fact.action))}.`] : [])
+            ].join("\n\n") };
+          await this.publishProjection(state, (await this.database().projectState(state.id)));
           activeRouteTurnClosed = false;
           await this.startRuntimeActivity(state, routeAuthority, { kind: "turn", phase: "model:running",
             invocationId: activeRouteTurn.invocationId, inputId: activeRouteTurn.inputId,
@@ -11654,7 +11830,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           filesystemAuthorityInput: await this.filesystemAuthorityInput(state),
           signal,
           onTrace: this.traceSink(state, "main", invocationId),
-          onOpened: () => this.recordRetryMainResidentOpened(state, {
+          onOpened: async () => this.recordRetryMainResidentOpened(state, {
             invocationId,
             epoch: attempt,
             epochKind: "coordinator"
@@ -11713,7 +11889,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       endRouteOperation();
     } catch (error) {
       endRouteOperation();
-      await this.#invocationDispatcher?.finish?.(state, activeRouteTurn.invocationId, "incomplete");
+      await this.finishInvocationDiagnostics(state, activeRouteTurn.invocationId, "incomplete");
       if (!activeRouteTurnClosed) await this.closeRuntimeActivity(state, routeAuthority, {
         kind: "turn",
         invocationId: activeRouteTurn.invocationId,
@@ -11734,8 +11910,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         routeScopeId,
         routeEpoch: attempt,
         runtimePath,
-        error,
-        allowRetry: !(error instanceof MainRouteMechanismExhaustedError)
+        error
       });
       if (recovered.recovered || recovered.priorProcessStopped) {
         await this.closeRuntimeActivity(state, routeAuthority, {
@@ -11760,7 +11935,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         { cause: error }
       );
     }
-    await this.#invocationDispatcher?.finish?.(state, activeRouteTurn.invocationId, "completed");
+    await this.finishInvocationDiagnostics(state, activeRouteTurn.invocationId, "completed");
     if (!activeRouteTurnClosed) await this.closeRuntimeActivity(state, routeAuthority, {
       kind: "turn", invocationId: activeRouteTurn.invocationId, outcome: "completed",
       requestId: `runtime-main-turn-close-${activeRouteTurn.invocationId}`
@@ -11776,18 +11951,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       this.#cancellingProjects.has(state.id)) {
       throw new Error("Main route turn was superseded before staged control commit");
     }
-    const committed = this.database().acceptedMainRouteActions({ projectId: state.id,
+    const committed = await this.database().acceptedMainRouteActions({ projectId: state.id,
       nodeRunId: sourceNodeRunId, semanticInputHash: acceptedIdentity.semanticInputHash });
-    if (!committed.some((fact) => fact.action.tool !== "select_display") ||
-      !this.mainRouteTaskCompleted(state.id, sourceNodeRunId, attempt, turnInputId)) {
-      // Injected/test launchers must obey the same live-tool contract. A bare
-      // return value cannot substitute for Agent tools or trigger auto Git.
-      await this.freezeAndRecoverIndependentMainRoute({ state, sourceNodeRunId, routeScopeId,
-        routeEpoch: attempt, runtimePath,
-        error: new MainRouteMechanismExhaustedError("Main launcher returned without its required live formal action and finish_task"),
-        allowRetry: false });
-      throw new MainRouteRecoveryRequiredError("Main route lacks its own explicit completion and formal decision");
-    }
+    if (!committed.some(fact => fact.action.tool !== "select_display")) return undefined;
     return this.finishMainRouteDecision({
       state,
       sourceNodeRunId,
@@ -11835,11 +12001,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       { tool: "route_to_agent" | "request_user" | "apply_workflow" | "complete_project" }>;
     controlActions?: ControlActionEnvelope[];
   }> {
-    if (!this.mainRouteTaskCompleted(input.state.id, input.sourceNodeRunId, input.routeEpoch, input.inputId)) {
-      throw new Error("Main must explicitly finish_task for its own current management task before its decision is consumed");
-    }
     this.assertWritable();
-    const originalResponse = this.database().eventByRequestId(input.state.id,
+    const originalResponse = await this.database().eventByRequestId(input.state.id,
       `main-route-response-${input.sourceNodeRunId}-${input.routeEpoch}`);
     if (originalResponse) {
       // A published user revision does not re-author the original native
@@ -11856,7 +12019,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
       const publication = originalResponse.payload.workflowAdjustment as WorkflowAdjustmentPublication | undefined;
       if (publication) {
-        const record = this.database().workflowAdjustment(input.state.id, publication.requestId);
+        const record = await this.database().workflowAdjustment(input.state.id, publication.requestId);
         const withdrawal = record?.history.find(item => item.status === "withdrawn");
         return { ...input.decision, output: `Workflow adjustment result: ${JSON.stringify({ ...publication,
           ...(withdrawal?.note === undefined ? {} : { userNote: withdrawal.note }) })}` };
@@ -11878,30 +12041,30 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (input.sourceIsMain && input.decision.decisionAction?.tool === "apply_workflow") {
       await this.applyWaitingWorkflowAdjustments(input.state);
       if (acceptedDecision?.action.tool === "apply_workflow") {
-        workflowAdjustment = this.database().rollForwardAcceptedMainWorkflow({
+        workflowAdjustment = (await this.database().rollForwardAcceptedMainWorkflow({
           projectId: input.state.id,
           nodeRunId: input.sourceNodeRunId,
           routeEpoch: acceptedDecision.routeEpoch,
           semanticInputHash: acceptedDecision.semanticInputHash,
           sequence: acceptedDecision.sequence
-        }, input.state);
+        }, input.state));
         await this.publishProjection(
           input.state,
-          this.database().projectState(input.state.id)
+          (await this.database().projectState(input.state.id))
         );
-        const adjustment = this.database().workflowAdjustment(input.state.id, workflowAdjustment.requestId);
+        const adjustment = await this.database().workflowAdjustment(input.state.id, workflowAdjustment.requestId);
         const withdrawal = adjustment?.history.find(item => item.status === "withdrawn");
         input.decision = { ...input.decision, output: `Workflow adjustment result: ${JSON.stringify({ ...workflowAdjustment,
           ...(withdrawal?.note === undefined ? {} : { userNote: withdrawal.note }) })}` };
-        if (workflowAdjustment.status === "applied" && !this.database().acceptedMainControlEffect({
+        if (workflowAdjustment.status === "applied" && !(await this.database().acceptedMainControlEffect({
           projectId: input.state.id,
           nodeRunId: input.sourceNodeRunId,
           routeEpoch: acceptedDecision.routeEpoch,
           semanticInputHash: acceptedDecision.semanticInputHash,
           sequence: acceptedDecision.sequence,
           effect: "workflow_projection"
-        })) {
-          this.database().recordAcceptedMainControlEffect({
+        }))) {
+          await this.database().recordAcceptedMainControlEffect({
             projectId: input.state.id,
             nodeRunId: input.sourceNodeRunId,
             routeEpoch: acceptedDecision.routeEpoch,
@@ -11911,7 +12074,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           });
           await this.publishProjection(
             input.state,
-            this.database().projectState(input.state.id)
+            (await this.database().projectState(input.state.id))
           );
         }
       } else {
@@ -11923,36 +12086,36 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           input.state.orchestration,
           proposal.orchestration
         );
-        this.assertWorkflowRevisionEditable(input.state, affectedGroupIds);
+        await this.assertWorkflowRevisionEditable(input.state, affectedGroupIds);
         const requestId = `main-workflow-${input.state.id}-${input.invocationId}`;
-        const revision = this.database().projectState(input.state.id).workflowRevision + 1;
+        const revision = (await this.database().projectState(input.state.id)).workflowRevision + 1;
         const previous = { agents: input.state.agents, archivedAgentSessions: input.state.archivedAgentSessions };
         archiveRemovedWorkflowAgentSessions(input.state, proposal.agents, revision);
         input.state.agents = proposal.agents;
         try {
           await this.saveWorkflowRevision(input.state, { orchestration: proposal.orchestration, affectedGroupIds, requestId });
         } catch (error) {
-          const accepted = this.database().eventByRequestId(input.state.id, requestId);
+          const accepted = await this.database().eventByRequestId(input.state.id, requestId);
           if (accepted?.type !== "workflow.revision.created" || accepted.workflowRevision !== revision) Object.assign(input.state, previous);
           throw error;
         }
       }
     }
-    const resetRecovery = this.database().resetMainRouteRecovery({
+    const resetRecovery = await this.database().resetMainRouteRecovery({
       projectId: input.state.id,
       nodeRunId: input.sourceNodeRunId
     });
     if (resetRecovery.reset) {
       await this.publishProjection(
         input.state,
-        this.database().projectState(input.state.id)
+        (await this.database().projectState(input.state.id))
       );
     }
     input.state.mainInvocationSeq += 1;
-    this.restoreReceivedRootMainInputs(input.state);
+    await this.restoreReceivedRootMainInputs(input.state);
     if (input.answeredIntervention) input.state.userIntervention = undefined;
     await this.saveState(input.state);
-    this.database().appendEvent({
+    await this.database().appendEvent({
       projectId: input.state.id,
       eventId: `evt-main-route-response-${input.sourceNodeRunId}-${input.routeEpoch}`,
       requestId: `main-route-response-${input.sourceNodeRunId}-${input.routeEpoch}`,
@@ -11969,34 +12132,31 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ...(workflowAdjustment ? { workflowAdjustment } : {})
       }
     });
-    this.resolveMainRouteFailures(input.state, input.sourceNodeRunId, input.routeEpoch, input.invocationId);
+    await this.resolveMainRouteFailures(input.state, input.sourceNodeRunId, input.routeEpoch, input.invocationId);
     await this.publishProjection(
       input.state,
-      this.database().projectState(input.state.id)
+      (await this.database().projectState(input.state.id))
     );
     return input.decision;
   }
 
-  private mainRouteTaskCompleted(projectId: string, nodeRunId: string, routeEpoch: number, inputId: string): boolean {
-    const taskId = mainRouteTaskCompletionKey(nodeRunId, routeEpoch, inputId);
-    const event = this.database().eventByRequestId(projectId, mainRouteTaskCompletionRequestId(taskId));
-    return event?.type === "main.route.task_completion.committed" && event.agentId === "main" &&
-      event.nodeRunId === nodeRunId && event.coordinatorEpoch === routeEpoch && event.payload.taskId === taskId;
+  private async mainRouteTaskMayReturn(projectId: string, nodeRunId: string, routeEpoch: number, inputId: string): Promise<boolean> {
+    if ((await this.mainRouteTaskCompleted(projectId, nodeRunId, routeEpoch, inputId))) return true;
+    let cursor = 0;
+    for (;;) {
+      const events = await this.database().eventsAfter(projectId, cursor, EVENT_PAGE_SIZE);
+      if (events.some(event => event.nodeRunId === nodeRunId && event.coordinatorEpoch === routeEpoch &&
+        event.type === "main.route.supervision.finished" && event.payload.inputId === inputId)) return true;
+      if (events.length < EVENT_PAGE_SIZE) return false;
+      cursor = events.at(-1)!.seq;
+    }
   }
 
-  /** Only the Agent's live finish_task may write this memory. Returning from
-   * a native turn, recovering an accepted decision, or publishing a workflow
-   * must never author/commit memory in place of Main. */
-  private async commitMainRouteTaskMemory(state: ProjectState, taskId: string,
-    content: { summary?: string; memory?: string }): Promise<void> {
-    const git = this.git(state.id);
-    if (!git.commitManagementMemory) return;
-    const snapshot = await this.optionalManagementMemorySnapshot(state.id);
-    await git.commitManagementMemory("main", `management-route-${createHash("sha256").update(taskId).digest("hex").slice(0, 40)}`,
-      ["# Main management memory", "", `Project: ${state.id}`, `Task: ${taskId}`, "",
-        "## Agent-authored completion memory", "",
-        content.memory ?? content.summary ?? "Agent requested completion of this Main management task.", ""].join("\n"),
-      snapshot?.commitSha);
+  private async mainRouteTaskCompleted(projectId: string, nodeRunId: string, routeEpoch: number, inputId: string): Promise<boolean> {
+    const taskId = mainRouteTaskCompletionKey(nodeRunId, routeEpoch, inputId);
+    const event = await this.database().eventByRequestId(projectId, mainRouteTaskCompletionRequestId(taskId));
+    return event?.type === "main.route.task_completion.committed" && event.agentId === "main" &&
+      event.nodeRunId === nodeRunId && event.coordinatorEpoch === routeEpoch && event.payload.taskId === taskId;
   }
 
   private async commitMainRouteStaging(input: {
@@ -12024,7 +12184,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         throw new Error("Main route staging does not match the completed turn authority");
       }
       if (action.tool === "finish_task") {
-        if (!this.mainRouteTaskCompleted(input.state.id, input.nodeRunId, input.routeEpoch, input.inputId)) {
+        if (!(await this.mainRouteTaskCompleted(input.state.id, input.nodeRunId, input.routeEpoch, input.inputId))) {
           throw new Error("Main finish_task result lacks its matching live durable completion");
         }
         continue;
@@ -12049,7 +12209,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             ...await this.validateRetainedMainDisplaySelection(input.state, input.nodeRunId, input.semanticInputHash, action)
           }
         : action;
-      const retained = this.database().acceptedMainRouteActions({ projectId: input.state.id, nodeRunId: input.nodeRunId,
+      const retained = await this.database().acceptedMainRouteActions({ projectId: input.state.id, nodeRunId: input.nodeRunId,
         semanticInputHash: input.semanticInputHash });
       const priorSlot = retained.find((fact) => (fact.action.tool === "select_display") === (action.tool === "select_display"));
       if (priorSlot && acceptedControlHash(priorSlot.action) !== acceptedControlHash(acceptedAction)) {
@@ -12059,11 +12219,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (!workflowProposal && input.sourceIsMain && action.tool === "apply_workflow") {
         // Bind the authority before file/resource validation can yield. Legacy
         // graph-only paths seed this exact configuration after a valid read.
-        const projection = this.database().projectState(input.state.id);
-        const baseConfigurationHash = this.database().scopedConfigurationHash(input.state.id) ??
+        const projection = await this.database().projectState(input.state.id);
+        const baseConfigurationHash = (await this.database().scopedConfigurationHash(input.state.id)) ??
           acceptedControlHash(credentialFreeAgentConfiguration({ agents: input.state.agents,
             skillDefinitions: input.state.skillDefinitions ?? {}, mcpDefinitions: input.state.mcpDefinitions ?? {} }));
-        const baseVersion = this.database().workflowAdjustmentCurrent(input.state.id, this.workflowAdjustmentSeed(input.state)).version;
+        const baseVersion = (await this.database().workflowAdjustmentCurrent(input.state.id, this.workflowAdjustmentSeed(input.state))).version;
         const proposal = await this.readMainWorkflowProposal(input.state, input.workspacePath, input.workflowAuthoringPath, baseVersion);
         workflowProposal = {
           orchestration: proposal.orchestration,
@@ -12082,7 +12242,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         };
       }
       const sequence = priorSlot?.sequence ?? retained.length;
-      this.database().revalidateMainRouteControl({
+      await this.database().revalidateMainRouteControl({
         projectId: input.state.id,
         nodeRunId: input.nodeRunId,
         routeEpoch: input.routeEpoch,
@@ -12206,45 +12366,29 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           if (sourceIsMain && action.tool === "select_display") {
             await this.validateRetainedMainDisplaySelection(state, nodeRunId, semanticInputHash, action);
           }
-          if (sourceIsMain && action.tool === "complete_project" && (state.artifacts?.length ?? 0) > 0 &&
-            !stagedActions.some((item) => item.action.tool === "select_display")) {
-            // A retained-session supplement or stop-confirmed new epoch may
-            // have no local staging file for the Agent's prior selection.
-            // Preserve that exact accepted choice, never select a result on
-            // Main's behalf or rebind a path to its newest publication.
-            const pendingDisplay = this.database().acceptedMainRouteActions({ projectId: state.id, nodeRunId, semanticInputHash })
-              .find((fact) => fact.action.tool === "select_display" && fact.routeEpoch === routeEpoch && fact.inputId === inputId);
-            if (pendingDisplay?.action.tool === "select_display") {
-              await this.validateMainDisplaySelection(state, pendingDisplay.action, true);
-            } else if (!await this.currentDisplayIsTrusted(state)) {
-              throw new Error("Main cannot complete a Git project with published artifacts before selecting a trusted display");
-            }
-          }
           const authority = { projectId: state.id, nodeRunId, routeEpoch, stateVersion: routeEpoch, invocationId: turn.invocationId,
             candidateNodeIds: candidates, tasklessRouteNodeIds: tasklessRouteTargets, canComplete, allowFinishRoute, action };
-          this.database().revalidateMainRouteControl(authority);
+          await this.database().revalidateMainRouteControl(authority);
+          let completion: unknown;
           if (action.tool === "finish_task") {
             const taskId = mainRouteTaskCompletionKey(nodeRunId, routeEpoch, inputId);
             const receipt = await this.#storage.requestTaskCompletion(state, taskId, envelope);
+            completion = receipt;
             if (receipt.summary !== action.summary || receipt.memory !== action.memory) {
               throw new Error("Repeat Main finish_task must preserve its accepted summary and memory");
             }
-            if (!this.mainRouteTaskCompleted(state.id, nodeRunId, routeEpoch, inputId)) {
-              await this.commitMainRouteTaskMemory(state, taskId, receipt);
-              this.database().revalidateMainRouteControl(authority);
-              this.database().appendEvent({ projectId: state.id, nodeRunId, agentId: "main", coordinatorEpoch: routeEpoch,
+            if (!(await this.mainRouteTaskCompleted(state.id, nodeRunId, routeEpoch, inputId))) {
+              await this.database().revalidateMainRouteControl(authority);
+              await this.database().appendEvent({ projectId: state.id, nodeRunId, agentId: "main", coordinatorEpoch: routeEpoch,
                 invocationId: turn.invocationId, requestId: mainRouteTaskCompletionRequestId(taskId),
                 type: "main.route.task_completion.committed", payload: { taskId, inputId, callId: envelope.callId } });
             }
           } else {
-            if (action.tool === "complete_project" && !this.mainRouteTaskCompleted(state.id, nodeRunId, routeEpoch, inputId)) {
-              throw new Error("Main must finish_task for its own management task before complete_project");
-            }
             await this.commitMainRouteStaging({ state, nodeRunId, routeEpoch, inputId, invocationId: turn.invocationId,
               semanticInputHash, candidates, canComplete, allowFinishRoute, sourceIsMain,
               workspacePath: request.workspacePath, workflowAuthoringPath, actions: [...stagedActions, envelope] });
           }
-          this.appendSuccessfulAttempt(state, {
+          await this.appendSuccessfulAttempt(state, {
             attemptId: durableAttemptId("control-success", [
               state.id,
               turn.invocationId,
@@ -12263,9 +12407,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               stateVersion: envelope.stateVersion
             }
           });
+          return completion;
         },
         onRejected: async (envelope, error) => {
-          this.appendFailureAttempt(state, {
+          await this.appendFailureAttempt(state, {
             ...(envelope ? {
               attemptId: durableAttemptId("control-failure", [
                 state.id,
@@ -12306,8 +12451,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     };
   }
 
-  private assertSessionCompatibleWorkflow(state: ProjectState, proposed: AgentOrchestrationTemplate, agents?: ProjectState["agents"]): void {
-    if (agents) this.database().assertRetainedWorkflowSessionHarnesses(state.id, agents, state);
+  private async assertSessionCompatibleWorkflow(state: ProjectState, proposed: AgentOrchestrationTemplate, agents?: ProjectState["agents"]): Promise<void> {
+    if (agents) await this.database().assertRetainedWorkflowSessionHarnesses(state.id, agents, state);
     if (state.orchestration.schemaVersion === 3 && proposed.schemaVersion !== 3) throw new Error("A scoped project cannot downgrade to scope-specific sessions/checkouts");
     if (state.orchestration.schemaVersion !== 3 && proposed.schemaVersion === 3 &&
       [...Object.keys(state.agentSessionIds ?? {}), ...Object.keys(state.agentSessions ?? {})].length) {
@@ -12319,8 +12464,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     state: ProjectState,
     workspacePath: string,
     workflowAuthoringPath?: string,
-    baseVersion = this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state)).version
+    baseVersion?: WorkflowConfigurationVersion
   ): Promise<ReturnType<typeof parseWorkflowProposal> & Partial<AgentOrchestrationProposal>> {
+    baseVersion ??= (await this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state))).version;
     const root = await fs.realpath(workspacePath);
     if (root !== path.resolve(workspacePath)) {
       throw new Error("Main management workspace is not canonical");
@@ -12345,27 +12491,27 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const raw = await fs.readFile(real, "utf8");
     const full = (JSON.parse(raw) as { schemaVersion?: unknown }).schemaVersion === 2;
     const refreshCurrentReference = async () => {
-      const current = this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state));
+      const current = await this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state));
       await this.#storage.writeManagementWorkflowCurrentSnapshot(workflowAuthoringPath
         ? path.dirname(path.dirname(workflowAuthoringPath)) : workspacePath,
         full ? mainAgentOrchestrationDocument(state.id, current.snapshot.orchestration,
           restoreAgentConfiguration(current.snapshot, state.agents), current.snapshot.skillDefinitions, current.snapshot.mcpDefinitions, current.version)
           : mainWorkflowDocument(state.id, current.snapshot.orchestration, current.version),
-        () => {
+        async () => {
         this.assertWritable();
-        return sameWorkflowConfigurationVersion(this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state)).version, current.version);
+        return sameWorkflowConfigurationVersion((await this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state))).version, current.version);
       });
     };
     await refreshCurrentReference();
     if (full) {
       const proposal = parseAgentOrchestrationProposal(raw, state.id, state.orchestration, state.agents,
         { baseDir: workspacePath, skillDefinitions: state.skillDefinitions, mcpDefinitions: state.mcpDefinitions, baseVersion });
-      this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
+      await this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
       if (!this.#validateWorkflowConfiguration) throw new Error("Agent configuration editing requires the server validator");
       await this.#validateWorkflowConfiguration(state, proposal);
-      if (!sameWorkflowConfigurationVersion(this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state)).version, baseVersion)) await refreshCurrentReference();
-      this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
-      this.database().initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: state.skillDefinitions ?? {}, mcpDefinitions: state.mcpDefinitions ?? {} });
+      if (!sameWorkflowConfigurationVersion((await this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state))).version, baseVersion)) await refreshCurrentReference();
+      await this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
+      await this.database().initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: state.skillDefinitions ?? {}, mcpDefinitions: state.mcpDefinitions ?? {} });
       return proposal;
     }
     const proposal = parseWorkflowProposal(
@@ -12375,8 +12521,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.agents,
       { baseVersion }
     );
-    this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
-    this.database().initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: state.skillDefinitions ?? {}, mcpDefinitions: state.mcpDefinitions ?? {} });
+    await this.assertSessionCompatibleWorkflow(state, proposal.orchestration, proposal.agents);
+    await this.database().initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: state.skillDefinitions ?? {}, mcpDefinitions: state.mcpDefinitions ?? {} });
     return proposal;
   }
 
@@ -12389,7 +12535,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     semanticInputHash: string,
     action: Extract<ControlAction, { tool: "select_display" }>
   ): Promise<DisplaySelection> {
-    const prior = this.database().acceptedMainRouteActions({ projectId: state.id, nodeRunId, semanticInputHash })
+    const prior = (await this.database().acceptedMainRouteActions({ projectId: state.id, nodeRunId, semanticInputHash }))
       .find((fact) => fact.action.tool === "select_display");
     if (prior?.action.tool !== "select_display") return this.validateMainDisplaySelection(state, action);
     const requested = [action.primary, ...(action.items ?? [])];
@@ -12456,20 +12602,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return { primary: bound[0]!, items: bound.slice(1) };
   }
 
-  private async currentDisplayIsTrusted(state: ProjectState): Promise<boolean> {
-    if (!state.display?.primary) return false;
-    try {
-      await this.validateMainDisplaySelection(state, {
-        tool: "select_display",
-        primary: state.display.primary,
-        items: state.display.items
-      }, true);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   private async commitMainPreparatoryActions(
     state: ProjectState,
     actions: readonly ControlActionEnvelope[] | undefined,
@@ -12481,14 +12613,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (acceptedDisplays.length > 0) {
       for (const fact of acceptedDisplays) {
         if (fact.action.tool !== "select_display") continue;
-        if (this.database().acceptedMainControlEffect({
+        if ((await this.database().acceptedMainControlEffect({
           projectId: state.id,
           nodeRunId: fact.nodeRunId,
           routeEpoch: fact.routeEpoch,
           semanticInputHash: fact.semanticInputHash,
           sequence: fact.sequence,
           effect: "display"
-        })) continue;
+        }))) continue;
         const display = await this.validateMainDisplaySelection(
           state,
           fact.action,
@@ -12500,7 +12632,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         // in this gap can only repeat the same assignment; the marker/event
         // remains exactly once.
         await this.saveState(state);
-        this.database().recordAcceptedMainControlEffect({
+        await this.database().recordAcceptedMainControlEffect({
           projectId: state.id,
           nodeRunId: fact.nodeRunId,
           routeEpoch: fact.routeEpoch,
@@ -12508,7 +12640,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           sequence: fact.sequence,
           effect: "display"
         });
-        await this.publishProjection(state, this.database().projectState(state.id));
+        await this.publishProjection(state, (await this.database().projectState(state.id)));
       }
       return;
     }
@@ -12558,7 +12690,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       const mergeLatest = async (eventSeq: number): Promise<CredentialFreeProjectStateProjection> => {
         for (;;) {
           this.assertWritable();
-          let newest = this.database().projectState(state.id);
+          let newest = await this.database().projectState(state.id);
           // Legacy Git projects retain their original file configuration until
           // S has an Agent configuration. Recovery must not invent an S edit.
           const configuration = newest.scopedConfiguration ?? credentialFreeAgentConfiguration({ agents: state.agents,
@@ -12578,34 +12710,34 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               await this.#validateWorkflowConfiguration(state, proposal);
             } catch (error) {
               this.assertWritable();
-              if (!sameProjectionWorkflowConfiguration(newest, this.database().workflowConfiguration(state.id))) continue;
+              if (!sameProjectionWorkflowConfiguration(newest, (await this.database().workflowConfiguration(state.id)))) continue;
               throw error;
             }
             this.assertWritable();
-            const current = this.database().projectState(state.id);
+            const current = await this.database().projectState(state.id);
             if (!sameProjectionWorkflowConfiguration(newest, current)) continue;
             if (!isDeepStrictEqual(state.agents, previousAgents)) throw new Error("Agent configuration changed during gateway recovery validation; retry using the retained original snapshot");
             const restoredAgents = restoreAgentConfiguration(configuration, proposal.agents);
             assertWorkflowGatewaySnapshots(restoredAgents);
-            this.assertSessionCompatibleWorkflow(state, current.workflowSnapshot as AgentOrchestrationTemplate, restoredAgents);
+            await this.assertSessionCompatibleWorkflow(state, current.workflowSnapshot as AgentOrchestrationTemplate, restoredAgents);
             archiveRemovedWorkflowAgentSessions(state, restoredAgents, current.workflowRevision);
             state.agents = restoredAgents;
             newest = current;
           }
           // Recheck original Session bindings after every asynchronous boundary,
           // including when the public configuration itself did not change.
-          this.assertSessionCompatibleWorkflow(state, newest.workflowSnapshot as AgentOrchestrationTemplate,
+          await this.assertSessionCompatibleWorkflow(state, newest.workflowSnapshot as AgentOrchestrationTemplate,
             newest.scopedConfiguration ? restoreAgentConfiguration(newest.scopedConfiguration, state.agents) : undefined);
           mergeProjection(state, newest, eventSeq);
           validated = newest;
           return newest;
         }
       };
-      const isCurrent = (applied: CredentialFreeProjectStateProjection): boolean => {
+      const isCurrent = async (applied: CredentialFreeProjectStateProjection): Promise<boolean> => {
         this.assertWritable();
-        const current = this.database().workflowConfiguration(state.id);
+        const current = await this.database().workflowConfiguration(state.id);
         if (!sameProjectionWorkflowConfiguration(applied, current)) return false;
-        this.assertSessionCompatibleWorkflow(state, current.workflowSnapshot as AgentOrchestrationTemplate,
+        await this.assertSessionCompatibleWorkflow(state, current.workflowSnapshot as AgentOrchestrationTemplate,
           current.scopedConfiguration ? restoreAgentConfiguration(current.scopedConfiguration, state.agents) : undefined);
         assertWorkflowGatewaySnapshots(state.agents);
         return true;
@@ -12614,7 +12746,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       let cursor = mirroredSeq;
       for (;;) {
         while (true) {
-          const page = this.database().eventsAfter(state.id, cursor, EVENT_PAGE_SIZE);
+          const page = await this.database().eventsAfter(state.id, cursor, EVENT_PAGE_SIZE);
           if (page.length === 0) break;
           for (const event of page) {
             cursor = event.seq;
@@ -12633,24 +12765,24 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           if (page.length < EVENT_PAGE_SIZE) break;
         }
         const applied = await mergeLatest(cursor);
-        if (!isCurrent(applied)) continue;
+        if (!(await isCurrent(applied))) continue;
         if (state.runtime) this.#storage.hub.publishRuntime(state.id, state.runtime);
         await publishAuthoritativeWorkflowFiles(
           this.#storage.projectDir(state.id),
-          this.database().authoritativeWorkflowFiles(state.id),
+          (await this.database().authoritativeWorkflowFiles(state.id)),
           () => this.assertWritable()
         );
-        if (!isCurrent(applied)) continue;
+        if (!(await isCurrent(applied))) continue;
         let persistedStatus: string | undefined;
         try {
           persistedStatus = await this.durableProjectStatus(state.id);
         } catch {
           persistedStatus = undefined;
         }
-        if (!isCurrent(applied)) continue;
+        if (!(await isCurrent(applied))) continue;
         if ((persistedStatus === "cancelling" || persistedStatus === "cancelled") &&
           state.status !== persistedStatus &&
-          !(options.stopConfirmed && state.status === "paused" && this.database().resumableProjectCancellationIntent(state.id))) {
+          !(options.stopConfirmed && state.status === "paused" && (await this.database().resumableProjectCancellationIntent(state.id)))) {
           // A stale publisher may have entered before Cancel obtained the
           // lifecycle lane. Never overwrite its already-durable terminal fence.
           state.status = persistedStatus;
@@ -12660,7 +12792,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           return;
         }
         await this.saveState(state);
-        if (isCurrent(applied)) return;
+        if ((await isCurrent(applied))) return;
       }
     });
     this.#projectionQueues.set(state.id, queued);
@@ -12673,14 +12805,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
   }
 
-  private git(projectId: string, closing?: import("./collaboration-git/contracts.js").RestrictedWorktreeClosingAuthority): CollaborationGitRuntime {
+  private async git(projectId: string, closing?: import("./collaboration-git/contracts.js").RestrictedWorktreeClosingAuthority): Promise<CollaborationGitRuntime> {
     const existing = closing ? undefined : this.#git.get(projectId);
     if (existing) return existing;
     const account = this.#gitAccounts.get(projectId);
     if (this.#credentialResolverForAccount && !account) {
       throw new GitHubAuthorizationError(401, "Git 项目没有绑定可用的 GitHub 账号");
     }
-    const workflowSnapshot = this.database().getProjectState(projectId)?.workflowSnapshot;
+    const workflowSnapshot = (await this.database().getProjectState(projectId))?.workflowSnapshot;
     const worktreeMode = workflowSnapshot && typeof workflowSnapshot === "object" &&
       "schemaVersion" in workflowSnapshot && workflowSnapshot.schemaVersion === 3
       ? "agent" : "execution";
@@ -12740,12 +12872,21 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   }
 
   private assertWritable(): void {
+    if (!this.#leaseError) {
+      try {
+        this.database();
+        this.#leaseWorker?.assertHeld();
+        if (!this.#leaseWorker && this.#leaseWorkerDiagnostics &&
+          this.#leaseWorkerDiagnostics.lease.expiresAtMs <= (this.#now?.() ?? Date.now()))
+          throw new CollaborationStateError("WRITER_LEASE_STALE", "The confirmed writer lease has expired");
+      } catch (error) { this.loseWriterLease(error); }
+    }
     if (this.#leaseError) throw new Error("Collaboration writer lease was lost", { cause: this.#leaseError });
-    this.database().assertWriterLeaseHeld();
   }
 
   private async saveState(state: ProjectState): Promise<void> {
     this.assertWritable();
+    if (["paused", "completed", "cancelled", "stopped"].includes(state.status)) await this.#invocationDispatcher?.flush?.(state.id);
     checkpointWorkflowRecovery(state, { delayMs: this.#harnessRecoveryDelayMs });
     if (["completed", "cancelled"].includes(state.status)) finishWorkflowRecovery(state);
     await this.#storage.saveState(state, () => this.assertWritable());
@@ -12769,7 +12910,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // this timer after that exact scheduling fence is released.
     if (this.#runs.has(state.id)) return;
     const delay = Math.max(1, Math.min(60_000, Date.parse(state.workflowRecovery.nextRetryAt) - Date.now()));
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
       this.#workflowRecoveryTimers.delete(state.id);
       void this.withProjectLifecycle(state.id, async () => {
         if (this.#shuttingDown || this.#leaseError || !canAutomaticallyRecoverWorkflow(state) ||
@@ -12786,8 +12927,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           await this.saveState(state);
           return;
         }
-        for (const incident of this.database().terminalPushCoordinationIncidents(state.id)) {
-          if (incident.status === "manager-failed") this.database().resumeTerminalPushCoordinatorRecovery(state.id, incident.id);
+        for (const incident of (await this.database().terminalPushCoordinationIncidents(state.id))) {
+          if (incident.status === "manager-failed") await this.database().resumeTerminalPushCoordinatorRecovery(state.id, incident.id);
         }
         state.status = "queued";
         await this.saveState(state);
@@ -12795,7 +12936,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }).catch(async (error: unknown) => {
         if (this.#shuttingDown || this.#leaseError || !canAutomaticallyRecoverWorkflow(state) ||
           this.#cancellingProjects.has(state.id)) return;
-        try { this.appendFailureAttempt(state, { operation: "workflow.recovery", error, metadata: { phase: state.phase } }); }
+        try { await this.appendFailureAttempt(state, { operation: "workflow.recovery", error, metadata: { phase: state.phase } }); }
         catch (auditError) {
           if (auditError instanceof CollaborationStateError && auditError.code === "WRITER_LEASE_STALE") { this.loseWriterLease(auditError); return; }
           console.warn("Workflow recovery failure audit also failed", safeRuntimeError(auditError));
@@ -12823,13 +12964,42 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return event;
   }
 
+  writerLeaseHealth(): { status: "ready" | "unavailable"; code?: string; reason?: string;
+    failedAt?: string; lastSuccessfulRenewalAt?: string; leaseExpiresAt?: string; epoch?: number } {
+    if (!this.#database || this.#closed || this.#shuttingDown) return { status: "unavailable", reason: "Collaboration runtime is not running" };
+    if (!this.#leaseError) {
+      try { this.assertWritable(); }
+      catch (error) { this.loseWriterLease(error); }
+    }
+    const diagnostics = this.#leaseWorker?.diagnostics() ?? this.#leaseWorkerDiagnostics!;
+    return { status: this.#leaseError ? "unavailable" : "ready", epoch: diagnostics.lease.epoch,
+      leaseExpiresAt: new Date(diagnostics.lease.expiresAtMs).toISOString(),
+      ...(diagnostics.lastSuccessfulRenewalAtMs != null ? { lastSuccessfulRenewalAt: new Date(diagnostics.lastSuccessfulRenewalAtMs).toISOString() } : {}),
+      ...(this.#leaseError ? { code: writerLeaseFailureFields(this.#leaseError).code ?? "WRITER_LEASE_UNAVAILABLE",
+        reason: safeRuntimeError(this.#leaseError), failedAt: this.#leaseFailedAt } : {}) };
+  }
+
+  private withWriterLeaseFailure(project: ProjectState): ProjectState {
+    if (["draft", "completed", "cancelled", "stopped"].includes(project.status)) return project;
+    const health = this.writerLeaseHealth();
+    project.status = hasUserWorkflowPause(project) ? project.status : "interrupted";
+    project.phase = "collaboration:writer-lease-lost";
+    project.lastError = `服务写入租约失效：${health.reason ?? "续租线程不可用"}。需要恢复服务后接续原任务，项目记录和原会话已保留。`;
+    project.currentAgent = undefined; project.queuedAgent = undefined; project.activeInvocationId = undefined;
+    project.runtime = { stateRevision: 0, executionCount: 0, ...project.runtime, status: project.status, phase: project.phase,
+      waiting: { kind: "service", reason: project.lastError, failedAt: health.failedAt, errorCode: health.code },
+      activities: (project.runtime?.activities ?? []).map(activity => ({ ...activity, leaseState: "recovering" as const })),
+      primaryActivity: undefined, currentAgent: undefined, activeInvocationId: undefined, leaseState: "recovering" };
+    return project;
+  }
+
   private writerLeaseFailureDiagnostics(error: unknown, leaseCheckError?: unknown) {
     const timestampMs = this.#now?.() ?? Date.now();
-    const diagnostics = this.#database?.writerLeaseDiagnostics();
+    const diagnostics = this.#leaseWorker?.diagnostics() ?? this.#leaseWorkerDiagnostics;
     const lease = diagnostics?.lease;
     return {
-      timestamp: new Date(timestampMs).toISOString(),
-      ...(this.#leaseHeartbeat ? { heartbeat: { ...this.#leaseHeartbeat } } : {}),
+      timestamp: this.#leaseFailedAt ?? new Date(timestampMs).toISOString(),
+      ...((this.#leaseWorkerDiagnostics?.heartbeat ?? this.#leaseHeartbeat) ? { heartbeat: { ...(this.#leaseWorkerDiagnostics?.heartbeat ?? this.#leaseHeartbeat)! } } : {}),
       ...writerLeaseFailureFields(error),
       ...(lease ? { leaseEpoch: lease.epoch, leaseExpiresAt: new Date(lease.expiresAtMs).toISOString(),
         leaseServiceId: boundedSharedText(lease.serviceId, 200),
@@ -12838,6 +13008,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       lastSuccessfulRenewalAt: diagnostics?.lastSuccessfulRenewalAtMs != null
         ? new Date(diagnostics.lastSuccessfulRenewalAtMs).toISOString() : null,
       ...(diagnostics?.lastRenewalAttempt ? { lastRenewalAttempt: diagnostics.lastRenewalAttempt } : {}),
+      ...(this.#leaseWorkerDiagnostics?.leaseCheck ? { leaseCheck: this.#leaseWorkerDiagnostics.leaseCheck } : {}),
       ...(leaseCheckError !== undefined ? { leaseCheckFailure: writerLeaseFailureFields(leaseCheckError) } : {})
     };
   }
@@ -12845,10 +13016,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   private loseWriterLease(error: unknown, leaseCheckError?: unknown): void {
     if (this.#leaseError) return;
     this.#leaseError = error instanceof Error ? error : new Error("Writer lease renewal failed", { cause: error });
+    this.#leaseFailedAt = this.#leaseWorkerDiagnostics?.failedAt ?? new Date(this.#now?.() ?? Date.now()).toISOString();
     try {
       console.error("Collaboration writer lease renewal failed; writer fenced",
         this.writerLeaseFailureDiagnostics(error, leaseCheckError));
     } catch { /* A diagnostic failure must not prevent fencing/aborting work. */ }
+    void this.#leaseWorker?.stop().catch(error => console.warn("Failed to stop the fenced heartbeat", safeRuntimeError(error)));
     for (const controller of this.#controllers.values()) controller.abort();
     // Stop exact resident handles, without further database mutations or an
     // automatic lease reacquisition that could defeat a replacement writer.

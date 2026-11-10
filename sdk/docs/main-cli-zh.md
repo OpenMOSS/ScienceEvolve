@@ -19,7 +19,7 @@ CLI 材料与描述参数分别覆盖对应默认值，省略则继承；`--inpu
 Git-off 使用实际工作区 `user_inputs/`；Git-on 使用私有项目 `workspaces/user_inputs/`，
 不进入 Git worktree 或自动发布。限制与后续补充方式见 [共享输入材料](project-inputs-zh.md)。
 
-需要 Node >=24 和对应 Harness；安装包自带 Pi 的 JS 入口。Git-on 协作和 Task 自己的 Git 操作需要 Git。默认 main 还支持另行安装的 [Hermes ACP Harness](hermes-zh.md)。
+需要 Node >=24 和对应 Harness；安装包自带 Pi 的 JS 入口。Git-on 协作和 Task 自己的 Git 操作需要 Git。
 明确传入新的绝对 `--data-dir`，不采用旧 `SCIENCEEVOLVE_DATA_DIR` 或默认数据目录。
 运行数据带引擎/实际 runtimeRevision 标记，不能混用 Web、旧 SDK 或修复前的预览运行数据。
 
@@ -134,8 +134,8 @@ scievolve gateway import --engine main --data-dir D:/runs/main-data `
   --harness pi --model your-model --source env
 ```
 
-Codex、pi、DSH 和 Claude Code 支持 env/profile 导入；`--source` 必须明确指定。env 读取 `SDK_CODEX_*`、
-`SDK_PI_*`、`SDK_DSH_*` 或 `SDK_CLAUDE_CODE_*`，至少需要 `_BASE_URL` 和 `_API_KEY`，
+Codex、pi 和 DSH 支持 env/profile 导入；`--source` 必须明确指定。env 读取 `SDK_CODEX_*`、
+`SDK_PI_*`、`SDK_DSH_*`，至少需要 `_BASE_URL` 和 `_API_KEY`，
 可选 `_PROTOCOL`、`_CONTEXT_WINDOW`、`_REASONING_JSON` / `_REASONING_FILE`。
 profile 可用绝对 `--profile-path`，省略时按既有 `SDK_*_PROFILE` / 原生目录发现规则读取。
 两种来源不互相兜底；不会修改 config/auth、CCSwitch 或登录态，也不执行 credential shell helpers。
@@ -144,7 +144,6 @@ profile 可用绝对 `--profile-path`，省略时按既有 `SDK_*_PROFILE` / 原
 导入不启动模型探测，不宣称验证通过；继续 `gateway test` 再绑定返回的 ID。
 OAuth-only profile 的 gateway import 仍明确拒绝；原生 OAuth 请用上一节的独立路线。
 
-Hermes 支持显式 `--harness hermes --source env`，读取 `OPENAI_BASE_URL` / `OPENAI_API_KEY`，不读取个人 Hermes profile 或 OAuth。安装、ACP 接口和权限说明见 [Hermes Harness](hermes-zh.md)。
 
 ## GitHub 认证与 Git 协作
 
@@ -345,6 +344,10 @@ agentActivityIdleWindowMs、agentToolActivityIdleWindowMs；timeouts 支持
 residentModelInactivityTimeoutMs、residentToolInactivityTimeoutMs、protocolProxyTimeoutMs、
 dshHandshakeTimeoutMs、dshTurnIdleTimeoutMs。
 
+传输预算最多取代理、Agent 模型无活动和常驻模型无活动期限中最小值的 90%。流式首段等待占三分之一，一次非流式恢复共享剩余预算并预留错误返回时间；接收方式仅在本次调用内保留。已有模型输出或工具调用的请求不会重放。原生函数参数错误交回原 Harness 和 Agent 纠正；最终失败保留原始原因。
+
+协作过程记录按最多 128 条或 1 秒合批落盘，原生输出仍实时推送。工具与生命周期边界、回合结算、暂停或停止完成及关闭前会刷出待写记录。每个项目最多保留一个正在写入和一个待写批次，待写批次满时让生产方等待。快照计算在事务前完成，事务内核对文档版本和写入资格。SQLite 锁冲突只在原先确认的租约有效期内重试，不抢占替代租约；慢操作日志区分准备、SQL、视图发布及提交耗时。
+
 Git 不指定 tokenEnv 时使用 main 的 Git credential helper；没有网页 OAuth 登录或 accountId 映射。
 tokenEnv 只引用变量名，每次 Git API/transport 使用时读取，支持进程内 token 轮换。
 expectedIdentity 可选，按前面的身份预检查填写真实 GitHub 数字 id 与 login，或省略整个字段。
@@ -394,6 +397,6 @@ Windows 的一轮真实任务不能代替四 Harness 和 Linux/macOS 完整验�
 Git-off 通过 workspace 指定工作目录。legacy 引擎已移除；旧运行数据需使用旧版本处理。
 10 月 5 日导入和 Loop 历史验证见 [API-key profile / Loop 验证记录](main-profile-loop-test-report-20261005.md)。
 10 月 5 日原生 OAuth、Git-on Evolver 与默认入口历史验证见 [真实验收报告](main-oauth-git-evolver-default-test-report-20261005.md)。
-2026-10-06 的原目录适配、Codex/Pi/DSH 实测和已知边界见 [更新与测试记录](workspace-main-acceptance-20261006-zh.md)；Claude Code 按用户要求未参与本轮。
+2026-10-06 的原目录适配、Codex/Pi/DSH 实测和已知边界见 [更新与测试记录](workspace-main-acceptance-20261006-zh.md)。
 普通 workspace 调用可使用 `scienceevolve_read_invocation_input` 分块读取本轮 Inbox/Memory；
 该工具不接收任意文件路径，也不使 shell 变为允许。

@@ -1223,7 +1223,7 @@ describe("HarnessRuntimeFacade", () => {
     expect(context.spec.prompt).toContain("authoritative inbox\n");
     expect(context.spec.prompt).toContain(`项目入口：${context.spec.inputs.projectPath}`);
     expect(context.spec.prompt).not.toContain("Persistent project memory:");
-    expect(context.spec.prompt).toContain("OpenFARS permission mode: workspace");
+    expect(context.spec.prompt).toContain("ScienceEvolve permission mode: workspace");
     expect(context.spec.policy.skillPaths).toHaveLength(1);
     expect(context.spec.policy.skillPaths[0]).toContain(
       `${path.sep}.scienceevolve${path.sep}agent-skills${path.sep}main${path.sep}skills${path.sep}fixture-skill${path.sep}SKILL.md`
@@ -1489,6 +1489,31 @@ describe("HarnessRuntimeFacade", () => {
     });
   });
 
+  it.each(["", "Evidence verified."])("carries optional visible summaries through live and durable research traces (%j)", async message => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-visible-summary-"));
+    roots.push(root);
+    const adapter = new FixtureAdapter();
+    vi.spyOn(adapter, "run").mockImplementation(async context => {
+      const base = { schemaVersion: 1 as const, timestamp: "2026-11-09T00:00:00.000Z",
+        invocationId: context.spec.invocationId, harnessId: adapter.descriptor.id };
+      await context.onEvent({ ...base, eventId: "public-summary", seq: 0, kind: "reasoning.summary", phase: "delta", itemId: "summary", message });
+      await context.onEvent({ ...base, eventId: "model-activity", seq: 1, kind: "activity", phase: "delta" });
+      return { handoff: "Actual task result", threadId: context.spec.session?.nativeId };
+    });
+    const { facade } = runtime(adapter);
+    const live: HarnessEvent[] = [], history: HarnessEvent[] = [];
+    const runRequest = await request(root, { onLiveHarnessEvent: event => { live.push(event); } });
+    await expect(facade.run(runRequest, (_kind, _message, data) => {
+      if (data?.canonicalEvent) history.push(data.canonicalEvent as unknown as HarnessEvent);
+    }, new AbortController().signal)).resolves.toMatchObject({ handoff: "Actual task result" });
+    expect(live.find(event => event.kind === "reasoning.summary")).toMatchObject({ message });
+    expect(history.filter(event => event.kind === "reasoning.summary")).toHaveLength(message ? 1 : 0);
+    expect(history.find(event => event.kind === "activity")).toMatchObject({ kind: "activity" });
+    expect(runRequest.onModelActivity).toHaveBeenCalledTimes(message ? 2 : 1);
+    expect(runRequest.onModelActivity).toHaveBeenNthCalledWith(1, { kind: "model", phase: "delta", source: "harness" });
+    expect(history.some(event => event.kind === "assistant.message")).toBe(false);
+  });
+
   it("preserves a successful Adapter result when a tool start has no completion", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-runtime-tool-open-"));
     roots.push(root);
@@ -1577,7 +1602,8 @@ describe("HarnessRuntimeFacade", () => {
       new AbortController().signal
     )).rejects.toMatchObject({
       code: "HARNESS_CONTRACT_VIOLATION",
-      message: "Fixture Harness returned an invalid natural-language handoff"
+      message: "Fixture Harness returned an invalid natural-language handoff",
+      details: expect.objectContaining({ reason: "handoff is empty" })
     });
   });
 
@@ -2510,7 +2536,7 @@ describe("HarnessRuntimeFacade", () => {
       "dsh",
       "pi",
       "codex",
-      "claude-code",
+      "dsh",
       "fixture-five"
     ]);
     expect(facade.nativeProtocol("fixture-five")).toBe("chat-completions");

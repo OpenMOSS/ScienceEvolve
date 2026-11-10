@@ -141,6 +141,23 @@ function closingHierarchyDecision(f: Awaited<ReturnType<typeof fixture>>, global
 }
 
 describe("original-session production closing dispatcher", () => {
+  it("cleans the exact ended checkout even when a later native binding belongs to another task", async () => {
+    const original = await authorizedClosingFixture({ originalStatus: "completed", businessDelivery: true });
+    const f = await fixture({ original });
+    f.db.recordAgentNativeSessionBinding({ ...f.binding, invocationId: "inv_later_final",
+      runtimePath: path.join(f.projectPath, "runtime/inv_later_final"),
+      executionContext: { ...f.executionContext, executionId: "group-final-later", ownershipEpoch: 2 } });
+    expect(f.db.latestAgentNativeSessionBinding(P, "worker")?.invocationId).toBe("inv_later_final");
+    await f.runtime.discover();
+    expect(f.launcher.stopScopedForRecovery).toHaveBeenCalledWith(expect.objectContaining({
+      scopeId: f.execution.id, ownershipEpoch: 1, executionRuntimePath: f.binding.runtimePath }));
+    expect(f.db.eventsAfter(P).find(event => event.type === "execution.worktree.cleaned")).toMatchObject({
+      payload: { executionId: f.execution.id, pendingPaths: [], deliveryCompleted: false } });
+    expect((await f.ordinaryGit.observeExecutionWorktree({ ...f.execution, purpose: "delivery" }, 1)).pendingPaths).toEqual([]);
+    expect(f.launcher.open).not.toHaveBeenCalled();
+    expect(f.db.latestAgentNativeSessionBinding(P, "worker")?.invocationId).toBe("inv_later_final");
+  });
+
   const deliveredActions: ControlAction[] = [{ tool: "git_push", reason: "My necessary original Memory" },
     { tool: "github_create_pr", base: "groups/run-G", title: "My independent B", body: "My necessary original Memory" },
     { tool: "github_merge_pr", providerNumber: 11 }, { tool: "finish_task", summary: "I observed my B merge and synchronization" }];
@@ -252,7 +269,7 @@ describe("original-session production closing dispatcher", () => {
       protocol: "scoped-supervisor-stop-v1", projectId: P, scopeId: input.scopeId, agentId: input.agentId,
       role: input.role, ownershipEpoch: input.ownershipEpoch, runtimePath: input.executionRuntimePath, nativeProcessScanCleared: stopped
     } }));
-    const project = new ScopedProjectRuntime({ database: f.db, state: f.state, storage: f.storage, git: f.ordinaryGit,
+    const project = await ScopedProjectRuntime.create({ database: f.db, state: f.state, storage: f.storage, git: f.ordinaryGit,
       repository: { ...f.repository, provider: "github", providerId: 1, cloneUrl: "https://github.com/example/project.git" },
       launcher: f.launcher, signal: f.controller.signal, filesystem: f.runtimeOptions.filesystem, decorate: f.runtimeOptions.decorate,
       trace: f.runtimeOptions.trace, publish: f.runtimeOptions.publish, submit: f.runtimeOptions.submit,
@@ -772,7 +789,7 @@ describe("original-session production closing dispatcher", () => {
         return new HarnessRuntimeFacade().validateResidentTurnResult(result, { ...input.request, control: authority.control });
       } };
     }) };
-    const project = new ScopedProjectRuntime({ database: f.db, state: f.state, storage: f.storage, git: f.ordinaryGit,
+    const project = await ScopedProjectRuntime.create({ database: f.db, state: f.state, storage: f.storage, git: f.ordinaryGit,
       repository: { ...f.repository, provider: "github", providerId: 1, cloneUrl: "https://github.com/example/project.git" }, launcher,
       signal: f.controller.signal, filesystem: f.runtimeOptions.filesystem, decorate: () => {}, trace: f.runtimeOptions.trace,
       publish: f.runtimeOptions.publish, continueWorktreeClosings: continuing, register: f.runtimeOptions.register, unregister: f.runtimeOptions.unregister,
@@ -1050,7 +1067,7 @@ describe("original-session production closing dispatcher", () => {
   it("materializes an already accepted completion while reconciling without inventing an actual output", async () => {
     const original = await openedClosingFixture();
     const envelope = original.envelope({ tool: "finish_task", memory: "Already accepted original closing Memory" }, "finish");
-    original.db.completeScopedWorktreeClosing({ ...original.closing, envelope });
+    original.db.completeScopedWorktreeClosing({ ...original.closing, controlCapabilityHash: original.authority.control.capabilityHash!, envelope });
     const f = await fixture({ original }); await f.runtime.reconcile();
     const saved = JSON.parse(await fs.readFile(path.join(original.closing.runtimePath, "worktree-closing/finish.json"), "utf8"));
     expect(saved.memory).toBe("Already accepted original closing Memory"); expect(f.db.scopedWorktreeClosingTurns(P)[0]!.result).toBeUndefined();

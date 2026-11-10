@@ -20,7 +20,13 @@ export function deriveProjectRuntimeProjection(
   fallback?: Pick<ProjectState, "status" | "phase" | "currentAgent" | "activeInvocationId" | "pauseRequest" | "workflowRecovery" | "lastError" | "failureAttempts" | "failureSummary">
 ): ProjectRuntimeProjection {
   const activities = structuredClone(projection.runtimeActivities);
-  const primaryActivity = [...activities].sort((left, right) =>
+  const primaryActivity = activities.filter(activity => {
+    if (!activity.executionId) return true;
+    const execution = projection.executions.find(item => item.id === activity.executionId);
+    const scoped = projection.scopedExecutions?.find(item => item.id === activity.executionId);
+    return !(execution && ["succeeded", "failed", "cancelled", "stopped", "superseded"].includes(execution.status) ||
+      scoped && ["completed", "stopped"].includes(scoped.status));
+  }).sort((left, right) =>
     runtimeActivityPriority(right) - runtimeActivityPriority(left) ||
     right.startedAt.localeCompare(left.startedAt) ||
     right.activityId.localeCompare(left.activityId)
@@ -147,9 +153,13 @@ export function deriveProjectRuntimeProjection(
     status = fallback?.status ?? (latestNode?.status === "cancelled" ? "cancelled" : "queued");
     phase = fallback?.phase ?? (status === "cancelled" ? "cancelled" : "collaboration:ready");
   }
-  const recentFailure = fallback?.failureAttempts?.filter(item => item.status === "failed").at(-1);
-  const repairKind = recentFailure && /AUTH|CREDENTIAL|PERMISSION|FORBIDDEN|UNAUTHORIZED/i.test(recentFailure.errorCode ?? "")
-    ? "authorization" as const : "configuration" as const;
+  const recentFailure = (projection.failureAttempts ?? fallback?.failureAttempts)?.filter(item => item.status === "failed" &&
+    fallback?.lastError && item.redactedMessage === fallback.lastError).at(-1);
+  const repairCode = recentFailure?.errorCode ?? "";
+  const repairKind = /^(?:MODEL_AUTHENTICATION_FAILED|GITHUB_(?:ACCOUNT_REQUIRED|WAITING_FOR_AUTHORIZATION))$/.test(repairCode)
+    ? "authorization" as const
+    : /^(?:HARNESS_(?:NOT_FOUND|UNAVAILABLE|CAPABILITY_UNSUPPORTED|CONFIGURATION_INVALID)|MODEL_REQUEST_INVALID)$/.test(repairCode)
+      ? "configuration" as const : "recovery" as const;
   const authorizationWaiting = githubAuthorizationWaiting({ status, phase, git: projection.git,
     lastError: fallback?.lastError, failureSummary: projection.failureSummary ?? fallback?.failureSummary,
     failureAttempts: projection.failureAttempts ?? fallback?.failureAttempts,

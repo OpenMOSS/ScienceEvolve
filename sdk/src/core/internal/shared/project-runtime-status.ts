@@ -19,6 +19,7 @@ export function githubAuthorizationWaiting(project: {
   failureAttempts?: readonly AuthorizationAttempt[];
 }): { kind: "authorization"; reason: string } | undefined {
   if (!project.git?.enabled || !["queued", "retrying", "interrupted"].includes(project.status) ||
+    project.phase === "collaboration:writer-lease-lost" ||
     project.phase === "user-intervention-required" ||
     project.phase === "collaboration:workflow-adjustment-waiting" ||
     project.runtime?.status === project.status && project.runtime.activities.length > 0) return undefined;
@@ -102,6 +103,7 @@ export function projectLifecycleState(project: RuntimeStatusSource, state: Runti
   const status = project.runtime?.status ?? project.status;
   if (status === "paused") return "paused";
   if (status === "interrupted") return "interrupted";
+  if (status === "retrying") return "retrying";
   if (["interrupting", "pausing", "cancelling", "stopping"].includes(status)) return "stopping";
   if (["cancelled", "stopped"].includes(status)) return "stopped";
   if (status === "failed") return "failed";

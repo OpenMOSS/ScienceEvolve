@@ -814,7 +814,7 @@ export class LocalCollaborationGitService {
     signal?: AbortSignal): Promise<LocalWorktreeStatusFact> {
     const observed = await this.observeRetainedExecution(execution, expectedOwnershipEpoch, signal);
     const status = await this.runner.run({ cwd: observed.worktreePath,
-      args: ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=traditional", "--ignore-submodules=none"],
+      args: ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
       signal, acceptedExitCodes: [0], environment: { GIT_OPTIONAL_LOCKS: "0" }, completeOutput: true,
       beforeSpawn: () => this.assertAuthority(execution, expectedOwnershipEpoch, observed.branch, "retained.observe") });
     if (status.stdout && !status.stdout.endsWith("\0")) {
@@ -836,6 +836,52 @@ export class LocalCollaborationGitService {
     const after = await this.observeWorktree(execution, observed.branch, signal);
     if (after.head !== observed.head) throw new GitInputError("Execution head moved during closing observation");
     return { ...after, pendingPaths: [...new Set(pendingPaths)] };
+  }
+
+  /** Service lifecycle cleanup of one exact, stopped task's checkout. Git
+   * delivery facts and its retained branch history are never changed. */
+  async clearExecutionWorktree(execution: GitExecutionAuthority, ownershipEpoch: number,
+    residentStopConfirmed: true, signal?: AbortSignal): Promise<{ cleanedPaths: string[]; pendingPaths: string[] }> {
+    if (residentStopConfirmed !== true) throw new GitInputError("Worktree cleanup requires confirmed native stop");
+    const before = await this.observeExecutionWorktree(execution, ownershipEpoch, signal);
+    const files = before.pendingPaths.map(file => file.replace(/\/$/, ""));
+    for (const file of files) {
+      if (!file || path.posix.normalize(file) !== file || path.isAbsolute(file) || file.includes("\\") ||
+        file.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) {
+        throw new GitPathViolationError("Stopped worktree contains an unsafe cleanup path");
+      }
+      let parent = before.worktreePath;
+      for (const part of file.split("/").slice(0, -1)) {
+        parent = path.join(parent, part);
+        let stat;
+        try { stat = await fs.lstat(parent); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") break; throw error; }
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new GitPathViolationError("Cleanup path traverses an untrusted directory");
+      }
+    }
+    if (!files.length) return { cleanedPaths: [], pendingPaths: [] };
+    const verify = async () => {
+      await this.assertAuthority(execution, ownershipEpoch, before.branch, "retained.observe");
+      const current = await this.observeWorktree(execution, before.branch, signal);
+      if (current.head !== before.head) throw new GitInputError("Stopped worktree changed before cleanup");
+    };
+    const listed = await this.runner.run({ cwd: before.worktreePath, args: ["ls-files", "-z"],
+      signal, completeOutput: true, environment: { GIT_OPTIONAL_LOCKS: "0" },
+      beforeSpawn: verify });
+    const tracked = new Set(listed.stdout.split("\0").filter(Boolean));
+    const restore = files.filter(file => tracked.has(file));
+    for (let offset = 0; offset < restore.length; offset += 50) {
+      await verify();
+      await this.command(before.worktreePath, ["restore", `--source=${before.head}`, "--staged", "--worktree", "--",
+        ...restore.slice(offset, offset + 50)], signal);
+    }
+    for (const file of files.filter(file => !tracked.has(file))) {
+      signal?.throwIfAborted();
+      await verify();
+      await fs.rm(path.join(before.worktreePath, file), { recursive: true, force: true });
+    }
+    const after = await this.observeExecutionWorktree(execution, ownershipEpoch, signal);
+    return { cleanedPaths: before.pendingPaths.filter(file => !after.pendingPaths.includes(file)), pendingPaths: after.pendingPaths };
   }
 
   async inspectExecution(execution: GitExecutionAuthority, epoch: number, directBase: string,

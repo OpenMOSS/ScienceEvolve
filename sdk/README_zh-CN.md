@@ -25,7 +25,7 @@ npm install /absolute/scienceevolve-sdk-0.1.1.tgz
 npm install -g /absolute/scienceevolve-sdk-0.1.1.tgz
 ```
 
-pi 随包提供；Codex、Claude Code、DSH 和 [Hermes](docs/hermes-zh.md) 按需安装。[配置编写 Skill](skills/scienceevolve-sdk/SKILL.md) 连同参考文档和模板随包交付，复制到编程 Agent 使用的 Skills 目录后新建会话即可使用。安装后的路径为 `node_modules/@scienceevolve/sdk/skills/scienceevolve-sdk`。
+pi 随包提供；Codex 和 DSH 按需安装。[配置编写 Skill](skills/scienceevolve-sdk/SKILL.md) 连同参考文档和模板随包交付，复制到编程 Agent 使用的 Skills 目录后新建会话即可使用。安装后的路径为 `node_modules/@scienceevolve/sdk/skills/scienceevolve-sdk`。
 
 ## 科研方法技能库
 

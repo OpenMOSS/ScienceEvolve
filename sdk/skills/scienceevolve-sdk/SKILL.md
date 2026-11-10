@@ -33,7 +33,7 @@ scievolve start ./workflow.json ./research_proposal.txt \
 
 dataDir 保存状态，不是业务 workspace。重配置只编辑本轮注入的 proposal path：外部 Git-off 使用 `.scienceevolve/management/<projectId>/proposal/workflow.json`，跨调用保留草稿和原根配置；apply_workflow path "workflow.json" 是逻辑别名。已接受的 Project Skill/MCP 定义保持不可变，内容调整使用新定义名称并更新引用。
 
-Codex Git-off workspace 可运行共享目录中的 shell；Claude Code workspace 只读工具及注入的文件工具，不提供 Bash，需要执行脚本时选择 compute（有 Bash）或任务实际需要的 yolo。非 yolo 的 Git-on 常驻 Agent 不应假定有原生 shell，先核对所需工具承载；prompt 不会赋予缺失能力。
+Codex Git-off workspace 可运行共享目录中的 shell；非 yolo 的 Git-on 常驻 Agent 不应假定有原生 shell，先核对所需工具承载；prompt 不会赋予缺失能力。
 
 ## 科研方法完整性
 

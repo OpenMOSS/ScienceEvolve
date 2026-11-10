@@ -78,6 +78,23 @@ describe("Agent queue read model", () => {
     expect(result.worker.queued.map(item => [item.id, item.position])).toEqual([["parallel-project:arrival:arrival-1", 1], ["parallel-project:arrival:arrival-2", 2]]);
   });
 
+  it.each(["retrying", "interrupted", "paused", "failed"] as const)("does not count retained startup activities as executing while the project is %s", status => {
+    const project = state();
+    project.status = status;
+    project.runtime!.status = status;
+    project.runtime!.activities = [activity("failed-start", "alice", { phase: "resident:starting" }),
+      activity("manager", "main", { executionId: undefined })];
+    const before = structuredClone(project);
+    const result = buildAgentQueueSnapshot(shared(), [project], [source(project)]);
+    for (const kind of ["main", "worker"] as const) {
+      expect(result[kind].activeTasks).toEqual([]);
+      expect(result[kind].activeProjectIds).toEqual([]);
+      expect(result[kind].recoveringTasks).toMatchObject([{ projectId: project.id, state: "recovering" }]);
+    }
+    expect(result.worker.pools).toContainEqual(expect.objectContaining({ occupied: 2 }));
+    expect(project).toEqual(before);
+  });
+
   it("excludes queued arrivals from an old outer node or a paused ancestor", () => {
     const project = state();
     project.activeNodeRunId = "current-node";

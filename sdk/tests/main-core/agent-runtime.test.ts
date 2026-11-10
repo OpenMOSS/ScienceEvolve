@@ -45,7 +45,7 @@ function successfulSmokeProbe(): AdapterSmokeProbeRunner {
     routerCompatibilityVersion: PROTOCOL_ROUTER_COMPATIBILITY_VERSION
   });
   return {
-    harnessIds: () => ["dsh", "pi", "codex", "claude-code"],
+    harnessIds: () => ["dsh", "pi", "codex", "dsh"],
     nativeProtocol: nativeProtocolForHarness,
     cacheKey: async ({ harness }) => identity(harness),
     runSmoke: async ({ harness }) => identity(harness)
@@ -729,7 +729,7 @@ describe("global gateway library", () => {
     const created = await registry.create({ ...gatewayInput });
     const progress: Array<{ type: string; harness?: string; model?: string; stage?: string; status?: string }> = [];
     const matrix = await registry.testMatrix(created.id, {
-      harnesses: ["codex", "dsh", "pi", "claude-code"]
+      harnesses: ["codex", "pi", "dsh"]
     }, undefined, (event) => {
       progress.push({
         type: event.type,
@@ -765,7 +765,7 @@ describe("global gateway library", () => {
       expect.objectContaining({ harness: "codex", nativeProtocol: "responses", routeMode: "direct", status: "passed" }),
       expect.objectContaining({ harness: "dsh", nativeProtocol: "chat-completions", routeMode: "proxy", routeDirection: "chat-completions->responses", status: "passed" }),
       expect.objectContaining({ harness: "pi", nativeProtocol: "chat-completions", routeMode: "proxy", routeDirection: "chat-completions->responses", status: "passed" }),
-      expect.objectContaining({ harness: "claude-code", nativeProtocol: "anthropic-messages", routeMode: "proxy", routeDirection: "anthropic-messages->responses", status: "passed" })
+      expect.objectContaining({ harness: "dsh", nativeProtocol: "anthropic-messages", routeMode: "proxy", routeDirection: "anthropic-messages->responses", status: "passed" })
     ]));
     expect(calls).toHaveLength(32);
     expect(calls.filter((call) => call.body.stream === true)).toHaveLength(16);
@@ -774,7 +774,7 @@ describe("global gateway library", () => {
     expect(new Set(calls.map((call) => call.body.model))).toEqual(new Set(gatewayInput.models));
     const privateRecord = (await registry.get(created.id))!;
     for (const model of gatewayInput.models) {
-      for (const harness of ["codex", "dsh", "pi", "claude-code"] as const) {
+      for (const harness of ["codex", "pi", "dsh"] as const) {
         expect(gatewayCombinationPassed(privateRecord, "responses", model, harness)).toBe(true);
       }
     }

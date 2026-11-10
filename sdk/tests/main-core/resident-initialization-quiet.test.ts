@@ -3,12 +3,14 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { afterEach, describe, expect, it } from "vitest";
-import { ResidentNativeDriver, codexAppServerCodec, claudeStreamJsonCodec } from "../../src/core/harness-runtime/resident-native-driver.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ResidentNativeDriver, codexAppServerCodec, piRpcCodec } from "../../src/core/harness-runtime/resident-native-driver.js";
+import * as residentLease from "../../src/core/harness-runtime/resident-lease.js";
 import type { SessionRef } from "../../src/core/harness-runtime/contracts.js";
 
 const roots:string[]=[],children:ChildProcessWithoutNullStreams[]=[];
 afterEach(async()=>{
+  vi.restoreAllMocks();
   for(const child of children.splice(0))if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");
   await Promise.all(roots.splice(0).map(root=>fs.rm(root,{recursive:true,force:true})));
 });
@@ -77,14 +79,49 @@ describe.runIf(process.platform === "linux")("resident initialization quiet proo
 describe.runIf(process.platform === "linux")("resident process exit facts",()=>{
   it.each([17,"SIGTERM"] as const)("retains the actual %s exit fact when no protocol result arrived",async exit=>{
     const child=await native(`const r=require('node:readline').createInterface({input:process.stdin});
-      r.once('line',()=>{${typeof exit==='number'?`process.exit(${exit})`:`process.kill(process.pid,'${exit}')`}});`);
-    const driver=await ResidentNativeDriver.open({child,session:session("claude-code","original-session"),
-      codec:claudeStreamJsonCodec(),turnAuthority:authority,ownershipEpoch:1});
+      r.on('line',line=>{const q=JSON.parse(line);
+        if(q.type==='get_state')return process.stdout.write(JSON.stringify({id:q.id,type:'response',command:'get_state',success:true,data:{isStreaming:false,sessionId:'original-session'}})+'\\n');
+        ${typeof exit==='number'?`process.exit(${exit})`:`process.kill(process.pid,'${exit}')`}});`);
+    const driver=await ResidentNativeDriver.open({child,session:session("pi","original-session"),
+      codec:piRpcCodec(),turnAuthority:authority,ownershipEpoch:1});
     let error:any;
     try{await driver.submit({inputId:"input-1",invocationId:"inv-1",prompt:"Fixture only; no tools or business.",
       route:{baseUrl:"http://127.0.0.1:45000/v1",token:"fixture-token"}});}catch(value){error=value;}
     expect(error?.message).toBe("Resident native process exited while awaiting a protocol frame");
-    expect(error.details).toMatchObject({protocol:"claude-stream-json",exitCode:typeof exit==='number'?exit:null,signal:typeof exit==='string'?exit:null});
+    expect(error.details).toMatchObject({protocol:"pi-rpc",exitCode:typeof exit==='number'?exit:null,signal:typeof exit==='string'?exit:null});
     expect(error.exitCode).toBe(typeof exit==='number'?exit:null);expect(error.signal).toBe(typeof exit==='string'?exit:null);
+  });
+});
+
+describe.runIf(process.platform === "linux")("resident startup failure", () => {
+  it.each([17, "SIGTERM"] as const)("reports a %s exit before native initialization as a process failure", async exit => {
+    const child = await native(typeof exit === "number"
+      ? `process.exit(${exit});` : `process.kill(process.pid, '${exit}');`);
+    await new Promise<void>(resolve => child.once("close", () => resolve()));
+    await expect(ResidentNativeDriver.open({ child, session: session("pi", "original-session"),
+      codec: piRpcCodec(), turnAuthority: authority, ownershipEpoch: 1, startupTimeoutMs: 25 }))
+      .rejects.toMatchObject({ code: "HARNESS_PROCESS_EXITED", source: "process",
+        details: { protocol: "pi-rpc", exitCode: child.exitCode, signal: child.signalCode } });
+  });
+
+  it("settles native startup when the process closes during PID identity inspection", async () => {
+    const child = await native("process.stdin.resume();");
+    const readIdentity = residentLease.readResidentProcessIdentity;
+    vi.spyOn(residentLease, "readResidentProcessIdentity").mockImplementationOnce(async (...args) => {
+      const identity = await readIdentity(...args);
+      const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
+      child.kill("SIGTERM");
+      await closed;
+      return identity;
+    });
+    let settled = false;
+    let failure: unknown;
+    const opening = ResidentNativeDriver.open({ child, session: session("pi", "original-session"),
+      codec: piRpcCodec(), turnAuthority: authority, ownershipEpoch: 1 })
+      .then(() => { settled = true; }, error => { failure = error; settled = true; });
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_500 });
+    await opening;
+    expect(failure).toMatchObject({ code: "HARNESS_PROCESS_EXITED", source: "process",
+      details: { protocol: "pi-rpc", signal: "SIGTERM" } });
   });
 });

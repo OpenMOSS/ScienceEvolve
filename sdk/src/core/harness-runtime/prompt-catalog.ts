@@ -45,9 +45,17 @@ export class HarnessPromptCatalog {
     const cached = this.cache.get(identity);
     if (!query.forceRefresh && cached && Date.now() - cached.at < 300_000) return cached.result;
     const result = this.collect(executable, query, { ...base, installedVersion });
-    this.cache.set(identity, { at: Date.now(), result });
+    const entry = { at: Date.now(), result };
+    this.cache.set(identity, entry);
     if (this.cache.size > 128) this.cache.delete(this.cache.keys().next().value!);
-    return result;
+    try {
+      const collected = await result;
+      if (collected.status === "source-unavailable" && this.cache.get(identity) === entry) this.cache.delete(identity);
+      return collected;
+    } catch (error) {
+      if (this.cache.get(identity) === entry) this.cache.delete(identity);
+      throw error;
+    }
   }
 
   private async run(executable: string, args: string[]): Promise<string> {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { CollaborationStateDatabase } from "./collaboration-state/store.js";
+import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import type { CollaborationEvent } from "./collaboration-state/contracts.js";
 import { sameDurableSession, type ControlResultContext } from "./control-result-receipts.js";
 import { validateSessionRef } from "./harness-runtime/session-ref.js";
@@ -80,9 +80,9 @@ export function workflowAdjustmentNotifications(database: Pick<CollaborationStat
   "prepareWorkflowAdjustmentNotification" | "confirmWorkflowAdjustmentNotification">, context: ControlResultContext) {
   assertWorkflowNotificationContext(context);
   return {
-    prepare: (inputId: string) => database.prepareWorkflowAdjustmentNotification(context, inputId)?.text ?? "",
-    details: (inputId: string) => workflowAdjustmentContextSources(database.prepareWorkflowAdjustmentNotification(context, inputId)?.facts ?? []),
-    observe: (event: Record<string, unknown>) => database.confirmWorkflowAdjustmentNotification(context, event)
+    prepare: async (inputId: string) => (await database.prepareWorkflowAdjustmentNotification(context, inputId))?.text ?? "",
+    details: async (inputId: string) => workflowAdjustmentContextSources((await database.prepareWorkflowAdjustmentNotification(context, inputId))?.facts ?? []),
+    observe: async (event: Record<string, unknown>) => await database.confirmWorkflowAdjustmentNotification(context, event)
   };
 }
 

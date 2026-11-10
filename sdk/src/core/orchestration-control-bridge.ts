@@ -19,7 +19,7 @@ import { sameControlActionRequest } from "./control-action-identity.js";
 import { assertSiiControlAction } from "./sii-experiments.js";
 import { CONTROL_OPERATION_TIMEOUT_MS } from "./control-request-lifetime.js";
 import { CollaborationGitError } from "./collaboration-git/errors.js";
-import type { ControlResultInput } from "./control-result-receipts.js";
+import { taskCompletionResultFacts, type ControlResultInput } from "./control-result-receipts.js";
 import { CollaborationStateError } from "./collaboration-state/errors.js";
 import { validateProjectStateRequest, type ProjectStateRequest } from "./project-state.js";
 
@@ -263,11 +263,11 @@ export interface ControlActionServiceOptions {
   capabilityHash?: string;
   expiresAt?: string;
   stagingPath: string;
-  /** Re-checks the current project state while its serialized write lock is held. */
+  /** Re-checks current authority and returns persisted completion facts when finish_task saves a receipt. */
   revalidate: (
     envelope: ControlActionEnvelope,
     stagedActions: ControlActionEnvelope[]
-  ) => Promise<void>;
+  ) => Promise<unknown>;
   /** Records a rejected invocation action without exposing the bearer secret. */
   onRejected?: (envelope: ControlActionEnvelope | undefined, error: Error) => Promise<void>;
   /** Called with the canonical staged envelope before returning acceptance.
@@ -388,9 +388,11 @@ export class ControlActionService {
         // request must not mint a receipt or cause those filesystem effects.
         // Valid repeats still revalidate current authority before returning.
         await assertSiiControlAction(this.options.projectId, this.options.agent, this.options.invocationId, action);
-        await this.options.revalidate(envelope!, current);
+        const validated = await this.options.revalidate(envelope!, current);
+        const completion = action.tool === "finish_task" && validated !== undefined ? taskCompletionResultFacts(validated) : undefined;
         const accepted = async (canonical: ControlActionEnvelope) => {
           await this.options.onStaged?.(structuredClone(canonical));
+          if (completion !== undefined) this.results.set(callId, completion);
           return canonical;
         };
         if (existing) return await accepted(existing);
@@ -485,7 +487,11 @@ export class ControlActionService {
     if (!isKnownControlAction(action)) throw new Error("control action is invalid");
     onPending?.();
     const envelope = await this.stage(capability, callId, action);
-    if (!isAgentGitAction(action) || !this.options.execute) return this.retainResult(envelope, callId);
+    if (!isAgentGitAction(action) || !this.options.execute) {
+      const retained = await this.retainResult(envelope, callId, this.results.get(callId));
+      this.assertCapability(capability);
+      return retained;
+    }
     if (this.results.has(callId)) return this.retainResult(envelope, callId, this.results.get(callId));
     // An Agent can reconnect/repeat the same call while its original result
     // is pending. Join that operation; never perform a second Git mutation.

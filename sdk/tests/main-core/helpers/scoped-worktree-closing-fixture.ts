@@ -256,7 +256,7 @@ export async function openedClosingFixture(fixtureOptions: { originalStatus?: "c
   const factory = scopedWorktreeClosingControlAuthorityFactory(options), turn = { invocationId, inputId: "closing-input", prompt: "Original Agent closing" };
   const authority = await factory({ request, turn });
   const envelope = (action: ControlAction, callId = "call"): ControlActionEnvelope => ({ projectId: P, agent: "worker", invocationId, callId,
-    capabilityHash, stateVersion: 1, receivedAt: f.time(), action });
+    capabilityHash: authority.control.capabilityHash, stateVersion: 1, receivedAt: f.time(), action });
   const run = (action: ControlAction, callId = "call") => authority.execute!(envelope(action, callId), new AbortController().signal);
-  return { ...f, capability, closing, scope, request, turn, options, factory, authority, envelope, run, provider };
+  return { ...f, capability: authority.control.capability, closing, scope, request, turn, options, factory, authority, envelope, run, provider };
 }

@@ -115,7 +115,7 @@ async function fixture(scope: "outer" | "legacy" | "closed" = "closed", leaders 
   const begin = (level?: number, allow = false) => { const input=reserveInput(level,allow); const turn=database.beginTerminalPushCoordinator(input)!; expect(turn).toBeDefined(); database.assertTerminalPushCoordinatorLaunch({...turn,runtimePath:input.runtimePath}); database.markTerminalPushCoordinatorOpened({...turn,nativeProcessOpened:true}); return turn; };
   const envelope = (turn:TerminalPushCoordinatorTurn,action:ControlAction):ControlActionEnvelope => ({schemaVersion:1,projectId:PROJECT,agent:turn.agentId,
     invocationId:turn.invocationId,callId:`call-${action.tool}`,stateVersion:turn.coordinatorEpoch,capabilityHash:turn.capabilityHash,receivedAt:ts,action});
-  const stage = (turn:TerminalPushCoordinatorTurn,action:ControlAction) => database.stageTerminalPushCoordinatorAction({...turn,envelope:envelope(turn,action)});
+  const stage = (turn:TerminalPushCoordinatorTurn,action:ControlAction) => database.stageTerminalPushCoordinatorAction({...turn,controlCapabilityHash:turn.capabilityHash,envelope:envelope(turn,action)});
   const finish = (turn:TerminalPushCoordinatorTurn) => stage(turn,{tool:"finish_task",summary:"I reviewed the original receipt",memory:"My actual coordination memory"});
   const result = (turn:TerminalPushCoordinatorTurn) => database.recordTerminalPushCoordinatorResult({...turn,output:"Actual manager handoff",handoffPath:path.join(root,"messages",`${turn.invocationId}.md`)});
   const stop = (turn:TerminalPushCoordinatorTurn) => database.stopTerminalPushCoordinator({...turn,residentStopConfirmed:true,evidence:{fixtureTrustedManagerAbsence:true}});
@@ -153,12 +153,13 @@ async function managerControl(role: "leader" | "main" | "main-as-leader" = "lead
     invocationId: turn.invocationId, runtimePath: turn.runtimePath, workspacePath: turn.worktreePath,
     permission: "workspace", skillPaths: [], autoSkillPaths: [], sessionContinuity: "strict", terminalPushCoordination: scope,
     executionContext: { role: "leader", coordinatorEpoch: turn.coordinatorEpoch, routeScopeId: "running-workflow" } } as AgentRunRequest;
-  const authority = await terminalPushCoordinationControlAuthorityFactory({ state, database: f.database, storage,
-    coordination: turn, capability: secret, assertCurrent() {} })({ request,
+  const factory = await terminalPushCoordinationControlAuthorityFactory({ state, database: f.database, storage,
+    coordination: turn, capability: secret, assertCurrent() {} });
+  const authority = await factory({ request,
     turn: { invocationId: turn.invocationId, inputId: "manager-input", prompt: "Decide this exact receipt issue" } });
   const control = authority.control;
   const service = new ControlActionService({ projectId: PROJECT, agent: turn.agentId, invocationId: turn.invocationId,
-    stateVersion: turn.coordinatorEpoch, capability: secret, capabilityHash: turn.capabilityHash,
+    stateVersion: turn.coordinatorEpoch, capability: control.capability, capabilityHash: control.capabilityHash,
     stagingPath: control.stagingPath, revalidate: authority.revalidate });
   await fs.mkdir(path.dirname(control.stagingPath), { recursive: true });
   const bridge = await startControlActionBridge(service, path.dirname(control.stagingPath));
@@ -170,7 +171,7 @@ async function managerControl(role: "leader" | "main" | "main-as-leader" = "lead
     const source = fileURLToPath(new URL("../../src/core/orchestration-control-mcp.ts", import.meta.url));
     const loader = sdkFixtureFileURL(createRequire(import.meta.url).resolve("tsx")).href;
     const child = spawn(process.execPath, ["--import", loader, source], { env: { ...process.env,
-      SCIENCEEVOLVE_CONTROL_CONTEXT: JSON.stringify({ ...context, ...overrides }), SCIENCEEVOLVE_CONTROL_CAPABILITY: secret }, stdio: ["pipe", "pipe", "pipe"] });
+      SCIENCEEVOLVE_CONTROL_CONTEXT: JSON.stringify({ ...context, ...overrides }), SCIENCEEVOLVE_CONTROL_CAPABILITY: control.capability }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = ""; let stderr = "";
     child.stdout.on("data", value => { stdout += String(value); }); child.stderr.on("data", value => { stderr += String(value); });
     const ended = new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("close", code => code ? reject(new Error(stderr)) : resolve()); });
@@ -178,10 +179,55 @@ async function managerControl(role: "leader" | "main" | "main-as-leader" = "lead
     await ended;
     return stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { result?: { tools?: { name: string }[]; isError?: boolean }; error?: unknown });
   };
-  return { f, turn, storage, oldMemory, state, request, scope, authority, context, bridge, call, run };
+  return { f, turn, storage, oldMemory, state, request, scope, authority, factory, context, bridge, call, run };
 }
 
 describe("running-workflow receipt coordinator MCP transport", () => {
+  it("rotates input capabilities while retaining its grant, accepted finish and exact historical envelope", async () => {
+    const m = await managerControl();
+    try {
+      const first: ControlActionEnvelope = { ...m.f.envelope(m.turn, { tool: "finish_task", summary: "Original accepted finish" }),
+        capabilityHash: m.authority.control.capabilityHash };
+      await m.authority.revalidate(first, []);
+      const next = await m.factory({ request: m.request,
+        turn: { invocationId: m.turn.invocationId, inputId: "manager-input:process-cleanup:1", prompt: "Continue the same task" } });
+      expect(next.control.capability).not.toBe(m.authority.control.capability);
+      expect(next.control.capabilityHash).not.toBe(m.authority.control.capabilityHash);
+      expect(next.control.stagingPath).not.toBe(m.authority.control.stagingPath);
+      await expect(m.authority.revalidate(first, [])).rejects.toThrow("live manager authority");
+      await expect(next.revalidate(first, [])).rejects.toThrow("live manager authority");
+      const decision = { ...m.f.envelope(m.turn, { tool: "coordinate_agent_receipt", incidentId: m.turn.incidentId,
+        operation: "retry", rationale: "My original receipt still needs observation" }), capabilityHash: next.control.capabilityHash };
+      await next.revalidate(decision, []);
+      const current = m.f.database.terminalPushCoordinatorTurns(PROJECT)[0];
+      expect(current.capabilityHash).toBe(m.turn.capabilityHash);
+      expect(current.completion).toEqual(first);
+      expect(current.stagedDecision).toEqual(decision);
+      expect(() => m.f.database.stageTerminalPushCoordinatorAction({ ...m.turn, capabilityHash: "f".repeat(64),
+        controlCapabilityHash: next.control.capabilityHash!, envelope: decision })).toThrow("exact native capability");
+    } finally { await m.bridge.close(); }
+  });
+
+  it("materializes a Chinese coordinator's accepted completion without changing its identity", async () => {
+    const f = await fixture("closed", ["root", "parent", "观测总师"]);
+    const input = f.reserveInput();
+    input.previousInvocationId = "inv_original_manager";
+    input.previousRuntimePath = path.join(f.root, "runtime", input.previousInvocationId);
+    const turn = f.database.beginTerminalPushCoordinator(input)!;
+    f.database.markTerminalPushCoordinatorOpened({ ...turn, nativeProcessOpened: true });
+    f.finish(turn);
+    const accepted = f.database.terminalPushCoordinatorTurns(PROJECT).find(entry => entry.invocationId === turn.invocationId)!;
+    const storage = new ProjectStorage(path.join(f.root, "data"), new EventHub()); await storage.initialize();
+    await fs.mkdir(storage.projectDir(PROJECT), { recursive: true });
+    const before = business(f.database);
+    const saved = await storage.saveTerminalPushCoordinatorCompletion(accepted);
+    const receipt = JSON.parse(await fs.readFile(saved.receiptPath, "utf8"));
+    expect(receipt).toMatchObject({ agentId: "观测总师", completion: accepted.completion });
+    expect(await fs.readFile(saved.memoryPath!, "utf8")).toBe("My actual coordination memory");
+    expect(await storage.saveTerminalPushCoordinatorCompletion(accepted)).toEqual(saved);
+    expect(business(f.database)).toEqual(before);
+  });
+
   it.each(["leader", "main", "main-as-leader"] as const)("allocates only the %s role's tools and saves that Agent's own finish/memory", async role => {
     const m = await managerControl(role, role === "main");
     const before = business(m.f.database);
@@ -515,7 +561,7 @@ describe("historical terminal receipt coordination state", () => {
     if(invalid==="leader-user")envelope.action={tool:"request_user",message:"User",rationale:"Wrong level"};
     if(invalid==="git")envelope.action={tool:"git_push"}; if(invalid==="route")envelope.action={tool:"route_to_agent",target:"worker"};
     if(invalid==="empty-memory")envelope.action={tool:"finish_task",memory:" "};
-    expect(()=>f.database.stageTerminalPushCoordinatorAction({...turn,envelope})).toThrow(/outside its exact native capability/);
+    expect(()=>f.database.stageTerminalPushCoordinatorAction({...turn,controlCapabilityHash:turn.capabilityHash,envelope})).toThrow(/outside its exact native capability/);
     expect(f.database.terminalPushCoordinatorTurns(PROJECT)[0]).toMatchObject({status:"opened"});
     expect(f.database.terminalPushCoordinatorTurns(PROJECT)[0].stagedDecision).toBeUndefined();
   });
@@ -608,7 +654,7 @@ describe("historical terminal receipt coordination state", () => {
   it("blocks normal native activity and another receipt while a historical manager owns the boundary",async()=>{
     const f=await fixture("legacy");const input=f.reserveInput();const turn=f.database.beginTerminalPushCoordinator(input)!;
     expect(f.database.beginTerminalPushCoordinator(input)).toBeUndefined();
-    expect(()=>f.database.stageTerminalPushCoordinatorAction({...turn,envelope:f.envelope(turn,{tool:"finish_task"})})).toThrow(/exact live native authority/);
+    expect(()=>f.database.stageTerminalPushCoordinatorAction({...turn,controlCapabilityHash:turn.capabilityHash,envelope:f.envelope(turn,{tool:"finish_task"})})).toThrow(/exact live native authority/);
     expect(()=>f.database.startRuntimeActivity({projectId:PROJECT,kind:"resident",phase:"test",invocationId:"inv_other",nodeRunId:"old-node",agentId:"worker"})).toThrow(/terminal receipt observation/);
     expect(f.database.beginTerminalPushObservation({projectId:PROJECT,executionId:"old-execution",ownershipEpoch:2,agentId:"worker",invocationId:"inv_unapproved_receipt",operationId:"original-push",
       originalInvocationId:"inv_original_worker",previousInvocationId:"inv_original_worker",previousRuntimePath:path.join(f.root,"runtime","inv_original_worker"),runtimePath:path.join(f.root,"runtime","inv_unapproved_receipt"),
@@ -649,7 +695,7 @@ describe("historical terminal receipt coordination state", () => {
     const f=await fixture("legacy");const turn=f.begin();f.finish(turn);
     const first=f.database.terminalPushCoordinatorTurns(PROJECT)[0].completion;
     const equivalent=f.envelope(turn,{tool:"finish_task",summary:"I reviewed the original receipt",memory:"My actual coordination memory"});equivalent.callId="equivalent-finish";
-    f.database.stageTerminalPushCoordinatorAction({...turn,envelope:equivalent});expect(f.database.terminalPushCoordinatorTurns(PROJECT)[0].completion).toEqual(first);
+    f.database.stageTerminalPushCoordinatorAction({...turn,controlCapabilityHash:turn.capabilityHash,envelope:equivalent});expect(f.database.terminalPushCoordinatorTurns(PROJECT)[0].completion).toEqual(first);
     expect(()=>f.stage(turn,{tool:"finish_task",memory:"Changed Agent memory"})).toThrow(/original action/);
     f.decide(turn,"retry");expect(()=>f.decide(turn,"escalate")).toThrow(/original action/);
     f.result(turn);expect(()=>f.database.recordTerminalPushCoordinatorResult({...turn,output:"Changed output"})).toThrow(/output changed/);

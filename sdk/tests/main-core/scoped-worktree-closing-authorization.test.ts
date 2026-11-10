@@ -284,7 +284,7 @@ describe("actual original-Agent closing return", () => {
 
   it("does not invent a returned output from the separately accepted finish_task", async () => {
     const f = await closingJournalFixture();
-    f.db.completeScopedWorktreeClosing({ ...f.closingInput, envelope: { projectId: "p", agent: "worker", invocationId: "inv_closing", callId: "finish",
+    f.db.completeScopedWorktreeClosing({ ...f.closingInput, controlCapabilityHash: f.closingInput.capabilityHash, envelope: { projectId: "p", agent: "worker", invocationId: "inv_closing", callId: "finish",
       stateVersion: 1, capabilityHash: f.closingInput.capabilityHash, receivedAt: f.input.observation.observedAt, action: { tool: "finish_task", summary: "My finish only" } } });
     expect(f.db.scopedWorktreeClosingResult("p", "inv_closing")).toBeUndefined();
     expect(f.db.scopedWorktreeClosingTurns("p")[0]?.result).toBeUndefined();
@@ -344,19 +344,19 @@ describe("separate original-Agent closing completion", () => {
 
   it.each(["completed", "failed"] as const)("retains the %s owner's immutable business facts and separate finish through restart and Stop", async status => {
     const f = await closingJournalFixture(status), original = f.snapshot(), envelope = finish(f);
-    const receipt = f.db.completeScopedWorktreeClosing({ ...f.closingInput, envelope });
+    const receipt = f.db.completeScopedWorktreeClosing({ ...f.closingInput, controlCapabilityHash: f.closingInput.capabilityHash, envelope });
     expect(receipt).toMatchObject({ projectId: "p", executionId: "original", ownershipEpoch: 1, invocationId: "inv_closing",
       grantInvocationId: f.closingInput.grantInvocationId, grantCallId: f.closingInput.grantCallId, reportHeadSha: HEAD,
       originalSession: f.binding.session, writerLeaseEpoch: 1, callId: envelope.callId, summary: envelope.action.tool === "finish_task" ? envelope.action.summary : undefined,
       memorySha256: expect.any(String) });
     const seq = f.db.projectState("p").eventSeq;
-    expect(f.db.completeScopedWorktreeClosing({ ...f.closingInput, envelope: { ...envelope, receivedAt: "2026-10-10T09:00:01.000Z" } })).toEqual(receipt);
+    expect(f.db.completeScopedWorktreeClosing({ ...f.closingInput, controlCapabilityHash: f.closingInput.capabilityHash, envelope: { ...envelope, receivedAt: "2026-10-10T09:00:01.000Z" } })).toEqual(receipt);
     expect(f.db.projectState("p").eventSeq).toBe(seq);
     expect(f.db.scopedWorktreeClosingTurns("p")[0]).toMatchObject({ status: "opened", completion: receipt });
     expect(f.leases()).toHaveLength(1); expect(f.db.scopedGroupIssues("p")).toHaveLength(1);
     expect(f.db.scopedWorktreeClosingCheckpoint("p", "inv_closing")).toBeUndefined();
     f.db.stopScopedWorktreeClosingTurn({ ...f.closingInput, residentStopConfirmed: true, evidence: { nativeGone: true } });
-    expect(() => f.db.completeScopedWorktreeClosing({ ...f.closingInput, envelope })).toThrow();
+    expect(() => f.db.completeScopedWorktreeClosing({ ...f.closingInput, controlCapabilityHash: f.closingInput.capabilityHash, envelope })).toThrow();
     f.db.close(); f.advance(60_001); const next = f.open();
     expect(next.scopedWorktreeClosingCompletion("p", "inv_closing")).toEqual(receipt);
     expect(next.scopedWorktreeClosingTurns("p")[0]).toMatchObject({ status: "stopped", completion: receipt });
@@ -365,21 +365,21 @@ describe("separate original-Agent closing completion", () => {
 
   it.each(["callId", "summary", "memory"] as const)("does not replace accepted closing %s", async field => {
     const f = await closingJournalFixture(), envelope = finish(f);
-    const receipt = f.db.completeScopedWorktreeClosing({ ...f.closingInput, envelope });
+    const receipt = f.db.completeScopedWorktreeClosing({ ...f.closingInput, controlCapabilityHash: f.closingInput.capabilityHash, envelope });
     const changed = structuredClone(envelope);
     if (field === "callId") changed.callId = "a-new-receipt";
     else changed.action = { ...changed.action, [field]: "Replacement" } as never;
-    expect(() => f.db.completeScopedWorktreeClosing({ ...f.closingInput, envelope: changed })).toThrow("immutable");
+    expect(() => f.db.completeScopedWorktreeClosing({ ...f.closingInput, controlCapabilityHash: f.closingInput.capabilityHash, envelope: changed })).toThrow("immutable");
     expect(f.db.scopedWorktreeClosingCompletion("p", "inv_closing")).toEqual(receipt);
   });
 
   it("keeps an Agent's omitted memory absent and retains its receipt after a writer handoff without renewing tools", async () => {
     const f = await closingJournalFixture(), envelope = { ...finish(f), action: { tool: "finish_task" as const } };
-    const original = f.snapshot(), receipt = f.db.completeScopedWorktreeClosing({ ...f.closingInput, envelope });
+    const original = f.snapshot(), receipt = f.db.completeScopedWorktreeClosing({ ...f.closingInput, controlCapabilityHash: f.closingInput.capabilityHash, envelope });
     expect(receipt).not.toHaveProperty("memory"); expect(receipt).not.toHaveProperty("memorySha256"); expect(receipt).not.toHaveProperty("summary");
     f.advance(60_001); const next = f.open();
     expect(next.scopedWorktreeClosingCompletion("p", "inv_closing")).toEqual(receipt);
-    expect(() => next.completeScopedWorktreeClosing({ ...f.closingInput, envelope })).toThrow();
+    expect(() => next.completeScopedWorktreeClosing({ ...f.closingInput, controlCapabilityHash: f.closingInput.capabilityHash, envelope })).toThrow();
     expect(next.openRuntimeActivities("p", false)).toMatchObject([{ leaseState: "recovering", invocationId: "inv_closing" }]);
     next.stopScopedWorktreeClosingTurn({ ...f.closingInput, residentStopConfirmed: true, evidence: { nativeGone: true }, priorWriterLeaseEpoch: 1 });
     expect(next.scopedGroupIssues("p")).toHaveLength(1); expect(f.snapshot()).toEqual(original);
@@ -389,7 +389,7 @@ describe("separate original-Agent closing completion", () => {
     "pause", "cancel", "stopped", "expired-writer", "expired-capability", "not-finish", "empty-memory", "extra-action-field"])("rejects %s closing finish without an accepted receipt", async fault => {
     const f = fault === "not-opened" ? await closingFixture() : await closingJournalFixture();
     if (fault === "not-opened") f.db.beginScopedWorktreeClosingTurn(f.closingInput);
-    const envelope = finish(f), input = { ...f.closingInput, envelope }, original = f.snapshot();
+    const envelope = finish(f), input = { ...f.closingInput, controlCapabilityHash: f.closingInput.capabilityHash, envelope }, original = f.snapshot();
     if (fault === "wrong-agent") envelope.agent = "reviewer";
     if (fault === "wrong-execution") input.executionId = "different";
     if (fault === "wrong-epoch") input.ownershipEpoch = 2;
@@ -435,7 +435,7 @@ describe("separate closing Git journal authority", () => {
   it.each([false, true])("transports the exact late B result after Stop, keeps native receipt pending and preserves A (local sync=%s)", async synchronized => {
     const f = await lateMerge(synchronized), before = f.snapshot();
     f.db.stopScopedWorktreeClosingTurn({ ...f.closingInput, residentStopConfirmed: true, evidence: { nativeProcessScanCleared: true } });
-    captureKnownAgentGitResults(f.db, "p"); captureKnownAgentGitResults(f.db, "p");
+    await captureKnownAgentGitResults(f.db, "p"); await captureKnownAgentGitResults(f.db, "p");
     const pending = f.db.pendingControlResultEvents("p", "worker"); expect(pending).toHaveLength(1);
     expect(pending[0]?.payload.receipt).toMatchObject({ invocationId: f.authority.invocationId, session: f.binding.session,
       result: { request: f.request, operation: { id: "closing-merge", expectedHead: f.checkpoint.observation.head },
@@ -452,10 +452,10 @@ describe("separate closing Git journal authority", () => {
   });
 
   it("supplements a pending B merge with its later independent synchronization without rewriting the earlier return", async () => {
-    const f = await lateMerge(false); captureKnownAgentGitResults(f.db, "p");
+    const f = await lateMerge(false); await captureKnownAgentGitResults(f.db, "p");
     const original = f.db.pendingControlResultEvents("p", "worker")[0]!;
     await f.journal.recordMergedSynchronization({ ...f.identity, synchronization: f.sync });
-    captureKnownAgentGitResults(f.db, "p"); captureKnownAgentGitResults(f.db, "p");
+    await captureKnownAgentGitResults(f.db, "p"); await captureKnownAgentGitResults(f.db, "p");
     expect(f.db.eventByRequestId("p", original.requestId!)?.payload).toEqual(original.payload);
     expect(f.db.pendingControlResultEvents("p", "worker").map(event => (event.payload.receipt as any).origin.status)).toEqual(["remote_success_local_pending", "completed"]);
   });
@@ -476,7 +476,7 @@ describe("separate closing Git journal authority", () => {
       return binding;
     });
     try {
-      expect(() => captureKnownAgentGitResults(f.db, "p")).toThrow("separate original invocation binding");
+      await expect(captureKnownAgentGitResults(f.db, "p")).rejects.toThrow("separate original invocation binding");
       expect(f.db.pendingControlResultEvents("p", "worker")).toEqual([]);
     } finally { spy.mockRestore(); }
     expect(lookup("p", requestId)).toEqual(original);

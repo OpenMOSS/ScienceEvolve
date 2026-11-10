@@ -18,7 +18,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
-type Harness = "codex" | "claude-code" | "dsh" | "pi";
+type Harness = "codex" | "dsh" | "pi";
 // Controlled native CLIs exercise the actual built-in Adapter and process/input
 // transport. They do not establish receipt by an installed production model.
 async function nativeExecutable(root: string, workspacePath: string, harness: Harness, echo = true) {
@@ -79,19 +79,13 @@ if (harness === "dsh") {
 } else {
   process.stdin.setEncoding("utf8");
   let wire = ""; for await (const chunk of process.stdin) wire += chunk;
-  const prompt = harness === "claude-code" ? JSON.parse(wire).message.content.map(block => block.text ?? "").join("\\n") : wire;
+  const prompt = wire;
   capture(prompt);
   if (harness === "codex") {
     emit({ type: "thread.started", thread_id: "e7994308-34ed-4e5a-9319-8261cbd0744c" });
     if (echo) emit({ type: "item.completed", item: { id: "original-user-input", type: "user_message", content: [{ type: "text", text: prompt }] } });
     emit({ type: "item.completed", item: { id: "original-answer", type: "agent_message", text: "Original native handoff." } });
     emit({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 3 } });
-  } else if (harness === "claude-code") {
-    const session_id = args[args.indexOf(args.includes("--resume") ? "--resume" : "--session-id") + 1];
-    emit({ type: "system", subtype: "init", session_id });
-    if (echo) emit({ type: "user", session_id, message: { role: "user", content: [{ type: "text", text: prompt }] } });
-    emit({ type: "assistant", session_id, message: { role: "assistant", content: [{ type: "text", text: "Original native handoff." }] } });
-    emit({ type: "result", subtype: "success", is_error: false, session_id, result: "Original native handoff." });
   } else {
     const file = args[args.indexOf("--session") + 1];
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -157,7 +151,7 @@ async function fixture(harness: Harness, large = false, echo = true) {
 }
 
 describe("Ordinary workflow notification input through the actual built-in process transports", () => {
-  it.each<Harness>(["codex", "claude-code", "dsh", "pi"])("%s carries complete large accepted facts and records the actual native Session once", async harness => {
+  it.each<Harness>(["codex", "dsh", "pi"])("%s carries complete large accepted facts and records the actual native Session once", async harness => {
     const f = await fixture(harness, true);
     const result = await f.runtime.run(f.request, async () => undefined, new AbortController().signal);
     expect(result.handoff).toContain("Original native handoff");

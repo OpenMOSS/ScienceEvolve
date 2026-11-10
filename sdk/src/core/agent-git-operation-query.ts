@@ -1,28 +1,48 @@
 import type { AgentGitToolInput } from "./agent-git-tools.js";
 import type { RemoteMergeSyncFact } from "./collaboration-git/contracts.js";
 import { pushSupersessionProof } from "./collaboration-git/operation.js";
+import { GitInputError } from "./collaboration-git/errors.js";
 
-export type AgentGitOperationQueryInput = Pick<AgentGitToolInput,
-  "execution" | "base" | "recordedOperation" | "recordedRequest" | "recordedSynchronization"> & {
+type QueryContext = Pick<AgentGitToolInput, "execution" | "base"> & {
   repository: Pick<AgentGitToolInput["repository"], "owner" | "name">;
   projectId: string;
   operationId: string;
   facts?: AgentGitToolInput["facts"];
 };
+type Readers = Pick<AgentGitToolInput, "recordedOperation" | "recordedRequest" | "recordedSynchronization">;
+export type AgentGitOperationQueryInput = QueryContext & {
+  [K in keyof Readers]: Readers[K] extends ((...args: infer A) => infer R) | undefined ? (...args: A) => Awaited<R> : never;
+};
+
+/** Gather immutable journal observations asynchronously, then validate them
+ * with the same pure projection used inside database transactions. */
+export async function readAgentGitOperation(input: QueryContext & Readers) {
+  const operation = await input.recordedOperation?.(input.operationId);
+  const request = await input.recordedRequest?.(input.operationId);
+  const publicationId = operation?.status === "superseded" ? pushSupersessionProof(operation, input.repository).publicationOperationId : undefined;
+  const publication = publicationId ? await input.recordedOperation?.(publicationId) : undefined;
+  let synchronizationQuery: Parameters<NonNullable<Readers["recordedSynchronization"]>>[0] | undefined;
+  const context = { ...input, recordedOperation: (id: string) => id === input.operationId ? operation : id === publicationId ? publication : undefined,
+    recordedRequest: () => request, recordedSynchronization: (query: NonNullable<typeof synchronizationQuery>) => { synchronizationQuery = query; return undefined; } };
+  const result = queryAgentGitOperation(context);
+  if (!synchronizationQuery) return result;
+  const synchronization = await input.recordedSynchronization?.(synchronizationQuery);
+  return queryAgentGitOperation({ ...context, recordedSynchronization: () => synchronization });
+}
 
 /** Reads exact original journal facts without invoking Git/provider callbacks,
  * changing authority, or claiming delivery to the native Session. */
 export function queryAgentGitOperation(input: AgentGitOperationQueryInput) {
   const { repository, execution, base } = input;
   const operation = input.recordedOperation?.(input.operationId);
-  if (!operation) throw new Error("The requested original Git operation is not recorded for this task");
+  if (!operation) throw new GitInputError("The requested original Git operation is not recorded for this task");
   if (operation.id !== input.operationId || operation.ownerExecutionId !== execution.id ||
     !Number.isSafeInteger(operation.ownershipEpoch) || (operation.ownershipEpoch ?? 0) < 1 ||
     operation.ownershipEpoch! > execution.ownershipEpoch ||
     !["git.push", "git.revert", "pull.create", "pull.merge", "pull.close", "pull.update"].includes(operation.kind) ||
     !/^[0-9a-f]{40}$/i.test(operation.expectedHead ?? "") ||
     operation.expectedBase !== (["git.push", "git.revert"].includes(operation.kind) ? execution.executionBranch : base)) {
-    throw new Error("The requested Git operation differs from this original task's ownership, branch or direct target");
+    throw new GitInputError("The requested Git operation differs from this original task's ownership, branch or direct target");
   }
   const remote = operation.remoteFact;
   if (operation.kind === "git.revert") {

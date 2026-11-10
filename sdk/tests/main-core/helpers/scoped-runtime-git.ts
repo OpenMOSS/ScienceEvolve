@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { expect, vi } from "vitest";
-import type { CollaborationStateDatabase } from "../../../src/core/collaboration-state/store.js";
+import type { CollaborationStateStore } from "../../../src/core/collaboration-state/database-worker.js";
 import type { ScopedWorkflowGit } from "../../../src/core/scoped-workflow-runtime.js";
 import type { GitHubPullRequestFact, GitHubRepositoryFact, RemoteMergeSyncFact } from "../../../src/core/collaboration-git/contracts.js";
 import { CollaborationGitFacade, type CreatePullRequestRequest, type CreateGroupFinalPullRequestRequest, type MergePullRequestRequest, type MergeGroupFinalPullRequestRequest } from "../../../src/core/collaboration-git/facade.js";
@@ -34,7 +34,7 @@ export class ScopedRuntimeGit implements ScopedWorkflowGit {
   }
   private readonly completionHeads = new Map<string, string>();
   readonly checkpointHeads = new Map<string, string>();
-  constructor(private readonly database: CollaborationStateDatabase, private readonly projectId = "p") {}
+  constructor(private readonly database: CollaborationStateStore, private readonly projectId = "p") {}
 
   observeRemoteRef = vi.fn(async (_repo: GitHubRepositoryFact, ref: string) => ({ owner: "example", repository: "openfars",
     ref, status: this.refs.has(ref) ? "present" as const : "missing" as const, sha: this.refs.get(ref), observedAt: NOW }));
@@ -52,7 +52,7 @@ export class ScopedRuntimeGit implements ScopedWorkflowGit {
   });
 
   checkpointGroupCompletion: CollaborationGitFacade["checkpointGroupCompletion"] = vi.fn(async (request) => {
-    const receipt = this.database.scopedGroupCompletionReport(this.projectId, request.groupRunId);
+    const receipt = await this.database.scopedGroupCompletionReport(this.projectId, request.groupRunId);
     const head = this.completionHeads.get(request.operationId) ?? createHash("sha1").update(request.expectedHead + receipt.content).digest("hex");
     this.completionHeads.set(request.operationId, head);
     const store = this.database.operationsForProject(this.projectId, true);
@@ -200,7 +200,7 @@ export class ScopedRuntimeGit implements ScopedWorkflowGit {
       return previous;
     }
     const conflicted = "agentId" in request.execution ? request.execution.agentId === this.conflictedAgent
-      : this.database.scopedGroupRun(this.projectId, request.execution.groupRunId)?.groupId === this.conflictedFinalGroup;
+      : (await this.database.scopedGroupRun(this.projectId, request.execution.groupRunId))?.groupId === this.conflictedFinalGroup;
     const mergeSha = createHash("sha1").update(request.operationId).digest("hex");
     const pull: GitHubPullRequestFact = { ...previous, status: conflicted ? "conflicted" : "merged",
       ...(conflicted ? {} : { mergeCommitSha: mergeSha }) };
@@ -240,7 +240,7 @@ export class ScopedRuntimeGit implements ScopedWorkflowGit {
       throw new Error("crash after exact local synchronization");
     }
     if (!("agentId" in request.execution) &&
-      this.database.scopedGroupRun(this.projectId, request.execution.groupRunId!)?.groupId === this.failFinalSyncOnceGroup) {
+      (await this.database.scopedGroupRun(this.projectId, request.execution.groupRunId!))?.groupId === this.failFinalSyncOnceGroup) {
       this.failFinalSyncOnceGroup = undefined;
       throw new Error("crash after child final synchronization");
     }

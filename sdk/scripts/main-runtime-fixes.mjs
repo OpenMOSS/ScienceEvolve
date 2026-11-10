@@ -7,12 +7,8 @@ export const sharedFixes = JSON.parse(sharedFixBytes);
 if (sharedFixes.schemaVersion !== 1 || !Array.isArray(sharedFixes.fixes)) throw new Error("Invalid shared-fix index");
 if (!["git", "working-tree"].includes(sharedFixes.sourceSnapshotKind ?? "git")) throw new Error("Invalid source snapshot kind");
 const ids = new Set();
-// SDK-owned adapters have no upstream blob. Track them explicitly instead of
-// inventing a main commit or weakening the byte checks for imported main code.
 export const hostSources = sharedFixes.hostSources ?? [];
-if (!Array.isArray(hostSources) || new Set(hostSources).size !== hostSources.length ||
-  hostSources.some(source => typeof source !== "string" ||
-    !/^harness-runtime\/adapters\/hermes-[a-z-]+\.ts$/.test(source))) throw new Error("Invalid SDK adapter sources");
+if (!Array.isArray(hostSources) || hostSources.length) throw new Error("Shared core cannot contain SDK adapter sources");
 export const supplementalSources = sharedFixes.supplementalSources ?? [];
 if (!Array.isArray(supplementalSources)) throw new Error("Invalid supplemental sources");
 const supplementalNames = new Set();

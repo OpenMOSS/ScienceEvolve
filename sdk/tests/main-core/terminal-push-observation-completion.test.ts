@@ -26,16 +26,16 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(opened = true) {
+async function fixture(opened = true, agentId = "worker") {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "terminal-push-completion-")); roots.push(root);
   const clock = { now: Date.now() };
   const timestamp = new Date(clock.now).toISOString();
   const storage = new ProjectStorage(path.join(root, "data"), new EventHub());
   await storage.initialize();
   const projectPath = storage.projectDir(PROJECT);
-  const worktree = path.join(projectPath, "git-worktrees", "agents", "worker");
-  const oldMemory = path.join(worktree, "agent-memory", "worker", "Memory.md");
-  const durableMemory = path.join(projectPath, "workspaces", "agent-memory", "worker", "Memory.md");
+  const worktree = path.join(projectPath, "git-worktrees", "agents", agentId);
+  const oldMemory = path.join(worktree, "agent-memory", agentId, "Memory.md");
+  const durableMemory = path.join(projectPath, "workspaces", "agent-memory", agentId, "Memory.md");
   for (const file of [oldMemory, durableMemory]) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, "Retained original Agent memory\n"); }
   await fs.mkdir(path.join(projectPath, "messages"));
   const databasePath = path.join(root, "collaboration.sqlite");
@@ -48,30 +48,30 @@ async function fixture(opened = true) {
   const raw = new DatabaseSync(databasePath); raw.exec("PRAGMA foreign_keys=ON");
   raw.prepare(`INSERT INTO node_runs(node_run_id,project_id,node_kind,node_id,agent_id,workflow_revision,
     activation_request_id,activation_payload_hash,input_snapshot_ref,activated_by_agent_id,status,activated_at,updated_at,completed_at)
-    VALUES ('old-node',?,'agent','worker','worker',1,'old-activation','old-hash','old-input','main','completed',?,?,?)`).run(PROJECT, timestamp, timestamp, timestamp);
+    VALUES ('old-node',?,'agent',?,?,1,'old-activation','old-hash','old-input','main','completed',?,?,?)`).run(PROJECT, agentId, agentId, timestamp, timestamp, timestamp);
   raw.prepare(`INSERT INTO work_tasks(task_id,node_run_id,assignment,queue_ordinal,purpose,status,created_at,updated_at,completed_at)
     VALUES ('old-task','old-node','Original completed work',1,'delivery','succeeded',?,?,?)`).run(timestamp, timestamp, timestamp);
   raw.prepare(`INSERT INTO member_executions(execution_id,project_id,node_run_id,task_id,agent_id,purpose,ownership_epoch,status,
     execution_branch,worktree_path,queued_at,started_at,updated_at,completed_at,process_stop_confirmed,invocation_id,session_id)
-    VALUES ('old-execution',?,'old-node','old-task','worker','delivery',2,'succeeded','executions/old-execution',?,?,?,?,?,1,'inv_original_worker','original-worker-session')`)
-    .run(PROJECT, worktree, timestamp, timestamp, timestamp, timestamp);
+    VALUES ('old-execution',?,'old-node','old-task',?,'delivery',2,'succeeded','executions/old-execution',?,?,?,?,?,1,'inv_original_worker','original-worker-session')`)
+    .run(PROJECT, agentId, worktree, timestamp, timestamp, timestamp, timestamp);
   raw.prepare(`INSERT INTO operations(operation_id,project_id,kind,payload_hash,status,owner_execution_id,ownership_epoch,
     expected_head,expected_base,created_at,updated_at) VALUES ('original-push',?,'git.push',?,'uncertain','old-execution',1,?,'executions/old-execution',?,?)`)
     .run(PROJECT, "a".repeat(64), HEAD, timestamp, timestamp);
   raw.close();
-  const priorReceipt = { taskId: "old-execution", agent: "worker", invocationId: "inv_original_worker", callId: "old-finish",
+  const priorReceipt = { taskId: "old-execution", agent: agentId, invocationId: "inv_original_worker", callId: "old-finish",
     requestedAt: timestamp, status: "accepted", summary: "Original task finished", memory: "Original memory", handoffPath: "/retained/original-handoff.md", acceptedAt: timestamp };
-  const state = { id: PROJECT, turn: 1, taskCompletions: { "old-execution": priorReceipt }, agents: { worker: { harness: "pi", permission: "yolo", sessionPersistence: false } } } as unknown as ProjectState;
+  const state = { id: PROJECT, turn: 1, taskCompletions: { "old-execution": priorReceipt }, agents: { [agentId]: { harness: "pi", permission: "yolo", sessionPersistence: false } } } as unknown as ProjectState;
   const statePath = path.join(projectPath, "state.json"); await fs.writeFile(statePath, JSON.stringify(state));
   const originalTaskReceiptPath = path.join(projectPath, "runtime", "task-completions", `${createHash("sha256").update("old-execution").digest("hex")}.json`);
   await fs.mkdir(path.dirname(originalTaskReceiptPath), { recursive: true }); await fs.writeFile(originalTaskReceiptPath, JSON.stringify(priorReceipt));
-  const turn = database.beginTerminalPushObservation({ projectId: PROJECT, executionId: "old-execution", ownershipEpoch: 2, agentId: "worker",
+  const turn = database.beginTerminalPushObservation({ projectId: PROJECT, executionId: "old-execution", ownershipEpoch: 2, agentId,
     invocationId: "inv_terminal_receipt", operationId: "original-push", originalInvocationId: "inv_original_worker", previousInvocationId: "inv_original_worker",
     previousRuntimePath: path.join(projectPath, "runtime", "resident", "inv_original_worker"), runtimePath: path.join(projectPath, "runtime", "resident", "inv_terminal_receipt"),
     residentStopConfirmed: true, evidence: { fixtureOriginalNativeAbsence: true } })!;
   if (opened) database.markTerminalPushObservationOpened({ ...turn, nativeProcessOpened: true });
   const envelope = (memory: string | undefined = "Actual Agent note: remote receipt remains unconfirmed"): ControlActionEnvelope => ({
-    projectId: PROJECT, agent: "worker", invocationId: turn.invocationId, callId: "my-finish", stateVersion: 2,
+    projectId: PROJECT, agent: agentId, invocationId: turn.invocationId, callId: "my-finish", stateVersion: 2,
     capabilityHash: "b".repeat(64), receivedAt: timestamp, action: { tool: "finish_task", summary: "I observed my old push", ...(memory === undefined ? {} : { memory }) } });
   const close = () => database.stopTerminalPushObservation({ ...turn, residentStopConfirmed: true, evidence: { fixtureSupplementNativeAbsence: true } });
   const observe = vi.fn(async () => ({ owner: repository.owner, repository: repository.name, ref: turn.executionBranch, status: "missing" as const, observedAt: timestamp }));
@@ -84,7 +84,7 @@ async function fixture(opened = true) {
 
 async function controlFor(f: Awaited<ReturnType<typeof fixture>>, assertCurrent = async () => {}) {
   const { terminalPushObservationControlAuthorityFactory } = await import("../../src/core/terminal-push-observation-control.js");
-  const request = { project: f.state, agent: "worker", kind: "worker", permission: "workspace", invocationId: f.turn.invocationId,
+  const request = { project: f.state, agent: f.turn.agentId, kind: "worker", permission: "workspace", invocationId: f.turn.invocationId,
     runtimePath: path.join(f.projectPath, "runtime", f.turn.invocationId), workspacePath: f.worktree, sessionContinuity: "strict",
     terminalPushObservation: { operationId: f.turn.operation.id }, executionContext: { role: "delivery", nodeRunId: f.turn.nodeRunId,
       executionId: f.turn.executionId, ownershipEpoch: f.turn.ownershipEpoch, executionWorktree: f.worktree } } as unknown as AgentRunRequest;
@@ -112,11 +112,13 @@ function oldBusiness(projection: ReturnType<CollaborationStateDatabase["projectS
 }
 
 describe("terminal push completion receipts", () => {
-  it.each([true, false])("the real MCP saves only the original Agent's supplemental finish and memory (memory: %s)", async withMemory => {
-    const f = await fixture(); const before = oldBusiness(f.database.projectState(PROJECT));
+  it.each([{ agentId: "worker", withMemory: true }, { agentId: "worker", withMemory: false },
+    { agentId: "探测证据员", withMemory: true }, { agentId: "探测证据员", withMemory: false }])(
+    "the real MCP saves $agentId supplemental finish (memory: $withMemory)", async ({ agentId, withMemory }) => {
+    const f = await fixture(true, agentId); const before = oldBusiness(f.database.projectState(PROJECT));
     const oldFiles = await Promise.all([f.statePath, f.originalTaskReceiptPath, f.oldMemory, f.durableMemory].map(file => fs.readFile(file)));
     const { authority, request } = await controlFor(f);
-    const service = new ControlActionService({ projectId: PROJECT, agent: "worker", invocationId: f.turn.invocationId,
+    const service = new ControlActionService({ projectId: PROJECT, agent: agentId, invocationId: f.turn.invocationId,
       stateVersion: 2, capability: authority.control.capability, capabilityHash: authority.control.capabilityHash,
       stagingPath: authority.control.stagingPath, revalidate: authority.revalidate, execute: authority.execute });
     await fs.mkdir(path.dirname(authority.control.stagingPath), { recursive: true });
@@ -124,7 +126,7 @@ describe("terminal push completion receipts", () => {
     try {
       const control = { ...authority.control, bridgePath: bridge.endpoint.path, bridgeHost: bridge.endpoint.host, bridgePort: bridge.endpoint.port };
       const responses = await actualMcp({ SCIENCEEVOLVE_CONTROL_CAPABILITY: control.capability, SCIENCEEVOLVE_CONTROL_CONTEXT:
-        serializeInvocationControlContext(control, { projectId: PROJECT, agent: "worker", invocationId: f.turn.invocationId, kind: "worker", workspacePath: request.workspacePath }) }, [
+        serializeInvocationControlContext(control, { projectId: PROJECT, agent: agentId, invocationId: f.turn.invocationId, kind: "worker", workspacePath: request.workspacePath }) }, [
         { id: 1, method: "tools/list" },
         { id: 2, method: "tools/call", params: { name: "git_reconcile_push", arguments: { callId: "my-query", operationId: "original-push", historical: true } } },
         { id: 3, method: "tools/call", params: { name: "finish_task", arguments: { callId: "my-finish", summary: "I found the original remote ref missing",
@@ -134,10 +136,13 @@ describe("terminal push completion receipts", () => {
       expect(responses[1].result.isError).not.toBe(true); expect(JSON.stringify(responses[1].result)).toContain("missing");
       expect(responses[2].result.isError).not.toBe(true);
       const observed = f.database.terminalPushObservationTurns(PROJECT)[0];
-      expect(observed.completion).toMatchObject({ projectId: PROJECT, invocationId: f.turn.invocationId, executionId: "old-execution",
+      expect(observed.completion).toMatchObject({ projectId: PROJECT, agentId, invocationId: f.turn.invocationId, executionId: "old-execution",
         originalInvocationId: "inv_original_worker", operationId: "original-push", callId: "my-finish", summary: "I found the original remote ref missing" });
       expect(observed.status).toBe("opened");
       const saved = await f.storage.saveTerminalPushObservationCompletion(observed.completion!);
+      expect((responses[2].result as any).structuredContent).toMatchObject({ status: "recorded", result: saved });
+      expect(JSON.stringify(responses[2].result.content)).toContain(saved.receiptPath);
+      expect(JSON.stringify(responses[2].result.content)).toContain("original business Memory is unchanged");
       expect(JSON.parse(await fs.readFile(saved.receiptPath, "utf8"))).toEqual(observed.completion);
       if (withMemory) expect(await fs.readFile(saved.memoryPath!, "utf8")).toBe("My actual observation: remote ref is still missing");
       else { expect(saved.memoryPath).toBeUndefined(); await expect(fs.access(path.join(path.dirname(saved.receiptPath), "Memory.md"))).rejects.toThrow(); }
@@ -147,7 +152,7 @@ describe("terminal push completion receipts", () => {
       expect(await Promise.all([f.statePath, f.originalTaskReceiptPath, f.oldMemory, f.durableMemory].map(file => fs.readFile(file)))).toEqual(oldFiles);
       expect(f.observe).toHaveBeenCalledOnce(); expect(f.push).not.toHaveBeenCalled(); expect(f.checkpoint).not.toHaveBeenCalled();
       const handoff = "Original Agent handoff: remote receipt is unresolved; ask my coordinator for help.";
-      const handoffPath = await f.storage.writeHandoff(f.state, "worker", f.turn.invocationId, handoff);
+      const handoffPath = await f.storage.writeHandoff(f.state, agentId, f.turn.invocationId, handoff);
       f.database.recordTerminalPushObservationResult({ ...f.turn, output: handoff, handoffPath });
       expect(await fs.readFile(handoffPath, "utf8")).toBe(handoff);
       f.close();
@@ -172,6 +177,23 @@ describe("terminal push completion receipts", () => {
     expect(f.database.eventsAfter(PROJECT, 0, 100).filter(event => event.type === "agent.terminal_push_observation.task.completed")).toHaveLength(1);
     expect(f.database.terminalPushObservationRepairCount(PROJECT, "old-execution")).toBe(1);
     expect(f.database.recordedGitOperation(PROJECT, "original-push")!.status).toBe("uncertain");
+  });
+
+  it("restores a Chinese Agent's accepted finish after file persistence fails without duplicating its receipt", async () => {
+    const f = await fixture(true, "探测证据员");
+    const { authority } = await controlFor(f);
+    const envelope = { ...f.envelope(), capabilityHash: authority.control.capabilityHash! };
+    vi.spyOn(f.storage, "saveTerminalPushObservationCompletion").mockRejectedValueOnce(new Error("fixture file persistence failed"));
+    await expect(authority.revalidate(envelope)).rejects.toThrow("fixture file persistence failed");
+    const accepted = f.database.terminalPushObservationTurns(PROJECT)[0].completion!;
+    expect(accepted.agentId).toBe("探测证据员");
+    await authority.revalidate(envelope);
+    const saved = await f.storage.saveTerminalPushObservationCompletion(accepted);
+    expect(JSON.parse(await fs.readFile(saved.receiptPath, "utf8"))).toEqual(accepted);
+    expect(await fs.readFile(saved.memoryPath!, "utf8")).toBe(envelope.action.tool === "finish_task" ? envelope.action.memory : undefined);
+    expect(f.database.eventsAfter(PROJECT, 0, 100).filter(event => event.type === "agent.terminal_push_observation.task.completed")).toHaveLength(1);
+    await expect(authority.revalidate({ ...envelope, action: { tool: "finish_task", summary: "changed" } })).rejects.toThrow("content changed");
+    expect(f.push).not.toHaveBeenCalled();
   });
 
   it.each(["reserved", "stopped", "frozen", "cancelled"] as const)("rejects finish in %s scope without a new receipt or memory", async stage => {

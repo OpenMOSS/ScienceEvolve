@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolveSleepMcpCommand } from "../../src/core/harness-runtime/runtime-support.js";
 import registerOpenFarsMcp from "../../src/core/harness-runtime/adapters/pi-mcp-extension.js";
+import { NATIVE_PROCESS_SUPPORT_ENV } from "../../src/core/harness-runtime/native-processes.js";
 
 const originalConfig = process.env.SCIENCEEVOLVE_PI_MCP_CONFIG;
 const originalRouteToken = process.env.SCIENCEEVOLVE_GATEWAY_API_KEY;
@@ -96,7 +97,8 @@ describe("Pi OpenFARS MCP extension", () => {
                 }
             : message.params?.name === "web_fetch"
               ? structuredFailure
-              : { content: [{ type: "text", text: "fixture search result" }], isError: false };
+              : { content: [{ type: "text", text: 'fixture search result\nProvider result: {"output":"PROVIDER_OUTPUT_ONCE"}' }],
+                  structuredContent: { status: "outcome_unknown", operationId: "original-operation", result: { output: "PROVIDER_OUTPUT_ONCE" } }, isError: false };
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
       });
@@ -140,8 +142,11 @@ describe("Pi OpenFARS MCP extension", () => {
         properties: { url: { type: "string" } }
       }
     ]);
-    await expect(tools[0]!.execute("call-1", { query: "fixture" }, new AbortController().signal))
-      .resolves.toMatchObject({ content: [{ type: "text", text: "fixture search result" }] });
+    const success = await tools[0]!.execute("call-1", { query: "fixture" }, new AbortController().signal);
+    expect(success.content[0].text).toContain("fixture search result");
+    expect(success.content.some((item: { text?: string }) => item.text?.includes('"status":"outcome_unknown"'))).toBe(true);
+    expect(success.details.mcpResult.structuredContent).toEqual({ status: "outcome_unknown", operationId: "original-operation", result: { output: "PROVIDER_OUTPUT_ONCE" } });
+    expect(success.content.map((item: { text?: string }) => item.text ?? "").join("\n").match(/PROVIDER_OUTPUT_ONCE/g)).toHaveLength(1);
     const failure = await tools[1]!.execute(
       "call-2",
       { url: "invalid" },
@@ -195,7 +200,7 @@ describe("Pi OpenFARS MCP extension", () => {
     const executable = path.join(root, "authority-mcp.mjs");
     await fs.writeFile(executable, `
 import readline from "node:readline";
-const keys = ${JSON.stringify(artifactAuthorityKeys)};
+const keys = ${JSON.stringify([...artifactAuthorityKeys, NATIVE_PROCESS_SUPPORT_ENV])};
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on("line", (line) => {
   const request = JSON.parse(line);
@@ -243,7 +248,7 @@ lines.on("line", (line) => {
       {},
       new AbortController().signal
     ) as { content: Array<{ text: string }> };
-    expect(JSON.parse(result.content[0]!.text)).toEqual(expected);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ ...expected, [NATIVE_PROCESS_SUPPORT_ENV]: "1" });
     await shutdown?.();
   });
 });

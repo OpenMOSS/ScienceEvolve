@@ -1,6 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { claudeProgressCallId } from "./claude-tool-progress.js";
 import { promises as fs } from "node:fs";
 import { redactTrace } from "../utils.js";
 import type { AgentRunResult, ControlActionEnvelope, TraceSink } from "../types.js";
@@ -28,7 +27,6 @@ import { signalProcessTree, terminateProcessTree } from "./process-host.js";
 export type ResidentRecoveryStrategy = "native-session-resume" | "durable-rehydrate";
 export type BuiltinResidentProtocol =
   | "codex-app-server"
-  | "claude-stream-json"
   | "pi-rpc"
   | "dsh-sdk-json-rpc";
 /** Additional codecs are supplied by trusted Adapter code, never a workflow string. */
@@ -116,6 +114,8 @@ export interface ResidentProtocolCodec {
   readonly recoveryStrategy: ResidentRecoveryStrategy;
   /** Native-frame mapping; the common driver alone owns liveness policy. */
   observe(frame: Readonly<Record<string, unknown>>): ResidentProtocolObservation | undefined;
+  /** An owned asynchronous item can finish after its original model turn. */
+  eventTurn?(frame: Readonly<Record<string, unknown>>): ResidentTurn | undefined;
   readonly completionTail: ResidentCompletionTailPolicy;
   initialize(connection: ResidentProtocolConnection, session: SessionRef): Promise<SessionRef>;
   /** Adapter-owned allowlist drain for non-business frames at idle boundaries. */
@@ -439,7 +439,7 @@ export class ResidentNativeDriver implements ResidentHarnessDriver {
     if (!Number.isSafeInteger(options.ownershipEpoch) || options.ownershipEpoch < 0) {
       throw driverError("Resident native process has an invalid ownership epoch");
     }
-    const identity = await waitForIdentity(options.child.pid, options.startupTimeoutMs ?? 10_000);
+    assertNativeProcessNotExited(options.child, options.codec.protocol);
     let connection!: JsonLineConnection;
     const activityClock = new ResidentTurnActivityClock(
       options.inactivityPolicy,
@@ -470,18 +470,22 @@ export class ResidentNativeDriver implements ResidentHarnessDriver {
     );
     connection = new JsonLineConnection(
       options.child,
-      options.onFrame,
+      (frame, turn) => options.onFrame?.(frame, options.codec.eventTurn?.(frame) ?? turn),
       (frame) => {
         const observation = options.codec.observe(frame);
         if (observation) activityClock.observe(observation);
       },
       options.codec.protocol
     );
-    const driver = new ResidentNativeDriver(options, identity, connection, activityClock);
     void options.processCompletion?.catch((error: unknown) => {
       connection.fail(driverError("Resident ProcessHost callback failed", error));
     });
     try {
+      // Observe close before asynchronous /proc reads: a failed native startup
+      // can exit while its identity is being inspected.
+      const identity = await waitForIdentity(options.child, options.startupTimeoutMs ?? 10_000, options.codec.protocol);
+      assertNativeProcessNotExited(options.child, options.codec.protocol);
+      const driver = new ResidentNativeDriver(options, identity, connection, activityClock);
       const initialized = await options.codec.initialize(connection, driver.session);
       assertInitializedSession(driver.session, initialized, options.codec);
       driver.session = initialized;
@@ -1025,7 +1029,14 @@ export class JsonLineConnection implements ResidentProtocolConnection {
           throw failure;
         }
         try {
-          await this.notify(frame, turn);
+          // Codex broadcasts native child-thread events on the parent's pipe.
+          // The codec validates them, but they are not this outer turn's input,
+          // output or completion. Their native transcripts remain authoritative.
+          if (this.#protocol !== "codex-app-server" ||
+            !isRecord(frame.params) || frame.params.threadId === undefined ||
+            frame.params.threadId === session.nativeId) {
+            await this.notify(frame, turn);
+          }
         } catch (error) {
           const failure = driverError("Resident completion-tail delivery failed", error);
           this.#fatal(failure);
@@ -1328,93 +1339,6 @@ function codexResidentObservation(
   }]);
 }
 
-function claudeResidentObservation(
-  frame: Readonly<Record<string, unknown>>
-): ResidentProtocolObservation | undefined {
-  const type = activityString(frame.type);
-  if (type === "tool_progress") {
-    const callId = claudeProgressCallId(frame);
-    const name = activityString(frame.tool_name);
-    return callId && name ? residentObservation([{ kind: "tool", phase: "updated", callId, name }]) : undefined;
-  }
-  if (type === "assistant") {
-    const message = maybeRecord(frame.message);
-    const activities: ResidentActivitySignal[] = [];
-    for (const value of Array.isArray(message?.content) ? message.content : []) {
-      const block = maybeRecord(value);
-      if (block?.type === "tool_use") {
-        const callId = activityString(block.id);
-        if (callId) activities.push({
-          kind: "tool",
-          phase: "started",
-          callId,
-          ...(activityString(block.name) ? { name: activityString(block.name)! } : {})
-        });
-      } else if (block?.type === "text") {
-        activities.push({ kind: "model", phase: "completed" });
-      } else if (block?.type === "thinking" || block?.type === "redacted_thinking") {
-        activities.push({ kind: "heartbeat" });
-      }
-    }
-    return residentObservation(activities, residentKnownUsage(message?.usage));
-  }
-  if (type === "user") {
-    const message = maybeRecord(frame.message);
-    const activities: ResidentActivitySignal[] = [];
-    for (const value of Array.isArray(message?.content) ? message.content : []) {
-      const block = maybeRecord(value);
-      if (block?.type !== "tool_result") continue;
-      const callId = activityString(block.tool_use_id);
-      if (!callId) continue;
-      activities.push({
-        kind: "tool",
-        phase: block.is_error === true ? "failed" : "completed",
-        callId,
-        ...(activityString(block.name) ? { name: activityString(block.name)! } : {})
-      });
-    }
-    return residentObservation(activities);
-  }
-  if (type === "stream_event") {
-    const event = maybeRecord(frame.event);
-    const eventType = activityString(event?.type);
-    const delta = maybeRecord(event?.delta);
-    const block = maybeRecord(event?.content_block);
-    if (eventType === "content_block_start" && block?.type === "tool_use") {
-      const callId = activityString(block.id);
-      if (callId) return residentObservation([{
-        kind: "tool",
-        phase: "started",
-        callId,
-        ...(activityString(block.name) ? { name: activityString(block.name)! } : {})
-      }]);
-    }
-    if (delta?.type === "text_delta") {
-      return residentObservation([{ kind: "model", phase: "delta" }]);
-    }
-    if (delta?.type === "thinking_delta" || delta?.type === "signature_delta" ||
-      delta?.type === "input_json_delta" || eventType === "content_block_stop" ||
-      eventType === "message_start") {
-      return residentObservation([{ kind: "heartbeat" }]);
-    }
-    if (eventType === "message_delta" || eventType === "message_stop") {
-      return residentObservation([{ kind: "model", phase: "completed" }]);
-    }
-    return undefined;
-  }
-  if (type === "result") {
-    return residentObservation(
-      [{ kind: "model", phase: "completed" }],
-      residentKnownUsage(frame.usage)
-    );
-  }
-  if (type === "system" && ["turn_start", "heartbeat", "keepalive", "keep_alive"]
-    .includes(activityString(frame.subtype) ?? "")) {
-    return residentObservation([{ kind: "heartbeat" }]);
-  }
-  return undefined;
-}
-
 function piResidentObservation(
   frame: Readonly<Record<string, unknown>>
 ): ResidentProtocolObservation | undefined {
@@ -1605,19 +1529,95 @@ export function codexAppServerCodec(options: {
 }): ResidentProtocolCodec {
   let threadId = "";
   let completedTurnId = "";
+  let activeTurnId = "";
+  const ownedItems = new Map<string, { nativeTurnId: string; turn: ResidentTurn }>();
+  const ownedItem = (frame: Readonly<Record<string, unknown>>) => {
+    if (frame.id !== undefined || typeof frame.method !== "string" || !frame.method.startsWith("item/") ||
+      frame.method === "item/started") return undefined;
+    const params = maybeRecord(frame.params), item = maybeRecord(params?.item);
+    const id = activityString(params?.itemId ?? item?.id);
+    const owner = id ? ownedItems.get(id) : undefined;
+    return owner && params?.threadId === threadId && params.turnId === owner.nativeTurnId ? owner : undefined;
+  };
+  let activeTurn: ResidentTurn | undefined;
+  const subagentThreads = new Map<string, { nativeTurnId: string; turn: ResidentTurn }>();
+  const lateSubagent = (frame: Readonly<Record<string, unknown>>) => {
+    if (typeof frame.method !== "string" || !/^(?:item\/|turn\/|error$)/.test(frame.method)) return undefined;
+    const source = subagentThreads.get(String(maybeRecord(frame.params)?.threadId));
+    return source && source.nativeTurnId !== activeTurnId ? source : undefined;
+  };
+  const subagentTurns = new Map<string, string>();
+  const rememberSubagents = (frame: Readonly<Record<string, unknown>>, senderThreadId: string, senderTurnId: string) => {
+    if (!["item/started", "item/updated", "item/completed"].includes(String(frame.method))) return;
+    const params = maybeRecord(frame.params), item = maybeRecord(params?.item);
+    if (item?.type !== "collabAgentToolCall" ||
+      !["spawnAgent", "resumeAgent"].includes(String(item.tool)) ||
+      item.status !== "completed") return;
+    if (params?.turnId !== senderTurnId || item.senderThreadId !== senderThreadId || !Array.isArray(item.receiverThreadIds) ||
+      !item.receiverThreadIds.every(id => activityString(id) !== undefined && id !== threadId && id !== senderThreadId)) {
+      throw driverError("Codex native subagent call reported invalid thread identities");
+    }
+    const owner = senderThreadId === threadId && activeTurn ? { nativeTurnId: senderTurnId, turn: activeTurn }
+      : subagentThreads.get(senderThreadId);
+    if (!owner) throw driverError("Codex native subagent has no known parent task");
+    for (const id of item.receiverThreadIds) subagentThreads.set(id as string, owner);
+  };
+  const acceptSubagentNotification = (frame: Readonly<Record<string, unknown>>): boolean => {
+    const params = maybeRecord(frame.params);
+    if (frame.id !== undefined || typeof frame.method !== "string" ||
+      typeof params?.threadId !== "string" || !subagentThreads.has(params.threadId)) return false;
+    const childThreadId = params.threadId;
+    const childTurnId = subagentTurns.get(childThreadId);
+    if (frame.method === "thread/closed") return true;
+    if (codexGoalUpdatedNotification(frame, childThreadId, childTurnId) ||
+      codexBackgroundNotification(frame, childThreadId) ||
+      childTurnId && codexTurnMetadataNotification(frame, childThreadId, childTurnId)) return true;
+    if (frame.method === "error") {
+      return childTurnId !== undefined && codexErrorNotification(frame, childThreadId, childTurnId);
+    }
+    if (!frame.method.startsWith("turn/") && !frame.method.startsWith("item/")) return false;
+    const nativeTurn = maybeRecord(params.turn);
+    const reportedTurnId = activityString(params.turnId ?? nativeTurn?.id);
+    if (reportedTurnId === undefined) return false;
+    if (frame.method === "turn/started") subagentTurns.set(childThreadId, reportedTurnId);
+    else if (reportedTurnId !== childTurnId) return false;
+    rememberSubagents(frame, childThreadId, reportedTurnId);
+    return true;
+  };
   return {
     protocol: "codex-app-server",
     recoveryStrategy: "native-session-resume",
-    observe: codexResidentObservation,
+    eventTurn: frame => (ownedItem(frame) ?? lateSubagent(frame))?.turn,
+    observe: frame => {
+      const origin = ownedItem(frame) ?? lateSubagent(frame);
+      if (origin && origin.nativeTurnId !== activeTurnId) return undefined;
+      const reportedThreadId = maybeRecord(frame.params)?.threadId;
+      if (reportedThreadId !== undefined && reportedThreadId !== threadId) {
+        // Internal work can keep the parent alive without replacing its usage
+        // totals or leaving child tools open in the parent's activity clock.
+        return typeof reportedThreadId === "string" && subagentThreads.has(reportedThreadId) &&
+          codexResidentObservation(frame)?.activities?.length
+          ? residentObservation([{ kind: "heartbeat" }]) : undefined;
+      }
+      return codexResidentObservation(frame);
+    },
     completionTail: {
       isComplete: () => completedTurnId.length > 0,
       accept: (frame, session) => session.nativeId === threadId &&
-        codexCompletionTailNotification(frame, threadId, completedTurnId)
+        (Boolean(ownedItem(frame)) || acceptSubagentNotification(frame) || codexCompletionTailNotification(frame, threadId, completedTurnId))
     },
-    settleIdle: (connection) => connection.consumeInitializationNotifications(
-      (frame) => codexIdleNotification(frame, threadId),
-      "Codex initialization"
-    ),
+    settleIdle: async (connection) => {
+      const late: Record<string, unknown>[] = [];
+      await connection.consumeInitializationNotifications(frame => {
+        if (ownedItem(frame)) { late.push(frame as Record<string, unknown>); return true; }
+        if (acceptSubagentNotification(frame)) {
+          if (lateSubagent(frame)) late.push(frame as Record<string, unknown>);
+          return true;
+        }
+        return codexIdleNotification(frame, threadId);
+      }, "Codex initialization");
+      for (const frame of late) await connection.notify(frame, (ownedItem(frame) ?? lateSubagent(frame))!.turn);
+    },
     async initialize(connection, session) {
       const initializeId = connection.requestId();
       await connection.send({
@@ -1682,10 +1682,19 @@ export function codexAppServerCodec(options: {
       });
       const response = await jsonRpcResult(connection, requestId, "Codex turn start");
       const turnId = stringField(recordField(recordField(response, "result"), "turn"), "id", "Codex turn identity");
+      activeTurnId = turnId; activeTurn = turn;
       await connection.notify(response, turn);
       let completed: Record<string, unknown>;
       for (;;) {
         const frame = await connection.next(() => true, "Codex turn event");
+        // Only native collaboration items on an already-owned thread establish
+        // child authority. Child events stay in native history; the outer
+        // Workflow advances only on the parent's own terminal evidence.
+        if (acceptSubagentNotification(frame)) {
+          const origin = lateSubagent(frame);
+          if (origin) await connection.notify(frame, origin.turn);
+          continue;
+        }
         // MCP/config startup can complete after the thread-open response. These
         // exact notifications remain non-business protocol metadata even when
         // they race with turn one, so consume them without turn attribution.
@@ -1698,11 +1707,7 @@ export function codexAppServerCodec(options: {
         // Official app-server error notifications precede either a native
         // retry or turn/completed. Keep both under this exact turn authority.
         if (frame.method === "error") {
-          const params = maybeRecord(frame.params);
-          const error = maybeRecord(params?.error);
-          if (frame.id !== undefined || params?.threadId !== threadId || params.turnId !== turnId ||
-            typeof params.willRetry !== "boolean" || !boundedProtocolString(error?.message) ||
-            !optionalBoundedProtocolString(error?.additionalDetails)) {
+          if (!codexErrorNotification(frame, threadId, turnId)) {
             throw driverError("Codex emitted an invalid or out-of-turn error notification");
           }
           await connection.notify(frame, turn);
@@ -1723,8 +1728,15 @@ export function codexAppServerCodec(options: {
           ? params.turnId
           : typeof frameTurn?.id === "string" ? frameTurn.id : undefined;
         if (frameTurnId !== undefined && frameTurnId !== turnId) {
+          const origin = ownedItem(frame);
+          if (origin) { await connection.notify(frame, origin.turn); continue; }
           throw driverError("Codex emitted an event for a different native turn");
         }
+        if (frame.method === "item/started") {
+          const item = maybeRecord(params.item), id = activityString(item?.id);
+          if (id) ownedItems.set(id, { nativeTurnId: turnId, turn });
+        }
+        rememberSubagents(frame, threadId, turnId);
         await connection.notify(frame, turn);
         if (frame.method !== "turn/completed") continue;
         if (frameTurnId !== turnId) {
@@ -1787,10 +1799,9 @@ function isExactNativeInputEcho(protocol: ResidentProtocol, frame: Record<string
       typeof params?.turnId !== "string" || !item || !["userMessage", "user_message"].includes(String(item.type))) return false;
     const content = strip(item.content); if (content === undefined) return false;
     metadata = { ...frame, params: { ...params, item: { ...item, content } } };
-  } else if (protocol === "claude-stream-json" || protocol === "pi-rpc") {
+  } else if (protocol === "pi-rpc") {
     const message = maybeRecord(frame.message);
-    if (!message || message.role !== "user" || (protocol === "claude-stream-json"
-      ? frame.type !== "user" || frame.session_id !== session.nativeId : frame.type !== "message_end")) return false;
+    if (!message || message.role !== "user" || frame.type !== "message_end") return false;
     const content = strip(message.content); if (content === undefined) return false;
     metadata = { ...frame, message: { ...message, content } };
   } else {
@@ -1829,11 +1840,13 @@ function codexBackgroundNotification(
     !CODEX_INITIALIZATION_NOTIFICATIONS.has(frame.method) ||
     !isRecord(frame.params)) return false;
   if (frame.method === "warning") {
-    return (frame.params.threadId === null || frame.params.threadId === threadId) &&
+    return (frame.params.threadId === null || activityString(frame.params.threadId) !== undefined) &&
       boundedProtocolString(frame.params.message);
   }
   if (frame.method === "thread/status/changed") {
-    return frame.params.threadId === threadId && codexThreadStatus(frame.params.status);
+    // These notifications are process-wide and can precede the spawn result
+    // that identifies a child. They confer no turn or tool authority.
+    return activityString(frame.params.threadId) !== undefined && codexThreadStatus(frame.params.status);
   }
   if (frame.method === "thread/goal/updated") return codexGoalUpdatedNotification(frame, threadId);
   if (frame.method === "thread/goal/cleared") {
@@ -1906,13 +1919,21 @@ function codexCompletionTailNotification(
   if (!threadId || !turnId || frame.id !== undefined || !isRecord(frame.params)) return false;
   if (codexTurnMetadataNotification(frame, threadId, turnId)) return true;
   if (frame.method === "thread/status/changed") {
-    return frame.params.threadId === threadId &&
-      maybeRecord(frame.params.status)?.type === "idle";
+    return codexBackgroundNotification(frame, threadId) &&
+      (frame.params.threadId !== threadId || maybeRecord(frame.params.status)?.type === "idle");
   }
   if (frame.method === "warning") {
-    return frame.params.threadId === threadId && boundedProtocolString(frame.params.message);
+    return codexBackgroundNotification(frame, threadId);
   }
   return frame.method === "thread/goal/cleared" && frame.params.threadId === threadId;
+}
+
+function codexErrorNotification(frame: Readonly<Record<string, unknown>>, threadId: string, turnId: string): boolean {
+  const params = maybeRecord(frame.params), error = maybeRecord(params?.error);
+  return frame.id === undefined && frame.method === "error" &&
+    params?.threadId === threadId && params.turnId === turnId &&
+    typeof params.willRetry === "boolean" && boundedProtocolString(error?.message) &&
+    optionalBoundedProtocolString(error?.additionalDetails);
 }
 
 function codexThreadTokenUsageNotification(
@@ -1970,92 +1991,6 @@ function nonnegativeSafeInteger(value: unknown): value is number {
 
 function positiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
-}
-
-export function claudeStreamJsonCodec(): ResidentProtocolCodec {
-  let turnComplete = false;
-  return {
-    protocol: "claude-stream-json",
-    recoveryStrategy: "native-session-resume",
-    observe: claudeResidentObservation,
-    completionTail: {
-      isComplete: () => turnComplete,
-      accept: () => false
-    },
-    async initialize(_connection, session) { return session; },
-    async submit(connection, session, turn) {
-      turnComplete = false;
-      connection.expectInputEcho?.(session, turn.prompt);
-      await connection.send({
-        type: "user",
-        session_id: session.nativeId,
-        message: {
-          role: "user",
-          content: [{ type: "text", text: turn.prompt }]
-        }
-      });
-      let handoff = "";
-      const activeTools = new Map<string, string>();
-      for (;;) {
-        const frame = await connection.next(() => true, "Claude stream event");
-        if (typeof frame.type !== "string" || !CLAUDE_TURN_FRAME_TYPES.has(frame.type)) {
-          throw driverError(`Claude emitted an unknown or out-of-turn frame (${protocolFrameShape(frame)})`);
-        }
-        if (frame.session_id !== session.nativeId) {
-          throw driverError("Claude stream emitted a different native session identity");
-        }
-        if (frame.type === "tool_progress") {
-          const callId = claudeProgressCallId(frame);
-          if (!callId || typeof frame.tool_name !== "string" || activeTools.get(callId) !== frame.tool_name ||
-            typeof frame.elapsed_time_seconds !== "number" || !Number.isFinite(frame.elapsed_time_seconds) ||
-            frame.elapsed_time_seconds < 0) {
-            throw driverError("Claude tool progress does not match an active call in the current turn");
-          }
-        } else {
-          trackClaudeToolCalls(frame, activeTools);
-        }
-        await connection.notify(frame, turn);
-        if (frame.type === "assistant") handoff = extractAssistantText(frame) || handoff;
-        if (frame.type !== "result") continue;
-        if (frame.is_error === true) {
-          turnComplete = true;
-          throw new NativeTurnFailedError("Claude resident turn returned an error result");
-        }
-        if (typeof frame.result === "string" && frame.result.trim()) handoff = frame.result;
-        turnComplete = true;
-        return { handoff: handoff || "Claude turn completed.", threadId: session.nativeId };
-      }
-    },
-    async close() { /* EOF terminates stream-json mode. */ }
-  };
-}
-
-const CLAUDE_TURN_FRAME_TYPES = new Set([
-  "system",
-  "stream_event",
-  "assistant",
-  "user",
-  "tool_progress",
-  "result"
-]);
-
-function trackClaudeToolCalls(frame: Readonly<Record<string, unknown>>, active: Map<string, string>): void {
-  const message = maybeRecord(frame.message);
-  const event = maybeRecord(frame.event);
-  const blocks = frame.type === "stream_event" && event?.type === "content_block_start"
-    ? [event.content_block]
-    : frame.type === "assistant" || frame.type === "user"
-      ? Array.isArray(message?.content) ? message.content : []
-      : [];
-  for (const value of blocks) {
-    const block = maybeRecord(value);
-    if (block?.type === "tool_use" && frame.type !== "user") {
-      const id = activityString(block.id), name = activityString(block.name);
-      if (id && name) active.set(id, name);
-    } else if (frame.type === "user" && block?.type === "tool_result" && typeof block.tool_use_id === "string") {
-      active.delete(block.tool_use_id);
-    }
-  }
 }
 
 export function piRpcCodec(options: {
@@ -2535,10 +2470,22 @@ function assertInitializedSession(
   }
 }
 
-async function waitForIdentity(pid: number, timeoutMs: number): Promise<ResidentProcessIdentity> {
+function assertNativeProcessNotExited(child: ChildProcessWithoutNullStreams, protocol: ResidentProtocol): void {
+  if (child.exitCode === null && child.signalCode === null) return;
+  throw new HarnessRuntimeError(
+    "HARNESS_PROCESS_EXITED",
+    "Resident native process exited before session initialization",
+    { protocol, exitCode: child.exitCode, signal: child.signalCode },
+    { source: "process" }
+  );
+}
+
+async function waitForIdentity(child: ChildProcessWithoutNullStreams, timeoutMs: number, protocol: ResidentProtocol): Promise<ResidentProcessIdentity> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try { return await readResidentProcessIdentity(pid); } catch {
+    assertNativeProcessNotExited(child, protocol);
+    try { return await readResidentProcessIdentity(child.pid!); } catch {
+      assertNativeProcessNotExited(child, protocol);
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
     }
   }

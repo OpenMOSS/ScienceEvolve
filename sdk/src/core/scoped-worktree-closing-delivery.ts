@@ -4,7 +4,7 @@ import type { AgentNativeSessionBinding, ScopedAgentReportRecord, ScopedAgentTas
 import type { PullRequestRecord } from "./types.js";
 import type { RestrictedWorktreeClosingFact, RemoteMergeSyncFact } from "./collaboration-git/contracts.js";
 import type { CollaborationStateDatabase } from "./collaboration-state/store.js";
-import { agentGitOperationJournal } from "./agent-git-operation-journal.js";
+import { readAgentGitOperationRequest } from "./agent-git-operation-journal.js";
 import { queryAgentGitOperation } from "./agent-git-operation-query.js";
 import { agentGitResultCoversOperation } from "./agent-git-result-proof.js";
 import { sameDurableSession } from "./control-result-receipts.js";
@@ -62,7 +62,6 @@ export function inspectScopedWorktreeClosingDelivery(input: {
 
   let supplement: ScopedWorktreeClosingDeliveryProof["supplement"];
   if (directory.deliveryRequired) {
-    const journal = agentGitOperationJournal(database, c.projectId);
     const operations: Array<{ query: ReturnType<typeof queryAgentGitOperation>; receipts: string[] }> = [];
     for (const attempt of input.attempts) {
       const t = attempt.turn;
@@ -78,7 +77,7 @@ export function inspectScopedWorktreeClosingDelivery(input: {
       for (const operation of attempt.operations) {
         if (operation.expectedHead !== directory.head || operation.ownershipEpoch !== c.ownershipEpoch ||
           operation.status !== "finalized" || !["git.push", "pull.create", "pull.merge"].includes(operation.kind)) continue;
-        const request = journal.recordedRequest(operation.id), binding = request?.nativeBinding;
+        const request = readAgentGitOperationRequest(database.eventByRequestId(c.projectId, `agent-git-request:${operation.id}`), c.projectId, operation.id), binding = request?.nativeBinding;
         const source = request && database.eventByRequestId(c.projectId, `agent-native-binding:${request.invocationId}`);
         const bound = database.eventByRequestId(c.projectId, `scoped-worktree-closing-operation:${operation.id}`);
         if (!request || request.action.tool === "git_revert" || !binding || source?.type !== "agent.native_binding.opened" || !isDeepStrictEqual(source.payload.binding, binding) ||
@@ -98,7 +97,8 @@ export function inspectScopedWorktreeClosingDelivery(input: {
         const query = queryAgentGitOperation({ projectId: c.projectId, operationId: operation.id, repository,
           execution: { id: c.executionId, agentId: c.agentId, purpose: "delivery", ownershipEpoch: c.ownershipEpoch,
             executionBranch: t.executionBranch, worktreePath: t.worktreePath }, base,
-          recordedOperation: id => database.recordedGitOperation(c.projectId, id), recordedRequest: journal.recordedRequest,
+          recordedOperation: id => database.recordedGitOperation(c.projectId, id),
+          recordedRequest: id => readAgentGitOperationRequest(database.eventByRequestId(c.projectId, `agent-git-request:${id}`), c.projectId, id),
           recordedSynchronization: identity => database.scopedMergedSynchronization(identity, t.invocationId) });
         if (query.status !== "completed") continue;
         const receipts = attempt.results.filter(({ receipt, received }) => received && receipt.projectId === c.projectId &&

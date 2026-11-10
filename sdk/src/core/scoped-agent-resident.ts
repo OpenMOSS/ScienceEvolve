@@ -1,5 +1,6 @@
 import type { AgentRunResult } from "./types.js";
 import { redactTrace } from "./utils.js";
+import { superviseTask, supervisionError, supervisionHandoff, type TaskSupervisionInput } from "./task-supervision.js";
 import type { CollaborationResidentLauncher, CollaborationResidentOpenInput } from "./collaboration-runtime.js";
 import { ScopedAgentTurnFailure, type ScopedAgentTurnInput, type ScopedAgentTurnInvoker,
   type ScopedAgentTurnResult } from "./scoped-agent-execution.js";
@@ -7,12 +8,15 @@ import { ScopedAgentTurnFailure, type ScopedAgentTurnInput, type ScopedAgentTurn
 export interface ScopedAgentResidentComposition {
   onHandle?(input: ScopedAgentTurnInput, handle: Awaited<ReturnType<CollaborationResidentLauncher["open"]>>): void | Promise<void>;
   onClosed?(input: ScopedAgentTurnInput): void | Promise<void>;
+  onRetired?(input: ScopedAgentTurnInput, nativeStopConfirmed: boolean, reason?: string): void | Promise<void>;
   submit?(input: ScopedAgentTurnInput, handle: Awaited<ReturnType<CollaborationResidentLauncher["open"]>>,
     turn: { inputId: string; invocationId: string; prompt: string }): Promise<AgentRunResult>;
   missingActions?(input: ScopedAgentTurnInput): string[] | Promise<string[]>;
   /** Production reserves a durable budget before submitting any supplement.
    * A missing reservation means the original task has exhausted its budget. */
-  reserveRepair?(input: ScopedAgentTurnInput, missing: string[]): number | undefined;
+  reserveRepair?(input: ScopedAgentTurnInput, missing: string[]): number | undefined | Promise<number | undefined>;
+  recordSupervision?(input: ScopedAgentTurnInput, outcome: Parameters<TaskSupervisionInput<AgentRunResult>["record"]>[0],
+    missing: string[], reason?: string): void | Promise<void>;
   /** Retain only exact, live-broker-accepted receipts from a completed model
    * turn before rotating its capability for a same-task supplement. */
   retainTurnResult?(input: ScopedAgentTurnInput, result: AgentRunResult, inputId: string): void | Promise<void>;
@@ -79,47 +83,46 @@ export class ResidentScopedAgentTurnInvoker implements ScopedAgentTurnInvoker {
         invocationId: input.invocationId, prompt: open.initialTask! };
       result = this.composition.submit ? await this.composition.submit(input, handle, turn) : await handle.submit(turn);
       await this.composition.retainTurnResult?.(input, result, turn.inputId);
-      // Natural model exit does not discharge the task. Mechanism repair uses
-      // this same native session/channel and fixed checkout; the Agent chooses
-      // the business/provider action and sees its actual result.
-      for (let localAttempt = 1; localAttempt <= 2; localAttempt += 1) {
-        const missing = await this.composition.missingActions?.(input) ?? [];
-        if (!missing.length) break;
-        input.signal?.throwIfAborted();
-        const attempt = this.composition.reserveRepair
-          ? this.composition.reserveRepair(input, missing) : localAttempt;
-        if (attempt === undefined) break;
-        const repair = { ...turn, inputId: `${inputIdBase}:mechanism-repair:${attempt}`,
-          prompt: `Continue your original task in the retained session and directory. Missing formal mechanism actions: ${missing.join(", ")}. Use the exposed tools, inspect their real results, preserve existing business work and PRs, and report a blocker in the existing handoff if you cannot finish.` };
-        result = this.composition.submit ? await this.composition.submit(input, handle, repair) : await handle.submit(repair);
-        await this.composition.retainTurnResult?.(input, result, repair.inputId);
-      }
-    } catch (error) { failure = error; }
-    try { await handle.close(); await this.composition.onClosed?.(input); }
-    catch (error) {
-      throw new ScopedAgentTurnFailure("Scoped resident stop was not confirmed; Agent FIFO remains held", false, { cause: error }, {
-        phase: "stop", executionId: input.execution.id, agentId: input.execution.agentId,
-        ownershipEpoch: input.execution.ownershipEpoch, invocationId: input.invocationId,
-        stopProof: "unconfirmed"
+      const supervised = await superviseTask({ key: `${input.execution.projectId}:${input.execution.id}`, value: result,
+        signal: input.signal, inspect: async () => [...await this.composition.missingActions?.(input) ?? [],
+          ...await handle.supervisionActions?.() ?? []],
+        reserve: missing => this.composition.reserveRepair?.(input, missing),
+        invoke: async (attempt, missing) => {
+          const repair = { ...turn, inputId: `scoped:${input.execution.id}:supervision:${attempt}`,
+            prompt: `Continue your original task in this session and directory. Remaining facts: ${missing.join("; ")}. Use the available tools and inspect their real results. Preserve confirmed operations and existing PRs. Do what you can and return the existing result and actual limitations if any remain.` };
+          return this.composition.submit ? this.composition.submit(input, handle, repair) : handle.submit(repair);
+        },
+        accept: (value, attempt) => this.composition.retainTurnResult?.(input, value, `scoped:${input.execution.id}:supervision:${attempt}`),
+        record: (outcome, missing, reason) => this.composition.recordSupervision?.(input, outcome, missing, reason)
       });
+      result = { ...supervised.value, handoff: supervisionHandoff(supervised.value.handoff ?? "", supervised) };
+    } catch (error) { failure = error; }
+    let nativeStopConfirmed = false;
+    let cleanupReason: string | undefined;
+    try { await handle.close(); nativeStopConfirmed = true; await this.composition.onClosed?.(input); }
+    catch (error) {
+      cleanupReason = supervisionError(error);
+      console.warn(`Scoped resident cleanup unconfirmed (${input.execution.id}): ${cleanupReason}`);
     }
+    try { await this.composition.onRetired?.(input, nativeStopConfirmed, cleanupReason); }
+    catch (error) { console.warn(`Scoped session retirement diagnostics unavailable: ${supervisionError(error)}`); }
     if (!result || failure !== undefined) {
       const reason = failure instanceof Error ? redactTrace(failure.message).trim().slice(0, 600) : "native turn returned no result";
-      throw new ScopedAgentTurnFailure(`Scoped native turn failed after confirmed process stop: ${reason}`, true, { cause: failure }, {
+      throw new ScopedAgentTurnFailure(`Scoped native turn failed: ${reason}`, nativeStopConfirmed, { cause: failure }, {
         phase: "turn", executionId: input.execution.id, agentId: input.execution.agentId,
         ownershipEpoch: input.execution.ownershipEpoch, invocationId: input.invocationId,
-        stopProof: "confirmed"
+        stopProof: nativeStopConfirmed ? "confirmed" : "unconfirmed"
       });
     }
     try {
       const accepted = await this.composition.acceptResult(input, result);
-      return { ...accepted, residentStopConfirmed: true };
+      return { ...accepted, residentStopConfirmed: nativeStopConfirmed };
     } catch (error) {
       const reason = error instanceof Error ? error.message.trim().slice(0, 1_000) : "unknown control acceptance error";
-      throw new ScopedAgentTurnFailure(`Scoped native result failed formal control acceptance: ${reason}`, true, { cause: error }, {
+      throw new ScopedAgentTurnFailure(`Scoped native result failed formal control acceptance: ${reason}`, nativeStopConfirmed, { cause: error }, {
         phase: "accept", executionId: input.execution.id, agentId: input.execution.agentId,
         ownershipEpoch: input.execution.ownershipEpoch, invocationId: input.invocationId,
-        stopProof: "confirmed"
+        stopProof: nativeStopConfirmed ? "confirmed" : "unconfirmed"
       });
     }
   }

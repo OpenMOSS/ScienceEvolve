@@ -633,6 +633,10 @@ export class CollaborationGitFacade {
     return this.options.localGit.observeExecutionWorktree(execution, ownershipEpoch, signal);
   }
 
+  clearExecutionWorktree(execution: GitExecutionAuthority, ownershipEpoch: number, residentStopConfirmed: true, signal?: AbortSignal) {
+    return this.options.localGit.clearExecutionWorktree(execution, ownershipEpoch, residentStopConfirmed, signal);
+  }
+
   observeRestrictedWorktreeClosing(execution: GitExecutionAuthority, ownershipEpoch: number,
     scope: RestrictedWorktreeClosingScope, signal?: AbortSignal) {
     return this.options.localGit.observeRestrictedWorktreeClosing(execution, ownershipEpoch, scope, signal);

@@ -11,7 +11,7 @@
 | Agent 字段 | 用法 |
 | --- | --- |
 | `model` | 实际可用的模型 ID；profile 默认模型不覆盖它 |
-| `harness` | `codex` / `pi` / `dsh` / `claude-code` / `hermes`；Hermes 需另行安装 ACP/MCP 依赖 |
+| `harness` | `codex` / `pi` / `dsh` |
 | `proxy` | 弃用兼容字段，main 规范化时移除；新配置省略。Agent 脚本沿用宿主统一启动环境，网络要求在部署中配置。 |
 | `gatewayReasoningOption` | 模型级网关思考选项 ID，例如 high/xhigh；必须配置对应映射并通过精确探测，原生 OAuth 不使用此字段 |
 | `instructions` | 角色职责与可执行的交接规则 |
@@ -23,7 +23,7 @@
 | `sessionPersistence` | 是否复用会话；Main 固定启用 |
 | `decisionBy` | `main` 或 `agent`；Main 固定为 `main` |
 
-不要通过写 prompt 来假定不支持的 Harness 能力会生效。Codex Git-off workspace 仍有 shell；Claude Code workspace 不提供 Bash，需要脚本时使用 compute 或任务实际需要的 yolo。Git-on 非 yolo 常驻策略更严格，不等同于 Git-off shell 权限。
+不要通过写 prompt 来假定不支持的 Harness 能力会生效。Codex Git-off workspace 仍有 shell；Git-on 非 yolo 常驻策略更严格，不等同于 Git-off shell 权限。
 
 ## 引擎与工作区
 
@@ -44,6 +44,7 @@ workspace 由 CLI/API 指定，不放 workflow。Git-off 直接使用所选原�
 - `automatic: false` 由 Main 判断结束。`automatic: true` 时，配置的非 Main 终止 Agent 只有拥有 `finish` 边才得到受限的 `complete_project` 能力。只有终止 Agent 可以有 `finish` 边；非 Main 终止 Agent 必须有该边。
 - 验收 Agent 有 `finish` 和一个普通 Agent 两条弱边、且 automatic 为 true 时，通过则 `complete_project`；未完成则直接返回普通 Agent，适合 coding/testing 修复循环。
 - `resultFormat: { "presets": ["代码", "报告"], "custom": "交付文件和证据要求" }` 描述成果，不会自动创建文件。
+- HTML 交付使用同一配置，例如 `resultFormat: { "presets": ["HTML 文件", "Markdown 文件"], "custom": "保留交互图表和相对路径资源" }`。各形式可多选；无需额外成果时使用 `{ "presets": [], "custom": "", "none": true }`。系统传递交付要求，文件由 Agent 实际生成和登记。
 - `allowUserIntervention` 控制用户介入；`allowMainReconfiguration` 控制流程自修改，通常从 false 开始。
 
 ## 批次循环

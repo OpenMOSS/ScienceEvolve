@@ -49,7 +49,7 @@ async function handle(request: Request): Promise<void> {
   if (request.method === "tools/list") {
     result(id, { tools: [{
       name: "sleep",
-      description: "Pause execution for the specified duration in milliseconds (1–43200000, up to 12 hours). Returns the elapsed wall-clock time. Waiting ends early when the Agent turn is interrupted or the call is cancelled; it does not change workflow state or finish the Agent turn.",
+      description: "Pause this tool call for the specified duration in milliseconds (1–43200000, up to 12 hours). Returns the elapsed wall-clock time on completion; interruption or cancellation returns an error. This timed pause does not observe a state change, update Memory, finish the Agent turn or release its execution slot. For monitored SII experiments, use sii_defer_task from the selected scienceevolve-sii server and end the turn to receive a later notification.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         type: "object", additionalProperties: false, required: ["duration_ms"],
@@ -63,7 +63,7 @@ async function handle(request: Request): Promise<void> {
     return;
   }
   if (request.params?.name !== "sleep") {
-    error(id, -32602, "Unknown tool");
+    error(id, -32602, "Unknown tool. This scienceevolve-sleep server provides only sleep(duration_ms).");
     return;
   }
   const args = request.params.arguments;

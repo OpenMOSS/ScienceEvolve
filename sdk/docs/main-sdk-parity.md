@@ -4,7 +4,7 @@
 
 Source updated: 2026-10-30
 
-ScienceEvolve Web / Server (`main` below) and the default `@scienceevolve/sdk` share workflow core rules, with Web and Node API/CLI hosts respectively. The actual shared core is byte-identical, including optional trusted host interfaces. SDK-owned Hermes code lives outside that core. The SDK records the main Git baseline plus exact working-tree source hashes. The dated [one-way sync record](main-sync-20261030.md) is historical; use the exact-source manifest when checking parity. Host features remain independent. The old `/legacy` engine is outside this guide's current entry points.
+ScienceEvolve Web / Server (`main` below) and the default `@scienceevolve/sdk` share workflow core rules, with Web and Node API/CLI hosts respectively. The actual shared core is byte-identical, including optional trusted host interfaces. The SDK records the main Git baseline plus exact working-tree source hashes. The dated [one-way sync record](main-sync-20261030.md) is historical; use the exact-source manifest when checking parity. Host features remain independent. The old `/legacy` engine is outside this guide's current entry points.
 
 ## Host differences
 
@@ -16,7 +16,7 @@ ScienceEvolve Web / Server (`main` below) and the default `@scienceevolve/sdk` s
 | Select a saved `gatewayId` | Gateway library and explicit `gatewayBindings`, or deployment-provided native Codex aliases | Resolve and lock the model route before invocation |
 | Server allocates project directories and Git worktrees | Caller may supply `workspace`; Git execution is isolated and delivers back to the original directory | Host validates working directories, inputs, and delivery |
 | Visual Workflow canvas | JSON, API, CLI | Same Workflow schema and validation rules |
-| Codex, pi, DSH, Claude Code | Also supports the SDK host extension Hermes Harness | Shared scheduling and per-turn capability checks |
+| Codex, pi, DSH | Codex, pi, DSH | Shared scheduling and per-turn capability checks |
 
 The SDK does not include Web pages. Web / Server does not accept arbitrary absolute server paths from callers. Credentials, Gateway snapshots, host paths, and `dataDir` are not portable Workflow fields. The SDK explicitly imports API-key environment/profile settings into its deployment gateway library, rather than retaining live bindings through the old workflow `gatewaySource`. See the [SDK repository](https://github.com/OpenMOSS/ScienceEvolve) for CLI/API entry points.
 

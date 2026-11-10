@@ -16,14 +16,11 @@ async function directory() { const root = await fs.mkdtemp(path.join(os.tmpdir()
 const digest = (value: Buffer) => createHash("sha256").update(value).digest("hex");
 
 describe("exact common source and host/runtime compatibility", () => {
-  it("keeps SDK-owned Hermes outside the common source provenance", async () => {
+  it("keeps the source manifest limited to common runtime sources", async () => {
     const manifest = JSON.parse(await fs.readFile(new URL("../resources/main-runtime/manifest.json", import.meta.url), "utf8"));
     expect(sharedFixes.hostSources).toEqual([]);
     expect(manifest.files.some(item => item.source.startsWith("sdk/"))).toBe(false);
-    for (const name of ["hermes-acp.ts", "hermes-adapter.ts", "hermes-settings.ts"]) {
-      await expect(fs.access(new URL(`../src/host/hermes/${name}`, import.meta.url))).resolves.toBeUndefined();
-      await expect(fs.access(new URL(`../src/core/harness-runtime/adapters/${name}`, import.meta.url))).rejects.toMatchObject({ code: "ENOENT" });
-    }
+    await expect(fs.access(new URL("../src/host/hermes", import.meta.url))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("verifies every actual common file directly against its recorded source hash", async () => {
     const manifest = JSON.parse(await fs.readFile(new URL("../resources/main-runtime/manifest.json", import.meta.url), "utf8"));

@@ -65,6 +65,8 @@ export function mediaTypeFor(filePath: string): string {
       ".md": "text/markdown; charset=utf-8",
       ".tex": "application/x-tex; charset=utf-8",
       ".json": "application/json; charset=utf-8",
+      ".jsonl": "application/x-ndjson; charset=utf-8",
+      ".bib": "text/x-bibtex; charset=utf-8",
       ".csv": "text/csv; charset=utf-8",
       ".txt": "text/plain; charset=utf-8",
       ".py": "text/x-python; charset=utf-8",

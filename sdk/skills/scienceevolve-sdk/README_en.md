@@ -32,7 +32,7 @@ The default entry uses main; project examples and the [template](assets/workflow
 
 dataDir stores runtime state, not business workspace. Edit only the injected proposal path. External Git-off uses `.scienceevolve/management/<projectId>/proposal/workflow.json` and preserves drafts/root configuration. apply_workflow path workflow.json is a logical alias. Accepted Project Skill/MCP definitions remain immutable; add new names and update references for content changes.
 
-Codex Git-off workspace can run shell. Claude Code workspace has read-only/native and injected file tools without Bash; use compute or task-necessary yolo for scripts. Do not assume non-yolo resident Git-on has a native shell. Prompts cannot supply missing capability.
+Codex Git-off workspace can run shell. Do not assume non-yolo resident Git-on has a native shell. Prompts cannot supply missing capability.
 
 ## Scientific-method fidelity
 

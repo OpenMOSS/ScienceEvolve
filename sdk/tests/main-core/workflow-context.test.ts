@@ -126,7 +126,8 @@ describe("management Workflow context", () => {
     expect(prompt).not.toContain("Configuration revision: 7; state revision: 12;");
     expect(prompt).not.toContain("Current Agent: main; role:");
     expect(context.preview).toContain(`Legal route candidates for this turn (exact node IDs): ${JSON.stringify(candidates)}`);
-    expect(prompt).toContain("OpenFARS permission mode:");
+    expect(prompt).toContain("ScienceEvolve permission mode:");
+    expect(prompt).not.toContain("OpenFARS permission mode:");
     expect(prompt).not.toContain("gateway-credential-must-stay-private");
     if (scope === "group") expect(context.preview).toContain("it does not complete the project");
     else expect(context.preview).toContain("Project completion:");

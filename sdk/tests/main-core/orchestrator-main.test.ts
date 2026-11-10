@@ -3292,7 +3292,8 @@ describe("public Main orchestration state machine", () => {
         code,
         `Official event contract failed with api_key=${leakedApiKey}`,
         { harnessId: "fixture-harness" },
-        { source, retryable: false }
+        { source, retryable: false, ...(code === "SESSION_RESUME_FAILED"
+          ? { cause: new Error(`Invalid JSON at position 5564 with api_key=${leakedApiKey}`) } : {}) }
       );
     });
 
@@ -3339,6 +3340,10 @@ describe("public Main orchestration state machine", () => {
       harnessRecoveryRequired: true
     });
     expect(JSON.stringify({ paused, events })).not.toContain(leakedApiKey);
+    if (code === "SESSION_RESUME_FAILED") {
+      expect(paused?.agentFailureHistory?.main?.[0]?.error).toContain("Invalid JSON at position 5564");
+      expect(agentFailure?.data?.error).toContain("Invalid JSON at position 5564");
+    }
     await orchestrator.shutdown();
     const restarted = new Orchestrator(new ProjectStorage(root, new EventHub()), new SkillCatalog([builtinSkillRoot]), runner,
       { retryBaseMs: 1, retryMaxMs: 1, agentConcurrency: 2 });
@@ -3352,7 +3357,7 @@ describe("public Main orchestration state machine", () => {
     await restarted.shutdown();
   });
 
-  it.each(["codex", "claude-code", "pi", "dsh"])("preserves the %s task after exhausted correction and resumes it only on explicit request", async harnessId => {
+  it.each(["codex", "pi", "dsh"])("preserves the %s task after exhausted correction and resumes it only on explicit request", async harnessId => {
     let attempts = 0;
     const { orchestrator, runner } = await harness(async request => {
       attempts += 1;

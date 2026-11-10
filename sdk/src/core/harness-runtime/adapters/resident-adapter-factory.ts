@@ -1,4 +1,3 @@
-import { claudeNativeToolApprovals } from "./claude-native-policy.js";
 import { selectedSkillInstructions } from "../selected-skills.js";
 import { SLEEP_TOOL_TIMEOUT_SEC } from "../../sleep-tool-contract.js";
 import { promises as fs } from "node:fs";
@@ -21,12 +20,10 @@ import {
 } from "../process-host.js";
 import {
   ResidentNativeDriver,
-  claudeStreamJsonCodec,
   codexAppServerCodec,
   dshSdkCodec,
   piRpcCodec
 } from "../resident-native-driver.js";
-import { modelFacingMcpNamespaceWildcard } from "../tool-catalog.js";
 import type { AdapterMcpRow } from "./adapter-utils.js";
 import { harnessExecutableLaunch, gatewayModelContextWindow, safeName, sleepMcpRow } from "./adapter-utils.js";
 import { assertDshSessionArtifact, dshSelectedSkillsPatch, dshMcpPatch, dshNativeSdkPatch, dshSessionArtifactPath, resolveDshSessionArtifactPath, prepareDshSettings } from "./dsh-adapter.js";
@@ -40,6 +37,7 @@ import type {
 import { residentScopeId } from "../resident-lease.js";
 import { validateStagedInvocationInputs } from "../invocation-inputs.js";
 import { installWindowsCodexPatch } from "../windows-codex-patch.js";
+import { NATIVE_PROCESS_SUPPORT_ENV } from "../native-processes.js";
 
 export type { ResidentAdapterLaunchRequest, ResidentAdapterLaunchDefinition } from "../resident-lease.js";
 
@@ -114,7 +112,6 @@ async function buildLaunch(input: ResidentAdapterLaunchRequest): Promise<Residen
   const harnessId = input.adapter.descriptor.id;
   if (harnessId === "codex") return buildCodexLaunch(input);
   if ("nativeCodexProfileHome" in input.launchRoute) throw launchError("Native Codex profile cannot launch another Harness");
-  if (harnessId === "claude-code") return buildClaudeLaunch(input);
   if (harnessId === "pi") return buildPiLaunch(input);
   if (harnessId === "dsh") return buildDshLaunch(input);
   if (input.adapter.resident?.buildLaunch) return input.adapter.resident.buildLaunch(input);
@@ -180,57 +177,6 @@ async function buildCodexLaunch(input: ResidentAdapterLaunchRequest) {
       modelProvider: native ? "openai" : "openfars_gateway",
       sandbox: "danger-full-access"
     })
-  };
-}
-
-async function buildClaudeLaunch(input: ResidentAdapterLaunchRequest) {
-  const { request, spec, session } = input;
-  const home = residentHarnessHome(input, "claude-home");
-  await fs.mkdir(home, { recursive: true, mode: 0o700 });
-  const mcpPath = path.join(input.executionRuntimePath, "claude-resident-mcp.json");
-  const rows = await residentMcpRows(input);
-  await fs.writeFile(mcpPath, `${JSON.stringify(claudeMcpConfig(rows), null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600
-  });
-  const args = [
-    "--print",
-    "--verbose",
-    "--input-format", "stream-json",
-    "--output-format", "stream-json",
-    "--replay-user-messages",
-    "--include-partial-messages",
-    "--bare",
-    "--disable-slash-commands",
-    "--setting-sources", "",
-    "--append-system-prompt", selectedSkillInstructions([...spec.policy.skillPaths, ...spec.policy.autoSkillPaths]),
-    "--tools", "default",
-    "--allowedTools", ...claudeNativeToolApprovals(rows.map(row => row.namespace)),
-    "--strict-mcp-config",
-    "--mcp-config", mcpPath,
-    "--permission-mode", "dontAsk",
-    "--model", spec.model,
-    ...(session.resumedAt
-      ? ["--resume", session.nativeId]
-      : ["--session-id", session.nativeId])
-  ];
-  const launch = harnessExecutableLaunch(input.executable, args);
-  const environment = residentEnvironment(input, {
-    HOME: input.filesystemAuthority.serviceUserRoot,
-    CLAUDE_CONFIG_DIR: home,
-    ANTHROPIC_MODEL: spec.model,
-    ANTHROPIC_SMALL_FAST_MODEL: spec.model,
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(
-      Math.max(1, Math.floor(gatewayModelContextWindow(request, spec.model) * 0.8))
-    ),
-    CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(gatewayModelContextWindow(request, spec.model))
-  });
-  return {
-    plan: launchPlan(input, launch.command, launch.args, environment, [
-      "CLAUDE_CONFIG_DIR", "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
-      "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
-    ]),
-    codec: claudeStreamJsonCodec()
   };
 }
 
@@ -597,7 +543,7 @@ function codexMcpConfig(
       const sleepTimeout = row.namespace === "scienceevolve-sleep"
         ? `, tool_timeout_sec = ${SLEEP_TOOL_TIMEOUT_SEC}` : "";
       const args = row.args.map((value) => JSON.stringify(value)).join(", ");
-      const env = Object.entries(row.env ?? {})
+      const env = Object.entries({ ...row.env, [NATIVE_PROCESS_SUPPORT_ENV]: "1" })
         .map(([key, value]) => `${JSON.stringify(key)} = ${JSON.stringify(value)}`)
         .join(", ");
       const controlBudget = row.namespace === "openfars-resident-control" ? `, tool_timeout_sec = ${Math.ceil(CONTROL_PROXY_TIMEOUT_MS / 1_000) + 10}` : "";
@@ -624,16 +570,6 @@ function codexSkillConfig(paths: readonly string[]): string {
     `{ path = ${JSON.stringify(skillPath)}, enabled = true }`
   );
   return `skills.config=[${entries.join(",")}]`;
-}
-
-function claudeMcpConfig(rows: readonly AdapterMcpRow[]): Record<string, unknown> {
-  return {
-    mcpServers: Object.fromEntries(rows.map((row) => [row.name,
-      row.transport === "stdio"
-        ? { type: "stdio", command: row.command, args: row.args, ...(row.env ? { env: row.env } : {}) }
-        : { type: "http", url: row.url, ...(row.headers ? { headers: row.headers } : {}) }
-    ]))
-  };
 }
 
 async function preparePiHome(

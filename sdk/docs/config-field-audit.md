@@ -6,7 +6,7 @@
 
 > 历史适用范围：本文记录 2026-09-26 的 legacy 引擎，不是当前默认 main 的字段合同。当前配置见 [workflow 合同](../skills/scienceevolve-sdk/references/workflow.md) 和 [main CLI/API](main-cli-zh.md)。旧 proxy 字段在默认 main 中被忽略，gatewaySource 不属于其启动 workflow。
 
-日期：2026-09-26。此文件随独立 npm tarball 发布。审计对象是当时 legacy SDK 接受的 SCION-AR `agents + orchestration` 配置，不是早期另拟的配置格式。
+日期：2026-09-26。此文件随独立 npm tarball 发布。审计对象是当时 legacy SDK 接受的 ScienceEvolve `agents + orchestration` 配置，不是早期另拟的配置格式。
 
 ## 状态说明
 

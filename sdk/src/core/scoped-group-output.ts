@@ -9,16 +9,15 @@ export function scopedPredecessorOutput(projection: CredentialFreeProjectStatePr
   if (source.status !== "completed") return undefined;
   if (source.targetKind === "agent") {
     const execution = projection.scopedExecutions?.find((item) => item.arrivalRequestId === source.requestId && item.groupRunId === source.groupRunId && item.status === "completed");
-    if (!execution || !projection.scopedAgentMerges?.some((merge) => merge.executionId === execution.id)) return undefined;
-    return projection.scopedAgentReports?.find((report) => report.executionId === execution.id && report.ownershipEpoch === execution.ownershipEpoch)?.output;
+    if (!execution) return undefined;
+    const report = projection.scopedAgentReports?.find((report) => report.executionId === execution.id && report.ownershipEpoch === execution.ownershipEpoch);
+    return report ? availableReport(projection, report.output, execution) : undefined;
   }
   const child = projection.scopedGroupRuns?.find((group) => group.parentArrivalRequestId === source.requestId && group.parentGroupRunId === source.groupRunId && group.status === "completed");
-  return child && projection.scopedGroupFinalMerges?.some((merge) => merge.groupRunId === child.id)
-    ? scopedGroupOutput(projection, child.id) : undefined;
+  return child ? scopedGroupOutput(projection, child.id) : undefined;
 }
 
-/** Handoffs contain only current, completed owners with actual merge proofs.
- * A skipped/failed report is never promoted to a successful group result. */
+/** Completed task reports and their actual Git delivery facts travel together. */
 export function scopedGroupOutput(projection: CredentialFreeProjectStateProjection, groupRunId: string): string {
   const groups = new Set([groupRunId]);
   for (;;) {
@@ -28,12 +27,17 @@ export function scopedGroupOutput(projection: CredentialFreeProjectStateProjecti
   }
   const owners = new Map((projection.scopedExecutions ?? []).filter((execution) => groups.has(execution.groupRunId) && execution.status === "completed")
     .map((execution) => [execution.id, execution.ownershipEpoch]));
-  const merged = new Set((projection.scopedAgentMerges ?? []).map((merge) => merge.executionId));
-  const reports = (projection.scopedAgentReports ?? []).filter((report) => owners.get(report.executionId) === report.ownershipEpoch && merged.has(report.executionId));
+  const reports = (projection.scopedAgentReports ?? []).filter((report) => owners.get(report.executionId) === report.ownershipEpoch);
   const skips = (projection.scopedArrivals ?? []).filter((arrival) => groups.has(arrival.groupRunId) && arrival.status === "skipped");
-  return [reports.map((report) => report.output).filter(Boolean).join("\n\n"),
+  return [reports.map(report => availableReport(projection, report.output, projection.scopedExecutions!.find(item => item.id === report.executionId)!)).filter(Boolean).join("\n\n"),
     skips.length ? `Explicitly skipped (not successful work): ${skips.map((arrival) => `${arrival.targetNodeId}/${arrival.requestId}`).join(", ")}` : ""]
-    .filter(Boolean).join("\n\n") || "Necessary paths reached Finish; no business result is claimed without a merged report.";
+    .filter(Boolean).join("\n\n") || "Necessary paths reached Finish; no business report was supplied.";
+}
+
+function availableReport(projection: CredentialFreeProjectStateProjection, output: string,
+  execution: NonNullable<CredentialFreeProjectStateProjection["scopedExecutions"]>[number]): string {
+  const merge = projection.scopedAgentMerges?.find(item => item.executionId === execution.id);
+  return merge ? output : `${output}\n\nSource: ${execution.agentId}, task ${execution.id}, directory ${execution.worktreePath}. No merged delivery has been confirmed. Materials may be uncommitted or unavailable after directory cleanup; use the existing files according to the current task.`;
 }
 
 /** All completed, relevant predecessors in this scheduling batch. Readiness

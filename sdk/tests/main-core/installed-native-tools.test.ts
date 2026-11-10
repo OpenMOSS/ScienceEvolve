@@ -13,7 +13,6 @@ const exec = promisify(execFile), roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
 const installed = [
   ["codex", "../harness/codex/node_modules/.bin/codex"],
-  ["claude-code", "../harness/claude code/node_modules/.bin/claude"],
   ["pi", "../harness/pi/node_modules/.bin/pi"],
   ["dsh", "../harness/dsh/node_modules/.bin/dsh"]
 ] as const;
@@ -91,7 +90,7 @@ for (const [harnessId, relative] of installed) describe.runIf(existsSync(relativ
       request.executionContext = { role: "delivery", executionId, ownershipEpoch: 1, nodeRunId: "fixture-node",
         taskId: "original-task", executionBranch: "main", executionWorktree: workspacePath };
       const adapter = new HarnessRuntimeResidentAdapter({ runtime, routeFactory: async () => {
-        const sourceProtocol = harnessId === "claude-code" ? "anthropic-messages" : harnessId === "codex" ? "responses" : "chat-completions";
+        const sourceProtocol = harnessId === "codex" ? "responses" : "chat-completions";
         const proxy = await factory({ gatewayUrl: gateway.url, apiKey: gateway.apiKey, model: "fixture-model", sourceProtocol, targetProtocol: "responses", force: true } as any);
         return { ...proxy, sourceProtocol, targetProtocol: "responses", proxy, resetFailure: proxy.resetFailure, getFailure: proxy.getFailure, close: proxy.close } as any;
       } });

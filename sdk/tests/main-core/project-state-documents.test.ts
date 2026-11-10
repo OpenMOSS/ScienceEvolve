@@ -34,7 +34,7 @@ async function fixture() {
     domain: id => database.projectStateDomain(id),
     read: (id, name) => database.projectStateDocument(id, name),
     write: (id, name, value, version, publish) => database.writeProjectStateDocument(id, name, value, version, publish) });
-  storage.configureProjectStateStore(adapter());
+  await storage.configureProjectStateStore(adapter());
   const orchestration = cloneAgentOrchestrationTemplate(), agents = mergeAgentConfigs(undefined, orchestration);
   agents.execution.experimentMcp = true;
   agents.execution.gatewayId = `gwy_${"a".repeat(32)}`;
@@ -64,6 +64,78 @@ async function fixture() {
 }
 
 describe("one formal store for project checkpoints and experiment ledgers", () => {
+  it.each([false, true])("preserves accepted results when an older callback saves only its telemetry (formal=%s)", async formal => {
+    const f = await fixture(); if (formal) f.register();
+    const telemetry = await f.storage.loadState(P), publication = await f.storage.loadState(P);
+    publication.artifacts = [{ id: "actual-report", agent: "execution", invocationId: "report-invocation",
+      path: "reports/final.md", title: "Final report", kind: "report", description: "Existing research",
+      size: 16, updatedAt: session.createdAt }];
+    publication.phase = "research:completed";
+    await f.storage.saveState(publication);
+    telemetry.computeUsage.totalCardHours = 42;
+    await f.storage.saveState(telemetry);
+    expect(await f.storage.loadState(P)).toMatchObject({ artifacts: publication.artifacts, phase: "research:completed",
+      computeUsage: { totalCardHours: 42 } });
+    telemetry.tokenUsage.inputTokens += 7;
+    await f.storage.appendEvent(telemetry, { type: "agent.trace", message: "Late diagnostic" });
+    expect((await f.storage.loadState(P)).artifacts).toEqual(publication.artifacts);
+    expect(telemetry.artifacts).toEqual(publication.artifacts);
+  });
+
+  it.each([false, true])("compares queued inputs by their persisted JSON when optional reception fields are unset (formal=%s)", async formal => {
+    const f = await fixture(); if (formal) f.register();
+    f.state.userInputs.push({ id: "queued-input", message: "Retain original task", mode: "wait", status: "pending",
+      createdAt: session.createdAt, targetMainInvocation: 1, deliveredAt: undefined, deliveredInvocationId: undefined });
+    await f.storage.saveState(f.state);
+    f.state.userInputs[0] = { ...f.state.userInputs[0], status: "delivered",
+      deliveredAt: session.createdAt, deliveredInvocationId: "actual-native-invocation" };
+    await f.storage.saveState(f.state);
+    expect((await f.storage.loadState(P)).userInputs).toEqual(f.state.userInputs);
+    const stale = await f.storage.loadState(P), accepted = await f.storage.loadState(P);
+    accepted.userInputs[0].message = "Accepted new User message"; await f.storage.saveState(accepted);
+    stale.userInputs[0].message = "Competing stale message";
+    await expect(f.storage.saveState(stale)).rejects.toThrow("Concurrent project checkpoint change at project.userInputs");
+    expect((await f.storage.loadState(P)).userInputs).toEqual(accepted.userInputs);
+  });
+
+  it.each([false, true])("rejects an untracked stale snapshot without replacing another writer's accepted catalog (formal=%s)", async formal => {
+    const f = await fixture(); if (formal) f.register();
+    const stale = structuredClone(await f.storage.loadState(P));
+    const publication = await f.storage.loadState(P);
+    publication.artifacts = [{ id: "available-result", agent: "execution", invocationId: "original-report",
+      path: "reports/accepted.md", title: "Accepted result", kind: "report", description: "Actual result",
+      size: 42, updatedAt: session.createdAt }];
+    await f.storage.saveState(publication);
+    stale.computeUsage.totalCardHours = 42;
+    await expect(f.storage.saveState(stale)).rejects.toThrow("save has no loaded baseline");
+    const refreshed = await f.storage.loadState(P);
+    expect(refreshed.artifacts).toEqual(publication.artifacts);
+    refreshed.computeUsage.totalCardHours = 42;
+    await f.storage.saveState(refreshed);
+    expect((await f.storage.loadState(P)).artifacts).toEqual(publication.artifacts);
+  });
+
+  it("rejects a competing write to the same lifecycle fact without losing the accepted result", async () => {
+    const f = await fixture(); f.register();
+    const stale = await f.storage.loadState(P), current = await f.storage.loadState(P);
+    current.phase = "research:accepted"; await f.storage.saveState(current);
+    stale.phase = "research:obsolete";
+    await expect(f.storage.saveState(stale)).rejects.toThrow(/Concurrent project checkpoint change at project.phase/);
+    expect((await f.storage.loadState(P)).phase).toBe("research:accepted");
+  });
+  it("retains trace audit and restart cursors without updating SQLite until its checkpoint flush", async () => {
+    const f = await fixture(); f.register();
+    const original = f.db.projectStateDocument(P, "project.checkpoint")!;
+    await f.storage.appendEvents(f.state, [{ type: "agent.trace", message: "Original retained tool event" }], undefined, { checkpoint: false });
+    expect(f.db.projectStateDocument(P, "project.checkpoint")).toEqual(original);
+    const reader = new ProjectStorage(f.root, new EventHub()); await reader.initialize();
+    expect((await reader.loadState(P)).eventSeq).toBe(1);
+    expect((await reader.readEvents(P)).map(event => event.message)).toEqual(["Original retained tool event"]);
+    await f.storage.saveState(f.state);
+    expect(f.db.projectStateDocument(P, "project.checkpoint")!.value).toMatchObject({ eventSeq: 1 });
+    expect((await reader.loadState(P)).eventSeq).toBe(1);
+  });
+
   it("registers the new project head and all source documents in one transaction, rolling publication failures back", async () => {
     const f = await fixture();
     const input = { projectId: OTHER, workflowRevision: 1, workflowSnapshot: f.state.orchestration,
@@ -94,8 +166,9 @@ describe("one formal store for project checkpoints and experiment ledgers", () =
     await f.storage.saveState(f.state);
     const unconfigured = new ProjectStorage(f.root, new EventHub()); await unconfigured.initialize();
     const lease = f.db.writerLease();
-    expect((await unconfigured.loadState(P)).status).toBe("queued");
-    await expect(unconfigured.saveState({ ...f.state, status: "completed" })).rejects.toThrow(/current lease-fenced runtime/);
+    const unconfiguredState = await unconfigured.loadState(P);
+    expect(unconfiguredState.status).toBe("queued"); unconfiguredState.status = "completed";
+    await expect(unconfigured.saveState(unconfiguredState)).rejects.toThrow(/current lease-fenced runtime/);
     expect((await unconfigured.loadState(P)).status).toBe("queued");
     expect(f.db.writerLease()).toEqual(lease);
     await rm(join(f.storage.projectDir(P), "state.json"));
@@ -114,9 +187,9 @@ describe("one formal store for project checkpoints and experiment ledgers", () =
 
   it("rejects source redirection and never resumes a registered project from a view when its configured database is unavailable", async () => {
     const f = await fixture(); f.register();
-    expect(() => f.storage.configureProjectStateStore({ ...f.adapter(), source: {
+    await expect(f.storage.configureProjectStateStore({ ...f.adapter(), source: {
       protocol: "project-state-v1", kind: "sqlite", databasePath: join(f.root, "another.sqlite")
-    } })).toThrow(/cannot be silently redirected/);
+    } })).rejects.toThrow(/cannot be silently redirected/);
     f.db.close(); await rm(f.options.databasePath);
     await writeFile(join(f.storage.projectDir(P), "state.json"), JSON.stringify({ ...f.state, status: "completed" }));
     const reader = new ProjectStorage(f.root, new EventHub()); await reader.initialize();
@@ -180,7 +253,7 @@ describe("one formal store for project checkpoints and experiment ledgers", () =
     expect((await f.storage.loadState(P)).agentSessions?.execution).toEqual(session);
     const lease = f.db.writerLease(); f.db.close();
     const reopened = CollaborationStateDatabase.open({ ...f.options, writerLease: lease }); stores.push(reopened);
-    f.storage.configureProjectStateStore(f.adapter(reopened));
+    await f.storage.configureProjectStateStore(f.adapter(reopened));
     expect((await f.storage.loadState(P)).agentSessionIds?.execution).toBe(session.nativeId);
     expect(reopened.projectStateRequest(main, { operation: "get", object: { kind: "execution", id: "original-task" } })).toMatchObject({ extensions: { analysis_stage: "ready" } });
   });
@@ -198,7 +271,7 @@ describe("one formal store for project checkpoints and experiment ledgers", () =
       await f.storage.commitInvocationCommit(f.state, "inv_transaction");
       await mkdir(directory, { recursive: true }); await writeFile(join(directory, "journal.json"), JSON.stringify(journal));
     } else await rm(join(directory, "journal.json"));
-    const restartedStorage = new ProjectStorage(f.root, new EventHub()); restartedStorage.configureProjectStateStore(f.adapter());
+    const restartedStorage = new ProjectStorage(f.root, new EventHub()); await restartedStorage.configureProjectStateStore(f.adapter());
     await restartedStorage.recoverIncompleteCommits();
     const actual = await restartedStorage.loadState(P);
     expect(actual.phase).toBe(committed ? "actual-result-awaiting-commit" : before.phase);
@@ -272,7 +345,7 @@ describe("one formal store for project checkpoints and experiment ledgers", () =
     sql.exec("DROP TABLE project_state_documents; DROP TABLE project_state_domains; UPDATE collaboration_state_meta SET schema_version=23");
     expect(() => initializeCollaborationStateSchema(sql)).toThrow(/lease/); sql.close();
     const reopened = CollaborationStateDatabase.open({ ...f.options, writerLease: lease }); stores.push(reopened);
-    f.storage.configureProjectStateStore(f.adapter(reopened));
+    await f.storage.configureProjectStateStore(f.adapter(reopened));
     expect(reopened.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
     expect(reopened.projectStateDomain(P)).toBeUndefined();
     expect((await f.storage.loadState(P)).status).toBe("queued");

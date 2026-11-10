@@ -2,7 +2,7 @@ import type { CollaborationGitFacade, SynchronizedPullRequestFact } from "./coll
 import type { GitGroupFinalAuthority, GitHubPullRequestFact, GitHubRepositoryFact } from "./collaboration-git/contracts.js";
 import { GitInputError, OperationStoreViolationError } from "./collaboration-git/errors.js";
 import { mergedPullSynchronizationOperationId } from "./collaboration-git/operation.js";
-import { CollaborationStateDatabase } from "./collaboration-state/store.js";
+import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import type { CompletedScopedGroup, ScopedFinalIntegrationRecord } from "./collaboration-state/contracts.js";
 import { CollaborationStateError } from "./collaboration-state/errors.js";
 
@@ -23,7 +23,7 @@ export interface IntegrateScopedGroupInput {
 
 export type ScopedGroupIntegrationResult =
   | { status: "completed"; completion: CompletedScopedGroup }
-  | { status: "awaiting_completion"; integration: ScopedFinalIntegrationRecord; pullRequest: GitHubPullRequestFact }
+  | { status: "awaiting_completion"; integration: ScopedFinalIntegrationRecord; pullRequest?: GitHubPullRequestFact }
   | { status: "waiting_for_pull"; integration: ScopedFinalIntegrationRecord; pullRequest: GitHubPullRequestFact };
 
 /** Gates canonical final delivery on real provider and synchronization facts.
@@ -32,7 +32,7 @@ export class ScopedGroupFinalIntegrator {
   private readonly inFlight = new Map<string, Promise<ScopedGroupIntegrationResult>>();
 
   constructor(private readonly database: CollaborationStateDatabase, private readonly git: ScopedGroupFinalGit,
-    private readonly options: { invokeAgent?: (integration: ScopedFinalIntegrationRecord, input: IntegrateScopedGroupInput) => Promise<SynchronizedPullRequestFact> } = {}) {}
+    private readonly options: { invokeAgent?: (integration: ScopedFinalIntegrationRecord, input: IntegrateScopedGroupInput) => Promise<SynchronizedPullRequestFact | undefined> } = {}) {}
 
   integrate(input: IntegrateScopedGroupInput): Promise<ScopedGroupIntegrationResult> {
     // A concurrent retry must not turn one group owner into two publishers.
@@ -48,9 +48,9 @@ export class ScopedGroupFinalIntegrator {
 
   private async performIntegration(input: IntegrateScopedGroupInput): Promise<ScopedGroupIntegrationResult> {
     input.signal?.throwIfAborted();
-    const group = this.database.scopedGroupRun(input.projectId, input.groupRunId);
+    const group = await this.database.scopedGroupRun(input.projectId, input.groupRunId);
     if (!group) throw new CollaborationStateError("RECORD_NOT_FOUND", "Scoped GroupRun does not exist");
-    const projection = this.database.projectState(input.projectId);
+    const projection = await this.database.projectState(input.projectId);
     const binding = projection.git.repository;
     if (!projection.git.enabled || projection.git.status !== "ready" || !binding ||
       binding.owner !== input.repository.owner || binding.name !== input.repository.name ||
@@ -60,18 +60,18 @@ export class ScopedGroupFinalIntegrator {
     if (group.status === "completed") {
       const proof = projection.scopedGroupFinalMerges?.find((fact) => fact.groupRunId === group.id);
       if (!proof) throw new OperationStoreViolationError("Completed scoped group has no final merge proof");
-      const owner = this.database.scopedFinalIntegration(input.projectId, group.id);
-      return { status: "completed", completion: this.database.completeScopedGroupAfterFinalMerge({
+      const owner = await this.database.scopedFinalIntegration(input.projectId, group.id);
+      return { status: "completed", completion: await this.database.completeScopedGroupAfterFinalMerge({
         projectId: input.projectId, groupRunId: group.id,
         executionId: owner?.id ?? `group-final-${group.id}`, ownershipEpoch: owner?.ownershipEpoch ?? 1,
         pullRequest: { ...proof.pullRequest, ownerExecutionId: owner?.id ?? `group-final-${group.id}` },
       synchronization: proof.synchronization, selectedWeakTarget: input.selectedWeakTarget
       }) };
     }
-    if (!this.database.scopedGroupReadyForFinalIntegration(input.projectId, group.id)) {
+    if (!(await this.database.scopedGroupReadyForFinalIntegration(input.projectId, group.id))) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped group has unfinished or failed necessary paths");
     }
-    const requested = this.database.scopedGroupIntegrationRequest(input.projectId, group.id);
+    const requested = await this.database.scopedGroupIntegrationRequest(input.projectId, group.id);
     if (input.integrationOwnerAgentId !== undefined && requested?.integrationOwnerAgentId !== input.integrationOwnerAgentId) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Final integration owner differs from the Leader's durable request");
     }
@@ -81,16 +81,16 @@ export class ScopedGroupFinalIntegrator {
     // Resolve the child's parent route before any remote mutation. Do not
     // merge its final PR and only then discover a missing/invalid decision.
     if (group.parentGroupRunId && group.parentArrivalRequestId) {
-      const parent = this.database.scopedGroupRun(input.projectId, group.parentGroupRunId);
-      const arrival = this.database.scopedArrivals(group.parentGroupRunId)
+      const parent = await this.database.scopedGroupRun(input.projectId, group.parentGroupRunId);
+      const arrival = (await this.database.scopedArrivals(group.parentGroupRunId))
         .find((item) => item.requestId === group.parentArrivalRequestId);
       if (!parent || !arrival) throw new OperationStoreViolationError("Child integration lost its parent arrival");
-      this.database.previewScopedArrivalRoute(input.projectId, arrival.requestId, input.selectedWeakTarget);
+      await this.database.previewScopedArrivalRoute(input.projectId, arrival.requestId, input.selectedWeakTarget);
     } else if (input.selectedWeakTarget !== undefined) {
       throw new GitInputError("A root group has no in-group successor decision");
     }
-    const retainedOwner = this.database.scopedFinalIntegration(input.projectId, group.id);
-    if (retainedOwner && group.status === "integrating") this.database.beginScopedFinalIntegration({
+    const retainedOwner = await this.database.scopedFinalIntegration(input.projectId, group.id);
+    if (retainedOwner && group.status === "integrating") await this.database.beginScopedFinalIntegration({
       projectId: input.projectId, groupRunId: group.id, expectedHeadSha: retainedOwner.expectedHeadSha
     });
     let ref = await this.git.observeRemoteRef(input.repository, group.groupBranch, input.signal);
@@ -99,7 +99,7 @@ export class ScopedGroupFinalIntegrator {
       (retainedOwner && group.status === "integrating" && ref.sha !== retainedOwner.expectedHeadSha)) {
       throw new GitInputError("Scoped final integration requires its exact provider-confirmed canonical group head");
     }
-    const { integration } = this.database.beginScopedFinalIntegration({
+    const { integration } = await this.database.beginScopedFinalIntegration({
       projectId: input.projectId, groupRunId: group.id, expectedHeadSha: ref.sha!
     });
     const execution: GitGroupFinalAuthority = {
@@ -110,9 +110,15 @@ export class ScopedGroupFinalIntegrator {
       repository: input.repository, execution, ownershipEpoch: execution.ownershipEpoch,
       expectedHead: integration.expectedHeadSha, signal: input.signal
     };
-    const recovered = this.database.scopedFinalRecoveryPull(input.projectId, execution.id, execution.ownershipEpoch);
+    const recovered = await this.database.scopedFinalRecoveryPull(input.projectId, execution.id, execution.ownershipEpoch);
     const operationPrefix = execution.ownershipEpoch === 1 ? execution.id : `${execution.id}-epoch-${execution.ownershipEpoch}`;
     const agentResult = this.options.invokeAgent ? await this.options.invokeAgent(integration, input) : undefined;
+    if (this.options.invokeAgent && (!agentResult || (await this.database.executionSupervisionResult(input.projectId, integration.id))?.outcome !== "resolved")) {
+      if (!(await this.database.executionSupervisionResult(input.projectId, integration.id))) {
+        throw new OperationStoreViolationError("Final Agent returned without a delivery result or supervision record");
+      }
+      return { status: "awaiting_completion", integration, ...(agentResult ? { pullRequest: agentResult } : {}) };
+    }
     const pull = agentResult ?? (recovered?.status === "merged" ? recovered : await this.git.createGroupFinalPullRequest({
       ...common, operationId: `${operationPrefix}-create`, base: integration.integrationTarget,
       title: `Integrate group ${group.groupId} into ${integration.integrationTarget}`,
@@ -136,7 +142,7 @@ export class ScopedGroupFinalIntegrator {
     if (!merged.mergeCommitSha || !/^[0-9a-f]{40}$/i.test(merged.mergeCommitSha)) {
       throw new OperationStoreViolationError("Scoped final PR merge has no exact merge commit");
     }
-    const retainedSync = this.database.scopedMergedSynchronization({
+    const retainedSync = await this.database.scopedMergedSynchronization({
       projectId: input.projectId, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
       providerNumber: merged.providerNumber, expectedHead: integration.expectedHeadSha,
       expectedBase: integration.integrationTarget, expectedMergeCommitSha: merged.mergeCommitSha
@@ -165,10 +171,10 @@ export class ScopedGroupFinalIntegrator {
       selectedWeakTarget: input.selectedWeakTarget
     };
     if (input.deferCompletion) {
-      this.database.completeScopedGroupAfterFinalMerge({ ...completionInput, deferCompletion: true });
+      await this.database.completeScopedGroupAfterFinalMerge({ ...completionInput, deferCompletion: true });
       return { status: "awaiting_completion", integration, pullRequest: synchronized };
     }
-    return { status: "completed", completion: this.database.completeScopedGroupAfterFinalMerge(completionInput) };
+    return { status: "completed", completion: await this.database.completeScopedGroupAfterFinalMerge(completionInput) };
   }
 
   private assertPull(

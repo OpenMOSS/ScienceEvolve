@@ -11,7 +11,7 @@ agents is keyed by Agent name. orchestration.agents is an array of `{ "name", "t
 | Agent field | Usage |
 | --- | --- |
 | model | Actual available ID; profile defaults do not override it. |
-| harness | codex / pi / dsh / claude-code / hermes; install Hermes ACP/MCP dependencies separately. |
+| harness | codex / pi / dsh. |
 | proxy | Deprecated compatibility field removed by main normalization; omit in new files. Configure networking in the host. |
 | gatewayReasoningOption | Model-specific option ID such as high/xhigh, requiring a mapped and tested gateway combination; unused for native OAuth. |
 | instructions | Role responsibilities and executable handoff rules. |
@@ -23,7 +23,7 @@ agents is keyed by Agent name. orchestration.agents is an array of `{ "name", "t
 | sessionPersistence | Session reuse; fixed on for Main. |
 | decisionBy | main or agent; fixed to main for Main. |
 
-Prompts do not grant unsupported capabilities. Codex Git-off workspace still has shell. Claude Code workspace has no Bash; use compute or task-necessary yolo for scripts. Non-yolo Git-on resident policy is stricter than Git-off shell access.
+Prompts do not grant unsupported capabilities. Codex Git-off workspace still has shell. Non-yolo Git-on resident policy is stricter than Git-off shell access.
 
 ## Engine and workspace
 

@@ -3,6 +3,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { selectCodexGatewayModelTemplate } from "../../codex-gateway-model-catalog.js";
 import type { HarnessPromptQuery, HarnessPromptResult } from "../prompt-catalog.js";
 
 /** Source inspection is Adapter-owned and must never call a business model. */
@@ -58,14 +59,18 @@ export async function collectInstalledHarnessPrompt(query: HarnessPromptQuery, b
     const catalog: unknown = JSON.parse(await run(["debug", "models", "--bundled"]));
     const models = catalog && typeof catalog === "object" && "models" in catalog ? catalog.models : undefined;
     if (!Array.isArray(models)) throw new Error("Invalid bundled model catalog");
-    const model = models.find(item => item && typeof item === "object" && item.slug === query.model);
-    if (!model) return { ...base, installedVersion, status: "model-unmatched",
-      reason: "安装版内置目录没有此模型的精确匹配，无法核实自定义模型或回退提示词。" };
-    if (typeof model.base_instructions !== "string" || !model.base_instructions) throw new Error("No base instructions");
+    const model = selectCodexGatewayModelTemplate(models, query.model);
+    if (typeof model.base_instructions !== "string" || !model.base_instructions.trim()) {
+      return { ...base, installedVersion, resolvedModel: model.slug,
+        reason: `当前安装版模型目录缺少 ${model.slug} 模板的基础提示词文本，请检查 Harness 安装。` };
+    }
+    const scopeNote = model.slug === query.model
+      ? "所选模型在当前安装版中的基础 Prompt；工具、Skills、平台规则和会话上下文在运行时另行组装。"
+      : `ScienceEvolve 网关运行使用安装版 ${model.slug} 的基础 Prompt 模板，请求模型仍为 ${query.model}。工具、Skills、平台规则和会话上下文在运行时另行组装。`;
     return { ...base, installedVersion, resolvedModel: model.slug, status: "available", sourceType: "bundled-default",
-      source: "codex debug models --bundled · base_instructions", text: model.base_instructions,
+      source: "codex debug models --bundled · base_instructions", scopeNote, text: model.base_instructions,
       sha256: createHash("sha256").update(model.base_instructions).digest("hex") };
   } catch {
-    return { ...base, installedVersion, reason: "安装版基础提示词采集失败；未使用其他版本、模型或会话的文本替代。" };
+    return { ...base, installedVersion, reason: "无法读取当前网关运行配置使用的安装版 Prompt 模板，请刷新重试或检查 Harness 安装。" };
   }
 }

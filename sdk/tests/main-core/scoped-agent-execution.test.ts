@@ -95,6 +95,23 @@ async function fixture(weak = false, fixtureOptions: { complete?: boolean } = {}
 }
 
 describe("scoped native execution and report checkpoint", () => {
+  it("retains the task-wide allowance through a restart after each dispatched supplement", async () => {
+    const f = await fixture();
+    let database = f.database;
+    const identity = { ...f.input, invocationId: "persisted-supervision-invocation" };
+    database.beginScopedAgentTurn({ ...identity, runtimePath: join(f.root, "runtime", identity.invocationId), baseCommit: BASE });
+    database.markScopedAgentTurnOpened({ ...identity, nativeProcessOpened: true });
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      expect(database.reserveScopedAgentMechanismRepair({ ...identity,
+        missing: ["Uncommitted result", `New mechanical observation ${attempt}`] })).toBe(attempt);
+      const writerLease = database.writerLease(); database.close();
+      database = CollaborationStateDatabase.open({ ...f.options, writerLease }); databases.push(database);
+      expect(database.executionSupervisionRepairCount("p", f.execution.id)).toBe(attempt);
+    }
+    expect(database.reserveScopedAgentMechanismRepair({ ...identity, missing: ["A fourth observation"] })).toBeUndefined();
+    expect(database.eventsAfter("p", 0, 1000).filter(event => event.type === "scoped.agent.mechanism_repair.requested")).toHaveLength(3);
+  });
+
   it("reads scoped delivery observations through the event-type index while preserving exact ownership and event order", async () => {
     const f = await fixture();
     for (let i = 0; i < 20; i++) f.database.appendEvent({ projectId: "p", requestId: `unrelated-${i}`,
@@ -306,8 +323,8 @@ describe("scoped native execution and report checkpoint", () => {
     expect(await runner.prepareDelivery(input)).toMatchObject({ ownershipEpoch: 2, expectedHeadSha: HEAD, output: "Original Agent's actual missing report after inspecting its existing PR" });
     expect(await runner.prepareDelivery(input)).toMatchObject({ ownershipEpoch: 2, expectedHeadSha: HEAD });
     expect(invoke).toHaveBeenCalledOnce();
-    expect(f.git.sessionBegin).not.toHaveBeenCalled(); expect(f.git.observeRetainedExecution).toHaveBeenCalledTimes(2);
-    expect(restore).toHaveBeenCalledTimes(2);
+    expect(f.git.sessionBegin).not.toHaveBeenCalled(); expect(f.git.observeRetainedExecution).toHaveBeenCalledOnce();
+    expect(restore).toHaveBeenCalledOnce();
     expect(f.git.checkpointAndPush).not.toHaveBeenCalled(); expect(f.git.observeRemoteRef).not.toHaveBeenCalled();
     expect(f.database.scopedAgentTaskCompletion("p", f.execution.id, 2)).toEqual(f.completion);
     expect(f.database.scopedAgentReport("p", f.execution.id, 1)).toEqual(f.oldReport);
@@ -327,21 +344,20 @@ describe("scoped native execution and report checkpoint", () => {
     });
     const runner = new ScopedAgentExecutionRunner(f.database, f.git, { invoke }, () => f.root,
       { automaticCheckpoint: false, requireAgentGitDeliveryFacts: true });
-    await expect(runner.prepareDelivery({ ...f.input, ownershipEpoch: 2 })).rejects.toThrow(`pending worktree path(s): ["${pendingPath}"]`);
+    const returned = await runner.prepareDelivery({ ...f.input, ownershipEpoch: 2 });
+    expect(returned.output).toContain(`pending worktree path(s): ["${pendingPath}"]`);
+    expect(returned.output).toContain("supervision ended (exhausted)");
     const report = f.database.scopedAgentReport("p", f.execution.id, 2)!;
-    expect(report.headSha).toBeUndefined();
+    expect(report.headSha).toBe(HEAD);
     expect(report.output).toContain("Observed original merged PR");
-    const failure = f.database.scopedRecoveryCandidates("p", "run-G")[0]!;
-    // Exhaustion retains the original owner and its mechanism incident;
-    // the thrown preparation error carries the current checkout diagnostic.
-    expect(failure.reason).toContain("automatic mechanism repairs exhausted");
-    expect(failure.reason).not.toContain("must explicitly call git_push");
+    expect(f.database.scopedGroupIssues("p")).toEqual([]);
+    expect(returned.output).not.toContain("must explicitly call git_push");
     expect(f.database.scopedAgentTaskCompletion("p", f.execution.id, 2)).toEqual(f.completion);
     expect(f.database.scopedRecoveryPull("p", f.execution.id, 2)).toEqual(f.pull);
-    expect(f.database.scopedAgentMechanismRepairCount("p", f.execution.id)).toBe(2);
+    expect(f.database.scopedAgentMechanismRepairCount("p", f.execution.id)).toBe(3);
     expect(f.database.scopedExecution("p", f.execution.id)).toMatchObject({ status: "integrating", ownershipEpoch: 2 });
     expect(f.git.checkpointAndPush).not.toHaveBeenCalled();
-    expect(invoke).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledTimes(2);
   });
 
   it("preserves the original failure and completion when the finite missing-report native turn itself fails", async () => {
@@ -477,6 +493,15 @@ describe("scoped native execution and report checkpoint", () => {
       const runner = new ScopedAgentExecutionRunner(f.database, f.git, { invoke }, () => f.root, { automaticCheckpoint: false });
       const reason = mode === "missing_head" ? "Original Agent report head remains unbound; its current checkout needs matching observed PR delivery facts for the retained merged task"
         : "Supplement could not reconcile its retained PR";
+      if (mode === "missing_head") {
+        const returned = await runner.prepareDelivery(f.input);
+        expect(returned.output).toContain("github_get_pr for the retained merged PR head");
+        expect(f.database.scopedAgentReport("p", f.execution.id, 1)).toEqual(report);
+        expect(f.database.scopedAgentTaskCompletion("p", f.execution.id, 1)).toEqual(completion);
+        expect(f.database.eventByRequestId("p", `scoped-failure:${f.execution.id}:1`)).toEqual(originalFailure);
+        expect(f.database.executionSupervisionResult("p", f.execution.id)?.outcome).toBe("unconfirmed");
+        return;
+      }
       await expect(runner.prepareDelivery(f.input)).rejects.toThrow(reason);
       const turn = f.database.scopedAgentTurn("p", f.execution.id, 1)!;
       if (mode === "before_open") {
@@ -582,7 +607,15 @@ describe("scoped native execution and report checkpoint", () => {
           head: laterHead, retained: true, pendingPaths: [], observedAt: NOW }));
         const runner = new ScopedAgentExecutionRunner(restarted, f.git, { invoke }, () => f.root,
           { automaticCheckpoint: false, requireAgentGitDeliveryFacts: true });
-        await expect(runner.prepareDelivery(f.input)).rejects.toThrow(/still lacks explicit Git delivery facts/);
+        const result = await runner.prepareDelivery(f.input);
+        expect(result.output).toContain("github_get_pr or github_create_pr");
+        expect(restarted.executionSupervisionResult("p", f.execution.id)?.outcome).toBe("unconfirmed");
+        expect(restarted.eventByRequestId("p", failureKey)).toBeUndefined();
+        expect(restarted.eventByRequestId("p", `scoped-failure:${f.execution.id}:1`)).toEqual(originalFailure);
+        expect(restarted.scopedAgentReport("p", f.execution.id, 1)).toEqual(report);
+        expect(restarted.recordedGitOperation("p", push.id)?.status).toBe("finalized");
+        expect(invoke).not.toHaveBeenCalled();
+        return;
       }
       expect(restarted.eventByRequestId("p", failureKey)?.payload.reason).toBe(failureInput.reason);
       if (mode === "recorded_failure") expect(restarted.eventByRequestId("p", failureKey)).toEqual(recorded);
@@ -774,7 +807,9 @@ describe("scoped native execution and report checkpoint", () => {
         await expect(runner.prepareDelivery(f.input)).resolves.toMatchObject({ expectedHeadSha: HEAD, output: report.output });
         expect(invoke).toHaveBeenCalledOnce();
       } else {
-        await expect(runner.prepareDelivery(f.input)).rejects.toThrow();
+        const returned = await runner.prepareDelivery(f.input);
+        expect(returned.output).toContain("supervision ended (unconfirmed)");
+        expect(f.database.executionSupervisionResult("p", f.execution.id)?.outcome).toBe("unconfirmed");
         expect(invoke).not.toHaveBeenCalled();
         expect(f.database.scopedAgentReport("p", f.execution.id, 1)).toEqual(report);
         if (mode !== "invalid_base") expect(restore).not.toHaveBeenCalled();
@@ -784,7 +819,7 @@ describe("scoped native execution and report checkpoint", () => {
     });
 
   it.each(["agent-memory/one/Memory.md", "compute/probe.js", "observation_failure", "clean"])(
-    "keeps a repaired report head unbound until its returned worktree is closed (%s)", async pendingPath => {
+    "keeps the actual repaired head and reports remaining worktree facts after the last supplement (%s)", async pendingPath => {
       const f = await fixture(false, { complete: false });
       const identity = { ...f.input, invocationId: "inv_" + "8".repeat(32) };
       f.database.beginScopedAgentTurn({ ...identity, runtimePath: join(f.root, "runtime", identity.invocationId), baseCommit: BASE });
@@ -795,6 +830,8 @@ describe("scoped native execution and report checkpoint", () => {
         residentTurnCompleted: true, residentStopConfirmed: true });
       const report = f.database.scopedAgentReport("p", f.execution.id, 1)!;
       const completion = f.database.scopedAgentTaskCompletion("p", f.execution.id, 1);
+      for (let attempt = 1; attempt <= 2; attempt++) f.database.appendEvent({ projectId: "p", agentId: "one",
+        type: "scoped.agent.mechanism_repair.requested", payload: { executionId: f.execution.id, ownershipEpoch: 1, attempt, missing: ["git_push"] } });
       let returned = false;
       f.git.observeExecutionWorktree = vi.fn(async (execution, epoch) => {
         if (returned && pendingPath === "observation_failure") throw new Error("Worktree observation unavailable");
@@ -839,13 +876,16 @@ describe("scoped native execution and report checkpoint", () => {
         expect(() => f.database.assertScopedGitExecutionOwnership({ ...f.input,
           expectedBranch: f.execution.executionBranch, operation: "checkpoint" })).toThrow();
       } else {
-        await expect(runner.prepareDelivery(f.input)).rejects.toThrow(pendingPath === "observation_failure"
-          ? "Worktree observation unavailable" : `pending worktree path(s): ["${pendingPath}"]`);
-        expect(f.database.scopedAgentReport("p", f.execution.id, 1)).toEqual(report);
+        const delivered = await runner.prepareDelivery(f.input);
+        expect(delivered.expectedHeadSha).toBe(HEAD);
+        expect(delivered.output).toContain(pendingPath === "observation_failure" ? "verification was not completed" : pendingPath);
+        expect(f.database.scopedAgentReport("p", f.execution.id, 1)).toEqual({ ...report, headSha: HEAD, headRecordedAt: new Date(1_000_000).toISOString() });
+        expect(f.database.executionSupervisionResult("p", f.execution.id)?.outcome)
+          .toBe(pendingPath === "observation_failure" ? "unconfirmed" : "exhausted");
       }
       expect(f.database.scopedAgentTaskCompletion("p", f.execution.id, 1)).toEqual(completion);
       expect(f.database.scopedAgentTurn("p", f.execution.id, 1)?.status).toBe("stopped");
-      expect(f.database.scopedAgentMechanismRepairCount("p", f.execution.id)).toBe(1);
+      expect(f.database.scopedAgentMechanismRepairCount("p", f.execution.id)).toBe(3);
       expect(f.database.eventsAfter("p", 0).filter(event => event.type === "scoped.agent.mechanism_repair.returned"))
         .toMatchObject([{ payload: { output: "Actual supplemental result with unfinished checkout closing" } }]);
       expect(invoke).toHaveBeenCalledOnce();
@@ -1008,27 +1048,19 @@ describe("scoped native execution and report checkpoint", () => {
       const exhausted = new ScopedAgentExecutionRunner(third, f.git, { invoke: failed }, () => f.root, { automaticCheckpoint: false });
       await expect(exhausted.prepareDelivery(f.input)).rejects.toThrow(/owns Git/);
       third.reconcileScopedAgentTurn(proof(secondRepair.invocationId, secondRepair.runtimePath));
-      await expect(exhausted.prepareDelivery(f.input)).rejects.toThrow(/finish_task/);
-      expect(failed).toHaveBeenCalledTimes(2);
-      const incident = third.scopedGroupIssues("p").find((issue) => issue.executionId === f.execution.id)!;
-      expect(incident).toMatchObject({ kind: "mechanism", ownershipEpoch: 1 });
-      const manager = { projectId: "p", groupRunId: "run-G", agentId: "main", invocationId: "lineage-manager",
-        runtimePath: join(f.root, "runtime", "lineage-manager"), allowStoppedRepairFaults: true };
-      const claim = third.claimScopedLeaderTurn(manager)!;
-      expect(claim).toBeDefined();
-      const identity = { ...manager, coordinatorEpoch: claim.coordinatorEpoch };
-      third.markScopedLeaderOpened(identity);
-      const envelope = (action: import("../../src/core/types.js").ControlAction, callId: string) => ({ projectId: "p", agent: "main",
-        invocationId: manager.invocationId, callId, stateVersion: claim.coordinatorEpoch,
-        capabilityHash: "a".repeat(64), receivedAt: NOW, action });
-      third.recordScopedLeaderTaskCompletion({ ...identity, envelope: envelope({ tool: "finish_task" }, "lineage-manager-finish") });
-      third.acceptScopedLeaderAction({ ...identity, residentStopConfirmed: true, envelope: envelope({ tool: "coordinate_group_task",
-        groupRunId: "run-G", coordinatorEpoch: claim.coordinatorEpoch, arrivalRequestId: f.execution.arrivalRequestId,
-        operation: "retry", rationale: "Original Agent may settle the same stopped report" }, "lineage-manager-retry") });
-      expect(third.scopedAgentReportContinuation("p", f.execution.id, 1)).toBeUndefined();
-      third.releaseScopedLeaderTurn({ ...identity, residentStopConfirmed: true });
-      expect(third.scopedAgentReportContinuation("p", f.execution.id, 1)?.incidentId).toBe(incident.id);
+      await expect(exhausted.prepareDelivery(f.input)).rejects.toMatchObject({ residentStopConfirmed: false });
+      expect(failed).toHaveBeenCalledTimes(3);
+      const lastRepair = third.scopedAgentTurn("p", f.execution.id, 1)!;
+      third.reconcileScopedAgentTurn(proof(lastRepair.invocationId, lastRepair.runtimePath));
+      const result = await exhausted.prepareDelivery(f.input);
+      expect(result.output).toContain("supervision ended (exhausted)");
+      expect(third.executionSupervisionRepairCount("p", f.execution.id)).toBe(3);
+      expect(failed).toHaveBeenCalledTimes(3);
+      expect(third.scopedAgentReport("p", f.execution.id, 1)).toEqual(originalReport);
+      expect(third.recordedGitOperation("p", "two-restart-original-push")?.status).toBe("prepared");
+      return;
     }
+
     const pull: GitHubPullRequestFact = { id: "two-restart-original-pr", providerNumber: 7,
       owner: repository.owner, repository: repository.name, ownerExecutionId: f.execution.id,
       head: f.execution.executionBranch, headSha: HEAD, base: "groups/run-G", status: "merged",
@@ -1125,7 +1157,8 @@ describe("scoped native execution and report checkpoint", () => {
     });
     const runner = new ScopedAgentExecutionRunner(f.database, f.git, { invoke }, () => f.root, { automaticCheckpoint: false });
     await expect(runner.prepareDelivery(f.input)).rejects.toMatchObject({ residentStopConfirmed: false });
-    await expect(runner.prepareDelivery(f.input)).rejects.toThrow(/already reserved/);
+    expect(await runner.prepareDelivery(f.input)).toMatchObject({ expectedHeadSha: HEAD, output: "Preserved original report" });
+    expect(f.database.executionSupervisionRepairCount("p", f.execution.id)).toBe(1);
     expect(invoke).toHaveBeenCalledOnce();
     expect(f.database.scopedAgentTurn("p", f.execution.id, 1)?.status).toBe("opened");
     expect(f.database.scopedExecution("p", f.execution.id)).toMatchObject({ status: "running", ownershipEpoch: 1 });
@@ -1168,7 +1201,7 @@ describe("scoped native execution and report checkpoint", () => {
     expect(next.scopedAgentReport("p", f.execution.id, 1)).toMatchObject({ invocationId, output: "Original report" });
   });
 
-  it.each(["retain", "retry_settles", "retry_uncertain"] as const)("retains an exhausted original owner and handles %s coordination without resetting its budget", async (mode) => {
+  it("returns an exhausted original report across restart and retains its uncertain Git facts", async () => {
     const f = await fixture(false, { complete: false });
     const invocationId = "inv_" + "a".repeat(32);
     const identity = { ...f.input, invocationId };
@@ -1183,11 +1216,6 @@ describe("scoped native execution and report checkpoint", () => {
     const invoke = vi.fn(async (input: ScopedAgentTurnInput) => {
       invocations.push(input.invocationId);
       input.onOpened();
-      if (input.reportRepair?.coordination && mode === "retry_settles") {
-        expect(input.reportRepair.coordination.envelope.action).toMatchObject({ operation: "retry", rationale: "Inspect my retained provider operation" });
-        await finalizeOperation(f.database.operationsForProject("p", true), operation, { owner: "example", repository: "openfars",
-          ref: f.execution.executionBranch, sha: HEAD, status: "present", observedAt: NOW });
-      }
       if (!f.database.scopedAgentTaskCompleted("p", f.execution.id, 1)) {
         f.database.recordScopedAgentTaskCompletion({ ...f.input, invocationId: input.invocationId, agentId: "one",
           callId: "agent-finished-but-provider-uncertain", requestedAt: NOW });
@@ -1195,85 +1223,24 @@ describe("scoped native execution and report checkpoint", () => {
       return { output: "Cannot settle my actual provider operation", reportHeadSha: HEAD, residentStopConfirmed: true as const };
     });
     const runner = new ScopedAgentExecutionRunner(f.database, f.git, { invoke }, () => f.root, { automaticCheckpoint: false });
-    for (let turn = 0; turn < 3; turn += 1) await expect(runner.prepareDelivery(f.input)).rejects.toThrow(/unsettled Git operations/);
-    expect(invoke).toHaveBeenCalledTimes(2);
-    expect(new Set(invocations).size).toBe(2);
-    expect(f.database.scopedAgentMechanismRepairCount("p", f.execution.id)).toBe(2);
-    expect(f.database.scopedExecution("p", f.execution.id)).toMatchObject({ status: "integrating", ownershipEpoch: 1 });
-    expect(f.database.scopedAgentReport("p", f.execution.id, 1)).toMatchObject({ invocationId, output: "Retained work" });
-    expect(f.database.projectState("p").operations.find((operation) => operation.id === "unsettled-original-operation")?.status).toBe("prepared");
-    expect(f.database.eventsAfter("p", 0).some((event) => event.type === "scoped.agent.failed")).toBe(false);
-    expect(f.git.checkpointAndPush).not.toHaveBeenCalled();
-    const issue = f.database.scopedGroupIssues("p").find((entry) => entry.kind === "mechanism")!;
-    expect(issue).toMatchObject({ executionId: f.execution.id, ownershipEpoch: 1 });
-    expect(f.database.scopedRecoveryCandidates("p", "run-G")).toMatchObject([{ executionId: f.execution.id,
-      incidentId: issue.id, kind: "mechanism", ownershipEpoch: 1 }]);
-    if (mode === "retain") {
-      f.database.close();
-      const restarted = CollaborationStateDatabase.open({ ...f.options, instanceId: "instance-b", now: () => 2_000_000 });
-      databases.push(restarted);
-      const manager = { projectId: "p", groupRunId: "run-G", agentId: "main", invocationId: "restarted-manager",
-        runtimePath: join(f.root, "runtime", "restarted-manager"), allowStoppedRepairFaults: true };
-      expect(restarted.scopedGroupIssues("p")).toEqual([issue]);
-      expect(restarted.claimScopedLeaderTurn(manager)).toBeUndefined();
-      const native = restarted.scopedAgentTurn("p", f.execution.id, 1)!;
-      restarted.reconcileScopedAgentTurn({ ...f.input, invocationId: native.invocationId, residentStopConfirmed: true,
-        evidence: { protocol: "scoped-supervisor-stop-v1", projectId: "p", scopeId: f.execution.id, agentId: "one",
-          role: "delivery", ownershipEpoch: 1, runtimePath: native.runtimePath, nativeProcessScanCleared: true } });
-      expect(restarted.claimScopedLeaderTurn(manager)).toBeDefined();
-      expect(restarted.scopedAgentMechanismRepairCount("p", f.execution.id)).toBe(2);
-      expect(restarted.scopedExecution("p", f.execution.id)).toMatchObject({ status: "integrating", ownershipEpoch: 1 });
-      expect(restarted.projectState("p").operations.find((entry) => entry.id === operation.id)?.status).toBe("prepared");
-      return;
-    }
-
-    const manager = { projectId: "p", groupRunId: "run-G", agentId: "main", invocationId: "manager-repair",
-      runtimePath: join(f.root, "runtime", "manager-repair") };
-    expect(f.database.claimScopedLeaderTurn(manager)).toBeUndefined();
-    // A fault exception never bypasses another related native owner, including
-    // a reservation that has not opened. It also keeps the original FIFO held.
-    const other = f.database.claimScopedAgentArrival({ projectId: "p", arrivalRequestId: f.group.arrivals[1]!.requestId,
-      agentId: "two", executionId: "other-live-execution", worktreePath: join(f.root, "git-worktrees", "agents", "two") })!.execution;
-    const otherTurn = { projectId: "p", executionId: other.id, ownershipEpoch: 1, invocationId: "other-native" };
-    f.database.beginScopedAgentTurn({ ...otherTurn, runtimePath: join(f.root, "runtime", "other-native"), baseCommit: BASE });
-    expect(f.database.claimScopedLeaderTurn({ ...manager, allowStoppedRepairFaults: true })).toBeUndefined();
-    f.database.markScopedAgentTurnOpened({ ...otherTurn, nativeProcessOpened: true });
-    expect(f.database.claimScopedLeaderTurn({ ...manager, allowStoppedRepairFaults: true })).toBeUndefined();
-    f.database.stopScopedAgentTurn({ ...otherTurn, residentStopConfirmed: true });
-    f.database.failScopedAgentArrival({ ...otherTurn, arrivalRequestId: other.arrivalRequestId,
-      reason: "Other actual native process stopped", residentStopConfirmed: true });
-
-    const claim = f.database.claimScopedLeaderTurn({ ...manager, allowStoppedRepairFaults: true })!;
-    expect(claim).toBeDefined();
-    const managerIdentity = { ...manager, coordinatorEpoch: claim.coordinatorEpoch };
-    f.database.markScopedLeaderOpened(managerIdentity);
-    const envelope = (action: import("../../src/core/types.js").ControlAction, callId: string) => ({ projectId: "p", agent: "main",
-      invocationId: manager.invocationId, callId, stateVersion: claim.coordinatorEpoch, capabilityHash: "a".repeat(64), receivedAt: NOW, action });
-    f.database.recordScopedLeaderTaskCompletion({ ...managerIdentity, envelope: envelope({ tool: "finish_task" }, "manager-own-finish") });
-    const retry = envelope({ tool: "coordinate_group_task", groupRunId: "run-G", coordinatorEpoch: claim.coordinatorEpoch,
-      arrivalRequestId: f.execution.arrivalRequestId, operation: "retry", rationale: "Inspect my retained provider operation" }, "manager-native-retry");
-    f.database.acceptScopedLeaderAction({ ...managerIdentity, envelope: retry, residentStopConfirmed: true });
-    expect(f.database.scopedAgentReportContinuation("p", f.execution.id, 1)).toBeUndefined();
-    await expect(runner.prepareDelivery(f.input)).rejects.toThrow(/management|Leader/);
-    expect(invoke).toHaveBeenCalledTimes(2);
-    f.database.releaseScopedLeaderTurn({ ...managerIdentity, residentStopConfirmed: true });
-    expect(f.database.scopedAgentReportContinuation("p", f.execution.id, 1)).toEqual({ incidentId: issue.id, envelope: retry });
-    if (mode === "retry_settles") {
-      expect(await runner.prepareDelivery(f.input)).toMatchObject({ output: "Retained work", ownershipEpoch: 1, expectedHeadSha: HEAD });
-      expect(f.database.scopedGroupIssues("p").some((entry) => entry.executionId === f.execution.id)).toBe(false);
-    } else {
-      await expect(runner.prepareDelivery(f.input)).rejects.toThrow(/unsettled Git operations/);
-      const nextIssue = f.database.scopedGroupIssues("p").find((entry) => entry.executionId === f.execution.id)!;
-      expect(nextIssue.id).not.toBe(issue.id);
-      expect(f.database.scopedRecoveryCandidates("p", "run-G").find((entry) => entry.incidentId === nextIssue.id)?.pendingOperation).toBeUndefined();
-      await expect(runner.prepareDelivery(f.input)).rejects.toThrow(/unsettled Git operations/);
-    }
+    const returned = await runner.prepareDelivery(f.input);
+    expect(returned.output).toContain("git_reconcile_push for retained operationId=unsettled-original-operation");
+    expect(returned.output).toContain("supervision ended (exhausted)");
     expect(invoke).toHaveBeenCalledTimes(3);
     expect(new Set(invocations).size).toBe(3);
-    expect(f.database.scopedAgentMechanismRepairCount("p", f.execution.id)).toBe(2);
-    expect(f.database.scopedExecution("p", f.execution.id)).toMatchObject({ status: "integrating", ownershipEpoch: 1 });
-    expect(f.database.scopedAgentReportContinuation("p", f.execution.id, 1)).toBeUndefined();
-    expect(f.database.eventsAfter("p", 0).filter((event) => event.type === "scoped.agent.coordinated_repair.requested")).toHaveLength(1);
+    expect(f.database.executionSupervisionRepairCount("p", f.execution.id)).toBe(3);
+    expect(f.database.scopedGroupIssues("p")).toEqual([]);
+    expect(f.database.recordedGitOperation("p", operation.id)?.status).toBe("prepared");
+    expect(f.database.scopedAgentReport("p", f.execution.id, 1)).toMatchObject({ invocationId, output: "Retained work" });
+    f.database.close();
+    const next = CollaborationStateDatabase.open({ ...f.options, instanceId: "next-writer", now: () => 2_000_000 }); databases.push(next);
+    const noWake = vi.fn();
+    const replay = await new ScopedAgentExecutionRunner(next, f.git, { invoke: noWake }, () => f.root,
+      { automaticCheckpoint: false }).prepareDelivery(f.input);
+    expect(replay.expectedHeadSha).toBe(HEAD);
+    expect(next.executionSupervisionRepairCount("p", f.execution.id)).toBe(3);
+    expect(next.recordedGitOperation("p", operation.id)?.status).toBe("prepared");
+    expect(noWake).not.toHaveBeenCalled();
     expect(f.git.checkpointAndPush).not.toHaveBeenCalled();
   });
 
@@ -1364,14 +1331,15 @@ describe("scoped native execution and report checkpoint", () => {
     next.beginScopedAgentTurn({ ...identity, runtimePath: join(f.root, "runtime", invocationId), baseCommit: BASE });
     next.markScopedAgentTurnOpened({ ...identity, nativeProcessOpened: true });
     expect(next.reserveScopedAgentMechanismRepair({ ...identity, missing: ["git_push", "finish_task"] })).toBe(2);
+    expect(next.reserveScopedAgentMechanismRepair({ ...identity, missing: ["finish_task"] })).toBe(3);
     const revision = next.projectState("p").stateRevision;
     expect(typeof revision).toBe("number");
     expect(next.reserveScopedAgentMechanismRepair({ ...identity, missing: ["finish_task"] })).toBeUndefined();
     expect(next.projectState("p").stateRevision).toBe(revision);
-    expect(next.scopedAgentMechanismRepairCount("p", retry.id)).toBe(2);
+    expect(next.scopedAgentMechanismRepairCount("p", retry.id)).toBe(3);
     const repairs = next.eventsAfter("p", 0).filter((event) => event.type === "scoped.agent.mechanism_repair.requested");
     expect(repairs.map((event) => [event.payload.ownershipEpoch, event.payload.attempt, event.payload.missing]))
-      .toEqual([[1, 1, ["finish_task"]], [2, 2, ["git_push", "finish_task"]]]);
+      .toEqual([[1, 1, ["finish_task"]], [2, 2, ["git_push", "finish_task"]], [2, 3, ["finish_task"]]]);
     expect(next.scopedAgentReport("p", retry.id, 2)).toBeUndefined();
     expect(next.scopedAgentTaskCompletion("p", retry.id, 2)).toBeUndefined();
     expect(next.scopedExecution("p", retry.id)?.status).toBe("running");
@@ -1530,33 +1498,29 @@ describe("scoped native execution and report checkpoint", () => {
       String(event.payload.reason).includes("finish_task"))).toBe(true);
   });
 
-  it("records a mechanism issue after finite no-progress repairs without a Git operation", async () => {
+  it("returns a report after three no-progress supplements without creating a recovery issue", async () => {
     const f = await fixture(false, { complete: false });
     const runner = new ScopedAgentExecutionRunner(f.database, f.git, f.invoker, () => f.root, { automaticCheckpoint: false });
-
-    await expect(runner.prepareDelivery(f.input)).rejects.toThrow(/finish_task/);
-    expect(f.database.scopedAgentMechanismRepairCount("p", f.execution.id)).toBe(1);
-    const retry = f.database.retryScopedAgentArrival({ projectId: "p", executionId: f.execution.id,
-      arrivalRequestId: f.execution.arrivalRequestId, failedOwnershipEpoch: 1 })!.execution;
-
-    await expect(runner.prepareDelivery({ ...f.input, ownershipEpoch: retry.ownershipEpoch })).rejects.toThrow(/finish_task/);
-    expect(f.database.scopedAgentMechanismRepairCount("p", f.execution.id)).toBe(2);
-    expect(f.database.scopedExecutionHasUnsettledGitOperation("p", f.execution.id, retry.ownershipEpoch)).toBe(false);
-    expect(f.database.scopedGroupIssues("p")).toMatchObject([{ kind: "mechanism", executionId: f.execution.id,
-      ownershipEpoch: retry.ownershipEpoch }]);
-    expect(f.database.scopedExecution("p", f.execution.id)).toMatchObject({ status: "integrating", ownershipEpoch: retry.ownershipEpoch });
-    expect(f.database.eventsAfter("p", 0).filter((event) => event.type === "scoped.agent.failed")).toHaveLength(1);
-    expect(() => f.database.retryScopedAgentArrival({ projectId: "p", executionId: f.execution.id,
-      arrivalRequestId: f.execution.arrivalRequestId, failedOwnershipEpoch: retry.ownershipEpoch })).toThrow(/failed work/);
+    const result = await runner.prepareDelivery(f.input);
+    expect(result.output).toContain("supervision ended (exhausted)");
+    expect(result.output).toContain("finish_task; git_push");
+    expect(f.invoker.invoke).toHaveBeenCalledTimes(4);
+    expect(f.database.executionSupervisionRepairCount("p", f.execution.id)).toBe(3);
+    expect(f.database.scopedGroupIssues("p")).toEqual([]);
+    expect(f.database.eventsAfter("p", 0).filter(event => event.type === "scoped.agent.failed")).toEqual([]);
+    expect(f.database.scopedAgentTaskCompletion("p", f.execution.id, 1)).toBeUndefined();
+    expect(f.git.checkpointAndPush).not.toHaveBeenCalled();
   });
 
-  it("fails an Agent-owned delivery when the turn finishes without an explicit git_push", async () => {
+  it("returns actual missing push facts without failing the Agent-owned task", async () => {
     const { database, root, invoker, input, execution, git } = await fixture();
     const runner = new ScopedAgentExecutionRunner(database, git, invoker, () => root, { automaticCheckpoint: false });
-    await expect(runner.prepareDelivery(input)).rejects.toThrow(/git_push/);
+    const result = await runner.prepareDelivery(input);
+    expect(result.output).toContain("git_push");
+    expect(database.executionSupervisionRepairCount("p", execution.id)).toBe(3);
     expect(database.scopedAgentTaskCompleted("p", execution.id, 1)).toBe(true);
     expect(database.scopedAgentReport("p", execution.id, 1)).toMatchObject({ output: "Committed work and report" });
-    expect(database.scopedExecution("p", execution.id)?.status).toBe("failed");
+    expect(database.scopedExecution("p", execution.id)?.status).toBe("integrating");
     expect(git.checkpointAndPush).not.toHaveBeenCalled();
   });
 
@@ -1720,9 +1684,9 @@ describe("scoped native resident composition", () => {
     expect(submissions).toHaveLength(2);
     expect(submissions.map((turn) => turn.invocationId)).toEqual([input.invocationId, input.invocationId]);
     expect(submissions.map((turn) => turn.inputId)).toEqual([
-      "scoped:arrival-one:epoch:1", "scoped:arrival-one:epoch:1:mechanism-repair:2"
+      "scoped:arrival-one:epoch:1", "scoped:exec-one:supervision:2"
     ]);
-    expect(submissions[1].prompt).toContain("retained session and directory");
+    expect(submissions[1].prompt).toContain("original task in this session and directory");
     expect(submissions[1].prompt).toContain("finish_task");
   });
 
@@ -1757,17 +1721,24 @@ describe("scoped native resident composition", () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  it("does not assert a stop proof or accept a result when native close fails", async () => {
+  it("retires a returned native task without asserting stop when cleanup fails", async () => {
     const input = nativeInput();
-    const acceptResult = vi.fn();
+    const acceptResult = vi.fn(async () => ({ output: "finished model turn" }));
+    const onRetired = vi.fn(), onClosed = vi.fn();
+    const submit = vi.fn(async () => ({ handoff: "finished model turn" }));
+    const close = vi.fn(async () => { throw new Error("process still alive"); });
     const open = vi.fn(async (request: CollaborationResidentOpenInput) => {
       await request.onOpened?.();
-      return { submit: vi.fn(async () => ({ handoff: "finished model turn" })),
-        close: vi.fn(async () => { throw new Error("process still alive"); }), pause: vi.fn(), resume: vi.fn() };
+      return { submit, close, pause: vi.fn(), resume: vi.fn() };
     });
-    const invoker = new ResidentScopedAgentTurnInvoker({ open }, { prepare: async () => openInput(input), acceptResult });
-    await expect(invoker.invoke(input)).rejects.toMatchObject({ residentStopConfirmed: false });
-    expect(acceptResult).not.toHaveBeenCalled();
+    const invoker = new ResidentScopedAgentTurnInvoker({ open }, {
+      prepare: async () => openInput(input), acceptResult, onRetired, onClosed });
+    await expect(invoker.invoke(input)).resolves.toEqual({ output: "finished model turn", residentStopConfirmed: false });
+    expect(acceptResult).toHaveBeenCalledOnce();
+    expect(onRetired).toHaveBeenCalledWith(input, false, "process still alive");
+    expect(onClosed).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("keeps a bounded redacted failure reason only after native stop is confirmed", async () => {

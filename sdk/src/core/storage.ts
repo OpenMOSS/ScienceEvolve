@@ -1,7 +1,6 @@
 import { archivedWorkflowSessionMatches, validArchivedWorkflowAgentSessions } from "./workflow-session-archive.js";
 import {
   closeSync,
-  createReadStream,
   fstatSync,
   ftruncateSync,
   lstatSync,
@@ -20,7 +19,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import { AgentContextSources, publishAgentContextIndex, type AgentContextSource, type AgentContextIndex } from "./agent-context-index.js";
-import readline from "node:readline";
+import { EventLogIndex } from "./event-log-index.js";
+import { compactWorkflowReplayEvent, isWorkflowReplayEvent } from "./workflow-replay.js";
 import { MAIN_AGENT_ORCHESTRATION_CURRENT_FILE, MAIN_AGENT_ORCHESTRATION_FILE } from "./main-workflow-files.js";
 import { ProjectFileBrowser } from "./project-file-browser.js";
 import type {
@@ -42,7 +42,7 @@ import type {
 import { EventHub } from "./event-hub.js";
 import type { ScopedWorktreeClosingCompletionRecord, TerminalPushObservationCompletionRecord, TerminalPushCoordinatorTurn } from "./collaboration-state/contracts.js";
 import { validateProjectDirectoryAliases } from "./project-directory-aliases.js";
-import { publishProjectStateDocumentView, readOnlyProjectStateDocuments, type ProjectStateDocument, type ProjectStateDocumentStore } from "./project-state-documents.js";
+import { mergeProjectCheckpoint, prepareProjectStateDocumentView, prepareProjectStateDocumentViewSync, publishProjectStateDocumentView, readOnlyProjectStateDocuments, type ProjectStateDocument, type ProjectStateDocumentStore } from "./project-state-documents.js";
 import { buildWorkspaceManifest, type WorkspaceFileStamp, type WorkspaceManifest } from "./workspace-checkpoint.js";
 import { validateSessionRef } from "./harness-runtime/session-ref.js";
 import { agentDefinitionFor, SYSTEM_CONTROLLER_AGENT } from "./system-controller.js";
@@ -149,6 +149,7 @@ export interface InvocationCommitOptions {
 export interface EventBootstrap {
   events: TimelineEvent[];
   timelineEvents: TimelineEvent[];
+  timelineHasMore: boolean;
   totalEvents: number;
   lastSeq: number;
 }
@@ -289,12 +290,6 @@ function compactTimelineEvent(event: TimelineEvent): TimelineEvent {
   };
 }
 
-function orderedRing<T>(ring: T[], total: number, capacity: number): T[] {
-  if (total <= capacity) return ring.slice(0, total);
-  const start = total % capacity;
-  return [...ring.slice(start), ...ring.slice(0, start)];
-}
-
 export interface ProjectStorageOptions {
   projectDirectoryAliases?: Readonly<Record<string, string>>;
   /** Trusted SDK host binding only; never supplied by workflow/HTTP input. */
@@ -306,7 +301,15 @@ export class PublishedArtifactIntegrityError extends Error {
     readonly expected: { size: number; sha256?: string }, readonly actual?: { size: number; sha256: string }) { super(message); }
 }
 
+interface PendingCheckpoint {
+  base: unknown;
+  submitted: unknown;
+  settled: Promise<void>;
+}
+
 export class ProjectStorage {
+  private readonly eventLogs = new EventLogIndex(isAgentTimelineEvent);
+  private readonly workflowReplayLogs = new EventLogIndex(isWorkflowReplayEvent);
   private contextIndexPublisher?: (input: { projectId: string; projectPath: string; inboxPath: string; sources: readonly AgentContextSource[] }) => Promise<AgentContextIndex | undefined>;
 
   configureContextIndexPublisher(publish: NonNullable<ProjectStorage["contextIndexPublisher"]>): void {
@@ -316,6 +319,10 @@ export class ProjectStorage {
   private readOnlyProjectStateStore?: ProjectStateDocumentStore;
   private readonly activeCommits = new Map<string, ActiveInvocationCommit>();
   private readonly activeMutations = new Map<string, ActiveProjectMutation>();
+  private readonly eventAppendSnapshots = new Map<string, { size: number; pending: number }>();
+  private readonly formalDocumentWrites = new Map<string, Promise<void>>();
+  private readonly checkpointBases = new WeakMap<object, unknown>();
+  private readonly checkpointWrites = new WeakMap<object, PendingCheckpoint[]>();
   private readonly projectEpochs = new Map<string, number>();
   private readonly workspacePreparations = new Map<string, Promise<string>>();
   private readonly artifactCatalogReads = new Map<string, Promise<ArtifactListItem[]>>();
@@ -353,14 +360,14 @@ export class ProjectStorage {
     return this.readOnlyProjectStateStore;
   }
 
-  configureProjectStateStore(store: ProjectStateDocumentStore): void {
+  async configureProjectStateStore(store: ProjectStateDocumentStore): Promise<void> {
     if (store.source) {
       const source = { ...store.source, databasePath: path.resolve(store.source.databasePath) };
       const prior = this.readProjectStateSource();
       if (prior && !isDeepStrictEqual(prior, source)) throw new Error("Formal state source cannot be silently redirected");
       if (!prior) {
         mkdirSync(this.root, { recursive: true });
-        this.atomicJsonSync(path.join(this.root, "project-state-source.json"), source);
+        await this.writeJsonDocument(path.join(this.root, "project-state-source.json"), source);
       }
     }
     this.configuredProjectStateStore = store;
@@ -386,8 +393,8 @@ export class ProjectStorage {
             (previous && (physicalInfo.dev !== previous.dev || physicalInfo.ino !== previous.ino))) {
           throw new Error("Project alias must refer to the same physical project directory");
         }
-        const formal = this.projectStateStore?.domain(projectId);
-        const state = formal ? this.projectStateStore!.read(projectId, "project.checkpoint")?.value
+        const formal = await this.projectStateStore?.domain(projectId);
+        const state = formal ? (await this.projectStateStore!.read(projectId, "project.checkpoint"))?.value
           : JSON.parse(await fs.readFile(path.join(physical, "state.json"), "utf8")) as unknown;
         // The existing state loader retains its version/session checks. A
         // directory mapping only verifies registration and physical identity.
@@ -518,6 +525,11 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
 `;
   }
 
+  /** Register an already-read checkpoint before recovery mutates its live object. */
+  trackCheckpoint(state: ProjectState): void {
+    if (!this.checkpointBases.has(state)) this.checkpointBases.set(state, JSON.parse(JSON.stringify(state)));
+  }
+
   async saveState(state: ProjectState, beforeCommit?: () => void): Promise<void> {
     await this.mutateProject(state.id, async () => {
       beforeCommit?.();
@@ -544,8 +556,8 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
    * workflow. Normal project loading retains its existing format checks. */
   async readStateSnapshot(projectId: string): Promise<unknown> {
     this.assertProjectId(projectId);
-    const domain = this.projectStateStore?.domain(projectId);
-    return domain ? this.projectStateStore!.read(projectId, "project.checkpoint")?.value
+    const domain = await this.projectStateStore?.domain(projectId);
+    return domain ? (await this.projectStateStore!.read(projectId, "project.checkpoint"))?.value
       : JSON.parse(await fs.readFile(path.join(this.projectDir(projectId), "state.json"), "utf8")) as unknown;
   }
 
@@ -554,6 +566,22 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     if (!isCurrentMainProjectState(value)) {
       throw new IncompatibleProjectStateError(projectId);
     }
+    const eventsPath = path.join(this.projectDir(projectId), "events.jsonl");
+    let size = this.eventAppendSnapshots.get(projectId)?.size;
+    if (size === undefined) {
+      try { size = (await fs.stat(eventsPath)).size; }
+      catch (error) {
+        // A newly registered project can precede its first diagnostic log.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" && value.eventSeq === 0) {
+          this.checkpointBases.set(value, structuredClone(value));
+          return value;
+        }
+        throw error;
+      }
+    }
+    const events = await this.eventLogs.snapshot(eventsPath, size);
+    value.eventSeq = Math.max(value.eventSeq, events.lastSeq);
+    this.checkpointBases.set(value, structuredClone(value));
     return value;
   }
 
@@ -741,6 +769,8 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       }
       await fs.rm(this.projectDir(projectId), { recursive: true, force: false });
     });
+    this.eventLogs.forget(path.join(this.projectDir(projectId), "events.jsonl"));
+    this.workflowReplayLogs.forget(path.join(this.projectDir(projectId), "events.jsonl"));
     this.workspacePreparations.delete(projectId);
     this.projectEpochs.delete(projectId);
   }
@@ -785,9 +815,12 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   ): Promise<number | undefined> {
     const eventsPath = path.join(this.projectDir(projectId), "events.jsonl");
     while (!signal?.aborted) {
-      await this.waitForProjectReadBarrier(projectId, signal);
+      // Invocation rollback can truncate the log. Other project writes need
+      // not hold up a reader of an already committed event prefix.
+      await this.waitForInvocationCommit(projectId, signal);
       if (signal?.aborted) return undefined;
-      const epoch = this.projectEpoch(projectId);
+      const pending = this.eventAppendSnapshots.get(projectId);
+      if (pending) return pending.size;
       let outcome:
         | { ok: true; size: number }
         | { ok: false; error: unknown };
@@ -796,15 +829,11 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       } catch (error) {
         outcome = { ok: false, error };
       }
-      if (
-        epoch !== this.projectEpoch(projectId) ||
-        this.activeCommits.has(projectId) ||
-        this.activeMutations.has(projectId)
-      ) {
-        continue;
-      }
+      if (this.activeCommits.has(projectId)) continue;
       if (!outcome.ok) throw outcome.error;
-      return outcome.size;
+      // An append may have begun while stat was in flight. Its starting
+      // offset excludes its bytes until persistence and publication finish.
+      return this.eventAppendSnapshots.get(projectId)?.size ?? outcome.size;
     }
     return undefined;
   }
@@ -828,24 +857,8 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   async reconcileEventLog(state: ProjectState): Promise<void> {
     const eventsPath = path.join(this.projectDir(state.id), "events.jsonl");
     await this.trimResidualJsonlTail(eventsPath);
-    const raw = await fs.readFile(eventsPath, "utf8");
-    let maxSeq = 0;
-    for (const line of raw.split("\n")) {
-      if (!line) continue;
-      try {
-        const parsed = JSON.parse(line) as { seq?: unknown };
-        if (
-          typeof parsed.seq === "number" &&
-          Number.isSafeInteger(parsed.seq) &&
-          parsed.seq > maxSeq
-        ) {
-          maxSeq = parsed.seq;
-        }
-      } catch {
-        // A complete but malformed historical line does not contribute a seq.
-      }
-    }
-    state.eventSeq = Math.max(state.eventSeq, maxSeq);
+    const snapshot = await this.eventLogs.snapshot(eventsPath, (await fs.stat(eventsPath)).size);
+    state.eventSeq = Math.max(state.eventSeq, snapshot.lastSeq);
   }
 
   async appendEvent(state: ProjectState, draft: ProjectEventDraft, beforeCommit?: () => void): Promise<TimelineEvent> {
@@ -854,24 +867,41 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
 
   /** Preserve every original event and sequence, sharing log appends and the
    * checkpoint write across a bounded batch. Publication follows persistence. */
-  async appendEvents(state: ProjectState, drafts: readonly ProjectEventDraft[], beforeCommit?: () => void): Promise<TimelineEvent[]> {
+  async appendEvents(state: ProjectState, drafts: readonly ProjectEventDraft[], beforeCommit?: () => void,
+    options: { checkpoint?: boolean } = {}): Promise<TimelineEvent[]> {
     if (!drafts.length) return [];
     if (drafts.length > 128) throw new Error("Project event batch exceeds 128 events");
-    return this.mutateProject(state.id, () => this.appendEventsUntracked(state, drafts, beforeCommit));
+    if (options.checkpoint === false && drafts.some(draft => draft.type !== "agent.trace")) {
+      throw new Error("Only diagnostic Agent traces may defer their project checkpoint");
+    }
+    return this.mutateProject(state.id, async () => {
+      beforeCommit?.();
+      let snapshot = this.eventAppendSnapshots.get(state.id);
+      if (!snapshot) {
+        // Repair and capture the committed prefix before the first async
+        // yield; readers must never include an unfinished append.
+        const size = this.trimResidualJsonlTailSync(path.join(this.projectDir(state.id), "events.jsonl"));
+        snapshot = { size, pending: 0 };
+        this.eventAppendSnapshots.set(state.id, snapshot);
+      }
+      snapshot.pending++;
+      try { return await this.appendEventsUntracked(state, drafts, beforeCommit,
+        options.checkpoint !== false || this.activeCommits.has(state.id)); }
+      finally {
+        if (--snapshot.pending === 0) this.eventAppendSnapshots.delete(state.id);
+      }
+    });
   }
 
   private async appendEventsUntracked(
     state: ProjectState,
     drafts: readonly ProjectEventDraft[],
-    beforeCommit?: () => void
+    beforeCommit?: () => void,
+    checkpoint = true
   ): Promise<TimelineEvent[]> {
     beforeCommit?.();
     const projectDir = this.projectDir(state.id);
     const eventsPath = path.join(projectDir, "events.jsonl");
-    // Keep the repair before the first async yield. Besides making the
-    // repair+append ordering explicit, callers cannot observe the in-memory
-    // "agent started" transition before the matching event append is issued.
-    this.trimResidualJsonlTailSync(eventsPath);
     state.updatedAt = nowIso();
     const events = drafts.map((draft): TimelineEvent => ({
       id: newId("evt"),
@@ -915,7 +945,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       "utf8"
     );
     beforeCommit?.();
-    await this.atomicJson(path.join(projectDir, "state.json"), state, beforeCommit);
+    if (checkpoint) await this.atomicJson(path.join(projectDir, "state.json"), state, beforeCommit);
     if (
       drafts.some(draft => draft.type === "project.config.updated" || draft.type === "workflow.reconfigured")
     ) {
@@ -930,7 +960,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     if (activeCommit) {
       activeCommit.bufferedEvents.push(...events);
     } else {
-      for (const event of events) this.hub.publish(event);
+      for (const event of events) await this.hub.publish(event);
     }
     return events;
   }
@@ -954,23 +984,16 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     limit = 1_000
   ): Promise<EventBootstrap> {
     const boundedLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
-    const recent = new Array<TimelineEvent>(boundedLimit);
-    const timelineEvents: TimelineEvent[] = [];
-    let totalEvents = 0;
-    let lastSeq = 0;
-    await this.replayEvents(projectId, 0, (event) => {
-      recent[totalEvents % boundedLimit] = event;
-      totalEvents += 1;
-      lastSeq = Math.max(lastSeq, event.seq);
-      if (isAgentTimelineEvent(event)) {
-        timelineEvents.push(compactTimelineEvent(event));
-      }
-    });
+    const size = await this.stableEventSnapshotSize(projectId) ?? 0;
+    const snapshot = await this.eventLogs.snapshot(path.join(this.projectDir(projectId), "events.jsonl"), size);
+    const recent = await this.eventLogs.page(snapshot, Infinity, boundedLimit);
+    const timeline = await this.eventLogs.timelinePage(snapshot, Infinity, 200);
     return {
-      events: orderedRing(recent, totalEvents, boundedLimit),
-      timelineEvents,
-      totalEvents,
-      lastSeq
+      events: recent.events,
+      timelineEvents: timeline.events.map(compactTimelineEvent),
+      timelineHasMore: timeline.hasMore,
+      totalEvents: snapshot.totalEvents,
+      lastSeq: snapshot.lastSeq
     };
   }
 
@@ -980,17 +1003,26 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     limit = 1_000
   ): Promise<EventHistoryPage> {
     const boundedLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
-    const recent = new Array<TimelineEvent>(boundedLimit);
-    let matchingEvents = 0;
-    await this.replayEvents(projectId, 0, (event) => {
-      if (event.seq >= beforeSeq) return;
-      recent[matchingEvents % boundedLimit] = event;
-      matchingEvents += 1;
-    });
-    return {
-      events: orderedRing(recent, matchingEvents, boundedLimit),
-      hasMore: matchingEvents > boundedLimit
-    };
+    const size = await this.stableEventSnapshotSize(projectId) ?? 0;
+    const snapshot = await this.eventLogs.snapshot(path.join(this.projectDir(projectId), "events.jsonl"), size);
+    return this.eventLogs.page(snapshot, beforeSeq, boundedLimit);
+  }
+
+  async readTimelineHistory(projectId: string, beforeSeq: number, limit = 200): Promise<EventHistoryPage> {
+    const boundedLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
+    const size = await this.stableEventSnapshotSize(projectId) ?? 0;
+    const snapshot = await this.eventLogs.snapshot(path.join(this.projectDir(projectId), "events.jsonl"), size);
+    const page = await this.eventLogs.timelinePage(snapshot, beforeSeq, boundedLimit);
+    return { events: page.events.map(compactTimelineEvent), hasMore: page.hasMore };
+  }
+
+  async readWorkflowReplayHistory(projectId: string, input: { before?: number; through?: number; limit: number }) {
+    const size = await this.stableEventSnapshotSize(projectId) ?? 0;
+    const snapshot = await this.workflowReplayLogs.snapshot(path.join(this.projectDir(projectId), "events.jsonl"), size);
+    const throughSeq = input.through ?? snapshot.lastSeq;
+    if (throughSeq > snapshot.lastSeq) throw new Error("Workflow replay event boundary no longer exists");
+    const page = await this.workflowReplayLogs.timelinePage(snapshot, Math.min(input.before ?? Infinity, throughSeq + 1), input.limit);
+    return { events: page.events.map(compactWorkflowReplayEvent), hasMore: page.hasMore, throughSeq };
   }
 
   async replayEvents(
@@ -1003,35 +1035,8 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     if (signal?.aborted || snapshotSize === undefined || snapshotSize === 0) {
       return;
     }
-    const input = createReadStream(
-      path.join(this.projectDir(projectId), "events.jsonl"),
-      { encoding: "utf8", start: 0, end: snapshotSize - 1 }
-    );
-    const lines = readline.createInterface({
-      input,
-      crlfDelay: Infinity
-    });
-    try {
-      for await (const line of lines) {
-        if (signal?.aborted) break;
-        if (!line) continue;
-        let event: TimelineEvent;
-        try {
-          event = JSON.parse(line) as TimelineEvent;
-        } catch {
-          // Ignore malformed historical lines; startup reconciliation removes
-          // the common partial-tail case before projects are served.
-          continue;
-        }
-        if (event.seq > afterSeq) {
-          const shouldContinue = await visit(event);
-          if (shouldContinue === false) break;
-        }
-      }
-    } finally {
-      lines.close();
-      input.destroy();
-    }
+    const snapshot = await this.eventLogs.snapshot(path.join(this.projectDir(projectId), "events.jsonl"), snapshotSize);
+    await this.eventLogs.replay(snapshot, afterSeq, visit, signal);
   }
 
   async beginInvocationCommit(
@@ -1046,6 +1051,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
         `Project ${state.id} already has active invocation commit ${current.invocationId}`
       );
     }
+    this.trackCheckpoint(state);
     const stateBefore = structuredClone(state);
     const transactionDir = this.transactionDir(state.id, invocationId);
     const existingJournal = await this.tryReadCommitJournal(
@@ -1140,7 +1146,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       // The control check and durable marker installation are one synchronous
       // event-loop turn. A pause/cancel therefore linearizes either before
       // this marker (and forces rollback) or after the committed result.
-      this.atomicJsonSync(
+      await this.writeJsonDocument(
         path.join(transactionDir, "journal.json"),
         journal
       );
@@ -1152,7 +1158,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     active?.resolveSettled();
     for (const event of bufferedEvents) {
       try {
-        this.hub.publish(event);
+        await this.hub.publish(event);
       } catch {
         // A listener cannot make an already-durable commit fail or prevent
         // later buffered events from reaching other subscribers.
@@ -1241,8 +1247,8 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
         this.projectDir(project.name),
         ".transactions"
       );
-      const formalJournal = this.projectStateStore?.domain(project.name)
-        ? this.projectStateStore.read(project.name, "invocation.commit")?.value as InvocationCommitJournal | null : undefined;
+      const formalJournal = (await this.projectStateStore?.domain(project.name))
+        ? (await this.projectStateStore!.read(project.name, "invocation.commit"))?.value as InvocationCommitJournal | null : undefined;
       if (formalJournal?.status === "in_progress") {
         const directory = this.transactionDir(project.name, formalJournal.invocationId);
         if (!(await fs.stat(directory).catch(() => undefined))?.isDirectory())
@@ -1324,7 +1330,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     projectId: string,
     fileName: string,
     document: unknown,
-    isCurrent?: () => boolean,
+    isCurrent?: () => boolean | Promise<boolean>,
     invocationId = "inv_agent_orchestration_snapshot"
   ): Promise<string> {
     const filePath = await this.mainAgentOrchestrationSnapshotPath(projectId, fileName, invocationId);
@@ -1346,14 +1352,14 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
 
   /** Update the authoritative read reference after publication/recovery without
    * creating, reading, replacing or rebasing Main's authoring file. */
-  async writeMainAgentOrchestrationCurrentSnapshot(projectId: string, document: unknown, isCurrent?: () => boolean): Promise<void> {
+  async writeMainAgentOrchestrationCurrentSnapshot(projectId: string, document: unknown, isCurrent?: () => boolean | Promise<boolean>): Promise<void> {
     const workspace = path.dirname(await this.mainAgentOrchestrationSnapshotPath(projectId, MAIN_AGENT_ORCHESTRATION_FILE, "inv_workflow_current_snapshot"));
     await this.writeMainWorkflowCurrentReference(workspace, `${JSON.stringify(document, null, 2)}\n`, isCurrent);
   }
 
   /** The coordinator supplies its already assigned canonical management cwd;
    * this never creates a worktree or chooses a new Agent/task workspace. */
-  async writeManagementWorkflowCurrentSnapshot(workspace: string, document: unknown, isCurrent?: () => boolean): Promise<void> {
+  async writeManagementWorkflowCurrentSnapshot(workspace: string, document: unknown, isCurrent?: () => boolean | Promise<boolean>): Promise<void> {
     if (path.resolve(workspace) !== workspace || await fs.realpath(workspace) !== workspace || !(await fs.lstat(workspace)).isDirectory())
       throw new Error("Management workflow reference requires its original canonical workspace");
     await this.writeMainWorkflowCurrentReference(workspace, `${JSON.stringify(document, null, 2)}\n`, isCurrent);
@@ -1365,12 +1371,12 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       throw new Error("Main's workflow document is not a canonical regular file");
   }
 
-  private async writeMainWorkflowCurrentReference(workspace: string, content: string, isCurrent?: () => boolean): Promise<void> {
+  private async writeMainWorkflowCurrentReference(workspace: string, content: string, isCurrent?: () => boolean | Promise<boolean>): Promise<void> {
     const previous = this.workflowReferenceWrites.get(workspace) ?? Promise.resolve();
     const write = previous.catch(() => undefined).then(async () => {
       // Read the real journal only after earlier writes finish. An old Main
       // preparation must not overwrite a newer publication's reference.
-      if (isCurrent && !isCurrent()) return;
+      if (isCurrent && !(await isCurrent())) return;
       await this.writeMainWorkflowCurrentFile(workspace, content, isCurrent);
     });
     this.workflowReferenceWrites.set(workspace, write);
@@ -1378,7 +1384,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     finally { if (this.workflowReferenceWrites.get(workspace) === write) this.workflowReferenceWrites.delete(workspace); }
   }
 
-  private async writeMainWorkflowCurrentFile(workspace: string, content: string, isCurrent?: () => boolean): Promise<void> {
+  private async writeMainWorkflowCurrentFile(workspace: string, content: string, isCurrent?: () => boolean | Promise<boolean>): Promise<void> {
     const currentPath = path.join(workspace, MAIN_AGENT_ORCHESTRATION_CURRENT_FILE);
     const referenceDirectory = path.dirname(currentPath);
     try { await fs.mkdir(referenceDirectory, { mode: 0o700 }); }
@@ -1390,7 +1396,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     const staleReference = new Error("Stale current workflow reference");
     try {
-      await this.atomicText(currentPath, content, () => { if (isCurrent && !isCurrent()) throw staleReference; });
+      await this.atomicText(currentPath, content, async () => { if (isCurrent && !(await isCurrent())) throw staleReference; });
     } catch (error) {
       if (error !== staleReference) throw error;
     }
@@ -1457,75 +1463,31 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     return path.join(this.projectDir(projectId), "runtime", "task-completions", `${createHash("sha256").update(taskId).digest("hex")}.json`);
   }
 
-  async requestTaskCompletion(state: ProjectState, taskId: string, envelope: ControlActionEnvelope,
-    options: { executionWorktree?: string } = {}): Promise<TaskCompletionRecord> {
+  async requestTaskCompletion(state: ProjectState, taskId: string, envelope: ControlActionEnvelope): Promise<TaskCompletionRecord> {
     if (envelope.action.tool !== "finish_task" || envelope.projectId !== state.id || !taskId) throw new Error("Task completion identity is invalid");
     const action = envelope.action;
     for (const content of [action.summary, action.memory]) {
       if (content !== undefined && (typeof content !== "string" || !content.trim() || content.length > 100_000)) throw new Error("Task completion content is invalid");
     }
-    return this.mutateProject(state.id, async () => {
+    return await this.mutateProject(state.id, async () => {
       const receiptPath = this.taskCompletionPath(state.id, taskId);
       let existing: TaskCompletionRecord | undefined;
       try { existing = JSON.parse(await fs.readFile(receiptPath, "utf8")) as TaskCompletionRecord; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       if (existing) {
         if (existing.agent !== envelope.agent || existing.taskId !== taskId) throw new Error("Task completion belongs to another Agent/task");
-        if (options.executionWorktree) await this.saveGitTaskMemory(state.id, taskId, envelope.agent,
-          existing.memory ?? existing.summary, options.executionWorktree);
         state.taskCompletions = { ...state.taskCompletions, [taskId]: existing };
         return existing;
       }
       const record: TaskCompletionRecord = { taskId, agent: envelope.agent, invocationId: envelope.invocationId,
         callId: envelope.callId, requestedAt: envelope.receivedAt, status: "requested",
         ...(action.summary ? { summary: action.summary } : {}), ...(action.memory ? { memory: action.memory } : {}) };
-      if (options.executionWorktree) record.memoryPath = await this.saveGitTaskMemory(state.id, taskId,
-        envelope.agent, action.memory ?? action.summary, options.executionWorktree);
-      else if (action.memory) record.memoryPath = (await this.saveRoleMemorySnapshot(state.id, envelope.agent,
-        action.memory, { runtimeOnly: state.git?.enabled === true })).path;
       await fs.mkdir(path.dirname(receiptPath), { recursive: true, mode: 0o700 });
       await this.atomicJson(receiptPath, record);
       state.taskCompletions = { ...state.taskCompletions, [taskId]: record };
       await this.atomicJson(path.join(this.projectDir(state.id), "state.json"), state);
       return record;
     });
-  }
-
-  /** Save exactly the Agent-authored logical-task record in its actual Git
-   * worktree. Repeated finish_task calls reuse it; Git publication remains an
-   * explicit Agent action and includes this file like every other file. */
-  private async saveGitTaskMemory(projectId: string, taskId: string, agent: string,
-    content: string | undefined, worktree: string): Promise<string> {
-    if (!content?.trim()) throw new Error("This Git task must update its Memory before completion. Supply your verified task memory or summary to finish_task, then stage, commit and deliver the work record with the other workspace files.");
-    if (!/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u.test(agent)) throw new Error("Agent memory identity is invalid");
-    const root = await fs.realpath(worktree);
-    this.assertDescendant(await fs.realpath(this.projectDir(projectId)), root, "Git task workspace");
-    const directory = path.join(root, "agent-memory", agent);
-    for (const parent of [path.dirname(directory), directory]) {
-      await fs.mkdir(parent, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
-      if (!(await fs.lstat(parent)).isDirectory() || await fs.realpath(parent) !== parent) throw new Error("Git task memory directory is not canonical");
-    }
-    const target = path.join(directory, "Memory.md");
-    let previous = "";
-    try {
-      const info = await fs.lstat(target);
-      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error("Git task Memory must be a regular file");
-      previous = await fs.readFile(target, "utf8");
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    const marker = `<!-- ScienceEvolve task memory ${createHash("sha256").update(taskId).digest("hex")} -->`;
-    if (!previous.split("\n").includes(marker)) await this.atomicText(target,
-      `${previous}${previous && !previous.endsWith("\n") ? "\n" : ""}\n${marker}\n## Task ${taskId}\n\n${content.trim()}\n`);
-    return target;
-  }
-
-  /** Rehydrate an existing Agent-authored record when upgrading a paused
-   * task. Preserve its immutable receipt and never invent replacement text. */
-  async synchronizeGitTaskMemory(state: ProjectState, taskId: string, agent: string, worktree: string): Promise<void> {
-    const record = state.taskCompletions?.[taskId];
-    if (!record) return;
-    if (record.agent !== agent) throw new Error("Git task memory belongs to another Agent");
-    await this.mutateProject(state.id, () => this.saveGitTaskMemory(state.id, taskId, agent,
-      record.memory ?? record.summary, worktree).then(() => undefined));
   }
 
   /** Materialize an already accepted S receipt. The contents are authored by
@@ -1536,7 +1498,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   }> {
     this.assertInvocationId(record.invocationId);
     if (!record.executionId || !record.operationId || !record.originalInvocationId ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(record.agentId) ||
+      !/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u.test(record.agentId) ||
       !Number.isSafeInteger(record.ownershipEpoch) || record.ownershipEpoch < 1 ||
       !Number.isSafeInteger(record.writerLeaseEpoch) || record.writerLeaseEpoch < 1 ||
       !/^[a-f0-9]{64}$/.test(record.capabilityHash) ||
@@ -1555,7 +1517,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   }> {
     this.assertInvocationId(record.invocationId);
     if (!record.executionId || !record.grantInvocationId || !record.grantCallId ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(record.agentId) || !/^[a-f0-9]{40}$/i.test(record.reportHeadSha) ||
+      !/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u.test(record.agentId) || !/^[a-f0-9]{40}$/i.test(record.reportHeadSha) ||
       !validateSessionRef(record.originalSession).valid || record.originalSession.durable !== true ||
       !Number.isSafeInteger(record.ownershipEpoch) || record.ownershipEpoch < 1 ||
       !Number.isSafeInteger(record.writerLeaseEpoch) || record.writerLeaseEpoch < 1 || !/^[a-f0-9]{64}$/.test(record.capabilityHash) ||
@@ -1571,15 +1533,16 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   }
 
   /** Materialize only the manager's own accepted S finish/memory. This does
-   * not overwrite the original role's task completion or retained Memory.md. */
+   * not overwrite the original role's task completion or retained Memory.md.
+   * Its input credential is distinct from the turn's durable manager grant. */
   async saveTerminalPushCoordinatorCompletion(turn: TerminalPushCoordinatorTurn): Promise<{
     receiptPath: string; memoryPath?: string;
   }> {
     const completion = turn.completion;
     if (!completion || completion.action.tool !== "finish_task" || completion.projectId !== turn.projectId ||
       completion.agent !== turn.agentId || completion.invocationId !== turn.invocationId ||
-      completion.capabilityHash !== turn.capabilityHash || completion.stateVersion !== turn.coordinatorEpoch ||
-      !turn.incidentId || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(turn.agentId) ||
+      !/^[a-f0-9]{64}$/.test(completion.capabilityHash ?? "") || completion.stateVersion !== turn.coordinatorEpoch ||
+      !turn.incidentId || !/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u.test(turn.agentId) ||
       !Number.isSafeInteger(turn.level) || turn.level < 0 || !Number.isSafeInteger(turn.coordinatorEpoch) || turn.coordinatorEpoch < 1 ||
       !Number.isSafeInteger(turn.writerLeaseEpoch) || turn.writerLeaseEpoch < 1 || !/^[a-f0-9]{64}$/.test(turn.capabilityHash) ||
       completion.action.memory !== undefined && (typeof completion.action.memory !== "string" || !completion.action.memory.trim() ||
@@ -1670,14 +1633,23 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     kind: string,
     message: string
   ): Promise<void> {
-    this.assertInvocationId(invocationId);
-    const filePath = path.join(
-      this.projectDir(state.id),
-      "traces",
-      `${String(state.turn + 1).padStart(4, "0")}_${agent}_${invocationId}.md`
-    );
-    const block = `\n### ${nowIso()} · ${kind}\n\n\`\`\`text\n${escapeMarkdownCodeFence(message)}\n\`\`\`\n`;
-    await fs.appendFile(filePath, block, "utf8");
+    await this.appendTraces(state, [{ agent, invocationId, kind, message, timestamp: nowIso() }]);
+  }
+
+  async appendTraces(state: ProjectState, traces: readonly {
+    agent: AgentName; invocationId: string; kind: string; message: string; timestamp: string;
+  }[]): Promise<void> {
+    const files = new Map<string, string[]>();
+    for (const trace of traces) {
+      this.assertInvocationId(trace.invocationId);
+      if (!Number.isFinite(Date.parse(trace.timestamp))) throw new Error("Trace record requires a valid timestamp");
+      const file = path.join(this.projectDir(state.id), "traces",
+        `${String(state.turn + 1).padStart(4, "0")}_${trace.agent}_${trace.invocationId}.md`);
+      const blocks = files.get(file) ?? [];
+      blocks.push(`\n### ${trace.timestamp} · ${trace.kind}\n\n\`\`\`text\n${escapeMarkdownCodeFence(trace.message)}\n\`\`\`\n`);
+      files.set(file, blocks);
+    }
+    await Promise.all([...files].map(([file, blocks]) => fs.appendFile(file, blocks.join(""), "utf8")));
   }
 
   /** Agent identity remains invocation metadata; it never changes the cwd. */
@@ -1696,7 +1668,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     content: string,
     options: { runtimeOnly?: boolean } = {}
   ): Promise<{ path: string; sha256: string }> {
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(role) ||
+    if (!/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u.test(role) ||
       Buffer.byteLength(content, "utf8") > 2 * 1024 * 1024 || content.includes("\0")) {
       throw new Error("Agent memory snapshot is invalid or too large");
     }
@@ -1784,7 +1756,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   }
 
   private async projectFileBrowser(projectId: string): Promise<ProjectFileBrowser> {
-    return new ProjectFileBrowser(this.projectDir(projectId), await this.loadState(projectId), () => this.artifactCatalog(projectId));
+    return new ProjectFileBrowser(this.projectDir(projectId), await this.loadState(projectId), async () => this.artifactCatalog(projectId));
   }
 
   private artifactCatalog(projectId: string, scope?: "project"): Promise<ArtifactListItem[]> {
@@ -1792,7 +1764,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     const pending = this.artifactCatalogReads.get(key);
     if (pending) return pending;
     const read = scope === "project"
-      ? this.projectFileBrowser(projectId).then(browser => browser.catalog())
+      ? this.projectFileBrowser(projectId).then(async browser => browser.catalog())
       : this.readArtifactCatalog(projectId);
     this.artifactCatalogReads.set(key, read);
     const clear = () => { if (this.artifactCatalogReads.get(key) === read) this.artifactCatalogReads.delete(key); };
@@ -2816,8 +2788,8 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       this.transactionDir(projectId, invocationId),
       "journal.json"
     );
-    const domain = this.projectStateStore?.domain(projectId);
-    const value = domain ? this.projectStateStore!.read(projectId, "invocation.commit")?.value
+    const domain = await this.projectStateStore?.domain(projectId);
+    const value = domain ? (await this.projectStateStore!.read(projectId, "invocation.commit"))?.value
       : JSON.parse(await fs.readFile(journalPath, "utf8")) as unknown;
     if (domain && (!isRecord(value) || value.invocationId !== invocationId))
       throw Object.assign(new Error("No authoritative journal for this exact invocation"), { code: "ENOENT" });
@@ -2908,6 +2880,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       await fs.unlink(messagePath);
     }
 
+    this.eventLogs.forget(path.join(projectDir, "events.jsonl"));
     await fs.truncate(
       path.join(projectDir, "events.jsonl"),
       journal.eventsSize
@@ -2958,26 +2931,21 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       }
     }
 
-    // Replace the live object before the final asynchronous write. A new
-    // pause/cancel may mutate it while the write is in flight; there must be
-    // no later Object.assign that can erase that mutation.
+    // The exact journal owns this rollback. Restore its checkpoint and event
+    // cursor together before further asynchronous work can receive user control.
     if (state) {
       const mutableState = state as unknown as Record<string, unknown>;
-      for (const key of Object.keys(mutableState)) {
-        delete mutableState[key];
-      }
+      for (const key of Object.keys(mutableState)) delete mutableState[key];
       Object.assign(mutableState, structuredClone(restoredState));
     }
-    await this.atomicJson(
-      path.join(projectDir, "state.json"),
-      structuredClone(restoredState)
-    );
-    if (this.projectStateStore?.domain(projectId)) {
-      const marker = this.projectStateStore.read(projectId, "invocation.commit")!;
+    await this.writeJsonDocument(path.join(projectDir, "state.json"), restoredState);
+    if (state) this.checkpointBases.set(state, JSON.parse(JSON.stringify(restoredState)));
+    if ((await this.projectStateStore?.domain(projectId))) {
+      const marker = (await this.projectStateStore!.read(projectId, "invocation.commit"))!;
       const current = marker.value as InvocationCommitJournal | null;
       if (!current || current.invocationId !== invocationId || current.status !== "in_progress")
         throw new Error("Original invocation recovery lost its exact authoritative journal");
-      this.projectStateStore.write(projectId, "invocation.commit", null, marker.version);
+      await this.projectStateStore!.write(projectId, "invocation.commit", null, marker.version);
     }
 
     // Keep the in-progress marker until every authoritative file is restored.
@@ -3013,30 +2981,32 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
         );
         for (let index = bytesRead - 1; index >= 0; index -= 1) {
           if (buffer[index] === 0x0a) {
+            this.eventLogs.forget(filePath);
             await handle.truncate(start + index + 1);
             return;
           }
         }
         cursor = start;
       }
+      this.eventLogs.forget(filePath);
       await handle.truncate(0);
     } finally {
       await handle.close();
     }
   }
 
-  private trimResidualJsonlTailSync(filePath: string): void {
+  private trimResidualJsonlTailSync(filePath: string): number {
     const descriptor = openSync(filePath, "r+");
     try {
       const { size } = fstatSync(descriptor);
-      if (size === 0) return;
+      if (size === 0) return 0;
 
       const lastByte = Buffer.allocUnsafe(1);
       if (
         readSync(descriptor, lastByte, 0, 1, size - 1) === 1 &&
         lastByte[0] === 0x0a
       ) {
-        return;
+        return size;
       }
 
       const chunkSize = 64 * 1024;
@@ -3053,19 +3023,22 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
         );
         for (let index = bytesRead - 1; index >= 0; index -= 1) {
           if (buffer[index] === 0x0a) {
+            this.eventLogs.forget(filePath);
             ftruncateSync(descriptor, start + index + 1);
-            return;
+            return start + index + 1;
           }
         }
         cursor = start;
       }
+      this.eventLogs.forget(filePath);
       ftruncateSync(descriptor, 0);
+      return 0;
     } finally {
       closeSync(descriptor);
     }
   }
 
-  private async atomicBuffer(filePath: string, value: Buffer, beforeCommit?: () => void): Promise<void> {
+  private async atomicBuffer(filePath: string, value: Buffer, beforeCommit?: () => void | Promise<void>): Promise<void> {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     const temporary = path.join(
       path.dirname(filePath),
@@ -3075,7 +3048,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       await fs.writeFile(temporary, value);
       for (let attempt = 0; ; attempt += 1) {
         try {
-          beforeCommit?.();
+          await beforeCommit?.();
           await fs.rename(temporary, filePath);
           break;
         } catch (error) {
@@ -3100,11 +3073,11 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     }
   }
 
-  private async atomicText(filePath: string, value: string, beforeCommit?: () => void): Promise<void> {
+  private async atomicText(filePath: string, value: string, beforeCommit?: () => void | Promise<void>): Promise<void> {
     await this.atomicBuffer(filePath, Buffer.from(value, "utf8"), beforeCommit);
   }
 
-  private formalDocumentPath(filePath: string): { projectId: string; name: "project.checkpoint" | "invocation.commit" } | undefined {
+  private async formalDocumentPath(filePath: string): Promise<{ projectId: string; name: "project.checkpoint" | "invocation.commit" } | undefined> {
     let directory = path.dirname(path.resolve(filePath));
     let name: "project.checkpoint" | "invocation.commit";
     if (path.basename(filePath) === "state.json") name = "project.checkpoint";
@@ -3115,30 +3088,119 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     const candidate = path.basename(directory);
     const projectId = path.dirname(directory) === path.resolve(this.projectsDir()) && /^prj_[a-f0-9]{32}$/.test(candidate) ? candidate
       : Object.entries(this.directoryAliases).find(([, alias]) => path.resolve(alias) === directory)?.[0];
-    return projectId && this.projectStateStore?.domain(projectId) ? { projectId, name } : undefined;
+    return projectId && (await this.projectStateStore?.domain(projectId)) ? { projectId, name } : undefined;
   }
 
   protected async atomicJson(filePath: string, value: unknown, beforeCommit?: () => void): Promise<void> {
-    const target = this.formalDocumentPath(filePath);
+    if (path.basename(filePath) !== "state.json" || value === null || typeof value !== "object") {
+      return this.writeAtomicJson(filePath, value, beforeCommit);
+    }
+    // Freeze the submitted JSON before the first async lookup or queue wait.
+    // Keep the live object separately for refreshing it after publication.
+    const submitted = JSON.parse(JSON.stringify(value));
+    const pending = this.checkpointWrites.get(value) ?? [];
+    const previous = pending.at(-1);
+    let release!: () => void;
+    const settled = new Promise<void>(resolve => { release = resolve; });
+    const checkpoint = { base: this.checkpointBases.get(value), submitted, settled };
+    pending.push(checkpoint);
+    this.checkpointWrites.set(value, pending);
+    try {
+      if (previous) await previous.settled;
+      await this.writeAtomicJson(filePath, value, beforeCommit, checkpoint);
+    } finally {
+      pending.shift();
+      if (!pending.length) this.checkpointWrites.delete(value);
+      release();
+    }
+  }
+
+  private async writeAtomicJson(filePath: string, value: unknown, beforeCommit?: () => void,
+    checkpoint?: PendingCheckpoint): Promise<void> {
+    const target = await this.formalDocumentPath(filePath);
     if (target) {
-      const prior = this.projectStateStore!.read(target.projectId, target.name);
-      if (!prior) throw new Error("Registered project has no authoritative document");
-      beforeCommit?.();
-      this.projectStateStore!.write(target.projectId, target.name, value, prior.version, document => {
-        beforeCommit?.(); publishProjectStateDocumentView(filePath, document);
-      });
+      // The read barrier tracks overlapping mutations; it is not a write
+      // mutex. Order document preparation and CAS without holding SQLite.
+      const key = `${target.projectId}:${target.name}`;
+      const previous = this.formalDocumentWrites.get(key);
+      let release!: () => void;
+      const settled = new Promise<void>(resolve => { release = resolve; });
+      this.formalDocumentWrites.set(key, settled);
+      try {
+        if (previous) await previous;
+        const prior = await this.projectStateStore!.read(target.projectId, target.name);
+        if (!prior) throw new Error("Registered project has no authoritative document");
+        beforeCommit?.();
+        if (checkpoint && checkpoint.base === undefined)
+          throw new Error(`Project ${target.projectId} checkpoint save has no loaded baseline; reload state and apply only the intended changes`);
+        const next = checkpoint
+          ? mergeProjectCheckpoint(checkpoint.base, prior.value, checkpoint.submitted)
+          : value;
+        const prepared = await prepareProjectStateDocumentView(filePath, next, prior);
+        try {
+          beforeCommit?.();
+          // Commit the exact snapshot even if the live object changed.
+          await this.projectStateStore!.write(target.projectId, target.name, prepared.value, prior.version, document => {
+            beforeCommit?.(); prepared.publish(document);
+          });
+          if (checkpoint) this.refreshCheckpoint(value as ProjectState, checkpoint, prepared.value);
+        } finally { prepared.discard(); }
+      } finally {
+        release();
+        if (this.formalDocumentWrites.get(key) === settled) this.formalDocumentWrites.delete(key);
+      }
+      return;
+    }
+    if (checkpoint) {
+      const key = path.resolve(filePath);
+      const previous = this.formalDocumentWrites.get(key);
+      let release!: () => void;
+      const settled = new Promise<void>(resolve => { release = resolve; });
+      this.formalDocumentWrites.set(key, settled);
+      try {
+        if (previous) await previous;
+        let current: unknown;
+        try { current = JSON.parse(await fs.readFile(filePath, "utf8")); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        if (current !== undefined && checkpoint.base === undefined)
+          throw new Error(`Project checkpoint ${filePath} save has no loaded baseline; reload state and apply only the intended changes`);
+        const next = current === undefined ? checkpoint.submitted
+          : mergeProjectCheckpoint(checkpoint.base, current, checkpoint.submitted);
+        await this.atomicText(filePath, `${JSON.stringify(next, null, 2)}\n`, beforeCommit);
+        this.refreshCheckpoint(value as ProjectState, checkpoint, next);
+      } finally {
+        release();
+        if (this.formalDocumentWrites.get(key) === settled) this.formalDocumentWrites.delete(key);
+      }
       return;
     }
     await this.atomicText(filePath, `${JSON.stringify(value, null, 2)}\n`, beforeCommit);
   }
 
-  private atomicJsonSync(filePath: string, value: unknown): void {
-    const target = this.formalDocumentPath(filePath);
+  private refreshCheckpoint(state: ProjectState, checkpoint: PendingCheckpoint, saved: unknown): void {
+    const { submitted, base } = checkpoint;
+    const refreshed = mergeProjectCheckpoint(submitted, saved, state, "project", true) as ProjectState;
+    for (const key of Object.keys(state)) if (!(key in refreshed)) delete (state as unknown as Record<string, unknown>)[key];
+    Object.assign(state, refreshed);
+    const accepted = structuredClone(saved);
+    this.checkpointBases.set(state, accepted);
+    // A queued save from the same live object must inherit accepted foreign
+    // fields without absorbing edits made after that save was submitted.
+    for (const pending of this.checkpointWrites.get(state) ?? []) {
+      if (pending === checkpoint || pending.base !== base) continue;
+      pending.submitted = mergeProjectCheckpoint(submitted, accepted, pending.submitted, "project", true);
+      pending.base = accepted;
+    }
+  }
+
+  private async writeJsonDocument(filePath: string, value: unknown): Promise<void> {
+    const target = await this.formalDocumentPath(filePath);
     if (target) {
-      const prior = this.projectStateStore!.read(target.projectId, target.name);
+      const prior = await this.projectStateStore!.read(target.projectId, target.name);
       if (!prior) throw new Error("Registered project has no authoritative document");
-      this.projectStateStore!.write(target.projectId, target.name, value, prior.version,
-        document => publishProjectStateDocumentView(filePath, document));
+      const prepared = prepareProjectStateDocumentViewSync(filePath, value, prior);
+      try { await this.projectStateStore!.write(target.projectId, target.name, prepared.value, prior.version, document => prepared.publish(document)); }
+      finally { prepared.discard(); }
       return;
     }
     const temporaryPath =
@@ -3273,7 +3335,7 @@ function isCurrentMainProjectState(value: unknown): value is ProjectState {
         groupIds.has(member) ||
         !configuredNames.has(member) ||
         localMembers.has(member) ||
-        groupByMember.has(member)
+        (!scoped && groupByMember.has(member))
       ) {
         return false;
       }

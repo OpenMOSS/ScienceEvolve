@@ -176,9 +176,8 @@ export class OfficialEventBridge {
         if (semanticKey && this.seenTerminalEvents.has(semanticKey)) {
           const tool = draft.tool;
           const started = tool && this.openToolStarts.get(tool.callId);
-          // Claude streams the start before arguments, then publishes the
-          // complete tool_use. Retain that first complete input as an update
-          // of the same still-open call so result receipts can bind it.
+          // Retain the first complete input when an open tool call publishes
+          // its arguments after its start so result receipts can bind it.
           if (draft.kind !== "tool.started" || !tool || !started ||
             started.input !== undefined || tool.input === undefined ||
             started.name !== tool.name || started.server !== tool.server || started.toolType !== tool.toolType) continue;
@@ -299,6 +298,14 @@ export async function emitCanonicalTrace(event: HarnessEvent, onTrace: TraceSink
   }
   if (event.kind === "assistant.delta" || event.kind === "assistant.message") {
     await onTrace("message", event.message ?? "", data);
+    return;
+  }
+  if (event.kind === "reasoning.summary") {
+    if (event.message?.trim() || (event.phase === "delta" && event.message?.length)) await onTrace("message", event.message!, data);
+    return;
+  }
+  if (event.kind === "activity") {
+    await onTrace("status", "", data);
     return;
   }
   if (event.kind === "usage") {

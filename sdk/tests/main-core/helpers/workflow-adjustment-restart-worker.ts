@@ -56,7 +56,7 @@ const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: `o
     stage("configuration-validation-start");
     await orchestrator.prepareWorkflowConfiguration(state, proposal);
     stage("configuration-validation-ready");
-    if (mode !== "apply" && coordinator.getWorkflowAdjustments(state).records.some(record => record.status === "pending"))
+    if (mode !== "apply" && (await coordinator.getWorkflowAdjustments(state)).records.some(record => record.status === "pending"))
       throw new Error("Controlled resource revalidation still waiting");
   },
   residentLauncher: createProductionCollaborationResidentLauncher(native, adapter),
@@ -105,8 +105,8 @@ const snapshot = async () => {
   const database = coordinator.database(), state = await storage.loadState(projectId);
   const raw = new DatabaseSync(path.join(root, "collaboration-state.sqlite"), { readOnly: true });
   const lease = raw.prepare("SELECT * FROM writer_service_lease").get(); raw.close();
-  return { pid: process.pid, state, projection: database.projectState(projectId), records: coordinator.getWorkflowAdjustments(state).records,
-    events: database.eventsAfter(projectId, 0, 10_000), openCount, lease };
+  return { pid: process.pid, state, projection: await database.projectState(projectId), records: (await coordinator.getWorkflowAdjustments(state)).records,
+    events: await database.eventsAfter(projectId, 0, 10_000), openCount, lease };
 };
 process.on("message", async (message: { id: string; action: string }) => {
   try {

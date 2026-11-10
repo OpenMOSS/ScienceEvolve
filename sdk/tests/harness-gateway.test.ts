@@ -14,8 +14,6 @@ async function write(root: string, file: string, content: unknown) {
 const cases = [
   { harness: "codex", prefix: "SDK_CODEX", folder: ".codex", file: "config.toml", directoryEnv: "CODEX_HOME",
     content: 'model_provider = "company"\n[model_providers.company]\nbase_url = "https://gateway.example/v1"\nenv_key = "NATIVE_KEY"\n', protocol: "responses" },
-  { harness: "claude-code", prefix: "SDK_CLAUDE_CODE", folder: ".claude", file: "settings.json", directoryEnv: "CLAUDE_CONFIG_DIR",
-    content: { env: { ANTHROPIC_BASE_URL: "https://gateway.example/v1", ANTHROPIC_AUTH_TOKEN: "native-secret" } }, protocol: "anthropic-messages" },
   { harness: "pi", prefix: "SDK_PI", folder: ".pi/agent", file: "models.json", directoryEnv: "PI_CODING_AGENT_DIR",
     content: { providers: { company: { baseUrl: "https://gateway.example/v1", api: "openai-completions", apiKey: "NATIVE_KEY", models: [{ id: "test-model", contextWindow: 123456 }] } } }, protocol: "chat-completions" },
   { harness: "dsh", prefix: "SDK_DSH", folder: ".dsh", file: "settings.yaml", directoryEnv: "DSH_HOME",
@@ -23,6 +21,11 @@ const cases = [
 ] as const;
 
 describe("Harness native profile paths", () => {
+  it("rejects Claude Code before reading profiles or accepting environment credentials", async () => {
+    await expect(readHarnessGateway("claude-code", "model", {
+      SDK_CLAUDE_CODE_API_KEY: "test-key", SDK_CLAUDE_CODE_BASE_URL: "https://gateway.example/v1"
+    }, "/unused", "env")).rejects.toThrow("Unsupported native Harness: claude-code");
+  });
   it.each(cases)("$harness env selection ignores profile and environment model settings", async (c) => {
     const env = {
       [`${c.prefix}_PROFILE`]: "/invalid-but-ignored",
@@ -41,7 +44,7 @@ describe("Harness native profile paths", () => {
   it.each(cases)("$harness profile selection defaults to its native location and keeps the workflow model", async (c) => {
     const home = await temporary();
     const content = c.harness === "codex" ? `model = "ignored-native-model"\n${c.content}`
-      : c.harness === "claude-code" ? { ...c.content, model: "ignored-native-model" } : c.content;
+      : c.content;
     await write(home, `${c.folder}/${c.file}`, content);
     for (const location of [undefined, "", " ", "default"]) {
       expect(await readHarnessGateway(c.harness, "workflow-model", {
@@ -122,7 +125,7 @@ describe("Harness native profile paths", () => {
     expect(await readHarnessGateway("pi", "m", { SDK_PI_PROFILE: root })).toMatchObject({ apiKey: "pi-auth-secret", url: "https://two.example/v1", protocol: "responses" });
   });
   it("reads DSH native credential references before ambient env", async () => {
-    const root = await temporary(); await write(root, "settings.yaml", cases[3].content);
+    const root = await temporary(); await write(root, "settings.yaml", cases[2].content);
     await write(root, ".credentials.yaml", 'version: 1\nrefs:\n  NATIVE_KEY: stored-secret\n');
     expect(await readHarnessGateway("dsh", "m", { SDK_DSH_PROFILE: root, NATIVE_KEY: "ambient-secret" })).toMatchObject({ apiKey: "stored-secret" });
   });

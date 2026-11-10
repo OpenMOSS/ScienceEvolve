@@ -4,7 +4,7 @@ import { readHarnessGateway } from "./host/harness-gateway.js";
 import type { GatewayInput } from "./core/agent-runtime.js";
 
 const importSchema = z.object({
-  harness: z.enum(["codex", "pi", "dsh", "claude-code", "hermes"]),
+  harness: z.enum(["codex", "pi", "dsh"]),
   model: z.string().trim().min(1).max(500),
   source: z.enum(["env", "profile"]),
   profilePath: z.string().min(1).refine(path.isAbsolute, "profilePath must be absolute").optional(),
@@ -21,13 +21,6 @@ export async function readMainHarnessGateway(input: MainHarnessGatewayImportOpti
   const options = importSchema.parse(input);
   // A supplied environment replaces process.env, rather than silently mixing credentials.
   const environment = { ...(options.environment ?? process.env) };
-  if (options.harness === "hermes") {
-    if (options.source !== "env") throw new Error("Hermes profile/OAuth import is not supported; use an explicit SDK gateway or env import");
-    const url = environment.OPENAI_BASE_URL?.trim(), apiKey = environment.OPENAI_API_KEY?.trim();
-    if (!url || !apiKey) throw new Error("Hermes env import requires OPENAI_BASE_URL and OPENAI_API_KEY");
-    return { name: options.name ?? "Hermes environment", url, apiKey, protocol: "chat-completions",
-      models: [options.model], defaultModel: options.model };
-  }
   if (options.profilePath !== undefined) {
     environment[`SDK_${options.harness.toUpperCase().replaceAll("-", "_")}_PROFILE`] = options.profilePath;
   }

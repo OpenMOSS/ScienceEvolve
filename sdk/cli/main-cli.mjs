@@ -13,7 +13,7 @@ Usage: scievolve <command> [--engine main] --data-dir <absolute-dedicated-direct
   gateway add --name N --url U --protocol P --models M1,M2 --default-model M1 --key-env ENV
               [--context-windows-file FILE] [--reasoning-file FILE]
   gateway import --harness H --model M --source env|profile [--profile-path ABS_PATH] [--name N]
-  gateway test ID --model M --harness codex|pi|dsh|claude-code|hermes|all [--reasoning-option ID]
+  gateway test ID --model M --harness codex|pi|dsh|all [--reasoning-option ID]
   start WORKFLOW_JSON REQUIREMENT_TXT     Alias of run start
   run start WORKFLOW_JSON REQUIREMENT_TXT [--title T] [--preset-id ID]
             (--gateway ID | --gateway-bindings FILE | --native-codex-profile ID) [--model M --harness H]
@@ -94,7 +94,7 @@ export async function runMainCli(positionals, options, services = {}) {
   let exitCode = 0;
   const line = (value) => stdout.write(`${JSON.stringify(value)}\n`);
   const guidance = (value) => stderr.write(`${value}\n`);
-  const harnesses = ["codex", "pi", "dsh", "claude-code", "hermes"];
+  const harnesses = ["codex", "pi", "dsh"];
   function only(names, count, args) {
     const allowed = new Set(["engine", "data-dir", "runtime-config", ...names]);
     for (const name of options.keys()) if (!allowed.has(name)) throw new Error(`Unknown main-engine option --${name}`);

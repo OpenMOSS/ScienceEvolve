@@ -20,7 +20,7 @@ export async function deliveredClosingFixture(originalStatus: "completed" | "fai
         tool: { ...native.tool, outputPreview: controlResultMarker(id) } });
     }
   }
-  f.db.completeScopedWorktreeClosing({ ...f.closing, envelope: f.envelope({ tool: "finish_task", summary: "Own Memory delivered through its independent PR" }, "finish") });
+  f.db.completeScopedWorktreeClosing({ ...f.closing, controlCapabilityHash: f.authority.control.capabilityHash!, envelope: f.envelope({ tool: "finish_task", summary: "Own Memory delivered through its independent PR" }, "finish") });
   f.db.recordScopedWorktreeClosingResult({ ...f.closing, inputId: f.turn.inputId,
     output: "I delivered my necessary Memory in PR 11, observed the merge and synchronized group target. Original A is retained.", residentTurnCompleted: true });
   f.db.stopScopedWorktreeClosingTurn({ ...f.closing, residentStopConfirmed: true, evidence: { exactNativeClosed: true } });

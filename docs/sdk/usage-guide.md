@@ -18,7 +18,7 @@
 
 - 读取 ScienceEvolve 现有的 `agents + orchestration` config；
 - 使用内置五 Agent 工作流，也可以描述自定义 Agent、路由、循环和终止条件；
-- 调用 Codex、pi、dsh、Claude Code 四种 Harness；
+- 调用 Codex、pi、dsh 三种 Harness；
 - 注册并测试模型网关；
 - 启动任务并持续返回事件、进度、结果和产物；
 - 暂停、恢复、取消任务，补充输入或回答 Agent 的问题；
@@ -126,7 +126,7 @@ tarball 不能代替源码 PR。只给 tarball 会让后续代码审查、维护
 - 可访问的模型网关、模型名称和 API key；
 - 一个专门给 SDK 使用、可读写的 `dataDir`。
 
-SDK 包含工作流运行代码、类型和内置 Skill；`pi` 由包的 npm 依赖提供，默认不需单独安装。Codex、dsh、Claude Code 及模型服务不随包提供。
+SDK 包含工作流运行代码、类型和内置 Skill；`pi` 由包的 npm 依赖提供，默认不需单独安装。Codex、dsh 及模型服务不随包提供。
 
 ### 3.2 安装
 
@@ -432,7 +432,7 @@ config 主要是两部分：
 
 Harness 是实际运行 Agent 的 CLI，不是模型名称。
 
-- Codex、pi、dsh、Claude Code 的参数和协议不同；
+- Codex、pi、dsh 的参数和协议不同；
 - 模型网关提供的协议也可能不同；
 - SDK 会在必要时启动本地协议转换代理；
 - 某个 Harness 不支持某项权限或功能时，不能假装支持。
@@ -517,7 +517,7 @@ Harness 是实际运行 Agent 的 CLI，不是模型名称。
 
 ### SDK 自带四个 Harness 吗？
 
-SDK 有四种适配器。`pi` 由 SDK 的 npm 依赖安装并默认使用；Codex、dsh、Claude Code 仍需在调用机器上单独安装。
+SDK 有三种适配器。`pi` 由 SDK 的 npm 依赖安装并默认使用；Codex、dsh 仍需在调用机器上单独安装。
 
 ### 当前 SDK 可以直接使用吗？
 

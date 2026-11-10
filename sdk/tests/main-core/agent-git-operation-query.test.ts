@@ -41,6 +41,13 @@ function fixture(kind: OperationRecord["kind"] = "pull.merge", status: Operation
 }
 
 describe("Original Agent Git operation journal query", () => {
+  it.each(["missing", "foreign owner"])("classifies a %s journal lookup as non-retryable invalid input", async variant => {
+    const f = fixture();
+    if (variant === "missing") f.recordedOperation.mockReturnValue(undefined);
+    else f.operation.ownerExecutionId = "another-task";
+    await expect(f.call()).rejects.toMatchObject({ code: "GIT_INVALID_INPUT", retryable: false });
+    f.assertReadOnly();
+  });
   it.each(["observed", "finalized"] as const)("returns the exact created PR while its mergeability is unknown (%s)", async status => {
     const f = fixture("pull.create", status);
     f.operation.remoteFact!.status = "unknown";

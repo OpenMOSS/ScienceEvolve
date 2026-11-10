@@ -292,19 +292,6 @@
       "reason": "Exact dated audit or acceptance evidence retains the package, API, environment, private repository or temporary consumer identifier actually used at that time; the report identifies itself as historical."
     },
     {
-      "id": "historical-report-30c215e28be8635a",
-      "path": "sdk/docs/config-field-audit.md",
-      "packagePath": "docs/config-field-audit.md",
-      "selector": {
-        "kind": "line",
-        "sha256": "fcde9c6cbe40c37b1890d2081cb8d12b5a8b5309e15f415dd904d324a93f403b"
-      },
-      "contentSha256": "fcde9c6cbe40c37b1890d2081cb8d12b5a8b5309e15f415dd904d324a93f403b",
-      "expectedMatches": 1,
-      "category": "historical-report",
-      "reason": "Exact dated audit or acceptance evidence retains the package, API, environment, private repository or temporary consumer identifier actually used at that time; the report identifies itself as historical."
-    },
-    {
       "id": "historical-report-0e1a7fd1e451c61a",
       "path": "sdk/docs/main-cli-test-report-20261005.md",
       "packagePath": "docs/main-cli-test-report-20261005.md",

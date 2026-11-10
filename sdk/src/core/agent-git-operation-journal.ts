@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
-import type { CollaborationStateDatabase } from "./collaboration-state/store.js";
+import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
 import type { AgentNativeSessionBinding } from "./collaboration-state/contracts.js";
+import type { CollaborationEvent } from "./collaboration-state/contracts.js";
 import type { ControlAction } from "./types.js";
 import { OperationPayloadMismatchError, OperationStoreViolationError } from "./collaboration-git/errors.js";
 
@@ -29,29 +30,34 @@ export interface RecordedAgentGitOperationRequest extends AgentGitOperationReque
 
 type Journal = Pick<CollaborationStateDatabase, "eventByRequestId" | "appendEvent" | "recordedGitOperation">;
 
+export function readAgentGitOperationRequest(event: CollaborationEvent | undefined, projectId: string,
+  operationId: string): RecordedAgentGitOperationRequest | undefined {
+  if (!event) return undefined;
+  const request = event.payload.request as unknown as RecordedAgentGitOperationRequest;
+  if (event.type !== "agent.git.operation.requested" || request?.schemaVersion !== 1 ||
+    request.projectId !== projectId || request.operationId !== operationId ||
+    event.invocationId !== request.invocationId || event.agentId !== request.agentId) {
+    throw new OperationStoreViolationError("Recorded Agent Git request has inconsistent original provenance");
+  }
+  return request;
+}
+
 /** Called only inside an already revalidated original Agent control callback.
  * Retains the request before any checkpoint/provider mutation, using existing
  * append-only events. This record is neither a result nor a delivery receipt. */
 export function agentGitOperationJournal(database: Journal, projectId: string) {
-  const recordedRequest = (operationId: string): RecordedAgentGitOperationRequest | undefined => {
-    const event = database.eventByRequestId(projectId, `agent-git-request:${operationId}`);
-    if (!event) return undefined;
-    const request = event.payload.request as unknown as RecordedAgentGitOperationRequest;
-    if (event.type !== "agent.git.operation.requested" || request?.schemaVersion !== 1 ||
-      request.projectId !== projectId || request.operationId !== operationId ||
-      event.invocationId !== request.invocationId || event.agentId !== request.agentId) {
-      throw new OperationStoreViolationError("Recorded Agent Git request has inconsistent original provenance");
-    }
-    return request;
+  const recordedRequest = async (operationId: string): Promise<RecordedAgentGitOperationRequest | undefined> => {
+    const event = await database.eventByRequestId(projectId, `agent-git-request:${operationId}`);
+    return readAgentGitOperationRequest(event, projectId, operationId);
   };
-  const recordRequest = (input: AgentGitOperationRequest): RecordedAgentGitOperationRequest => {
+  const recordRequest = async (input: AgentGitOperationRequest): Promise<RecordedAgentGitOperationRequest> => {
     if (input.projectId !== projectId || !input.operationId || !input.executionId || !input.agentId ||
       !input.invocationId || !input.callId || !Number.isSafeInteger(input.ownershipEpoch) || input.ownershipEpoch < 1 ||
       !input.executionBranch || !input.integrationTarget || !Number.isFinite(Date.parse(input.requestedAt)) ||
       !["git_push", "github_create_pr", "github_merge_pr", "github_close_pr", "github_update_pr", "git_revert"].includes(input.action.tool)) {
       throw new OperationStoreViolationError("Agent Git request requires its exact task, caller and direct target");
     }
-    const prior = recordedRequest(input.operationId);
+    const prior = await recordedRequest(input.operationId);
     if (prior) {
       const { schemaVersion: _schema, operationAlreadyExisted: _existed, nativeBinding: _binding,
         invocationId: _invocation, requestedAt: _time, ...original } = prior;
@@ -61,7 +67,7 @@ export function agentGitOperationJournal(database: Journal, projectId: string) {
       // source session/invocation and exact arguments; never replace them.
       return prior;
     }
-    const bindingEvent = database.eventByRequestId(projectId, `agent-native-binding:${input.invocationId}`);
+    const bindingEvent = await database.eventByRequestId(projectId, `agent-native-binding:${input.invocationId}`);
     const binding = bindingEvent?.payload.binding as unknown as AgentNativeSessionBinding | undefined;
     if (binding && (bindingEvent?.type !== "agent.native_binding.opened" || binding.projectId !== projectId ||
       binding.agentId !== input.agentId || binding.invocationId !== input.invocationId ||
@@ -70,9 +76,9 @@ export function agentGitOperationJournal(database: Journal, projectId: string) {
       throw new OperationStoreViolationError("Agent Git request differs from its exact native session binding");
     }
     const request: RecordedAgentGitOperationRequest = { ...structuredClone(input), schemaVersion: 1,
-      operationAlreadyExisted: database.recordedGitOperation(projectId, input.operationId) !== undefined,
+      operationAlreadyExisted: (await database.recordedGitOperation(projectId, input.operationId)) !== undefined,
       ...(binding ? { nativeBinding: structuredClone(binding) } : {}) };
-    database.appendEvent({ projectId, agentId: input.agentId, invocationId: input.invocationId,
+    await database.appendEvent({ projectId, agentId: input.agentId, invocationId: input.invocationId,
       requestId: `agent-git-request:${input.operationId}`, type: "agent.git.operation.requested", payload: { request } });
     return request;
   };

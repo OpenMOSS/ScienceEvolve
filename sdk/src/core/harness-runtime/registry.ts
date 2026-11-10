@@ -42,8 +42,7 @@ const REQUIRED_PERMISSIONS = new Set(["workspace", "compute", "yolo"]);
 const SAFE_ENV_KEY = /^[A-Z][A-Z0-9_]{0,127}$/;
 const WINDOWS_NPM_ENTRYPOINTS: Readonly<Record<string, readonly string[]>> = {
   dsh: ["@deepseek-ai", "dsh", "lib", "bin.js"],
-  pi: ["@mariozechner", "pi-coding-agent", "dist", "cli.js"],
-  "claude-code": ["@anthropic-ai", "claude-code", "bin", "claude.exe"]
+  pi: ["@mariozechner", "pi-coding-agent", "dist", "cli.js"]
 };
 
 function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
@@ -113,24 +112,6 @@ export const BUILTIN_HARNESS_DESCRIPTORS: readonly HarnessDescriptor[] = [
       ...COMMON_CAPABILITIES,
       assistantStreaming: "proxy-visible-output"
     }
-  },
-  {
-    schemaVersion: 1,
-    id: "claude-code",
-    label: "Claude Code",
-    adapterVersion: "1",
-    nativeProtocol: "anthropic-messages",
-    purposes: ["workflow", "explainer", "probe"],
-    selectable: false,
-    executableEnv: "SCIENCEEVOLVE_CLAUDE_CODE_BIN",
-    defaultCommand: "claude",
-    userSelectable: false,
-    notes: "Claude Code stream-json adapter",
-    explainerIsolation: "adapter-read-only-tools",
-    route: {
-      requireMainControlTools: true,
-    },
-    capabilities: { ...COMMON_CAPABILITIES, explainerInputFormats: ["text", "image", "pdf"] }
   }
 ] as const;
 
@@ -415,9 +396,7 @@ async function resolveExecutableCandidate(
 }
 
 export function installedHarnessCandidates(descriptor: HarnessDescriptor): string[] {
-  const relative = descriptor.id === "claude-code"
-    ? path.join("claude code", "node_modules", ".bin", "claude")
-    : path.join(descriptor.id, "node_modules", ".bin", descriptor.defaultCommand);
+  const relative = path.join(descriptor.id, "node_modules", ".bin", descriptor.defaultCommand);
   const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
   const projectRoot = path.basename(process.cwd()) === "server"
     ? path.resolve(process.cwd(), "..")

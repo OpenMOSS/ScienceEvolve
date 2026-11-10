@@ -25,7 +25,7 @@ npm install /absolute/scienceevolve-sdk-0.1.1.tgz
 npm install -g /absolute/scienceevolve-sdk-0.1.1.tgz
 ```
 
-The SDK bundles pi; install Codex, Claude Code, DSH, or [Hermes](docs/hermes.md) as needed. The [configuration-authoring Skill](skills/scienceevolve-sdk/README_en.md) ships with its references and templates. Copy its directory into the Skills directory used by your coding agent and start a new session. In an installed package it is at `node_modules/@scienceevolve/sdk/skills/scienceevolve-sdk`.
+The SDK bundles pi; install Codex or DSH as needed. The [configuration-authoring Skill](skills/scienceevolve-sdk/README_en.md) ships with its references and templates. Copy its directory into the Skills directory used by your coding agent and start a new session. In an installed package it is at `node_modules/@scienceevolve/sdk/skills/scienceevolve-sdk`.
 
 ## Scientific Skills
 

@@ -272,7 +272,7 @@ async function fixture(mainRouting = false, scenario: { nested?: boolean; allowU
           adjustmentProposed = true;
           const file = authority.control.workflowAuthoringPath!;
           const document = JSON.parse(await readFile(file, "utf8")); document.agents.idea.instructions = "Exact live scoped proposal";
-          if (scenario.workflowAdjustment === "late-session") document.agents.idea.harness = "claude-code";
+          if (scenario.workflowAdjustment === "late-session") document.agents.idea.harness = "dsh";
           if (scenario.workflowAdjustment === "missing-version") delete document.baseVersion;
           if (scenario.workflowAdjustment === "stale-version") cycleConfiguration();
           await writeFile(file, JSON.stringify(document));
@@ -432,11 +432,107 @@ async function fixture(mainRouting = false, scenario: { nested?: boolean; allowU
       await retainNativeReturn?.(result);
       return result;
     }, register: (key, handle) => handles.set(key, handle), unregister: (key) => handles.delete(key) };
-  const runtime = new ScopedProjectRuntime(dependencies);
+  const runtime = await ScopedProjectRuntime.create(dependencies);
   return { database, runtime, state, opened, submitted, closed, handles, git, dependencies, options, storage, root, launcher, scenario };
 }
 
 describe("scoped project native production composition", () => {
+  it("continues the actual workflow after a returned Agent's auxiliary handoff file cannot be saved", async () => {
+    const f = await fixture();
+    const write = f.storage.writeHandoff.bind(f.storage);
+    let failed = false;
+    vi.spyOn(f.storage, "writeHandoff").mockImplementation(async (...args) => {
+      if (args[1] === "execution" && !failed) { failed = true; throw new Error("Auxiliary handoff view unavailable"); }
+      return write(...args);
+    });
+    await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
+      outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
+    expect((await advanceUntilTerminal(f)).status).toBe("completed");
+    expect(failed).toBe(true);
+    expect(f.submitted.filter(turn => turn.agent === "execution")).toHaveLength(1);
+    const execution = f.database.projectState(id).scopedExecutions!.find(e => e.agentId === "execution")!;
+    const turn = f.submitted.find(turn => turn.agent === "execution")!;
+    expect(f.database.scopedAgentReport(id, execution.id, execution.ownershipEpoch)?.output).toBe(`Finished ${turn.invocationId}`);
+    expect(f.database.executionSupervisionRepairCount(id, execution.id)).toBe(0);
+    expect(f.database.scopedGroupIssues(id)).toEqual([]);
+  });
+
+  it("lets the Leader complete a returned final task with an unfinished PR after the shared allowance", async () => {
+    const f = await fixture();
+    const open = f.launcher.open.getMockImplementation()!;
+    let finalId: string | undefined, finalTurns = 0;
+    f.launcher.open.mockImplementation(async input => {
+      const handle = await open(input), scope = input.controlScope;
+      if (scope?.role === "scoped-agent" && scope.executionId.startsWith("group-final-")) {
+        finalId = scope.executionId;
+        handle.submit.mockImplementation(async turn => {
+          await input.controlAuthorityFactory!({ request: input.request, turn });
+          finalTurns += 1;
+          return { handoff: "Final task returned; the canonical PR remains unfinished", controlActions: [] };
+        });
+      } else if (scope?.role === "scoped-leader") {
+        const submit = handle.submit.getMockImplementation()!;
+        handle.submit.mockImplementation(async turn => {
+          if (!f.database.scopedFinalTaskReturned(id, scope.groupRunId)) return submit(turn);
+          const authority = await input.controlAuthorityFactory!({ request: input.request, turn });
+          const controlActions: ControlActionEnvelope[] = [];
+          for (const action of [{ tool: "finish_task", summary: "Reviewed the returned final task and its actual limitations" },
+            { tool: "complete_group", groupRunId: scope.groupRunId, coordinatorEpoch: authority.control.stateVersion,
+              output: "Existing work returned with an unfinished canonical PR" }] as ControlAction[]) {
+            const envelope: ControlActionEnvelope = { projectId: id, agent: input.request.agent, invocationId: turn.invocationId,
+              callId: `returned-final-${action.tool}`, stateVersion: authority.control.stateVersion,
+              capabilityHash: authority.control.capabilityHash, receivedAt: new Date().toISOString(), action };
+            await authority.revalidate(envelope, controlActions); controlActions.push(envelope);
+          }
+          return { handoff: "Existing result and its true limitations accepted", controlActions };
+        });
+      }
+      return handle;
+    });
+    await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
+      outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
+    const terminal = await advanceUntilTerminal(f);
+    expect(terminal.status, JSON.stringify(terminal.issues)).toBe("completed");
+    expect(finalTurns).toBe(4);
+    expect(f.database.executionSupervisionRepairCount(id, finalId!)).toBe(3);
+    expect(f.database.scopedGroupFinalMergeFact(id, "run-G")).toBeUndefined();
+    expect(f.database.scopedFinalIntegration(id, "run-G")!.status).toBe("completed");
+    expect(f.database.scopedGroupIssues(id)).toEqual([]);
+  }, 15_000);
+
+  it("runs the configured successor after three unsuccessful supplements without inventing Git delivery", async () => {
+    const f = await fixture();
+    const open = f.launcher.open.getMockImplementation()!;
+    let target: string | undefined, turns = 0;
+    f.launcher.open.mockImplementation(async input => {
+      const handle = await open(input);
+      const scope = input.controlScope;
+      if (target || scope?.role !== "scoped-agent" || scope.agentId !== "execution") return handle;
+      target = scope.executionId;
+      handle.submit.mockImplementation(async turn => {
+        await input.controlAuthorityFactory!({ request: input.request, turn });
+        turns += 1;
+        await writeFile(path.join(input.request.workspacePath, "uncommitted-result.txt"), "Existing available result");
+        return { handoff: "Existing available result; Git delivery is unfinished", controlActions: [] };
+      });
+      return handle;
+    });
+    await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
+      outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
+    const result = await advanceUntilTerminal(f);
+    expect(result.status).toBe("completed");
+    expect(turns).toBe(4);
+    const projection = f.database.projectState(id), original = f.database.scopedExecution(id, target!)!;
+    expect(original.status).toBe("completed");
+    expect(f.database.executionSupervisionRepairCount(id, target!)).toBe(3);
+    expect(projection.scopedAgentMerges!.some(merge => merge.executionId === target)).toBe(false);
+    const successor = projection.scopedArrivals!.find(arrival => arrival.sourceRunId === original.arrivalRequestId)!;
+    expect(successor.status).toBe("completed");
+    expect(projection.scopedExecutions!.some(execution => execution.arrivalRequestId === successor.requestId && execution.status === "completed")).toBe(true);
+    expect(f.database.scopedGroupIssues(id)).toEqual([]);
+    expect(f.state.status).not.toBe("retrying");
+  }, 15_000);
+
   it("preserves scoped management repair allowances through transient Harness failures", async () => {
     const f = await fixture(false, { transientLeaderFailures: 2 });
     await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
@@ -745,7 +841,7 @@ describe("scoped project native production composition", () => {
     f.database.close();
     const database = CollaborationStateDatabase.open({ ...f.options, instanceId: "two", now: () => 2_000_000 }); stores.push(database);
     const git = new ScopedRuntimeGit(database, id); git.restoreProviderState(f.git);
-    const runtime = new ScopedProjectRuntime({ ...f.dependencies, database, git, publish: async () => undefined });
+    const runtime = await ScopedProjectRuntime.create({ ...f.dependencies, database, git, publish: async () => undefined });
     expect(database.scopedGroupActivationPreparations(id)).toEqual([original]);
     expect(database.prepareUserWorkflowAdjustmentPublication(id, "edit-before-restart")).toMatchObject({ ready: false });
     const activated = await runtime.activate(database.scopedGroupActivationPreparations(id)[0].input);
@@ -927,7 +1023,7 @@ describe("scoped project native production composition", () => {
       outer: { nodeRunId: "outer-late-session", inputSnapshotRef: "original-input", activatedByAgentId: "main" } });
     await f.runtime.advance(activated.groupRun.id);
     const record = f.database.workflowAdjustments(id)[0]; expect(bound).toBe(true);
-    expect(record).toMatchObject({ status: "pending", waitingReason: expect.stringContaining("Harness"), proposal: { agents: { idea: { harness: "claude-code" } } } });
+    expect(record).toMatchObject({ status: "pending", waitingReason: expect.stringContaining("Harness"), proposal: { agents: { idea: { harness: "dsh" } } } });
     expect(f.database.workflowAdjustmentCurrent(id)).toEqual(before); expect(f.state.pauseRequest).toBeUndefined();
     expect(kind === "structured" ? f.state.agentSessions?.idea : f.state.agentSessionIds?.idea).toEqual(kind === "structured" ? original : original.nativeId);
     f.database.withdrawWorkflowAdjustment({ projectId: id, requestId: record.requestId, operationId: "withdraw-late-session", note: "Retain the original Harness" });
@@ -1875,7 +1971,7 @@ describe("scoped project native production composition", () => {
             if (mode === "missing_route") await call({ tool: "finish_task", summary: "My original work is finished" });
             priorCapability = authority.control.capability;
           } else {
-            expect(turn.inputId).toContain("mechanism-repair:");
+            expect(turn.inputId).toContain("supervision:");
             expect(paths.at(-1)).not.toBe(paths[0]);
             expect(hashes.at(-1)).not.toBe(hashes[0]);
             await expect(authority.revalidate(priorReceipt!, [])).rejects.toThrow(/exact scoped turn capability/);
@@ -2004,8 +2100,8 @@ describe("scoped project native production composition", () => {
               coordinatorEpoch: scope.coordinatorEpoch, arrivalRequestId, operation: "retry", rationale: "Continue this original Agent's retained work" });
           }
         } else {
-          expect(turn.inputId).toContain("mechanism-repair:1");
-          expect(turn.prompt).toContain("Missing formal mechanism actions: finish_task");
+          expect(turn.inputId).toContain(":supervision:1");
+          expect(turn.prompt).toContain("Remaining facts: finish_task");
           for (const arrivalRequestId of scope.failedArrivalRequestIds) expect(turn.prompt).toContain(arrivalRequestId);
           await expect(service.stage(authority.control.capability, "replace-during-finish", { tool: "coordinate_group_task", groupRunId: scope.groupRunId,
             coordinatorEpoch: scope.coordinatorEpoch, arrivalRequestId: scope.failedArrivalRequestIds[0], operation: "escalate", rationale: "Replace a staged choice" }))
@@ -2875,19 +2971,20 @@ describe("scoped project native production composition", () => {
     expect(f.git.closePullRequest).not.toHaveBeenCalled();
   });
 
-  it.each(["missing_finish", "memory_failure", "missing_decision"] as const)(
-    "repairs scoped management %s in the original handle without consuming a staged plan early", async (mode) => {
+  it.each(["missing_finish", "receipt_failure", "missing_decision"] as const)(
+    "repairs scoped management %s while preserving its original plan and completion receipt", async (mode) => {
       const f = await fixture(); f.state.agents.main.sessionPersistence = false;
       const open = f.launcher.open.getMockImplementation()!;
-      const saveMemory = f.storage.saveRoleMemorySnapshot.bind(f.storage);
-      let saves = 0;
-      vi.spyOn(f.storage, "saveRoleMemorySnapshot").mockImplementation(async (...args) => {
-        if (args[2] === "Own manager memory") {
-          saves += 1;
-          if (mode === "memory_failure" && saves === 1) throw new Error("Agent memory save failed");
+      const saveCompletion = f.storage.requestTaskCompletion.bind(f.storage);
+      let attempts = 0;
+      vi.spyOn(f.storage, "requestTaskCompletion").mockImplementation(async (...args) => {
+        if (args[2].action.tool === "finish_task" && args[2].action.memory === "Own manager memory") {
+          attempts += 1;
+          if (mode === "receipt_failure" && attempts === 1) throw new Error("Completion receipt storage failed");
         }
-        return saveMemory(...args);
+        return saveCompletion(...args);
       });
+      const saveMemory = vi.spyOn(f.storage, "saveRoleMemorySnapshot");
       let invocationId: string | undefined; let turns = 0;
       const stagingPaths: string[] = [];
       f.launcher.open.mockImplementation(async (input) => {
@@ -2903,7 +3000,7 @@ describe("scoped project native production composition", () => {
             adapterVersion: "test", nativeId, generation: 1, durable: true, createdAt: repository.observedAt }, nativeId);
           if (turns > 1) {
             expect(turn.invocationId).toBe(invocationId);
-            expect(turn.prompt).toContain("retained session");
+            expect(turn.prompt).toContain("same session");
             expect((await input.turnRequestFactory!({ request: input.request, turn })).request.resumeThreadId).toBe(nativeId);
           }
           const authority = await input.controlAuthorityFactory!({ request: input.request, turn });
@@ -2924,8 +3021,8 @@ describe("scoped project native production composition", () => {
             if (mode === "missing_decision") await call(finish);
             else {
               await call(plan);
-              if (mode === "memory_failure") {
-                await expect(call(finish)).rejects.toThrow("Agent memory save failed");
+              if (mode === "receipt_failure") {
+                await expect(call(finish)).rejects.toThrow("Completion receipt storage failed");
                 expect(f.database.scopedLeaderTaskCompleted(id, scope.groupRunId, "main", invocationId!, scope.coordinatorEpoch)).toBe(false);
               }
             }
@@ -2946,19 +3043,20 @@ describe("scoped project native production composition", () => {
       await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
         outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
       expect((await advanceUntilTerminal(f)).status).toBe("completed");
-      expect(turns).toBe(2); expect(new Set(stagingPaths).size).toBe(2);
+      expect(turns, JSON.stringify(f.database.eventsAfter(id, 0, 10000).filter(e => e.type.includes("supervision")).map(e => ({ type: e.type, outcome: e.payload.outcome, missing: e.payload.missing, reason: e.payload.reason })))).toBe(2); expect(new Set(stagingPaths).size).toBe(2);
       expect(f.opened.filter((entry) => entry.request.invocationId === invocationId)).toHaveLength(1);
       expect(f.database.scopedGroupPlan(id, "run-G")?.tasks[0].assignment).toContain("Original instruction");
       const events = f.database.eventsAfter(id, 0, 10_000).filter((event) => event.invocationId === invocationId);
       expect(events.filter((event) => event.type === "scoped.leader.task.completed")).toHaveLength(1);
       expect(events.filter((event) => event.type === "scoped.management.mechanism_repair.requested")).toHaveLength(1);
       expect(events.filter((event) => event.type === "scoped.leader.action.accepted")).toHaveLength(1);
-      expect(saves).toBe(mode === "memory_failure" ? 2 : 1);
+      expect(saveMemory).not.toHaveBeenCalled();
       const receipt = f.state.taskCompletions![`management:run-G:${invocationId}`];
-      expect(await readFile(receipt.memoryPath!, "utf8")).toContain("Own manager memory");
+      expect(receipt.memory).toBe("Own manager memory");
+      expect(receipt.memoryPath).toBeUndefined();
     });
 
-  it.each(["finish_task", "formal plan"])("bounds scoped management missing %s and keeps its original plan queued", async (missing) => {
+  it.each(["finish_task", "formal plan"])("ends scoped management missing %s after three supplements and retains actual decisions", async (missing) => {
     const f = await fixture(); f.state.agents.main.sessionPersistence = false;
     const open = f.launcher.open.getMockImplementation()!;
     let invocationId: string | undefined; let turns = 0;
@@ -2982,19 +3080,26 @@ describe("scoped project native production composition", () => {
     await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
       outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
     await f.runtime.advance("run-G");
-    expect(turns).toBe(3); expect(f.closed).toContain(invocationId);
-    expect(f.database.scopedGroupPlan(id, "run-G")).toBeUndefined();
-    expect(f.database.projectState(id).scopedExecutions).toEqual([]);
-    const events = f.database.eventsAfter(id, 0, 10_000).filter((event) => event.invocationId === invocationId);
-    expect(events.filter((event) => event.type === "scoped.management.mechanism_repair.requested")).toHaveLength(2);
-    expect(events.filter((event) => event.type === "scoped.leader.action.accepted")).toHaveLength(0);
-    expect(events.some((event) => event.type === "scoped.management.round.completed")).toBe(false);
-    const repairScopeKey = events.find((event) => event.type === "scoped.management.mechanism_repair.requested")!.payload.repairScopeKey as string;
-    expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(2);
+    expect(turns).toBe(4); expect(f.closed).toContain(invocationId);
+    const events = f.database.eventsAfter(id, 0, 10_000).filter(event => event.invocationId === invocationId);
+    expect(events.filter(event => event.type === "scoped.management.mechanism_repair.requested")).toHaveLength(3);
+    expect(events.some(event => event.type === "scoped.leader.task.completed")).toBe(false);
+    expect(events.some(event => event.type === "scoped.management.round.completed")).toBe(true);
+    if (missing === "finish_task") {
+      expect(f.database.scopedGroupPlan(id, "run-G")?.tasks[0]?.assignment).toBe("Retain this original plan");
+      expect(f.database.projectState(id).scopedExecutions!.length).toBeGreaterThan(0);
+      expect(events.filter(event => event.type === "scoped.leader.action.accepted")).toHaveLength(1);
+    } else {
+      expect(f.database.scopedGroupPlan(id, "run-G")).toBeUndefined();
+      expect(f.database.projectState(id).scopedExecutions).toEqual([]);
+      expect(events.filter(event => event.type === "scoped.leader.action.accepted")).toEqual([]);
+      await f.runtime.advance("run-G");
+      expect(turns).toBe(4);
+    }
   });
 
   it.each((["plan", "recover"] as const).flatMap(purpose => (["repair", "exhaust"] as const).map(outcome => ({ purpose, outcome }))))(
-    "renews only an explicitly resumed stopped scoped $purpose and still bounds $outcome", async ({ purpose, outcome }) => {
+    "preserves the scoped $purpose allowance through explicit Resume even if the Agent could $outcome", async ({ purpose, outcome }) => {
     const f = await fixture(false, { failIdeaOnce: purpose === "recover", recovery: outcome === "exhaust" ? "user" : "retry" });
     const open = f.launcher.open.getMockImplementation()!;
     const plans: CollaborationResidentOpenInput[] = [];
@@ -3015,28 +3120,22 @@ describe("scoped project native production composition", () => {
     });
     await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
       outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
-    const paused = new AbortController();
-    const recordFailure = f.database.recordScopedManagementFailure.bind(f.database);
-    const recording = vi.spyOn(f.database, "recordScopedManagementFailure").mockImplementation(input => {
-      const failures = recordFailure(input); paused.abort(); return failures;
-    });
-    await expect(new ScopedProjectRuntime({ ...f.dependencies, signal: paused.signal }).advance("run-G")).rejects.toThrow();
-    recording.mockRestore();
-    expect(turns).toBe(3);
+    await f.runtime.advance("run-G");
+    expect(turns).toBe(4);
     const original = f.database.scopedGroupRun(id, "run-G");
     const originalExecutions = f.database.projectState(id).scopedExecutions;
     const originalPlan = f.database.scopedGroupPlan(id, "run-G");
     const originalActions = f.database.scopedAcceptedLeaderActions(id, "run-G");
     const repairScopeKey = f.database.eventsAfter(id, 0, 10_000).find(event => event.type === "scoped.management.mechanism_repair.requested")!.payload.repairScopeKey as string;
     // Rehydrating a runtime preserves the exhausted automatic budget.
-    await new ScopedProjectRuntime(f.dependencies).reconcileResidents();
-    expect(turns).toBe(3);
-    expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(2);
+    await (await ScopedProjectRuntime.create(f.dependencies)).reconcileResidents();
+    expect(turns).toBe(4);
+    expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(3);
     const history = f.database.scopedManagementFailures(id);
     const projection = f.database.projectState(id);
     expect(() => f.database.resumeScopedManagementRepairs({ projectId: id, nodeRunId: "foreign-root",
       expectedRevision: projection.stateRevision })).toThrow();
-    expect(() => f.database.resumeScopedManagementRepairs({ projectId: id, nodeRunId: "node-G",
+    if (purpose === "recover") expect(() => f.database.resumeScopedManagementRepairs({ projectId: id, nodeRunId: "node-G",
       expectedRevision: projection.stateRevision + 1 })).toThrow();
     const claim = f.database.claimScopedLeaderTurn({ projectId: id, groupRunId: "run-G", agentId: "main",
       invocationId: "still-live-manager", allowStoppedRepairFaults: true })!;
@@ -3047,7 +3146,7 @@ describe("scoped project native production composition", () => {
       invocationId: "still-live-manager", residentStopConfirmed: true });
     f.database.resumeScopedManagementRepairs({ projectId: id, nodeRunId: "node-G",
       expectedRevision: f.database.projectState(id).stateRevision });
-    expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(0);
+    expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(3);
     expect(f.database.scopedGroupRun(id, "run-G")).toEqual(original);
     expect(f.database.scopedManagementFailures(id)).toEqual(history);
     expect(f.database.projectState(id).scopedExecutions).toEqual(originalExecutions);
@@ -3055,42 +3154,28 @@ describe("scoped project native production composition", () => {
     // A duplicate Resume before new exhaustion cannot replenish anything.
     f.database.resumeScopedManagementRepairs({ projectId: id, nodeRunId: "node-G",
       expectedRevision: f.database.projectState(id).stateRevision });
-    expect(f.database.eventsAfter(id, 0, 10_000).filter(event => event.type === "scoped.management.recovery.resumed")).toHaveLength(1);
+    expect(f.database.eventsAfter(id, 0, 10_000).filter(event => event.type === "scoped.management.recovery.resumed")).toHaveLength(purpose === "recover" ? 1 : 0);
     resumed = true;
-    if (outcome === "repair") {
-      expect((await advanceUntilTerminal(f)).status).toBe("completed");
-      const manager = plans.at(-1)!;
-      expect(manager.request.resumeThreadId).toBe("session-main");
-      expect(manager.request.workspacePath).toBe(plans[0].request.workspacePath);
-      expect(f.database.scopedGroupPlan(id, "run-G")).toBeTruthy();
-    } else {
-      await f.runtime.advance("run-G");
-      expect(turns).toBe(6);
-      expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(2);
-      await f.runtime.advance("run-G");
-      expect(turns).toBe(6);
-      expect(f.database.scopedGroupPlan(id, "run-G")).toEqual(originalPlan);
-      expect(f.database.scopedManagementFailures(id).slice(history.length).map(failure => failure.attempt)).toEqual([1, 2]);
-      expect(f.database.scopedManagementFailures(id).slice(0, history.length)).toEqual(history);
-      expect(f.database.eventsAfter(id, 0, 10_000).filter(event => event.type === "scoped.management.escalated")).toHaveLength(1);
-    }
+    await f.runtime.advance("run-G");
+    expect(turns).toBe(4);
+    expect(plans).toHaveLength(1);
+    expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(3);
+    expect(f.database.scopedGroupPlan(id, "run-G")).toEqual(originalPlan);
+    expect(f.database.scopedManagementFailures(id)).toEqual(history);
   });
 
   it.each(["plan", "recover"] as const)("retains bounded scoped %s recovery across repeated explicit Resume cycles", async purpose => {
     const f = await fixture(false, { failIdeaOnce: purpose === "recover", recovery: "retry" });
     const open = f.launcher.open.getMockImplementation()!;
     const managers: CollaborationResidentOpenInput[] = [];
-    let complete = false;
     let turns = 0;
     f.launcher.open.mockImplementation(async input => {
       const handle = await open(input);
       if (input.controlScope?.role !== "scoped-leader" ||
         input.request.workflowContext?.purpose !== purpose) return handle;
       managers.push(input);
-      const submit = handle.submit.getMockImplementation()!;
       handle.submit.mockImplementation(async turn => {
         turns += 1;
-        if (complete) return submit(turn);
         await input.request.onDurableSessionStarted!({ schemaVersion: 1, harnessId: "codex", adapterVersion: "test",
           nativeId: "session-main", generation: 1, durable: true, createdAt: repository.observedAt }, "session-main");
         return { handoff: "Manager returned without its required formal actions" };
@@ -3099,43 +3184,22 @@ describe("scoped project native production composition", () => {
     });
     await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
       outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
-    let previousFailures = f.database.scopedManagementFailures(id);
-    for (let cycle = 0; cycle < 2; cycle += 1) {
-      const stopped = new AbortController();
-      const record = f.database.recordScopedManagementFailure.bind(f.database);
-      const recording = vi.spyOn(f.database, "recordScopedManagementFailure").mockImplementation(input => {
-        const failures = record(input); stopped.abort(); return failures;
-      });
-      try {
-        await expect(new ScopedProjectRuntime({ ...f.dependencies, signal: stopped.signal }).advance("run-G")).rejects.toThrow();
-      } finally { recording.mockRestore(); }
-      expect(turns).toBe((cycle + 1) * 3);
-      const history = f.database.scopedManagementFailures(id);
-      expect(history.slice(0, previousFailures.length)).toEqual(previousFailures);
-      previousFailures = history;
-      const retained = f.database.projectState(id);
-      const actions = f.database.scopedAcceptedLeaderActions(id, "run-G");
-      const repairScopeKey = f.database.eventsAfter(id, 0, 10_000)
-        .find(event => event.type === "scoped.management.mechanism_repair.requested")!.payload.repairScopeKey as string;
-      expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(2);
-      f.database.resumeScopedManagementRepairs({ projectId: id, nodeRunId: "node-G", expectedRevision: retained.stateRevision });
-      expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(0);
-      expect(f.database.projectState(id).scopedExecutions).toEqual(retained.scopedExecutions);
-      expect(f.database.scopedManagementFailures(id)).toEqual(history);
+    await f.runtime.advance("run-G");
+    expect(turns).toBe(4);
+    const repairs = f.database.eventsAfter(id, 0, 10_000).filter(event => event.type === "scoped.management.mechanism_repair.requested");
+    const repairScopeKey = repairs.find(event => event.payload.purpose === purpose)!.payload.repairScopeKey as string;
+    const failures = f.database.scopedManagementFailures(id);
+    const actions = f.database.scopedAcceptedLeaderActions(id, "run-G");
+    for (let cycle = 0; cycle < 2; cycle++) {
+      f.database.resumeScopedManagementRepairs({ projectId: id, nodeRunId: "node-G", expectedRevision: f.database.projectState(id).stateRevision });
+      await f.runtime.advance("run-G");
+      expect(f.database.scopedManagementRepairCount(id, repairScopeKey)).toBe(3);
+      expect(turns).toBe(4);
+      expect(f.database.scopedManagementFailures(id)).toEqual(failures);
       expect(f.database.scopedAcceptedLeaderActions(id, "run-G")).toEqual(actions);
-      f.database.resumeScopedManagementRepairs({ projectId: id, nodeRunId: "node-G",
-        expectedRevision: f.database.projectState(id).stateRevision });
-      expect(f.database.eventsAfter(id, 0, 10_000).filter(event => event.type === "scoped.management.recovery.resumed"))
-        .toHaveLength(cycle + 1);
     }
-    const grants = f.database.eventsAfter(id, 0, 10_000).filter(event => event.type === "scoped.management.recovery.resumed");
-    expect(new Set(grants.map(event => event.requestId)).size).toBe(2);
-    complete = true;
-    expect((await advanceUntilTerminal(f)).status).toBe("completed");
-    expect(turns).toBe(7);
-    expect(managers.at(-1)!.request.resumeThreadId).toBe("session-main");
-    expect(managers.at(-1)!.request.workspacePath).toBe(managers[0].request.workspacePath);
-    expect(f.database.scopedManagementFailures(id).slice(0, previousFailures.length)).toEqual(previousFailures);
+    expect(managers).toHaveLength(1);
+    expect(f.database.scopedManagementSupervisionEnded(id, "run-G", purpose)).toBe(true);
   });
 
   it("transports pending project input only to GLOBAL Main through its ordinary turn", async () => {
@@ -3257,7 +3321,7 @@ describe("scoped project native production composition", () => {
     const recording = vi.spyOn(f.database, "recordScopedManagementFailure").mockImplementation(input => {
       const result = record(input); if (input.globalMain) paused.abort(); return result;
     });
-    await expect(new ScopedProjectRuntime({ ...f.dependencies, signal: paused.signal }).advance("run-G")).rejects.toThrow();
+    await expect((await ScopedProjectRuntime.create({ ...f.dependencies, signal: paused.signal })).advance("run-G")).rejects.toThrow();
     recording.mockRestore();
     expect(globalTurns).toBe(3);
     const groups = f.database.projectState(id).scopedGroupRuns!;
@@ -3673,7 +3737,7 @@ describe("scoped project native production composition", () => {
     const git = new ScopedRuntimeGit(database, id);
     git.refs.set("groups/run-G", "b".repeat(40)); git.localRefs.set("groups/run-G", "b".repeat(40));
     git.localRefs.set(execution.executionBranch, "b".repeat(40));
-    const runtime = new ScopedProjectRuntime({ ...f.dependencies, database, git,
+    const runtime = await ScopedProjectRuntime.create({ ...f.dependencies, database, git,
       publish: async () => undefined });
     await runtime.reconcileResidents();
     expect(f.launcher.stopScopedForRecovery).toHaveBeenCalledWith(expect.objectContaining({ scopeId: execution.id, agentId: "idea", ownershipEpoch: 1 }));
@@ -3746,7 +3810,7 @@ describe("scoped project native production composition", () => {
       f.database.close();
       database = CollaborationStateDatabase.open({ ...f.options, instanceId: "stop-resume-successor", now: () => 2_000_000 }); stores.push(database);
       const git = new ScopedRuntimeGit(database, id); git.restoreProviderState(f.git);
-      runtime = new ScopedProjectRuntime({ ...f.dependencies, database, git, publish: async () => undefined });
+      runtime = (await ScopedProjectRuntime.create({ ...f.dependencies, database, git, publish: async () => undefined }));
     }
     database.resumeProjectCancellation({ projectId: id });
     expect(database.scopedExecution(id, execution.id)).toMatchObject({ id: execution.id, agentId: execution.agentId,
@@ -3894,7 +3958,7 @@ describe("scoped project native production composition", () => {
         f.database.close();
         database = CollaborationStateDatabase.open({ ...f.options, instanceId: "two", now: () => 2_000_000 }); stores.push(database);
         if (mode === "reconciled-writer") {
-          const runtime = new ScopedProjectRuntime({ ...f.dependencies, database, git: new ScopedRuntimeGit(database, id),
+          const runtime = await ScopedProjectRuntime.create({ ...f.dependencies, database, git: new ScopedRuntimeGit(database, id),
             publish: async () => undefined });
           await runtime.reconcileResidents();
           expect(database.scopedAgentRecoveredForCurrentWriter(id, execution.id, 1, previous.invocationId)).toBe(true);
@@ -4087,7 +4151,7 @@ describe("scoped project native production composition", () => {
     const database = CollaborationStateDatabase.open({ ...f.options, instanceId: "reply-recovery", now: () => 2_000_000 });
     stores.push(database);
     const git = new ScopedRuntimeGit(database, id); git.restoreProviderState(f.git);
-    const runtime = new ScopedProjectRuntime({ ...f.dependencies, database, git,
+    const runtime = await ScopedProjectRuntime.create({ ...f.dependencies, database, git,
       publish: async () => { await f.storage.saveState(f.state); } });
     f.state.userIntervention = { ...first, status: "answered", response: "Earlier user instruction" };
     await runtime.advance("run-G");

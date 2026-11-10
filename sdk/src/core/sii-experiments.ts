@@ -202,7 +202,8 @@ function option(args: string[], key: string): string | undefined {
 }
 function bounded(value: unknown): unknown {
   const text = redactTrace(JSON.stringify(value) ?? "null");
-  return text.length > MAX_OUTPUT ? { preview: text.slice(0, MAX_OUTPUT), truncated: true } : JSON.parse(text);
+  return text.length > MAX_OUTPUT ? { ...(typeof record(value).success === "boolean" ? { success: record(value).success } : {}),
+    preview: text.slice(0, MAX_OUTPUT), truncated: true } : JSON.parse(text);
 }
 function within(candidate: string, root: string): boolean { const relative = path.relative(root, candidate); return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)); }
 function ownerFor(request: AgentRunRequest): { owner: string; taskId: string } {
@@ -298,7 +299,12 @@ export class SiiExperimentService {
       server.setRequestHandler(CallToolRequestSchema, async request => {
         try {
           const value = await binding.call(request.params.name, record(request.params.arguments));
-          return { content: [{ type: "text" as const, text: JSON.stringify(value) }], structuredContent: record(value) };
+          const result = record(value);
+          const rejected = ["sii_command", "sii_submit_experiment", "sii_submit_batch"].includes(request.params.name) &&
+            (record(result.result).success === false || record(result.experiment).status === "failed" ||
+              Array.isArray(result.results) && result.results.some(item => record(item).error !== undefined || record(record(item).experiment).status === "failed"));
+          return { ...(rejected ? { isError: true } : {}),
+            content: [{ type: "text" as const, text: JSON.stringify(value) }], structuredContent: result };
         } catch (error) { return { isError: true, content: [{ type: "text" as const, text: redactTrace(error instanceof Error ? error.message : String(error)) }] }; }
       });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -392,13 +398,13 @@ export class SiiExperimentService {
     const [root, actual] = await Promise.all([fs.realpath(this.options.projectsRoot), fs.realpath(projectPath)]);
     const projectId = path.basename(actual);
     if (path.dirname(actual) !== root || !/^prj_[a-f0-9]{32}$/.test(projectId)) throw new Error("Experiment state path is outside the registered projects root");
-    return this.documentStore.domain(projectId) ? projectId : undefined;
+    return await this.documentStore.domain(projectId) ? projectId : undefined;
   }
 
   async document(projectPath: string): Promise<Document> {
     const projectId = await this.documentProject(projectPath);
     if (projectId) {
-      const record = this.documentStore!.read(projectId, "sii.ledger");
+      const record = await this.documentStore!.read(projectId, "sii.ledger");
       if (!record) throw new Error("Registered project has no authoritative experiment ledger");
       const value = record.value as Document;
       if (value.version !== 1 || !Array.isArray(value.experiments) || !Array.isArray(value.waits)) throw new Error("Invalid authoritative SII experiment ledger");
@@ -420,7 +426,7 @@ export class SiiExperimentService {
     if (projectId) {
       const prior = this.documentVersions.get(doc);
       if (!prior || prior.projectId !== projectId) throw new Error("Experiment ledger authority changed; read the current document before deciding another operation");
-      const saved = this.documentStore!.write(projectId, "sii.ledger", doc, prior.version,
+      const saved = await this.documentStore!.write(projectId, "sii.ledger", doc, prior.version,
         record => publishProjectStateDocumentView(target, record));
       this.documentVersions.set(doc, { projectId, version: saved.version });
       return;
@@ -812,7 +818,8 @@ export class SiiMcpBinding {
           experiment.status = completionFile && !["failed", "cancelled"].includes(observation.status) ? "running" : observation.status;
           experiment.rawStatus = observation.raw;
           experiment.observedAt = new Date().toISOString();
-        } else experiment.status = record(response).success === false ? "failed" : "queued";
+        } else experiment.status = record(response).success === false ? "failed"
+          : record(response).success === true ? "queued" : "submission_unknown";
         experiment.evidence = bounded(response);
         if (experiment.status === "queued") await this.service.registerUsage(this.request.projectPath, experiment);
       } catch (error) { experiment.queryError = redactTrace(String(error)).slice(0, 2000); }
@@ -919,8 +926,8 @@ export class SiiMcpBinding {
       return;
     }
     const nativeCall = this.nativeResultCalls.get(tool.callId);
-    // Claude's official user tool_result frame has only tool_use_id. Reuse
-    // its actual preceding tool_use binding, as the control-result path does.
+    // Result frames may identify only the call. Reuse its actual preceding
+    // tool binding, as the control-result path does.
     const boundGeneric = tool.name === "tool" && nativeCall && sameDurableSession(nativeCall.session, session);
     if (event.kind !== "tool.completed" || event.phase !== "completed" ||
       (!ownTool && !boundGeneric) || tool.status !== "completed" ||

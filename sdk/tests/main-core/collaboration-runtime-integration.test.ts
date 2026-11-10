@@ -1,3 +1,4 @@
+import type { AsyncCollaborationStateStore } from "../../src/core/collaboration-state/database-worker.js";
 import { checkpointWorkflowRecovery } from "../../src/core/workflow-recovery.js";
 import { hasUserWorkflowPause } from "../../src/core/workflow-recovery.js";
 import { createHash } from "node:crypto";
@@ -52,7 +53,7 @@ import type {
   GitHubPullRequestFact,
   GitInitializationResult
 } from "../../src/core/collaboration-git/index.js";
-import { GitCommandError, GitHubAuthorizationError, GitHubUncertainResultError } from "../../src/core/collaboration-git/index.js";
+import { GitCommandError, GitHubAuthorizationError, GitHubProviderError, GitHubUncertainResultError } from "../../src/core/collaboration-git/index.js";
 import type { SynchronizedPullRequestFact } from "../../src/core/collaboration-git/facade.js";
 import {
   ControlActionRejectedError,
@@ -78,6 +79,187 @@ afterEach(async () => {
 });
 
 describe("CollaborationRuntimeCoordinator", () => {
+  it.each([false, true])("preserves Git tool error retryability in the durable journal (%s)", async retryable => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "git-tool-retryability-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_adadadadadadadadadadadadadadadad");
+    state.orchestration = { ...state.orchestration, routes: { ...state.orchestration.routes,
+      idea: [{ target: "finish", kind: "strong" }] } };
+    await storage.createProject(state);
+    let recordedAttempt: ReturnType<CollaborationStateDatabase["failureAttempts"]>[number] | undefined;
+    const coordinator = new CollaborationRuntimeCoordinator({ storage,
+      gitFactory: options => {
+        const git = happyGitFake(options, []);
+        return { ...git, observePullRequest: async request => {
+          if (request.providerNumber === 999) throw new GitHubProviderError("PR observation failed", retryable);
+          return await git.observePullRequest!(request);
+        } };
+      }, residentLauncher: { open: async input => ({ pause: async () => {}, resume: async () => {}, close: async () => {},
+        submit: async turn => {
+          await expect(agentFixtureRequests(input, turn, [{ tool: "github_get_pr", providerNumber: 999 }]))
+            .rejects.toMatchObject({ retryable });
+          recordedAttempt = (await coordinator.database().failureAttempts(state.id))
+            .find(item => item.operation === "agent.github_get_pr");
+          return agentFixtureDelivery(input, turn, { handoff: "Git failure recorded; original delivery completed" }, coordinator);
+        } }) } });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    await coordinator.createProject(state, { enabled: true, provider: "github" });
+    await waitFor(() => state.status === "completed");
+    expect(recordedAttempt).toMatchObject({ status: "failed", retryable, errorCode: "GITHUB_PROVIDER_FAILED" });
+  });
+
+  it.each(["accepted", "modified", "missing"] as const)("settles a registration task only from unchanged merged files (%s)", async condition => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-registration-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_acacacacacacacacacacacacacacacac"); await storage.createProject(state);
+    const projectRoot = storage.projectDir(state.id), repositoryPath = path.join(projectRoot, "repository");
+    const ownerId = "execution-source", publisherId = "execution-registration";
+    const ownerPath = path.join(projectRoot, "git-worktrees", ownerId), publisherPath = path.join(projectRoot, "git-worktrees", publisherId);
+    await fs.mkdir(path.dirname(ownerPath), { recursive: true });
+    await gitCommand(projectRoot, ["init", "-b", "main", "repository"]);
+    await gitCommand(repositoryPath, ["config", "user.name", "OpenFARS Test"]);
+    await gitCommand(repositoryPath, ["config", "user.email", "openfars@example.invalid"]);
+    await fs.writeFile(path.join(repositoryPath, "accepted.md"), "# Accepted report\n");
+    await fs.writeFile(path.join(repositoryPath, "second.md"), "# Accepted evidence\n");
+    await gitCommand(repositoryPath, ["add", "."]); await gitCommand(repositoryPath, ["commit", "-m", "accepted files"]);
+    const commitSha = await gitCommand(repositoryPath, ["rev-parse", "HEAD"]);
+    await gitCommand(repositoryPath, ["worktree", "add", "-b", `executions/${ownerId}`, ownerPath]);
+    await gitCommand(repositoryPath, ["worktree", "add", "-b", `executions/${publisherId}`, publisherPath]);
+    state.git = { enabled: true, status: "ready", provider: "github", repository: { owner: "fixture", name: "registration",
+      htmlUrl: "https://github.example/fixture/registration", private: true, defaultBranch: "main", localPath: repositoryPath } };
+    await storage.saveState(state);
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "registration", hostId: "fixture" });
+    liveCoordinators.push(coordinator); await coordinator.initialize(); const database = coordinator.database();
+    await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      git: state.git, workerCapacity: 1, managementCapacity: 1 });
+    await database.activateNode({ projectId: state.id, nodeRunId: "node-source", node: { kind: "agent", nodeId: "idea", agentId: "idea" },
+      activationRequestId: "source-activation", inputSnapshotRef: "source", activatedByAgentId: "main", workflowRevision: 1 });
+    const owner = (await database.startStandaloneExecution({ projectId: state.id, nodeRunId: "node-source", taskId: "task-source", executionId: ownerId,
+      agentId: "idea", assignment: "Produce the report", executionBranch: `executions/${ownerId}`, worktreePath: ownerPath, invocationId: "inv_source" })).execution;
+    await database.observePullRequest({ projectId: state.id, executionId: ownerId, ownershipEpoch: 1, pullRequest: {
+      id: "pull-source", providerNumber: 1, htmlUrl: "https://github.example/pull/1", head: owner.executionBranch, base: "main",
+      ownerExecutionId: ownerId, status: "merged", headSha: commitSha, mergeCommitSha: commitSha, observedAt: new Date().toISOString() } });
+    await database.completeExecution({ projectId: state.id, executionId: ownerId, ownershipEpoch: 1, output: "Merged report" });
+    await database.completeStandaloneNode({ projectId: state.id, nodeRunId: "node-source", executionId: ownerId, ownershipEpoch: 1,
+      output: "Merged report", routeEmissionId: "source-return", route: { kind: "fixed", targetNodeId: "main" } });
+    await database.activateNode({ projectId: state.id, nodeRunId: "node-registration", node: { kind: "agent", nodeId: "idea", agentId: "idea" },
+      activationRequestId: "registration-activation", inputSnapshotRef: "registration", activatedByAgentId: "main", workflowRevision: 1 });
+    const publisher = (await database.startStandaloneExecution({ projectId: state.id, nodeRunId: "node-registration", taskId: "task-registration", executionId: publisherId,
+      agentId: "idea", assignment: "Register the accepted report", executionBranch: `executions/${publisherId}`, worktreePath: publisherPath, invocationId: "inv_registration" })).execution;
+    for (const artifactPath of ["accepted.md", "second.md"]) await database.appendEvent({ projectId: state.id, agentId: "idea",
+      executionId: publisherId, ownershipEpoch: 1, invocationId: publisher.invocationId, type: "artifact.publication.staged",
+      payload: { path: artifactPath, title: artifactPath, kind: "document", description: "Register the accepted file" } });
+    if (condition === "modified") await fs.writeFile(path.join(publisherPath, "second.md"), "Unmerged replacement\n");
+    if (condition === "missing") await fs.unlink(path.join(publisherPath, "second.md"));
+    const internal = coordinator as unknown as { commitUnchangedMergedArtifactIntents(state: ProjectState, execution: typeof publisher, base: string): Promise<void> };
+    if (condition === "accepted") {
+      await internal.commitUnchangedMergedArtifactIntents(state, publisher, "main");
+      await internal.commitUnchangedMergedArtifactIntents(state, publisher, "main");
+      expect(state.artifacts).toHaveLength(2);
+      for (const artifact of state.artifacts!) {
+        expect(artifact.gitSource).toMatchObject({ executionId: ownerId, pullRequestId: "pull-source", commitSha });
+        expect(artifact.invocationId).toBe(publisher.invocationId);
+        expect(artifact.sha256).toMatch(/^[a-f0-9]{64}$/);
+      }
+      expect((await storage.readEvents(state.id, 0, 1000)).filter(event => event.type === "artifact.published")).toHaveLength(2);
+    } else {
+      await expect(internal.commitUnchangedMergedArtifactIntents(state, publisher, "main")).rejects.toThrow("second.md");
+      expect(state.artifacts ?? []).toHaveLength(0);
+    }
+    expect((await database.latestAgentGitFacts(state.id, publisherId, 1))).toBeUndefined();
+    expect((await database.projectState(state.id)).pullRequests[0]?.ownerExecutionId).toBe(ownerId);
+  });
+  it("projects every native Main invocation even when Main was never a workflow execution", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-main-count-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_abababababababababababababababab"); await storage.createProject(state);
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-count", hostId: "fixture" });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    await coordinator.database().createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      git: state.git, workerCapacity: 1, managementCapacity: 1 });
+    for (const invocationId of ["main-routing", "main-recovery", "main-management"]) {
+      await coordinator.database().appendEvent({ projectId: state.id, agentId: "main", invocationId,
+        type: "agent.native_binding.opened", payload: {} });
+    }
+    expect((await coordinator.projectReadModel(state)).executionCounts?.main).toBe(3);
+    expect((await coordinator.projectReadModel(state)).executionCounts?.main).toBe(3);
+    expect(state.executionCounts?.main ?? 0).toBe(0);
+    expect((await coordinator.database().projectState(state.id)).executions).toEqual([]);
+  });
+  it("delivers only known foreign late system messages during Main's next normal input without waking a project", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-late-main-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"); await storage.createProject(state);
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "late-main", hostId: "fixture" });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    await coordinator.database().createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      git: { enabled: false, status: "disabled" }, workerCapacity: 1, managementCapacity: 1 });
+    const runCounts = structuredClone(state.runCounts);
+    const internal = coordinator as unknown as {
+      traceSink(state: ProjectState, agent: string, invocationId: string): import("../../src/core/types.js").TraceSink;
+      attachRuntimeCallbacks(state: ProjectState, request: AgentRunRequest): void;
+    };
+    const trace = internal.traceSink(state, "idea", "inv_original");
+    await trace("output", "ordinary old command output", { late: true, inputId: "original-input" });
+    expect((await coordinator.database().unexpectedSystemMessages(state.id))).toEqual([]);
+    const source = { late: true, foreignSystemMessage: true, inputId: "original-input" };
+    await trace("output", "Known other native Agent completed its old command", source);
+    await trace("output", "Known other native Agent completed its old command", source);
+    expect((await coordinator.database().unexpectedSystemMessages(state.id))).toHaveLength(1);
+    const request = { project: state, agent: "main", invocationId: "inv_main_normal" } as AgentRunRequest;
+    internal.attachRuntimeCallbacks(state, request);
+    const session = { schemaVersion: 1, harnessId: "codex", adapterVersion: "fixture", nativeId: "main-session",
+      generation: 1, durable: true, createdAt: new Date().toISOString() } as const;
+    const context = vi.fn(async () => "Known-source context index");
+    expect(await request.onPendingWorkflowAdjustments!("main-input", session, context)).toContain("Unexpected system messages");
+    expect(context).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ key: "unexpected-system-messages",
+      records: [expect.objectContaining({ sourceAgentId: "idea", sourceInvocationId: "inv_original", inputId: "original-input" })] })]));
+    const worker = { project: state, agent: "idea", invocationId: "inv_worker_normal" } as AgentRunRequest;
+    internal.attachRuntimeCallbacks(state, worker);
+    expect(await worker.onPendingWorkflowAdjustments!("worker-input", session)).toBe("");
+    expect(state.runCounts).toEqual(runCounts);
+    state.status = "completed";
+    await trace("output", "A later known foreign result", source);
+    expect(state.status).toBe("completed");
+    expect((await coordinator.database().unexpectedSystemMessages(state.id))).toHaveLength(2);
+  });
+
+  it("keeps production coordinator writes current while its business thread stalls", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-independent-heartbeat-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "worker-heartbeat", hostId: "fixture", leaseDurationMs: 5000 });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5700);
+    expect(coordinator.writerLeaseHealth()).toMatchObject({ status: "ready", epoch: 1 });
+    const state = projectState("prj_b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1");
+    await coordinator.database().createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      git: { enabled: false, status: "disabled" }, workerCapacity: 1, managementCapacity: 1 });
+    expect((await coordinator.database().projectState(state.id)).id).toBe(state.id);
+    await coordinator.shutdown();
+  }, 20_000);
+
+  it("exposes a service interruption and retained sessions when the writer lease expires", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-writer-readiness-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    let clock = Date.now();
+    const state = projectState("prj_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1");
+    state.git = { enabled: true, status: "ready" }; await storage.createProject(state);
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "readiness", hostId: "fixture", now: () => clock });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    await coordinator.database().createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      git: state.git, workerCapacity: 1, managementCapacity: 1 });
+    const before = structuredClone(state), log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(coordinator.writerLeaseHealth().status).toBe("ready"); clock += 31_000;
+      const view = await coordinator.projectReadModel(state);
+      expect(view).toMatchObject({ status: "interrupted", phase: "collaboration:writer-lease-lost", runtime: {
+        status: "interrupted", activities: [], waiting: { kind: "service", failedAt: new Date(clock).toISOString(), errorCode: "WRITER_LEASE_STALE" } } });
+      expect(coordinator.writerLeaseHealth()).toMatchObject({ status: "unavailable", code: "WRITER_LEASE_STALE" });
+      expect((await coordinator.queueReadModel(state))?.state.runtime?.activities).toEqual([]);
+      expect(state).toEqual(before);
+    } finally { log.mockRestore(); await coordinator.shutdown().catch(() => {}); }
+  });
+
   it("retains the task and waits for repair after a permanent outer scheduling error", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-permanent-schedule-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
@@ -87,14 +269,20 @@ describe("CollaborationRuntimeCoordinator", () => {
     liveCoordinators.push(coordinator); await coordinator.initialize();
     const run = vi.spyOn(coordinator as unknown as { runManagedProjectWithRecovery(state: ProjectState, signal: AbortSignal): Promise<void> }, "runManagedProjectWithRecovery")
       .mockRejectedValue(new HarnessRuntimeError("HARNESS_CONFIGURATION_INVALID", "Selected gateway credentials need repair", {}, { retryable: false }));
+    const liveRuntime = vi.spyOn(storage.hub, "publishRuntime");
     await coordinator.createProject(state, { enabled: true, provider: "github" });
     await waitFor(() => state.status === "interrupted");
     expect(state.phase).toBe("collaboration:repair-required");
     expect(state.lastError).toContain("credentials need repair");
     await new Promise(resolve => setTimeout(resolve, 40));
+    expect(liveRuntime.mock.calls.at(-1)).toMatchObject([state.id, {
+      status: "interrupted", phase: "collaboration:repair-required",
+      waiting: { kind: "configuration", reason: expect.stringContaining("credentials need repair") }
+    }]);
+    expect(state.runtime?.status).toBe("interrupted");
     expect(run).toHaveBeenCalledTimes(1);
     expect(state.workflowRecovery?.nextRetryAt).toBeUndefined();
-    expect(coordinator.database().failureAttempts(state.id).at(-1)).toMatchObject({ retryable: false, errorCode: "HARNESS_CONFIGURATION_INVALID" });
+    expect((await coordinator.database().failureAttempts(state.id)).at(-1)).toMatchObject({ retryable: false, errorCode: "HARNESS_CONFIGURATION_INVALID" });
     await coordinator.shutdown();
   });
 
@@ -127,7 +315,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     await waitFor(() => state.status === "interrupted"); expect(state.phase).toBe("collaboration:repair-required");
     expect(state.lastError).toContain("configured credential was rejected"); await new Promise(resolve => setTimeout(resolve, 40));
     expect(resume).toHaveBeenCalledTimes(1); expect(state.workflowRecovery).toBeUndefined();
-    expect(coordinator.database().failureAttempts(state.id).at(-1)).toMatchObject({ operation: "workflow.recovery", retryable: false });
+    expect((await coordinator.database().failureAttempts(state.id)).at(-1)).toMatchObject({ operation: "workflow.recovery", retryable: false });
   });
 
   it("continues multiple retained Worker recovery rounds without reusing an input or replacing its owner", async () => {
@@ -163,6 +351,42 @@ describe("CollaborationRuntimeCoordinator", () => {
     } finally { await coordinator.shutdown(); }
   }, 15_000);
 
+  it("clears the current Main decision error before starting its successfully selected Worker and retains failure history", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-main-route-error-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_42424242424242424242424242424242");
+    state.orchestration = { ...state.orchestration, input: { source: "input", target: "main" },
+      routes: { ...state.orchestration.routes, main: [{ target: "idea", kind: "strong" }], idea: [{ target: "finish", kind: "strong" }] } };
+    await storage.createProject(state);
+    let workerOpened = false, errorAtWorkerStart: string | undefined;
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-route-error", hostId: "fixture",
+      gitFactory: options => happyGitFake(options, []), residentLauncher: {
+        async decideRoute(input) {
+          state.lastError = "Main management node awaits a fenced route or completion decision";
+          await coordinator.database().appendFailureAttempt({ projectId: state.id, attemptId: "original-main-missing-decision",
+            nodeRunId: input.sourceNodeRunId, agentId: "main", scope: "scheduler", operation: `main-route.decision:${input.sourceNodeRunId}`,
+            status: "failed", errorCode: "MAIN_ROUTE_DECISION_MISSING", retryable: true, redactedMessage: state.lastError,
+            causeClass: "Error", startedAt: state.createdAt, finishedAt: state.createdAt, metadata: {} });
+          return agentFixtureMainDecision(input, { targetNodeId: "idea", decisionRequestId: "actual-main-route",
+            output: "Continue the original research task" });
+        },
+        async open(input) {
+          workerOpened = true; errorAtWorkerStart = state.lastError;
+          return { async submit(turn) { return agentFixtureDelivery(input, turn, { handoff: "Research task delivered" }, coordinator); },
+            async close() {} };
+        }
+      } });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    try {
+      await coordinator.createProject(state, { enabled: true, provider: "github" });
+      await waitFor(() => workerOpened);
+      expect(errorAtWorkerStart).toBeUndefined();
+      const attempts = (await coordinator.database().projectState(state.id)).failureAttempts;
+      expect(attempts.filter(a => a.attemptId === "original-main-missing-decision" && a.status === "failed")).toHaveLength(1);
+      expect(attempts.some(a => a.scope === "scheduler" && a.operation.startsWith("main-route.decision:") && a.status === "succeeded")).toBe(true);
+    } finally { await coordinator.shutdown(); }
+  });
+
   it("reconciles historical Main failures only after the original decision and finish receipt are durable", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-main-failure-recovery-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
@@ -182,22 +406,22 @@ describe("CollaborationRuntimeCoordinator", () => {
     try {
       await coordinator.createProject(state, { enabled: true, provider: "github" });
       await waitFor(() => state.status === "completed");
-      const database = coordinator.database(), node = database.projectState(state.id).nodeRuns[0]!;
+      const database = coordinator.database(), node = (await database.projectState(state.id)).nodeRuns[0]!;
       for (const [index, operation] of [`main-route:${node.id}`, "main-route.recovery", `main-route.recovery:${node.id}`].entries()) {
-        database.appendFailureAttempt({ projectId: state.id, attemptId: `historical-main-${index}`, nodeRunId: node.id,
+        await database.appendFailureAttempt({ projectId: state.id, attemptId: `historical-main-${index}`, nodeRunId: node.id,
           agentId: "main", scope: index === 2 ? "scheduler" : "resident", operation, status: "failed",
           errorCode: "MAIN_ROUTE_RECOVERY_REQUIRED", retryable: true, redactedMessage: "Original Main decision was incomplete",
           causeClass: "Error", startedAt: node.activatedAt, finishedAt: node.completedAt!, metadata: {} });
       }
-      expect(database.projectState(state.id).failureSummary.unresolvedFailures).toBe(3);
+      expect((await database.projectState(state.id)).failureSummary.unresolvedFailures).toBe(3);
       await coordinator.recoverProject(state);
       expect(decisions).toBe(1); expect(state.status).toBe("completed");
-      const repaired = database.projectState(state.id);
+      const repaired = await database.projectState(state.id);
       expect(repaired.failureSummary.unresolvedFailures).toBe(0);
       expect(repaired.failureAttempts.filter(attempt => attempt.status === "failed")).toHaveLength(3);
       expect(repaired.failureAttempts.filter(attempt => attempt.status === "succeeded" && attempt.nodeRunId === node.id)).toHaveLength(3);
       await coordinator.recoverProject(state);
-      expect(database.projectState(state.id).failureAttempts).toHaveLength(repaired.failureAttempts.length);
+      expect((await database.projectState(state.id)).failureAttempts).toHaveLength(repaired.failureAttempts.length);
     } finally { await coordinator.shutdown(); }
   });
   it("workflow continuity: joins a live Resume and releases the temporary input fence after a write failure", async () => {
@@ -318,7 +542,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       if (mode !== "automatic") {
         await waitFor(() => state.status === "retrying" && submits === 3);
         const execution = state.executions![0]!;
-        expect(coordinator.database().projectState(state.id).agentGitDelivery?.[execution.id]).toMatchObject({
+        expect((await coordinator.database().projectState(state.id)).agentGitDelivery?.[execution.id]).toMatchObject({
           ready: false, unresolvedOperations: [expect.objectContaining({ kind: "pull.merge", localStage: "synchronization_pending" })] });
         if (mode === "manual") {
           await coordinator.pauseProject(state);
@@ -330,9 +554,9 @@ describe("CollaborationRuntimeCoordinator", () => {
         } else {
           const repository = repositoryFact(state.git!.repository!.name);
           const operation = { id: "continuity-repository", payloadHash: "continuity-repository" };
-          coordinator.database().prepareOperation(state.id, { ...operation, kind: "repository.create", status: "prepared" });
-          coordinator.database().transitionOperation(state.id, { ...operation, status: "observed", remoteFact: repository });
-          coordinator.database().transitionOperation(state.id, { ...operation, status: "finalized", remoteFact: repository });
+          await coordinator.database().prepareOperation(state.id, { ...operation, kind: "repository.create", status: "prepared" });
+          await coordinator.database().transitionOperation(state.id, { ...operation, status: "observed", remoteFact: repository });
+          await coordinator.database().transitionOperation(state.id, { ...operation, status: "finalized", remoteFact: repository });
           await coordinator.shutdown();
           state = await storage.loadState(state.id);
           expect(state.workflowRecovery).toMatchObject({ pending: true, attempt: 1 });
@@ -409,15 +633,15 @@ describe("CollaborationRuntimeCoordinator", () => {
         await coordinator.resumeProject(state);
       }
       if (recovery === "restart") {
-        await waitFor(() => Boolean(coordinator.database().pendingHarnessRecovery(state.id)) && state.status === "retrying");
+        await waitFor(async () => Boolean((await coordinator.database().pendingHarnessRecovery(state.id))) && state.status === "retrying");
         // The lightweight Git fixture supplies a live repository to the first
         // writer. Persist its real provider fact as production initialization
         // does, so a new writer can recover without that in-memory cache.
         const repository = repositoryFact(state.git!.repository!.name);
         const operation = { id: "native-recovery-repository", payloadHash: "native-recovery-repository-fact" };
-        coordinator.database().prepareOperation(state.id, { ...operation, kind: "repository.create", status: "prepared" });
-        coordinator.database().transitionOperation(state.id, { ...operation, status: "observed", remoteFact: repository });
-        coordinator.database().transitionOperation(state.id, { ...operation, status: "finalized", remoteFact: repository });
+        await coordinator.database().prepareOperation(state.id, { ...operation, kind: "repository.create", status: "prepared" });
+        await coordinator.database().transitionOperation(state.id, { ...operation, status: "observed", remoteFact: repository });
+        await coordinator.database().transitionOperation(state.id, { ...operation, status: "finalized", remoteFact: repository });
         await coordinator.shutdown();
         // A stale technical-pause mirror must not override S's saved automatic
         // recovery intent. Explicit Pause still has its own separate proof.
@@ -431,16 +655,16 @@ describe("CollaborationRuntimeCoordinator", () => {
       if (recovery === "permanent") {
         await waitFor(() => ["paused", "retrying", "interrupted"].includes(state.status) && submits === 2);
         expect(state.lastError).toContain("authentication failed");
-        expect(coordinator.database().pendingHarnessRecovery(state.id)).toBeUndefined();
+        expect((await coordinator.database().pendingHarnessRecovery(state.id))).toBeUndefined();
         await coordinator.recoverProject(state);
         expect(state.status).toBe("interrupted");
         expect(state.phase).toBe("collaboration:repair-required");
         expect(submits).toBe(2);
         return;
       }
-      await waitFor(() => state.status === "completed").catch(error => {
+      await waitFor(() => state.status === "completed").catch(async error => {
         throw new Error(JSON.stringify({ status: state.status, phase: state.phase, error: state.lastError,
-          pending: coordinator.database().pendingHarnessRecovery(state.id)?.payload, opens, submits }), { cause: error });
+          pending: (await coordinator.database().pendingHarnessRecovery(state.id))?.payload, opens, submits }), { cause: error });
       });
       expect(oldResume).not.toHaveBeenCalled();
       expect(opens).toHaveLength(2);
@@ -448,10 +672,10 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(order.filter(item => item.startsWith("push-") || item === "pr:idea")).toHaveLength(2);
       expect(state.executions?.[0]).toMatchObject({ id: opens[0]!.id, ownershipEpoch: 2, status: "succeeded" });
       expect(state.taskCompletions?.[opens[0]!.id]).toBeDefined();
-      expect(coordinator.database().executionHasNativeRecoveryStopProvenance(state.id, opens[0]!.id, 1)).toBe(true);
-      expect(coordinator.database().executionHasExactRestartStopProvenance(state.id, opens[0]!.id, 1)).toBe(false);
-      expect(coordinator.database().latestAgentGitFacts(state.id, opens[0]!.id, 2)?.merged?.providerNumber).toBe(1);
-      await waitFor(() => !coordinator.database().pendingHarnessRecovery(state.id));
+      expect((await coordinator.database().executionHasNativeRecoveryStopProvenance(state.id, opens[0]!.id, 1))).toBe(true);
+      expect((await coordinator.database().executionHasExactRestartStopProvenance(state.id, opens[0]!.id, 1))).toBe(false);
+      expect((await coordinator.database().latestAgentGitFacts(state.id, opens[0]!.id, 2))?.merged?.providerNumber).toBe(1);
+      await waitFor(async () => !(await coordinator.database().pendingHarnessRecovery(state.id)));
     } finally { await coordinator.shutdown(); }
   }, 20_000);
 
@@ -472,23 +696,23 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.initialize();
     try {
       const db = coordinator.database();
-      db.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      await db.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
         git: state.git, workerCapacity: 2, managementCapacity: 1, formalState: { checkpoint: state } });
-      const intent = db.appendEvent({ projectId: state.id, agentId: "main", requestId: "original-user-stop",
+      const intent = await db.appendEvent({ projectId: state.id, agentId: "main", requestId: "original-user-stop",
         type: "project.cancellation.requested", payload: { actor: "user", reason: "user_cancelled", resumable: true } });
-      if (alreadyConfirmed) db.confirmProjectCancellationStopped(state.id);
+      if (alreadyConfirmed) await db.confirmProjectCancellationStopped(state.id);
       const originalCounts = structuredClone({ mainInvocationSeq: state.mainInvocationSeq, runCounts: state.runCounts });
       const cancel = vi.spyOn(coordinator, "cancelProject");
       await coordinator.recoverProject(state);
       expect(state.status).toBe(hasUserWorkflowPause(state) ? "paused" : "retrying"); expect(state.phase).toBe("collaboration:user-cancelled");
-      const proof = db.eventByRequestId(state.id, `project-stop-confirmed:${state.id}:${intent.event.seq}`);
+      const proof = await db.eventByRequestId(state.id, `project-stop-confirmed:${state.id}:${intent.event.seq}`);
       expect(proof?.type).toBe("project.cancellation.stop_confirmed");
       await coordinator.recoverProject(state);
       expect(cancel).toHaveBeenCalledTimes(alreadyConfirmed ? 0 : 1);
-      expect(db.eventByRequestId(state.id, `project-stop-confirmed:${state.id}:${intent.event.seq}`)).toEqual(proof);
+      expect((await db.eventByRequestId(state.id, `project-stop-confirmed:${state.id}:${intent.event.seq}`))).toEqual(proof);
       expect({ mainInvocationSeq: state.mainInvocationSeq, runCounts: state.runCounts }).toEqual(originalCounts);
       expect(native).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
-      expect(db.eventsAfter(state.id, 0, 1000).filter(e => e.type === "project.cancellation.stop_confirmed")).toHaveLength(1);
+      expect((await db.eventsAfter(state.id, 0, 1000)).filter(e => e.type === "project.cancellation.stop_confirmed")).toHaveLength(1);
     } finally { await coordinator.shutdown(); }
   });
 
@@ -507,13 +731,13 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.initialize();
     try {
       const db = coordinator.database();
-      db.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      await db.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
         git: state.git, workerCapacity: 2, managementCapacity: 1, formalState: { checkpoint: state } });
       const nodeRunId = "main-replay-node", inputId = "main-original-input", invocationId = "inv_" + "4".repeat(32);
-      db.activateNode({ projectId: state.id, nodeRunId, node: { kind: "agent", nodeId: "main", agentId: "main" },
+      await db.activateNode({ projectId: state.id, nodeRunId, node: { kind: "agent", nodeId: "main", agentId: "main" },
         activationRequestId: "main-replay-activation", inputSnapshotRef: inputId, activatedByAgentId: "main", workflowRevision: 1 });
       const taskId = `main-management:${nodeRunId}:1:${inputId}`;
-      db.appendEvent({ projectId: state.id, nodeRunId, agentId: "main", coordinatorEpoch: 1, invocationId,
+      await db.appendEvent({ projectId: state.id, nodeRunId, agentId: "main", coordinatorEpoch: 1, invocationId,
         requestId: "main-task-completion-" + createHash("sha256").update(taskId).digest("hex"),
         type: "main.route.task_completion.committed", payload: { taskId, inputId, callId: "original-finish" } });
       const input = { state, sourceNodeRunId: nodeRunId, sourceAgentId: "main", sourceIsMain: true,
@@ -522,7 +746,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         signal: new AbortController().signal };
       const finish = (coordinator as unknown as { finishMainRouteDecision(request: typeof input): Promise<unknown> }).finishMainRouteDecision.bind(coordinator);
       await finish(input);
-      const response = db.eventByRequestId(state.id, `main-route-response-${nodeRunId}-1`);
+      const response = await db.eventByRequestId(state.id, `main-route-response-${nodeRunId}-1`);
       expect(response).toMatchObject({ workflowRevision: 1, type: "main.route.response.committed" });
       const originalMainInvocationSeq = state.mainInvocationSeq;
       if (advance) {
@@ -530,14 +754,14 @@ describe("CollaborationRuntimeCoordinator", () => {
         await coordinator.saveWorkflowRevision(state, { orchestration: next, affectedGroupIds: [], requestId: "later-user-revision" });
         expect(state.workflowRevision).toBe(2);
       }
-      const eventsBefore = db.eventsAfter(state.id, 0, 1000), revisionBefore = db.projectState(state.id).stateRevision;
+      const eventsBefore = await db.eventsAfter(state.id, 0, 1000), revisionBefore = (await db.projectState(state.id)).stateRevision;
       await expect(finish(input)).resolves.toEqual(input.decision);
       expect(state.mainInvocationSeq).toBe(originalMainInvocationSeq);
-      expect(db.eventByRequestId(state.id, `main-route-response-${nodeRunId}-1`)).toEqual(response);
-      expect(db.eventsAfter(state.id, 0, 1000).filter(e => e.type === "main.route.response.committed")).toHaveLength(1);
-      expect(db.projectState(state.id).workflowRevision).toBe(advance ? 2 : 1);
-      expect(db.projectState(state.id).stateRevision).toBe(revisionBefore);
-      expect(db.eventsAfter(state.id, 0, 1000)).toEqual(eventsBefore);
+      expect((await db.eventByRequestId(state.id, `main-route-response-${nodeRunId}-1`))).toEqual(response);
+      expect((await db.eventsAfter(state.id, 0, 1000)).filter(e => e.type === "main.route.response.committed")).toHaveLength(1);
+      expect((await db.projectState(state.id)).workflowRevision).toBe(advance ? 2 : 1);
+      expect((await db.projectState(state.id)).stateRevision).toBe(revisionBefore);
+      expect((await db.eventsAfter(state.id, 0, 1000))).toEqual(eventsBefore);
       expect(native).not.toHaveBeenCalled();
     } finally { await coordinator.shutdown(); }
   });
@@ -571,13 +795,13 @@ describe("CollaborationRuntimeCoordinator", () => {
     try {
       if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
       await coordinator.initialize();
-      for (const state of [blocked, untouched]) coordinator.database().createProject({ projectId: state.id, workflowRevision: 1,
+      for (const state of [blocked, untouched]) await coordinator.database().createProject({ projectId: state.id, workflowRevision: 1,
         workflowSnapshot: state.orchestration, git: state.git!, workerCapacity: 1, formalState: { checkpoint: state } });
       for (const state of [blocked, untouched]) {
         const id = `startup-repository-${state.id}`, fact = repositoryFact(state.id);
-        coordinator.database().prepareOperation(state.id, { id, kind: "repository.create", payloadHash: id, status: "prepared" });
+        await coordinator.database().prepareOperation(state.id, { id, kind: "repository.create", payloadHash: id, status: "prepared" });
         for (const status of ["observed", "finalized"] as const)
-          coordinator.database().transitionOperation(state.id, { id, payloadHash: id, status, remoteFact: fact });
+          await coordinator.database().transitionOperation(state.id, { id, payloadHash: id, status, remoteFact: fact });
       }
       // Register genuinely new empty domains first, then retain the real
       // checkpoint shape used by recovery rather than migrating history.
@@ -592,10 +816,10 @@ describe("CollaborationRuntimeCoordinator", () => {
         mainInvocationSeq: blocked.mainInvocationSeq, requirement: blocked.requirement });
       if (outcome === "frozen-authorization-error") {
         const db = coordinator.database();
-        db.activateNode({ projectId: blocked.id, nodeRunId: "frozen-startup-main",
+        await db.activateNode({ projectId: blocked.id, nodeRunId: "frozen-startup-main",
           node: { kind: "agent", nodeId: "main", agentId: "main" }, activationRequestId: "frozen-startup-input",
           inputSnapshotRef: `project:${blocked.id}:requirement:cycle:1`, activatedByAgentId: "main", workflowRevision: 1 });
-        db.freezeMainRouteFailure({ projectId: blocked.id, nodeRunId: "frozen-startup-main", routeEpoch: 1,
+        await db.freezeMainRouteFailure({ projectId: blocked.id, nodeRunId: "frozen-startup-main", routeEpoch: 1,
           error: "Original Main process disappeared", requestId: "freeze-startup-main" });
       }
       await expect(orchestrator.initialize()).resolves.toBeUndefined();
@@ -607,12 +831,12 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect({ session: failed.agentSessions, ids: failed.agentSessionIds, counts: failed.runCounts,
         mainInvocationSeq: failed.mainInvocationSeq, requirement: failed.requirement }).toEqual(original);
       expect(projects.find(p => p.id === untouched.id)).toMatchObject({ status: "retrying", phase: "collaboration:ready" });
-      expect(coordinator.database().failureAttempts(blocked.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+      expect((await coordinator.database().failureAttempts(blocked.id))).toEqual(expect.arrayContaining([expect.objectContaining({
         scope: "git", operation: "project.recovery.remote-ref", status: "failed", retryable: true
       })]));
-      expect(coordinator.database().failureAttempts(untouched.id)).toEqual([]);
+      expect((await coordinator.database().failureAttempts(untouched.id))).toEqual([]);
       expect(provider).toHaveBeenCalledTimes(1); expect(native).not.toHaveBeenCalled();
-      coordinator.database().assertWriterLeaseHeld();
+      await coordinator.database().assertWriterLeaseHeld();
     } finally { await orchestrator.shutdown(); }
   });
 
@@ -625,13 +849,13 @@ describe("CollaborationRuntimeCoordinator", () => {
     try {
       if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
       await coordinator.initialize(); const database = coordinator.database();
-      database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
         git: state.git, workerCapacity: 1, formalState: { checkpoint: state } });
       for (let i = 0; i < 510; i++) {
-        const prior = database.projectStateDocument(state.id, "project.checkpoint")!;
-        database.writeProjectStateDocument(state.id, "project.checkpoint", { ...state, phase: `observed-${i}` }, prior.version);
+        const prior = (await database.projectStateDocument(state.id, "project.checkpoint"))!;
+        await database.writeProjectStateDocument(state.id, "project.checkpoint", { ...state, phase: `observed-${i}` }, prior.version);
       }
-      const before = database.eventsAfter(state.id, 0, 2000).length;
+      const before = (await database.eventsAfter(state.id, 0, 2000)).length;
       const append = storage.appendEvent.bind(storage); let mirrored = 0;
       vi.spyOn(storage, "appendEvent").mockImplementation(async (...args) => {
         // Bound the reproduction even if a 500-event page reproduces itself.
@@ -639,12 +863,12 @@ describe("CollaborationRuntimeCoordinator", () => {
         return append(...args);
       });
       const publisher = coordinator as unknown as { publishProjection(state: ProjectState, projection: ReturnType<typeof database.projectState>): Promise<void> };
-      await publisher.publishProjection(state, database.projectState(state.id));
-      const after = database.eventsAfter(state.id, 0, 2000).length;
+      await publisher.publishProjection(state, (await database.projectState(state.id)));
+      const after = (await database.eventsAfter(state.id, 0, 2000)).length;
       expect(after - before).toBeLessThan(10); expect(mirrored).toBeLessThan(10);
-      expect(database.projectStateDocument(state.id, "project.checkpoint")?.value).toMatchObject({ id: state.id, status: "paused" });
-      const history = database.projectStateRequest({ kind: "system", projectId: state.id, source: "controlled-system-reader" },
-        { operation: "get", object: { kind: "project", id: state.id } }) as { historyTotal: number };
+      expect((await database.projectStateDocument(state.id, "project.checkpoint"))?.value).toMatchObject({ id: state.id, status: "paused" });
+      const history = (await database.projectStateRequest({ kind: "system", projectId: state.id, source: "controlled-system-reader" },
+        { operation: "get", object: { kind: "project", id: state.id } })) as { historyTotal: number };
       expect(history.historyTotal).toBeGreaterThan(510);
     } finally { await coordinator.shutdown(); }
   });
@@ -683,12 +907,12 @@ describe("CollaborationRuntimeCoordinator", () => {
         orchestration: { agents: [{ name: "main", template: "main" }], input: { source: "input", target: "main" }, routes: { main: [] },
           decisionPlans: { main: "Inspect the original task" }, allowUserIntervention: true,
           termination: { agent: "main", condition: "Main explicitly verifies the task", decisionBy: "main", automatic: false }, resultFormat: { presets: [], custom: "" } } });
-      await waitFor(() => coordinator.database().projectState(project.id).runtime?.status === "completed");
+      await waitFor(async () => (await coordinator.database().projectState(project.id)).runtime?.status === "completed");
       expect(inspected).toBe(true); expect((await storage.loadState(project.id)).lastError).toBeFalsy();
-      const projection = coordinator.database().projectState(project.id);
+      const projection = await coordinator.database().projectState(project.id);
       expect(projection.runtime?.status).toBe("completed");
       expect(projection.formalState?.checkpoint.lifecycle).not.toHaveProperty("status");
-      expect(coordinator.database().projectStateDocument(project.id, "project.checkpoint")!.value).toMatchObject({ status: "completed" });
+      expect((await coordinator.database().projectStateDocument(project.id, "project.checkpoint"))!.value).toMatchObject({ status: "completed" });
       expect(projection.businessState).toEqual(expect.arrayContaining([expect.objectContaining({
         object: { kind: "project", id: project.id }, extensions: { completed: true, acceptance_progress: { step: "Main inspected the original task" } }
       })]));
@@ -714,9 +938,9 @@ describe("CollaborationRuntimeCoordinator", () => {
     try {
       liveCoordinators.push(coordinator); await coordinator.initialize();
       const database = coordinator.database();
-      database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
         git: state.git, workerCapacity: 1, managementCapacity: 1 });
-      const lease = database.writerLease();
+      const lease = await database.writerLease();
       const error = Object.assign(new Error(boundary === "renewal" ? "disk I/O error" : "database is locked"), {
         code: "ERR_SQLITE_ERROR", errcode: boundary === "renewal" ? 778 : 5 });
       const checkError = Object.assign(new Error("lease verification I/O error"), { code: "ERR_SQLITE_ERROR", errcode: 778 });
@@ -726,15 +950,16 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(log).toHaveBeenCalledExactlyOnceWith("Collaboration writer lease renewal failed; writer fenced", {
         timestamp: new Date(clock).toISOString(), error: error.message, code: "ERR_SQLITE_ERROR", sqliteCode: error.errcode,
         sqlitePrimaryCode: error.errcode & 0xff,
+        heartbeat: { intervalMs: 10_000, scheduledAtMs: clock, startedAtMs: clock, delayMs: 0 },
         leaseEpoch: lease.epoch, leaseExpiresAt: new Date(lease.expiresAtMs).toISOString(),
         leaseServiceId: lease.serviceId, leaseInstanceId: lease.instanceId, leaseHostId: lease.hostId,
         leaseRemainingMs: lease.expiresAtMs - clock, lastSuccessfulRenewalAt: null,
         ...(boundary === "lease-check" ? { leaseCheckFailure: { error: checkError.message, code: "ERR_SQLITE_ERROR",
           sqliteCode: 778, sqlitePrimaryCode: 10 } } : {})
       });
-      expect(() => database.assertWriterLeaseHeld()).not.toThrow();
-      expect(database.writerLease()).toEqual(lease);
-      expect(coordinator.projectReadModel(state).phase).toBe("collaboration:writer-lease-lost");
+      await expect(database.assertWriterLeaseHeld()).resolves.toBeUndefined();
+      expect((await database.writerLease())).toEqual(lease);
+      expect((await coordinator.projectReadModel(state)).phase).toBe("collaboration:writer-lease-lost");
       await expect(coordinator.pauseProject(state)).rejects.toMatchObject({ message: "Collaboration writer lease was lost", cause: error });
       clock += 10_000; vi.advanceTimersByTime(10_000);
       expect(renew).toHaveBeenCalledOnce(); expect(log).toHaveBeenCalledOnce();
@@ -755,7 +980,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       liveCoordinators.push(coordinator); await coordinator.initialize();
       const database = coordinator.database();
       clock += 10_000; vi.advanceTimersByTime(10_000);
-      const confirmedAt = clock, lease = database.writerLease();
+      const confirmedAt = clock, lease = await database.writerLease();
       inspect = new DatabaseSync(databasePath);
       inspect.exec(`CREATE TRIGGER reject_heartbeat BEFORE UPDATE ON writer_service_lease
         BEGIN SELECT RAISE(ROLLBACK, 'original_failure'); END;`);
@@ -766,7 +991,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           leaseEpoch: lease.epoch, leaseInstanceId: lease.instanceId,
           lastRenewalAttempt: { startedAtMs: clock, durationMs: expect.any(Number), stage: "update",
             outcome: "failed", transactionActive: false } }));
-      expect(database.writerLease()).toEqual(lease);
+      expect((await database.writerLease())).toEqual(lease);
       expect(inspect.prepare("SELECT renewed_at_ms FROM writer_service_lease").get()).toMatchObject({ renewed_at_ms: confirmedAt });
       expect(() => coordinator.assertWritable()).toThrow(expect.objectContaining({
         message: "Collaboration writer lease was lost", cause: expect.objectContaining({ message: "original_failure", errcode: 1811 })
@@ -791,7 +1016,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     let successor: CollaborationStateDatabase | undefined;
     try {
       liveCoordinators.push(coordinator); await coordinator.initialize();
-      const database = coordinator.database(), lease = database.writerLease();
+      const database = coordinator.database(), lease = await database.writerLease();
       const busy = Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
       vi.spyOn(database, "renewWriterLease").mockImplementation(() => { throw busy; });
       clock = lease.expiresAtMs + 1;
@@ -807,7 +1032,7 @@ describe("CollaborationRuntimeCoordinator", () => {
             checkedAtMs: clock, expectedLease: lease, observedLease: successor?.writerLease() ?? lease
           } }) }));
       expect(() => coordinator.assertWritable()).toThrow(expect.objectContaining({ cause: busy }));
-      expect(database.writerLease()).toEqual(lease);
+      expect((await database.writerLease())).toEqual(lease);
       if (successor) expect(() => successor!.assertWriterLeaseHeld()).not.toThrow();
     } finally {
       successor?.relinquishWriterLease(); successor?.close();
@@ -833,13 +1058,13 @@ describe("CollaborationRuntimeCoordinator", () => {
         if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
         await coordinator.initialize();
         const database = coordinator.database();
-        database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+        await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
           git: state.git, workerCapacity: 1, managementCapacity: 1 });
-        const original = database.writerLease();
-        const phase = coordinator.projectReadModel(state).phase;
+        const original = await database.writerLease();
+        const phase = (await coordinator.projectReadModel(state)).phase;
         const failures: unknown[] = []; const renew = database.renewWriterLease.bind(database);
-        vi.spyOn(database, "renewWriterLease").mockImplementation(() => {
-          try { return renew(); } catch (error) { failures.push(error); throw error; }
+        vi.spyOn(database, "renewWriterLease").mockImplementation(async () => {
+          try { return await renew(); } catch (error) { failures.push(error); throw error; }
         });
         reader = new DatabaseSync(databasePath, { readOnly: true });
         expect(reader.prepare("PRAGMA journal_mode").get()).toMatchObject({ journal_mode: "delete" });
@@ -848,22 +1073,22 @@ describe("CollaborationRuntimeCoordinator", () => {
         vi.advanceTimersByTime(10_000);
         expect(failures).toHaveLength(1);
         expect(failures[0]).toMatchObject({ errcode: 5 });
-        expect(database.writerLeaseDiagnostics()).toMatchObject({ lastSuccessfulRenewalAtMs: null,
+        expect((await database.writerLeaseDiagnostics())).toMatchObject({ lastSuccessfulRenewalAtMs: null,
           lastRenewalAttempt: { startedAtMs: clock, stage: "commit", outcome: "failed", transactionActive: false } });
         expect(warning).toHaveBeenCalledExactlyOnceWith("Collaboration writer lease renewal delayed; original lease still held",
           expect.objectContaining({ sqliteCode: 5, sqlitePrimaryCode: 5,
             lastRenewalAttempt: expect.objectContaining({ stage: "commit", durationMs: expect.any(Number) }) }));
         // The actual failed COMMIT rolled back. The original epoch still
         // owns its unexpired lease; a reader did not become a successor.
-        expect(() => database.assertWriterLeaseHeld()).not.toThrow();
-        expect(database.writerLease()).toEqual(original);
+        await expect(database.assertWriterLeaseHeld()).resolves.toBeUndefined();
+        expect((await database.writerLease())).toEqual(original);
         reader.exec("ROLLBACK"); reader.close(); reader = undefined;
-        expect(coordinator.projectReadModel(state).phase).toBe(phase);
+        expect((await coordinator.projectReadModel(state)).phase).toBe(phase);
         if (outcome === "retry") {
           clock += 10_000; vi.advanceTimersByTime(10_000);
-          expect(database.writerLease()).toMatchObject({ epoch: original.epoch, instanceId: original.instanceId,
+          expect((await database.writerLease())).toMatchObject({ epoch: original.epoch, instanceId: original.instanceId,
             expiresAtMs: startedAt + 50_000 });
-          expect(database.writerLeaseDiagnostics().lastSuccessfulRenewalAtMs).toBe(clock);
+          expect((await database.writerLeaseDiagnostics()).lastSuccessfulRenewalAtMs).toBe(clock);
           await expect(coordinator.pauseProject(state)).resolves.toBeUndefined();
           expect(state.pauseRequest?.settledAt).toBeTruthy();
         } else if (outcome === "unexpected") {
@@ -871,8 +1096,8 @@ describe("CollaborationRuntimeCoordinator", () => {
             throw new Error("Unexpected heartbeat failure");
           });
           clock += 10_000; vi.advanceTimersByTime(10_000);
-          expect(() => database.assertWriterLeaseHeld()).not.toThrow();
-          expect(coordinator.projectReadModel(state).phase).toBe("collaboration:writer-lease-lost");
+          await expect(database.assertWriterLeaseHeld()).resolves.toBeUndefined();
+          expect((await coordinator.projectReadModel(state)).phase).toBe("collaboration:writer-lease-lost");
           await expect(coordinator.pauseProject(state)).rejects.toThrow("writer lease was lost");
         } else {
           clock = original.expiresAtMs + 1;
@@ -880,9 +1105,9 @@ describe("CollaborationRuntimeCoordinator", () => {
             serviceId: "reader-heartbeat-successor", instanceId: "successor", hostId: "test-host", topology: "single-host",
             leaseDurationMs: 30_000, now: () => clock });
           vi.advanceTimersByTime(10_000);
-          expect(coordinator.projectReadModel(state).phase).toBe("collaboration:writer-lease-lost");
+          expect((await coordinator.projectReadModel(state)).phase).toBe("collaboration:writer-lease-lost");
           await expect(coordinator.pauseProject(state)).rejects.toThrow("writer lease was lost");
-          expect(database.writerLease().epoch).toBe(original.epoch);
+          expect((await database.writerLease()).epoch).toBe(original.epoch);
           if (successor) {
             expect(successor.writerLease().epoch).toBe(original.epoch + 1);
             expect(() => successor!.assertWriterLeaseHeld()).not.toThrow();
@@ -914,17 +1139,17 @@ describe("CollaborationRuntimeCoordinator", () => {
       const options = { storage, databasePath: path.join(root, "writer.sqlite"), serviceId: "git-writer-fixture", hostId: "test",
         now: () => clock, leaseDurationMs: 300_000, validateWorkflowConfiguration: async () => undefined, residentLauncher: native };
       const coordinator = new CollaborationRuntimeCoordinator(options); await coordinator.initialize(); const database = coordinator.database();
-      database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
-      database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
+      await database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
       await coordinator.saveWorkflowRevision(state, { orchestration: state.orchestration, affectedGroupIds: [] });
-      const current = coordinator.getWorkflowAdjustments(state).current;
+      const current = (await coordinator.getWorkflowAdjustments(state)).current;
       const workspace = await fs.realpath(await storage.roleWorkspace(state.id, "main", "inv_writer_fixture"));
       const draftName = scoped ? ".scienceevolve/management/inv_original/proposal/workflow.json" : "workflow.json";
       if (scoped) await fs.mkdir(path.dirname(path.join(workspace, draftName)), { recursive: true });
       const draft = await storage.writeMainAgentOrchestrationSnapshot(state.id, draftName, mainAgentOrchestrationDocument(state.id,
         current.snapshot.orchestration, current.snapshot.agents, current.snapshot.skillDefinitions, current.snapshot.mcpDefinitions, current.version));
       const draftBytes = await fs.readFile(draft), draftInode = (await fs.stat(draft)).ino;
-      database.appendEvent({ projectId: state.id, type: "projection.test.observation", payload: { message: "Original writer has one accepted event to mirror" } });
+      await database.appendEvent({ projectId: state.id, type: "projection.test.observation", payload: { message: "Original writer has one accepted event to mirror" } });
       const targets = [path.join(storage.projectDir(state.id), "state.json"), path.join(storage.projectDir(state.id), "workflow", "definition.json"),
         path.join(storage.projectDir(state.id), "workflow", "current-state.json"), path.join(workspace, ".scienceevolve", "workflow-current.json")];
       let successor: { epoch: number; version: typeof current.version; nativeCalls: number } | undefined;
@@ -959,7 +1184,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           ? coordinator.readMainWorkflowProposal(state, workspace, draft, current.version)
           : coordinator.saveWorkflowRevision(state, { orchestration: state.orchestration, affectedGroupIds: [] });
         await expect(publish).rejects.toThrow(/writer|lease/i);
-        expect(successor!.epoch).toBeGreaterThan(database.writerLease().epoch); expect(successor!.version).toEqual(current.version); expect(successor!.nativeCalls).toBe(0);
+        expect(successor!.epoch).toBeGreaterThan((await database.writerLease()).epoch); expect(successor!.version).toEqual(current.version); expect(successor!.nativeCalls).toBe(0);
         for (let index = 0; index < targets.length; index++) {
           expect(await fs.readFile(targets[index])).toEqual(published[index].bytes); expect((await fs.stat(targets[index])).ino).toBe(published[index].inode);
         }
@@ -971,7 +1196,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(persisted.agentSessions).toEqual({ main: session }); expect(persisted.agentSessionIds).toEqual({ main: session.nativeId });
         expect(persisted.agentSessionMeta).toEqual(state.agentSessionMeta); expect(persisted.runCounts.main).toBe(9); expect(persisted.mainInvocationSeq).toBe(42);
         const events = await storage.readEvents(state.id, 0, Number.MAX_SAFE_INTEGER); expect(new Set(events.map(event => event.eventId)).size).toBe(events.length);
-        expect(recovery.database().projectState(state.id).tasks).toEqual([]); expect(recovery.database().projectState(state.id).executions).toEqual([]);
+        expect((await recovery.database().projectState(state.id)).tasks).toEqual([]); expect((await recovery.database().projectState(state.id)).executions).toEqual([]);
         expect(native.open).not.toHaveBeenCalled(); expect(native.decideRoute).not.toHaveBeenCalled();
       } finally {
         appendHook.mockRestore(); saveHook.mockRestore(); writeHook.mockRestore(); statusHook.mockRestore();
@@ -1013,10 +1238,10 @@ describe("CollaborationRuntimeCoordinator", () => {
         ...(mode === "no validator" ? {} : { validateWorkflowConfiguration: validate }), residentLauncher: native });
       if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
       await coordinator.initialize(); const database = coordinator.database();
-      database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
-      if (mode !== "legacy authority") database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
+      if (mode !== "legacy authority") await database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
       const original = structuredClone({ usage: state.tokenUsage, compute: state.computeUsage, counts: state.runCounts, meta: state.agentSessionMeta });
-      const formal = database.workflowConfiguration(state.id), before = database.eventsAfter(state.id, 0, 1000);
+      const formal = await database.workflowConfiguration(state.id), before = await database.eventsAfter(state.id, 0, 1000);
       const save = storage.saveState.bind(storage);
       const persistence = vi.spyOn(storage, "saveState").mockImplementation(async next => {
         if (mode === "persistence failure" && !retry && next.agents.main.gatewaySnapshot) throw new Error("Private snapshot persistence failed");
@@ -1041,8 +1266,8 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(persisted.agentSessions).toEqual({ main: session }); expect(persisted.agentSessionIds).toEqual({ main: session.nativeId });
         expect(persisted.mainInvocationSeq).toBe(42);
         expect({ usage: persisted.tokenUsage, compute: persisted.computeUsage, counts: persisted.runCounts, meta: persisted.agentSessionMeta }).toEqual(original);
-        expect(database.workflowConfiguration(state.id)).toEqual(formal); expect(database.eventsAfter(state.id, 0, 1000)).toEqual(before);
-        expect(database.projectState(state.id).tasks).toEqual([]); expect(database.projectState(state.id).executions).toEqual([]);
+        expect((await database.workflowConfiguration(state.id))).toEqual(formal); expect((await database.eventsAfter(state.id, 0, 1000))).toEqual(before);
+        expect((await database.projectState(state.id)).tasks).toEqual([]); expect((await database.projectState(state.id)).executions).toEqual([]);
         if (mode !== "no validator") {
           const expected = mode === "existing" ? { ...snapshot, apiKey: "original-locked-secret" } :
             mode === "late snapshot" ? { ...snapshot, apiKey: "late-original-locked-secret" } : snapshot;
@@ -1052,7 +1277,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(validate).toHaveBeenCalledTimes(mode === "existing" || mode === "no validator" ? 0 :
           ["recover", "legacy authority", "late snapshot"].includes(mode) ? 1 : 2);
         expect(native.open).not.toHaveBeenCalled(); expect(native.decideRoute).not.toHaveBeenCalled();
-        expect(JSON.stringify(database.projectState(state.id))).not.toContain("server-secret"); expect(JSON.stringify(formal)).not.toContain("locked-secret");
+        expect(JSON.stringify((await database.projectState(state.id)))).not.toContain("server-secret"); expect(JSON.stringify(formal)).not.toContain("locked-secret");
       } finally { eventPersistence.mockRestore(); persistence.mockRestore(); await coordinator.shutdown(); }
     });
 
@@ -1072,18 +1297,18 @@ describe("CollaborationRuntimeCoordinator", () => {
       const configuration = credentialFreeAgentConfiguration({ agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
       configuration.agents.main.model = "model-A"; configuration.agents.main.gatewayId = "gwy_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
       let advanced = false;
-      const advance = () => {
+      const advance = async () => {
         if (advanced) return; advanced = true;
         const next = structuredClone(configuration); next.agents.main.model = "model-B"; next.agents.main.gatewayId = "gwy_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         const workflow = structuredClone(state.orchestration); workflow.decisionPlans.main = "Latest accepted workflow";
-        database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 2, snapshot: workflow, affectedGroupIds: [] });
-        database.appendEvent({ projectId: state.id, requestId: "accepted-configuration-B", type: "scoped.configuration.applied", payload: { configuration: next } });
+        await database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 2, snapshot: workflow, affectedGroupIds: [] });
+        await database.appendEvent({ projectId: state.id, requestId: "accepted-configuration-B", type: "scoped.configuration.applied", payload: { configuration: next } });
       };
       const validate = vi.fn(async (_state, proposal) => {
         const main = proposal.agents.main;
         main.gatewaySnapshot = { id: main.gatewayId!, name: main.gatewayId!, url: "https://controlled.invalid", apiKey: `private-${main.model}`,
           models: [main.model], defaultModel: main.model, protocol: "responses" };
-        if (boundary === "validation") advance();
+        if (boundary === "validation") await advance();
       });
       const native = { open: vi.fn(async () => { throw new Error("Configuration projection must not dispatch a model"); }),
         decideRoute: vi.fn(async () => { throw new Error("Configuration projection must not create a Main turn"); }) };
@@ -1091,24 +1316,24 @@ describe("CollaborationRuntimeCoordinator", () => {
         validateWorkflowConfiguration: validate, residentLauncher: native });
       if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
       await coordinator.initialize(); const database = coordinator.database();
-      database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
-      database.initializeScopedConfiguration(state.id, configuration);
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
+      await database.initializeScopedConfiguration(state.id, configuration);
       const append = storage.appendEvent.bind(storage);
       vi.spyOn(storage, "appendEvent").mockImplementation(async (...args) => {
-        await append(...args); if (boundary === "event mirror") advance();
+        await append(...args); if (boundary === "event mirror") await advance();
       });
       const rename = fs.rename.bind(fs);
       const publication = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
         await rename(...args);
-        if (boundary === "workflow files" && String(args[1]) === path.join(storage.projectDir(state.id), "workflow", "current-state.json")) advance();
+        if (boundary === "workflow files" && String(args[1]) === path.join(storage.projectDir(state.id), "workflow", "current-state.json")) await advance();
       });
       const durable = coordinator.durableProjectStatus.bind(coordinator);
       vi.spyOn(coordinator, "durableProjectStatus").mockImplementation(async (...args) => {
-        const result = await durable(...args); if (boundary === "durable status") advance(); return result;
+        const result = await durable(...args); if (boundary === "durable status") await advance(); return result;
       });
       const save = storage.saveState.bind(storage);
       vi.spyOn(storage, "saveState").mockImplementation(async (...args) => {
-        await save(...args); if (boundary === "state save") advance();
+        await save(...args); if (boundary === "state save") await advance();
       });
       try {
         await coordinator.saveWorkflowRevision(state, { orchestration: structuredClone(state.orchestration), affectedGroupIds: [] });
@@ -1116,7 +1341,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(validate.mock.calls.map(([, proposal]) => proposal.agents.main.model)).toEqual(["model-A", "model-B"]);
         const persisted = await storage.loadState(state.id);
         expect(persisted.workflowRevision).toBe(2);
-        expect(persisted.orchestration).toEqual(database.projectState(state.id).workflowSnapshot);
+        expect(persisted.orchestration).toEqual((await database.projectState(state.id)).workflowSnapshot);
         expect(persisted.agents.main).toEqual(expect.objectContaining({ model: "model-B", gatewayId: "gwy_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           gatewaySnapshot: expect.objectContaining({ apiKey: "private-model-B" }) }));
         expect(persisted.agentSessions).toEqual({ main: originalSession }); expect(persisted.agentSessionIds).toEqual({ main: originalSession.nativeId });
@@ -1126,7 +1351,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         const events = await storage.readEvents(state.id, 0, Number.MAX_SAFE_INTEGER);
         expect(new Set(events.map(event => event.eventId)).size).toBe(events.length);
         expect(native.open).not.toHaveBeenCalled(); expect(native.decideRoute).not.toHaveBeenCalled();
-        expect(JSON.stringify(database.projectState(state.id))).not.toContain("private-model-");
+        expect(JSON.stringify((await database.projectState(state.id)))).not.toContain("private-model-");
       } finally { publication.mockRestore(); await coordinator.shutdown(); }
     });
 
@@ -1148,7 +1373,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       const save = storage.saveState.bind(storage);
       const bindLateSession = async () => {
         const agentId = mode === "late retirement" ? "writing" : "main";
-        const session = { schemaVersion: 1 as const, harnessId: mode.startsWith("late binding") ? "claude" : "codex", adapterVersion: "controlled",
+        const session = { schemaVersion: 1 as const, harnessId: mode.startsWith("late binding") ? "dsh" : "codex", adapterVersion: "controlled",
           nativeId: "late-original-session", generation: 8, durable: true, createdAt: new Date().toISOString() };
         state.agentSessions = { [agentId]: session }; state.agentSessionIds = { [agentId]: session.nativeId };
         state.agentSessionMeta = { [agentId]: { generation: 8, contextSeq: 34, resumeFailureCount: 2 } };
@@ -1160,14 +1385,14 @@ describe("CollaborationRuntimeCoordinator", () => {
           if (["A-B-A", "superseded rejection", "latest rejection"].includes(mode)) {
             const changed = structuredClone(originalWorkflow); changed.decisionPlans.main = "Accepted configuration B";
             const next = structuredClone(configuration); next.agents.main.instructions = "Accepted configuration B";
-            database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 2, snapshot: changed, affectedGroupIds: [] });
-            database.appendEvent({ projectId: state.id, requestId: "configuration-B", type: "scoped.configuration.applied", payload: { configuration: next } });
+            await database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 2, snapshot: changed, affectedGroupIds: [] });
+            await database.appendEvent({ projectId: state.id, requestId: "configuration-B", type: "scoped.configuration.applied", payload: { configuration: next } });
             if (mode === "A-B-A") {
-              database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 3, snapshot: originalWorkflow, affectedGroupIds: [] });
-              database.appendEvent({ projectId: state.id, requestId: "configuration-A-again", type: "scoped.configuration.applied", payload: { configuration } });
+              await database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 3, snapshot: originalWorkflow, affectedGroupIds: [] });
+              await database.appendEvent({ projectId: state.id, requestId: "configuration-A-again", type: "scoped.configuration.applied", payload: { configuration } });
             }
           }
-          if (mode === "event only") database.appendEvent({ projectId: state.id, type: "projection.test.observation", payload: { message: "An event independently advances stateRevision" } });
+          if (mode === "event only") await database.appendEvent({ projectId: state.id, type: "projection.test.observation", payload: { message: "An event independently advances stateRevision" } });
           if (mode === "late binding" || mode === "late retirement") {
             await bindLateSession();
           }
@@ -1181,8 +1406,8 @@ describe("CollaborationRuntimeCoordinator", () => {
         validateWorkflowConfiguration: validate, residentLauncher: native });
       if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
       await coordinator.initialize(); const database = coordinator.database();
-      database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: originalWorkflow, git: state.git, workerCapacity: 2 });
-      database.initializeScopedConfiguration(state.id, configuration);
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: originalWorkflow, git: state.git, workerCapacity: 2 });
+      await database.initializeScopedConfiguration(state.id, configuration);
       const rename = fs.rename.bind(fs);
       const publication = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
         await rename(...args);
@@ -1192,10 +1417,10 @@ describe("CollaborationRuntimeCoordinator", () => {
       vi.spyOn(coordinator, "durableProjectStatus").mockImplementation(async (...args) => {
         const result = await durable(...args); if (mode === "late binding after status") await bindLateSession(); return result;
       });
-      const publish = () => coordinator.saveWorkflowRevision(state, { orchestration: structuredClone(database.projectState(state.id).workflowSnapshot) as typeof state.orchestration, affectedGroupIds: [] });
+      const publish = async () => coordinator.saveWorkflowRevision(state, { orchestration: structuredClone((await database.projectState(state.id)).workflowSnapshot) as typeof state.orchestration, affectedGroupIds: [] });
       try {
         if (mode === "captured projection") {
-          const captured = database.projectState(state.id); captured.stateRevision += 1000; captured.workflowRevision = 999;
+          const captured = await database.projectState(state.id); captured.stateRevision += 1000; captured.workflowRevision = 999;
           captured.scopedConfiguration!.agents.main.instructions = "Unaccepted caller configuration";
           const boundary = coordinator as unknown as { publishProjection(state: ProjectState, projection: typeof captured): Promise<void> };
           await expect(boundary.publishProjection(state, { ...captured, id: "prj_other" })).rejects.toThrow("another project");
@@ -1205,7 +1430,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           await expect(publish()).rejects.toThrow("Latest route unavailable");
           expect(state.agents.main.instructions).not.toBe("Accepted configuration A");
           expect(state.agents.main.instructions).not.toBe("Accepted configuration B");
-          expect(database.projectState(state.id).scopedConfiguration!.agents.main.instructions).toBe("Accepted configuration B");
+          expect((await database.projectState(state.id)).scopedConfiguration!.agents.main.instructions).toBe("Accepted configuration B");
           allowLatest = true; await publish();
         } else if (mode.startsWith("late binding")) {
           await expect(publish()).rejects.toThrow(/Harness|harness|Session/);
@@ -1256,8 +1481,8 @@ describe("CollaborationRuntimeCoordinator", () => {
         validateWorkflowConfiguration: async () => undefined, residentLauncher: native });
       if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
       await coordinator.initialize(); const database = coordinator.database();
-      database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
-      const current = coordinator.getWorkflowAdjustments(state).current, proposal = structuredClone(current.snapshot);
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
+      const current = (await coordinator.getWorkflowAdjustments(state)).current, proposal = structuredClone(current.snapshot);
       proposal.orchestration.agents = proposal.orchestration.agents.filter(agent => agent.name !== "writing");
       delete proposal.agents.writing; delete proposal.orchestration.routes.writing; delete proposal.orchestration.decisionPlans.writing;
       for (const node of Object.keys(proposal.orchestration.routes)) proposal.orchestration.routes[node] = proposal.orchestration.routes[node].filter(edge => edge.target !== "writing");
@@ -1271,7 +1496,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         const publish = coordinator.submitWorkflowAdjustment(state, { projectId: state.id, requestId: "retire-original-writing", base: current.version, proposal });
         if (failure) await expect(publish).rejects.toThrow("Original archive file publication failed");
         else expect((await publish).record.status).toBe("applied");
-        expect(database.workflowAdjustment(state.id, "retire-original-writing")!.status).toBe("applied");
+        expect((await database.workflowAdjustment(state.id, "retire-original-writing"))!.status).toBe("applied");
         write.mockRestore();
         const restored = await storage.loadState(state.id);
         await coordinator.saveWorkflowRevision(restored, { orchestration: proposal.orchestration, affectedGroupIds: [] });
@@ -1280,15 +1505,15 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(persisted.agentSessions).toEqual({ [key]: originalSession }); expect(persisted.agentSessionIds).toEqual({ [key]: originalSession.nativeId });
         expect(persisted.archivedAgentSessions).toEqual([expect.objectContaining({ agentId: "writing", workflowRevision: 2,
           sessions: { [key]: { session: originalSession, legacyId: originalSession.nativeId } }, meta: { generation: 4, contextSeq: 21, resumeFailureCount: 2 } })]);
-        const before = database.eventsAfter(state.id, 0, 1000);
+        const before = await database.eventsAfter(state.id, 0, 1000);
         await coordinator.saveWorkflowRevision(persisted, { orchestration: proposal.orchestration, affectedGroupIds: [] });
-        expect(persisted.archivedAgentSessions).toHaveLength(1); expect(database.eventsAfter(state.id, 0, 1000)).toEqual(before);
-        const accepted = coordinator.getWorkflowAdjustments(persisted).current;
+        expect(persisted.archivedAgentSessions).toHaveLength(1); expect((await database.eventsAfter(state.id, 0, 1000))).toEqual(before);
+        const accepted = (await coordinator.getWorkflowAdjustments(persisted)).current;
         const rejoin = structuredClone(current.snapshot);
-        const replacement = structuredClone(rejoin); replacement.agents.writing.harness = "claude-code";
+        const replacement = structuredClone(rejoin); replacement.agents.writing.harness = "dsh";
         await expect(coordinator.submitWorkflowAdjustment(persisted, { projectId: state.id, requestId: "reject-original-id-replacement", base: accepted.version, proposal: replacement }))
           .rejects.toThrow(/Session|session/);
-        expect(database.workflowAdjustment(state.id, "reject-original-id-replacement")).toBeUndefined();
+        expect((await database.workflowAdjustment(state.id, "reject-original-id-replacement"))).toBeUndefined();
         expect((await coordinator.submitWorkflowAdjustment(persisted, { projectId: state.id, requestId: "explicitly-rejoin-original-writing", base: accepted.version, proposal: rejoin })).record.status).toBe("applied");
         expect(persisted.agents.writing.harness).toBe(current.snapshot.agents.writing.harness);
         expect(persisted.agentSessions).toEqual({ [key]: originalSession }); expect(persisted.archivedAgentSessions).toHaveLength(1);
@@ -1355,12 +1580,12 @@ describe("CollaborationRuntimeCoordinator", () => {
       if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
       await coordinator.initialize();
       const database = coordinator.database(), claim = database.claimNextTask.bind(database);
-      const race = vi.spyOn(database, "claimNextTask").mockImplementation(input => {
+      const race = vi.spyOn(database, "claimNextTask").mockImplementation(async input => {
         if (["transaction_race", "transaction_apply"].includes(mode) && input.agentId === "idea" && !submitted) {
           submitted = true;
           const current = coordinator.getWorkflowAdjustments(state).current, proposal = structuredClone(current.snapshot);
           proposal.agents.idea.instructions = nextInstructions;
-          database.submitUserWorkflowAdjustment({ projectId: state.id, requestId: "original-user-edit", base: current.version, proposal },
+          await database.submitUserWorkflowAdjustment({ projectId: state.id, requestId: "original-user-edit", base: current.version, proposal },
             credentialFreeAgentConfiguration({ agents: state.agents, skillDefinitions: state.skillDefinitions ?? {}, mcpDefinitions: state.mcpDefinitions ?? {} }));
         }
         return claim(input);
@@ -1370,14 +1595,14 @@ describe("CollaborationRuntimeCoordinator", () => {
         if (mode === "transaction_race") {
           await waitFor(() => state.phase === "collaboration:workflow-adjustment-waiting" || Boolean(state.lastError));
           expect(state.lastError).toBeUndefined(); expect(state.status).toBe("queued"); expect(deliveries).toEqual([]);
-          const held = database.projectState(state.id), originalGroup = held.groupRuns[0]!;
+          const held = await database.projectState(state.id), originalGroup = held.groupRuns[0]!;
           expect(held.executions).toEqual([]); expect(held.tasks.map(task => task.id)).toEqual(["original-task-0", "original-task-1"]);
           expect(leaderOpens).toBe(1); expect(originalGroup.coordinatorEpoch).toBe(1);
           await coordinator.withdrawWorkflowAdjustment(state, { projectId: state.id, requestId: "original-user-edit", operationId: "explicit-withdraw" });
         }
         await waitFor(() => state.status === "completed" || Boolean(state.lastError), 10_000);
         expect(state.lastError).toBeUndefined(); expect(state.status).toBe("completed");
-        const final = database.projectState(state.id), records = coordinator.getWorkflowAdjustments(state).records;
+        const final = await database.projectState(state.id), records = coordinator.getWorkflowAdjustments(state).records;
         expect(final.groupRuns).toHaveLength(1); expect(final.groupRuns[0]?.coordinatorEpoch).toBe(1);
         expect(leaderOpens).toBe(1); expect(leaderTurns).toBe(3); expect(final.executions).toHaveLength(3);
         expect(final.executions.every(execution => execution.ownershipEpoch === 1 && execution.status === "succeeded")).toBe(true);
@@ -1386,7 +1611,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           : mode === "between_tasks" ? [originalInstructions, nextInstructions] : [originalInstructions, originalInstructions]);
         expect(records).toMatchObject([{ requestId: "original-user-edit", status: mode === "transaction_race" ? "withdrawn" : "applied" }]);
         expect(final.pullRequests.every(pull => pull.status === "merged")).toBe(true);
-        expect(database.eventsAfter(state.id, 0, 2000).filter(event => event.type === "group.activated")).toHaveLength(1);
+        expect((await database.eventsAfter(state.id, 0, 2000)).filter(event => event.type === "group.activated")).toHaveLength(1);
       } finally { race.mockRestore(); await coordinator.shutdown(); }
     }, 15_000);
 
@@ -1404,8 +1629,8 @@ describe("CollaborationRuntimeCoordinator", () => {
     const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "legacy-launch-replay", hostId: "test", validateWorkflowConfiguration: async () => undefined });
     if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
     await coordinator.initialize(); const database = coordinator.database();
-    database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
-    const { groupRun } = database.activateGroup({ projectId: state.id, nodeRunId: "original-node", groupRunId: "original-group", nodeId: "G", groupId: "G",
+    await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
+    const { groupRun } = await database.activateGroup({ projectId: state.id, nodeRunId: "original-node", groupRunId: "original-group", nodeId: "G", groupId: "G",
       activationRequestId: "original-activation", inputSnapshotRef: "original-input", memberAgentIds: ["idea", "execution"], origin: { kind: "project-input" },
       baseCommit: "a".repeat(40), groupBranch: "groups/original-group", workflowRevision: 1 });
     const stop = new Error("Observed accepted launch before lane, Git inputs or native startup");
@@ -1413,15 +1638,15 @@ describe("CollaborationRuntimeCoordinator", () => {
     const internal = coordinator as unknown as { openGroupCoordinatorResident(...args: unknown[]): Promise<unknown> };
     try {
       await expect(internal.openGroupCoordinatorResident(state, groupRun, "Original assignment", new AbortController().signal)).rejects.toBe(stop);
-      const original = database.latestGroupLeaderLaunch(state.id, groupRun.id, "main", 1)!;
-      const current = coordinator.getWorkflowAdjustments(state).current, proposal = structuredClone(current.snapshot);
+      const original = (await database.latestGroupLeaderLaunch(state.id, groupRun.id, "main", 1))!;
+      const current = (await coordinator.getWorkflowAdjustments(state)).current, proposal = structuredClone(current.snapshot);
       proposal.agents.idea.instructions = "New unclaimed Worker instructions";
       expect((await coordinator.submitWorkflowAdjustment(state, { projectId: state.id, requestId: "unrelated-user-edit", base: current.version, proposal })).record.status).toBe("applied");
       expect(state.workflowRevision).toBe(2);
       await expect(internal.openGroupCoordinatorResident(state, groupRun, "Original assignment", new AbortController().signal)).rejects.toBe(stop);
-      expect(database.latestGroupLeaderLaunch(state.id, groupRun.id, "main", 1)).toEqual(original);
-      expect(database.eventsAfter(state.id, 0, 1000).filter(event => event.type === "group.leader.launch.started")).toHaveLength(1);
-      expect(database.projectState(state.id).runtimeActivities).toEqual([]); expect(database.projectState(state.id).executions).toEqual([]);
+      expect((await database.latestGroupLeaderLaunch(state.id, groupRun.id, "main", 1))).toEqual(original);
+      expect((await database.eventsAfter(state.id, 0, 1000)).filter(event => event.type === "group.leader.launch.started")).toHaveLength(1);
+      expect((await database.projectState(state.id)).runtimeActivities).toEqual([]); expect((await database.projectState(state.id)).executions).toEqual([]);
     } finally { lane.mockRestore(); await coordinator.shutdown(); }
   });
 
@@ -1535,7 +1760,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           expect((await storage.loadState(state.id)).pauseRequest).toEqual(state.pauseRequest);
           expect(aborted).toBe(false); expect(opens).toBe(1); expect(turns).toBe(1);
           expect(memories).toHaveLength(0);
-          expect(coordinator.database().eventsAfter(state.id, 0, 2000)
+          expect((await coordinator.database().eventsAfter(state.id, 0, 2000))
             .filter(event => event.type === "main.route.response.committed")).toHaveLength(0);
           await vi.waitFor(() => expect(state.runtime?.activities).toEqual([]));
           return;
@@ -1548,12 +1773,12 @@ describe("CollaborationRuntimeCoordinator", () => {
         } else expect(outcome).toBeUndefined();
         expect(state.status).toBe(hasUserWorkflowPause(state) ? "paused" : "retrying"); expect(state.pauseRequest?.settledAt).toBeTruthy();
         expect(turns).toBe(mode === "opening" ? 0 : 1);
-        expect(memories).toHaveLength(mode === "opening" ? 0 : 1);
+        expect(memories).toHaveLength(0);
         expect(closes).toBe(0); expect(aborted).toBe(false);
         if (settledTool) await expect(settledTool.service.stage(settledTool.capability, "late-paused-main-finish",
           { tool: "finish_task", summary: "Main finished its original task",
             memory: "Agent-authored Main memory retained across Pause" })).rejects.toThrow("Main route authority was revoked");
-        const beforeResume = coordinator.database().eventsAfter(state.id, 0, 2000);
+        const beforeResume = await coordinator.database().eventsAfter(state.id, 0, 2000);
         expect(beforeResume.filter(event => event.type === "main.route.response.committed")).toHaveLength(0);
         expect(beforeResume.filter(event => event.type === "main.route.mechanism_repair.requested")).toHaveLength(0);
         await coordinator.resumeProject(state);
@@ -1564,7 +1789,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(turns).toBe(mode === "missing_decision" ? 2 : 1);
         expect(new Set(invocationIds).size).toBe(turns);
         expect(memories).toEqual([expect.stringContaining("Agent-authored Main memory retained")]);
-        const events = coordinator.database().eventsAfter(state.id, 0, 2000);
+        const events = await coordinator.database().eventsAfter(state.id, 0, 2000);
         expect(events.filter(event => event.type === "main.route.task_completion.committed")).toHaveLength(1);
         expect(events.filter(event => event.type === "main.route.response.committed")).toHaveLength(1);
       } finally { rejectClose = false; releaseOpen(); releaseTurn(); await coordinator.shutdown(); }
@@ -1631,12 +1856,12 @@ describe("CollaborationRuntimeCoordinator", () => {
         }
         const savedPause = structuredClone(state.pauseRequest);
         expect(savedPause?.settledAt).toBeTruthy(); expect(state.status).toBe(hasUserWorkflowPause(state) ? "paused" : "retrying");
-        expect(coordinator.database().projectState(state.id).tasks).toHaveLength(0);
+        expect((await coordinator.database().projectState(state.id)).tasks).toHaveLength(0);
         await coordinator.resumeProject(state);
         await vi.waitFor(() => expect(submits).toBe(1));
         expect(opens).toBe(1); expect(resumes).toBe(mode === "before_launch" ? 0 : 1);
         expect(state.pauseRequest).toBeUndefined();
-        expect(coordinator.database().eventsAfter(state.id, 0, 1000)
+        expect((await coordinator.database().eventsAfter(state.id, 0, 1000))
           .filter(event => event.type === "group.leader.launch.started")).toHaveLength(1);
       } finally {
         release(); await pauseOutcome?.catch(() => undefined); inbox.mockRestore(); await coordinator.shutdown();
@@ -1727,7 +1952,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(opens).toBe(launchesWhilePaused + (mode === "before_launch" ? 1 : 0));
         expect(resumes).toBe(mode === "before_launch" ? 0 : 1);
         expect(state.pauseRequest).toBeUndefined();
-        expect(Boolean(coordinator.database().projectStateDomain(state.id))).toBe(formal);
+        expect(Boolean((await coordinator.database().projectStateDomain(state.id)))).toBe(formal);
       } finally {
         release(); await pauseOutcome?.catch(() => undefined); inbox.mockRestore(); await coordinator.shutdown();
       }
@@ -1817,7 +2042,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       }
       expect(state.status).toBe(hasUserWorkflowPause(state) ? "paused" : "retrying"); expect(state.pauseRequest?.settledAt).toBeTruthy(); expect(pauses).toBe(1);
       expect(state.agentSessions).toEqual(originalSessions);
-      expect(coordinator.database().projectState(state.id).nodeRuns.some(node => node.status === "completed")).toBe(false);
+      expect((await coordinator.database().projectState(state.id)).nodeRuns.some(node => node.status === "completed")).toBe(false);
       await expect(savedControl!.service.stage(savedControl!.capability, "late-worker-pause-push", {
         tool: "git_push", reason: "Stale capability after the original native turn returned" })).rejects.toThrow("Standalone control authority was revoked");
     } finally { release(); await pauseOutcome; await coordinator.shutdown(); }
@@ -1904,7 +2129,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     } finally { releaseNative(); await coordinator.shutdown(); }
   }, 15_000);
 
-  it.each(["missing_finish", "memory_failure", "missing_decision", "rejected_finish", "native_failure", "project_completion", "authoring_supplement", "historical_failure", "authoring_native_failure"] as const)(
+  it.each(["missing_finish", "receipt_failure", "missing_decision", "rejected_finish", "native_failure", "project_completion", "authoring_supplement", "historical_failure", "authoring_native_failure"] as const)(
     "keeps Main's actual production handle and original task while Agent repairs %s", async (mode) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-main-finish-native-"));
       temporaryRoots.push(root);
@@ -1919,7 +2144,19 @@ describe("CollaborationRuntimeCoordinator", () => {
         schemaVersion: 3, allowMainReconfiguration: true,
         scopedWorkflow: { schemaVersion: 1, rootAgentIds: ["main"], groups: [] } };
       state.agents = { main: { ...state.agents.main, sessionPersistence: false } };
+      if (mode === "project_completion") state.artifacts = [{ id: "main:report.md", agent: "main", invocationId: "inv_report",
+        path: "report.md", title: "Published report", kind: "document", description: "Available published work",
+        size: 24, mediaType: "text/markdown", updatedAt: new Date().toISOString(),
+        gitSource: { executionId: "execution-report", ownershipEpoch: 1, worktreePath: path.join(root, "retained-report"),
+          commitSha: "d".repeat(40), pullRequestId: "pull-report", acceptedBase: "main" } }];
       await storage.createProject(state);
+      const saveCompletion = storage.requestTaskCompletion.bind(storage);
+      let completionAttempts = 0;
+      vi.spyOn(storage, "requestTaskCompletion").mockImplementation(async (...args) => {
+        completionAttempts += 1;
+        if (mode === "receipt_failure" && completionAttempts === 1) throw new Error("Main completion receipt storage failed");
+        return saveCompletion(...args);
+      });
       let turns = 0; let opens = 0; let closes = 0; let finishToolActive = false; let memoryAttempts = 0;
       let firstInputId = ""; let failedToolReturned = false;
       let originalProposalPath = "";
@@ -1943,7 +2180,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         return { initialLease: lease, async submit(turn: { inputId: string; invocationId: string; prompt: string }) {
           expect(submittedInputIds.has(turn.inputId)).toBe(false); submittedInputIds.add(turn.inputId);
           turns += 1; firstInputId ||= turn.inputId;
-          if (turns > 1 && !nativeFailure) expect(turn.inputId).toMatch(new RegExp(`^${firstInputId}-mechanism-repair-`));
+          if (turns > 1 && !nativeFailure) expect(turn.inputId).toMatch(new RegExp(`^${firstInputId}:supervision:`));
           const fresh = await input.turnRequestFactory({ baseRequest: input.request, turn });
           const modelStart = Date.now() - 200;
           for (const [phase, offset, text] of [["started", 0, undefined], ["delta", 100, "abcdefgh"], ["completed", 200, undefined]] as const) {
@@ -1997,16 +2234,14 @@ describe("CollaborationRuntimeCoordinator", () => {
               return { handoff: "apply_workflow rejected the proposal with an authoring authority error (remembered from a prior turn)" };
             }
             if (mode === "project_completion") {
-              const complete: ControlAction = { tool: "complete_project", rationale: "Main explicitly decides the authorized no-artifact project is complete" };
-              await expect(call(complete)).rejects.toThrow("finish_task for its own management task before complete_project");
-              await finishTask(); await finishTask();
+              const complete: ControlAction = { tool: "complete_project", rationale: "Main decides the project is complete with the available published report" };
               await call(complete);
-              return { handoff: "Main completed itself and then completed the project", controlActions: actions };
+              return { handoff: "Main decided the project is complete; its own completion receipt remains missing", controlActions: actions };
             }
             if (mode === "missing_decision" || mode === "authoring_supplement") await finishTask();
             else {
-              if (mode === "memory_failure") {
-                await expect(finishTask()).rejects.toThrow("Main Agent memory write failed inside finish_task");
+              if (mode === "receipt_failure") {
+                await expect(finishTask()).rejects.toThrow("Main completion receipt storage failed");
                 failedToolReturned = true;
               }
               oldEnvelope = await call(request);
@@ -2019,6 +2254,7 @@ describe("CollaborationRuntimeCoordinator", () => {
             }
             return { handoff: "This Agent still has a missing mechanism action", controlActions: actions };
           }
+          if (mode === "project_completion") return { handoff: "Main retains its accepted completion decision without an own-task receipt", controlActions: [] };
           expect(turns).toBe(2);
           expect(state.userIntervention).toBeUndefined();
           if (mode === "missing_decision" || mode === "authoring_supplement" || mode === "historical_failure") {
@@ -2038,7 +2274,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           } else {
             expect(turn.prompt).toContain("finish_task");
             expect(memories).toHaveLength(0);
-            if (mode === "memory_failure") expect(failedToolReturned).toBe(true);
+            if (mode === "receipt_failure") expect(failedToolReturned).toBe(true);
             if (nativeFailure) {
               await expect(oldAuthority.revalidate({ ...oldEnvelope, callId: "stale-native-finish", action: finish }, []))
                 .rejects.toThrow("stale route epoch");
@@ -2064,7 +2300,7 @@ describe("CollaborationRuntimeCoordinator", () => {
             } } : {}),
             async commitManagementMemory(...args) {
             expect(finishToolActive).toBe(true); memoryAttempts += 1;
-            if (mode === "memory_failure" && memoryAttempts === 1) throw new Error("Main Agent memory write failed inside finish_task");
+            if (mode === "receipt_failure" && memoryAttempts === 1) throw new Error("Main completion receipt storage failed");
             return git.commitManagementMemory!(...args);
           } };
         }, residentLauncher: createProductionCollaborationResidentLauncher(native, adapter) });
@@ -2073,26 +2309,31 @@ describe("CollaborationRuntimeCoordinator", () => {
       try {
         await coordinator.createProject(state, { enabled: true, provider: "github" });
         await waitFor(() => state.status === "completed" || state.userIntervention?.status === "pending" || Boolean(state.lastError));
-        const diagnostics = JSON.stringify(coordinator.database().eventsAfter(state.id, 0, 2000).filter((event) =>
+        const diagnostics = JSON.stringify((await coordinator.database().eventsAfter(state.id, 0, 2000)).filter((event) =>
           event.type.includes("failed") || event.type.includes("repair") || event.type.includes("attempt")).map((event) =>
           ({ type: event.type, payload: event.payload })));
         expect(state.lastError, diagnostics).toBeUndefined();
         expect(state.status).toBe(mode === "project_completion" ? "completed" : "retrying");
         if (mode !== "project_completion") expect(state.userIntervention?.message).toBe("Agent asks the original user requirement");
-        expect(turns).toBe(mode === "project_completion" ? 1 : 2); expect(opens, diagnostics).toBe(nativeFailure ? 2 : 1); expect(closes).toBe(opens);
+        expect(turns).toBe(mode === "project_completion" ? 4 : 2); expect(opens, diagnostics).toBe(nativeFailure ? 2 : 1); expect(closes).toBe(opens);
         expect(state.performance?.history).toHaveLength(turns);
         expect(state.performance?.aggregate?.invocations).toBe(nativeFailure ? turns - 1 : turns);
         expect(state.performance?.latest).toMatchObject({ firstTokenLatencyMs: 100, requestActive: false, status: "completed" });
-        expect(memories).toHaveLength(1); expect(memories[0]).toContain("Main-authored memory: keep this original task");
-        expect(memoryAttempts).toBe(mode === "memory_failure" ? 2 : 1);
-        const events = coordinator.database().eventsAfter(state.id, 0, 2000);
-        expect(events.filter((event) => event.type === "main.route.task_completion.committed")).toEqual([
+        expect(memories).toHaveLength(0);
+        expect(memoryAttempts).toBe(0);
+        const events = await coordinator.database().eventsAfter(state.id, 0, 2000);
+        expect(events.filter((event) => event.type === "main.route.task_completion.committed")).toEqual(mode === "project_completion" ? [] : [
           expect.objectContaining({ payload: expect.objectContaining({ inputId: firstInputId }) })
         ]);
-        expect(Object.keys(state.taskCompletions ?? {})).toHaveLength(1);
+        expect(Object.keys(state.taskCompletions ?? {})).toHaveLength(mode === "project_completion" ? 0 : 1);
+        if (mode === "project_completion") {
+          expect(state.artifacts).toHaveLength(1);
+          expect(state.artifacts![0]!.id).toBe("main:report.md");
+          expect(state.display).toBeUndefined();
+        }
         expect(events.filter((event) => event.type === "main.route_action.accepted")).toHaveLength(nativeFailure ? 2 : 1);
         expect(events.filter((event) => event.type === "main.route.response.committed")).toHaveLength(1);
-        expect(events.filter((event) => event.type === "main.route.mechanism_repair.requested")).toHaveLength(nativeFailure || mode === "project_completion" ? 0 : 1);
+        expect(events.filter((event) => event.type === "main.route.mechanism_repair.requested")).toHaveLength(nativeFailure ? 0 : mode === "project_completion" ? 3 : 1);
         if (mode === "authoring_native_failure") {
           const attempts = events.filter(event => event.type === "main.route.attempt");
           expect(attempts).toHaveLength(2);
@@ -2174,7 +2415,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(state.lastError).toBeUndefined(); expect(applied).toBe(true);
       expect(state.workflowRevision).toBe(2);
       expect(state.agents.main.instructions).toContain("Exact retained Main edit, formally applied once.");
-      const accepted = coordinator.database().eventsAfter(state.id, 0, 2000).filter(event => event.type === "main.route_action.accepted" &&
+      const accepted = (await coordinator.database().eventsAfter(state.id, 0, 2000)).filter(event => event.type === "main.route_action.accepted" &&
         (event.payload.action as ControlAction | undefined)?.tool === "apply_workflow");
       expect(accepted).toHaveLength(1);
       expect(JSON.stringify(accepted[0]!.payload)).toContain("Exact retained Main edit, formally applied once.");
@@ -2183,8 +2424,8 @@ describe("CollaborationRuntimeCoordinator", () => {
     } finally { await coordinator.shutdown(); }
   }, 15_000);
 
-  it.each(["missing_finish", "missing_decision"] as const)(
-    "bounds Main's production native repairs for %s and lets explicit Resume repair the original session", async (mode) => {
+  it.each(["missing_finish", "missing_decision", "new_user_input", "new_user_input_no_decision"] as const)(
+    "returns Main after three production supplements for %s and preserves its original allowance", async (mode) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-main-bounded-native-")); temporaryRoots.push(root);
       const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
       const state = projectState("prj_40404040404040404040404040404040");
@@ -2204,6 +2445,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           if (turns === 1) await fresh.request.onDurableSessionStarted?.(lease.session, lease.session.nativeId);
           else expect(fresh.request.resumeThreadId).toBe(lease.session.nativeId);
           if (repairAfterResume) {
+            if (mode === "new_user_input_no_decision") return { handoff: "New request returned without a formal choice" };
             const authority = await input.controlAuthorityFactory!({ request: fresh.request, turn });
             const service = new ControlActionService({ projectId: state.id, agent: "main", invocationId: turn.invocationId,
               stateVersion: authority.control.stateVersion, capability: authority.control.capability,
@@ -2211,7 +2453,7 @@ describe("CollaborationRuntimeCoordinator", () => {
             const actions = [await service.stage(authority.control.capability, "resumed-main-finish", {
               tool: "finish_task", summary: "Finished my original task", memory: "Main's own resumed memory"
             })];
-            if (mode === "missing_decision") actions.push(await service.stage(authority.control.capability, "resumed-main-choice", {
+            if (mode === "missing_decision" || mode === "new_user_input") actions.push(await service.stage(authority.control.capability, "resumed-main-choice", {
               tool: "request_user", message: "Main's resumed choice", rationale: "Agent chose after explicit Resume"
             }));
             return { handoff: "Agent repaired the original task after explicit Resume", controlActions: actions };
@@ -2235,37 +2477,49 @@ describe("CollaborationRuntimeCoordinator", () => {
       await coordinator.initialize();
       try {
         await coordinator.createProject(state, { enabled: true, provider: "github" });
-        await waitFor(() => ["paused", "retrying"].includes(state.status));
-        expect(turns, JSON.stringify({ lastError: state.lastError, events: coordinator.database().eventsAfter(state.id, 0, 2000)
-          .filter((event) => event.type.includes("failed") || event.type.includes("repair")) })).toBe(3);
-        expect(opens).toBe(1); expect(closes).toBe(1); expect(memories).toHaveLength(0);
-        expect(state.userIntervention).toBeUndefined();
-        expect(state.phase).toBe("collaboration:main-recovery-waiting");
-        expect(coordinator.database().projectState(state.id).frozen).toBe(true);
-        const events = coordinator.database().eventsAfter(state.id, 0, 2000);
-        expect(events.filter((event) => event.type === "main.route.mechanism_repair.requested")).toHaveLength(2);
-        expect(events.filter((event) => event.type === "main.route.response.committed")).toHaveLength(0);
-        expect(events.filter((event) => event.type === "main.route.task_completion.committed")).toHaveLength(0);
-        expect(coordinator.database().mainRouteControlRepairCount(state.id, state.nodeRuns![0]!.id)).toBe(2);
-        expect(coordinator.database().projectState(state.id).runtimeActivities).toHaveLength(0);
-        // Recovery retains the original scene and renews fast repairs after exact stop proof; dispatch remains deferred.
-        await coordinator.recoverProject(state);
-        expect(turns).toBe(3);
-        expect(coordinator.database().mainRouteControlRepairCount(state.id, state.nodeRuns![0]!.id)).toBe(0);
-        repairAfterResume = true;
-        await coordinator.resumeProject(state);
-        await waitFor(() => state.userIntervention?.status === "pending" || Boolean(state.lastError));
+        await waitFor(async () => (await coordinator.database().eventsAfter(state.id, 0, 2000)).some(event => event.type === "main.route.supervision.finished"));
+        await waitFor(() => closes === 1);
+        expect(turns).toBe(4); expect(opens).toBe(1); expect(memories).toEqual([]);
+        expect((await coordinator.database().projectState(state.id)).frozen).toBe(false);
+        const events = await coordinator.database().eventsAfter(state.id, 0, 2000);
+        expect(events.filter(event => event.type === "main.route.mechanism_repair.requested")).toHaveLength(3);
+        expect(events.filter(event => event.type === "main.route.task_completion.committed")).toEqual([]);
         expect(state.lastError).toBeUndefined();
-        expect(turns).toBe(4); expect(opens).toBe(2); expect(closes).toBe(2);
-        expect(memories).toEqual([expect.stringContaining("Main's own resumed memory")]);
-        expect(state.userIntervention?.message).toBe(mode === "missing_finish" ? "Main's retained choice" : "Main's resumed choice");
-        const resumed = coordinator.database().eventsAfter(state.id, 0, 2000);
-        expect(resumed.filter(event => event.type === "main.route.mechanism_repair.requested")).toHaveLength(2);
-        expect(resumed.filter(event => event.type === "main.route.recovered" && event.payload.mechanismRepairBudgetRenewed === true)).toHaveLength(1);
+        if (mode === "missing_finish") {
+          await waitFor(() => state.userIntervention?.status === "pending");
+          expect(state.userIntervention?.message).toBe("Main's retained choice");
+          expect((await coordinator.database().eventsAfter(state.id, 0, 2000)).filter(event => event.type === "main.route.response.committed")).toHaveLength(1);
+        } else {
+          const nodeRunId = (await coordinator.database().projectState(state.id)).nodeRuns[0]!.id;
+          expect((await coordinator.database().mainRouteControlRepairCount(state.id, nodeRunId))).toBe(3);
+          repairAfterResume = true;
+          await coordinator.recoverProject(state);
+          await coordinator.resumeProject(state);
+          await new Promise(resolve => setTimeout(resolve, 40));
+          expect(turns).toBe(4); expect(opens).toBe(1);
+          expect((await coordinator.database().mainRouteControlRepairCount(state.id, nodeRunId))).toBe(3);
+          if (mode === "new_user_input" || mode === "new_user_input_no_decision") {
+            const request = { message: "New explicit User request after the previous task returned", mode: "wait" as const, requestId: "new-user-request" };
+            await coordinator.addProjectUserInput(state, request);
+            await waitFor(() => closes === 2);
+            expect(turns).toBe(5); expect(opens).toBe(2);
+            const afterInput = await coordinator.database().eventsAfter(state.id, 0, 2000);
+            expect(afterInput.filter(event => event.type === "main.route.mechanism_repair.requested")).toHaveLength(3);
+            if (mode === "new_user_input") await waitFor(() => state.userIntervention?.status === "pending");
+            else {
+              await coordinator.recoverProject(state); await coordinator.resumeProject(state);
+              await new Promise(resolve => setTimeout(resolve, 40));
+              expect(turns).toBe(5); expect(opens).toBe(2);
+              expect((await coordinator.database().mainRouteControlRepairCount(state.id, nodeRunId))).toBe(3);
+            }
+            await coordinator.addProjectUserInput(state, request);
+            expect(turns).toBe(5);
+          }
+        }
       } finally { await coordinator.shutdown(); }
     }, 15_000);
 
-  it.each(["missing_finish", "memory_failure", "rejected_finish"] as const)(
+  it.each(["missing_finish", "receipt_failure", "rejected_finish"] as const)(
     "retains an accepted Leader decision while the same Agent explicitly repairs %s", async (mode) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-leader-finish-"));
       temporaryRoots.push(root);
@@ -2279,6 +2533,13 @@ describe("CollaborationRuntimeCoordinator", () => {
         input: { source: "input", target: "finish-team" },
         routes: { ...state.orchestration.routes, "finish-team": [{ target: "finish", kind: "strong" }] } };
       await storage.createProject(state);
+      const saveCompletion = storage.requestTaskCompletion.bind(storage);
+      let completionAttempts = 0;
+      vi.spyOn(storage, "requestTaskCompletion").mockImplementation(async (...args) => {
+        completionAttempts += 1;
+        if (mode === "receipt_failure" && completionAttempts === 1) throw new Error("Leader completion receipt storage failed");
+        return saveCompletion(...args);
+      });
       let leaderTurns = 0;
       let leaderOpens = 0;
       let planInputId: string | undefined;
@@ -2293,7 +2554,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           return { ...git, async commitManagementMemory(...args) {
             expect(finishToolActive).toBe(true);
             memoryAttempts += 1;
-            if (mode === "memory_failure" && memoryAttempts === 1) throw new Error("fixture memory save failed inside finish_task");
+            if (mode === "receipt_failure" && memoryAttempts === 1) throw new Error("Leader completion receipt storage failed");
             return git.commitManagementMemory!(...args);
           } };
         },
@@ -2330,8 +2591,8 @@ describe("CollaborationRuntimeCoordinator", () => {
               coordinatorEpoch: context.coordinatorEpoch!, tasks: [{ taskId: "task-held-plan",
                 assignment: "Original Agent-assigned work", assigneeAgentId: "idea" }] };
             if (leaderTurns === 1) {
-              if (mode === "memory_failure") {
-                await expect(requestFinish()).rejects.toThrow("fixture memory save failed inside finish_task");
+              if (mode === "receipt_failure") {
+                await expect(requestFinish()).rejects.toThrow("Leader completion receipt storage failed");
                 toolFailureReturned = true;
               }
               await call(assign);
@@ -2347,10 +2608,10 @@ describe("CollaborationRuntimeCoordinator", () => {
               expect(leaderTurns).toBe(2);
               expect(turn.prompt).toContain("decision has already been accepted");
               expect(turn.prompt).toContain("finish_task");
-              expect(coordinator.database().projectState(state.id).tasks).toHaveLength(0);
-              expect(coordinator.database().projectState(state.id).executions).toHaveLength(0);
+              expect((await coordinator.database().projectState(state.id)).tasks).toHaveLength(0);
+              expect((await coordinator.database().projectState(state.id)).executions).toHaveLength(0);
               expect(memoryContents).toHaveLength(0);
-              if (mode === "memory_failure") expect(toolFailureReturned).toBe(true);
+              if (mode === "receipt_failure") expect(toolFailureReturned).toBe(true);
               await expect(call({ ...assign, tasks: [{ taskId: "task-held-plan", assignment: "Unauthorized replacement",
                 assigneeAgentId: "execution" }] })).rejects.toThrow("accepted decision cannot be replaced");
               await requestFinish();
@@ -2365,7 +2626,6 @@ describe("CollaborationRuntimeCoordinator", () => {
             } else {
               const complete: ControlAction = { tool: "complete_group", groupRunId: context.groupRunId!,
                 coordinatorEpoch: context.coordinatorEpoch!, output: "Explicit Leader completion" };
-              await expect(call(complete)).rejects.toThrow("finish_task for its own management round before complete_group");
               await requestFinish();
               await call(complete);
             }
@@ -2382,19 +2642,19 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(state.status).toBe("completed");
         expect(leaderTurns).toBe(4);
         expect(leaderOpens).toBe(1);
-        expect(memoryAttempts).toBe(mode === "memory_failure" ? 4 : 3);
-        expect(memoryContents).toHaveLength(3);
-        expect(memoryContents.every((item) => item.includes("Agent-authored memory: retain the original task"))).toBe(true);
+        expect(memoryAttempts).toBe(0);
+        expect(memoryContents).toHaveLength(0);
+        expect(Object.values(state.taskCompletions ?? {}).some(receipt => receipt.memory?.includes("Agent-authored memory: retain the original task"))).toBe(true);
         expect(state.tasks?.find((item) => item.id === "task-held-plan"))
           .toMatchObject({ assignment: "Original Agent-assigned work", assigneeAgentId: "idea", status: "succeeded" });
-        const events = coordinator.database().eventsAfter(state.id, 0, 2000);
+        const events = await coordinator.database().eventsAfter(state.id, 0, 2000);
         expect(events.filter((item) => item.type === "group.control_action.accepted")).toHaveLength(3);
         expect(events.filter((item) => item.type === "group.task_completion.committed")).toHaveLength(3);
         expect(events.filter((item) => item.type === "group.control.round.completed")).toHaveLength(3);
       } finally { await coordinator.shutdown(); }
     }, 15_000);
 
-  it("does not bypass the bounded finish_task budget with an already accepted Leader decision", async () => {
+  it("retains an accepted Leader decision after three missing-finish supplements without inventing a receipt", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-leader-missing-finish-"));
     temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub());
@@ -2430,18 +2690,20 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.initialize();
     try {
       await coordinator.createProject(state, { enabled: true, provider: "github" });
-      await waitFor(() => ["paused", "retrying"].includes(state.status) && Boolean(state.lastError));
-      expect(nativeTurns).toBe(3);
-      expect(state.lastError).toContain("two retained-session mechanism repairs");
-      const projection = coordinator.database().projectState(state.id);
-      expect(projection.tasks).toHaveLength(0);
-      expect(projection.executions).toHaveLength(0);
-      expect(coordinator.database().eventsAfter(state.id, 0, 1000)
-        .filter((item) => item.type === "group.task_completion.committed")).toHaveLength(0);
+      await waitFor(async () => (await coordinator.database().eventsAfter(state.id, 0, 1000)).some(event => event.type === "group.control.supervision.finished"));
+      const events = await coordinator.database().eventsAfter(state.id, 0, 1000);
+      const firstRound = events.filter(event => event.type === "group.control.mechanism_repair.requested").slice(0, 3);
+      expect(firstRound).toHaveLength(3);
+      expect(nativeTurns).toBeGreaterThanOrEqual(4);
+      await waitFor(async () => (await coordinator.database().projectState(state.id)).tasks.length > 0);
+      const projection = await coordinator.database().projectState(state.id);
+      expect(projection.tasks[0]!.assignment).toBe("Must wait for actual finish");
+      expect(events.filter(event => event.type === "group.task_completion.committed")).toEqual([]);
+      expect(state.lastError).toBeUndefined();
     } finally { await coordinator.shutdown(); }
   }, 15_000);
 
-  it("bounds a Leader without a formal decision in the original session and escalates after two repairs", async () => {
+  it("returns a Leader without a formal decision after three supplements without automatic escalation", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-missing-leader-decision-"));
     temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub());
@@ -2481,16 +2743,17 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.initialize();
     try {
       await coordinator.createProject(state, { enabled: true, provider: "github" });
-      await waitFor(() => ["paused", "retrying"].includes(state.status) && Boolean(state.lastError));
-      expect(nativeTurns).toBe(3);
-      expect(new Set(inputIds).size).toBe(3);
-      expect(inputIds.slice(1).every((id) => id.startsWith(`${inputIds[0]}-mechanism-repair-`))).toBe(true);
+      await waitFor(async () => (await coordinator.database().eventsAfter(state.id, 0, 1000)).some(event => event.type === "group.control.supervision.finished"));
+      expect(nativeTurns).toBe(4);
+      expect(new Set(inputIds).size).toBe(4);
       expect(closed).toBeGreaterThan(0);
-      expect(state.lastError).toContain("two retained-session mechanism repairs");
-      const projection = coordinator.database().projectState(state.id);
-      expect(projection.executions).toHaveLength(0);
-      expect(projection.tasks).toHaveLength(0);
-      expect(coordinator.database().groupControlRepairCount(state.id, projection.groupRuns[0]!.id, "main")).toBe(2);
+      const projection = await coordinator.database().projectState(state.id);
+      expect(projection.executions).toEqual([]);
+      expect(projection.tasks).toEqual([]);
+      expect((await coordinator.database().groupControlRepairCount(state.id, projection.groupRuns[0]!.id, "main"))).toBe(3);
+      expect(state.lastError).toBeUndefined();
+      await new Promise(resolve => setTimeout(resolve, 40));
+      expect(nativeTurns).toBe(4);
     } finally { await coordinator.shutdown(); }
   }, 15_000);
 
@@ -2524,30 +2787,30 @@ describe("CollaborationRuntimeCoordinator", () => {
       await coordinator.initialize();
       try {
         const database = coordinator.database();
-        database.createProject({ projectId: state.id, workflowRevision: 1,
+        await database.createProject({ projectId: state.id, workflowRevision: 1,
           workflowSnapshot: state.orchestration, git: state.git!, workerCapacity: 1, managementCapacity: 1 });
         const repository = repositoryFact("retained-stop");
-        database.prepareOperation(state.id, { id: "retained-repository", kind: "repository.create",
+        await database.prepareOperation(state.id, { id: "retained-repository", kind: "repository.create",
           payloadHash: "retained-repository", status: "prepared" });
-        database.transitionOperation(state.id, { id: "retained-repository", payloadHash: "retained-repository",
+        await database.transitionOperation(state.id, { id: "retained-repository", payloadHash: "retained-repository",
           status: "observed", remoteFact: repository });
-        database.transitionOperation(state.id, { id: "retained-repository", payloadHash: "retained-repository",
+        await database.transitionOperation(state.id, { id: "retained-repository", payloadHash: "retained-repository",
           status: "finalized", remoteFact: repository });
         const worktree = path.join(storage.projectDir(state.id), "git-worktrees", "retained-execution");
         await fs.mkdir(worktree, { recursive: true });
         const dirty = path.join(worktree, "unfinished.txt");
         await fs.writeFile(dirty, "uncommitted Agent work\n");
-        database.activateNode({ projectId: state.id, nodeRunId: "retained-node",
+        await database.activateNode({ projectId: state.id, nodeRunId: "retained-node",
           node: { kind: "agent", nodeId: "idea", agentId: "idea" }, activationRequestId: "retained-activation",
           inputSnapshotRef: "fixture:retained", activatedByAgentId: "main", workflowRevision: 1 });
-        const execution = database.startStandaloneExecution({ projectId: state.id, nodeRunId: "retained-node",
+        const execution = (await database.startStandaloneExecution({ projectId: state.id, nodeRunId: "retained-node",
           taskId: "retained-task", executionId: "retained-execution", agentId: "idea", assignment: "Retain unfinished work",
-          executionBranch: "executions/retained-execution", worktreePath: worktree, invocationId: "inv_retained_stop" }).execution;
-        database.observePullRequest({ projectId: state.id, executionId: execution.id, ownershipEpoch: 1,
+          executionBranch: "executions/retained-execution", worktreePath: worktree, invocationId: "inv_retained_stop" })).execution;
+        await database.observePullRequest({ projectId: state.id, executionId: execution.id, ownershipEpoch: 1,
           pullRequest: pull });
-        database.requestExecutionStop({ projectId: state.id, executionId: execution.id, ownershipEpoch: 1,
+        await database.requestExecutionStop({ projectId: state.id, executionId: execution.id, ownershipEpoch: 1,
           reason: "native_failure", requestId: "retained-stop" });
-        state.operations = database.projectState(state.id).operations;
+        state.operations = (await database.projectState(state.id)).operations;
         const observeStop = coordinator as unknown as { prepareStoppedExecutionForTerminalTransition(
           project: ProjectState, execution: typeof execution, reason: string, transition: "handoff"
         ): Promise<Record<string, unknown>> };
@@ -2556,7 +2819,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           retainedExecution: execution.id, retainedWorktreePath: worktree, pullRequestNumber: 41,
           pullRequestStatus: status, checkpointCommit: head });
         expect(await fs.readFile(dirty, "utf8")).toBe("uncommitted Agent work\n");
-        expect(database.projectState(state.id).pullRequests[0]).toMatchObject({ id: pull.id, status, headSha: head });
+        expect((await database.projectState(state.id)).pullRequests[0]).toMatchObject({ id: pull.id, status, headSha: head });
         expect(push).not.toHaveBeenCalled();
         expect(close).not.toHaveBeenCalled();
         expect(create).not.toHaveBeenCalled();
@@ -2630,19 +2893,19 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.initialize();
     try {
       const database = coordinator.database();
-      database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 1 });
-      database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
-      const original = retained ? database.prepareScopedGroupActivation({ projectId: state.id, groupRunId: "original-run-G", groupId: "G",
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 1 });
+      await database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
+      const original = retained ? (await database.prepareScopedGroupActivation({ projectId: state.id, groupRunId: "original-run-G", groupId: "G",
         activationRequestId: "original-root-request", workflowRevision: 1,
-        outer: { nodeRunId: "original-node-G", inputSnapshotRef: "original-input", optionalTask: "Original immutable assignment", activatedByAgentId: "main" } }) : undefined;
-      const current = database.workflowAdjustmentCurrent(state.id), proposal = structuredClone(current.snapshot);
+        outer: { nodeRunId: "original-node-G", inputSnapshotRef: "original-input", optionalTask: "Original immutable assignment", activatedByAgentId: "main" } })) : undefined;
+      const current = await database.workflowAdjustmentCurrent(state.id), proposal = structuredClone(current.snapshot);
       proposal.orchestration.input.target = "main";
-      database.submitUserWorkflowAdjustment({ projectId: state.id, requestId: "future-root-input", base: current.version, proposal });
-      const publication = database.prepareUserWorkflowAdjustmentPublication(state.id, "future-root-input");
+      await database.submitUserWorkflowAdjustment({ projectId: state.id, requestId: "future-root-input", base: current.version, proposal });
+      const publication = await database.prepareUserWorkflowAdjustmentPublication(state.id, "future-root-input");
       expect(publication.ready).toBe(true); if (!publication.ready) throw new Error("Future project Input does not replace a retained original preparation");
       const accept = async () => {
-        expect(database.publishUserWorkflowAdjustment(state.id, "future-root-input", publication.validationToken).status).toBe("applied");
-        const projection = database.projectState(state.id);
+        expect((await database.publishUserWorkflowAdjustment(state.id, "future-root-input", publication.validationToken)).status).toBe("applied");
+        const projection = await database.projectState(state.id);
         state.orchestration = projection.workflowSnapshot as ProjectState["orchestration"]; state.workflowRevision = projection.workflowRevision;
         state.agents = structuredClone(projection.scopedConfiguration!.agents);
       };
@@ -2659,13 +2922,53 @@ describe("CollaborationRuntimeCoordinator", () => {
       if (original) { expect(activate).toHaveBeenCalledExactlyOnceWith(original.input); expect(management).not.toHaveBeenCalled(); }
       else {
         expect(activate).not.toHaveBeenCalled(); expect(management).toHaveBeenCalledOnce();
-        expect(database.projectState(state.id).nodeRuns).toMatchObject([{ workflowRevision: 2, node: { kind: "agent", agentId: "main" },
+        expect((await database.projectState(state.id)).nodeRuns).toMatchObject([{ workflowRevision: 2, node: { kind: "agent", agentId: "main" },
           inputSnapshotRef: `project:${state.id}:requirement:cycle:1` }]);
-        expect(database.scopedGroupActivationPreparations(state.id)).toEqual([]);
+        expect((await database.scopedGroupActivationPreparations(state.id))).toEqual([]);
       }
       expect(gitFactory).not.toHaveBeenCalled();
-      expect(database.projectState(state.id).scopedArrivals).toEqual([]); expect(database.projectState(state.id).scopedGroupRuns).toEqual([]);
+      expect((await database.projectState(state.id)).scopedArrivals).toEqual([]); expect((await database.projectState(state.id)).scopedGroupRuns).toEqual([]);
     } finally { await coordinator.shutdown(); }
+  });
+
+  it("restores the bound GitHub account before retaining a repair-required project for explicit resume", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-repair-account-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_99999999999999999999999999999998");
+    state.status = "interrupted"; state.phase = "collaboration:repair-required";
+    state.lastError = "Unable to publish a canonical Harness event";
+    state.git = { ...state.git!, enabled: true, status: "ready",
+      account: { id: "gha_" + "a".repeat(32), providerUserId: 7, login: "bound-owner" },
+      repository: { owner: "bound-owner", name: "retained-project", htmlUrl: "https://github.example/retained-project",
+        private: true, defaultBranch: "main", localPath: path.join(root, "repository") } };
+    await storage.createProject(state);
+    const resolveAccount = vi.fn(() => async () => ({ token: "fixture-credential", requestedScopes: ["repo"] }));
+    const gitFactory = vi.fn((options: CollaborationGitFactoryOptions) => ({ ...happyGitFake(options, []),
+      async observeRemoteRef(repository, ref) { return { owner: repository.owner, repository: repository.name,
+        ref, status: "present" as const, sha: "a".repeat(40), observedAt: new Date().toISOString() }; }
+    }) satisfies CollaborationGitRuntime);
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "repair-account", hostId: "fixture",
+      credentialResolverForAccount: resolveAccount, gitFactory });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    await coordinator.database().createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      git: state.git, workerCapacity: 1, managementCapacity: 1 });
+    const database = coordinator.database(), repository = repositoryFact("retained-project");
+    const operation = { id: "retained-repository", payloadHash: "retained-repository" };
+    await database.prepareOperation(state.id, { ...operation, kind: "repository.create", status: "prepared" });
+    await database.transitionOperation(state.id, { ...operation, status: "observed", remoteFact: repository });
+    await database.transitionOperation(state.id, { ...operation, status: "finalized", remoteFact: repository });
+    state.operations = (await database.projectState(state.id)).operations;
+    const schedule = vi.spyOn(coordinator as unknown as { scheduleProjectAfterSettlingRun(state: ProjectState): void },
+      "scheduleProjectAfterSettlingRun").mockImplementation(() => {});
+    await expect(coordinator.recoverProject(state)).resolves.toBe(true);
+    expect(state).toMatchObject({ status: "interrupted", phase: "collaboration:repair-required" });
+    expect(schedule).not.toHaveBeenCalled(); expect(gitFactory).not.toHaveBeenCalled();
+    await expect(coordinator.resumeProject(state)).resolves.toBeUndefined();
+    expect(resolveAccount).toHaveBeenCalledExactlyOnceWith(state.git.account!.id);
+    expect(gitFactory).toHaveBeenCalledWith(expect.objectContaining({ credentialResolver: expect.any(Function),
+      expectedIdentity: { id: 7, login: "bound-owner" } }));
+    expect(state).toMatchObject({ status: "queued", phase: "collaboration:recovering" });
+    expect(schedule).toHaveBeenCalledOnce();
   });
 
   it("pauses an accountless legacy Git project instead of using ambient credentials", async () => {
@@ -2732,8 +3035,8 @@ describe("CollaborationRuntimeCoordinator", () => {
       });
       if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
       await coordinator.initialize();
-      const database = (coordinator as unknown as { database(): CollaborationStateDatabase }).database();
-      database.createProject({
+      const database = (await (coordinator as unknown as { database(): AsyncCollaborationStateStore }).database());
+      await database.createProject({
         projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
         git: state.git, workerCapacity: 1, managementCapacity: 1,
         requestId: "durable-pause-fixture"
@@ -2773,57 +3076,55 @@ describe("CollaborationRuntimeCoordinator", () => {
     if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
     await coordinator.initialize();
     const database = coordinator.database();
-    database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+    await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
       git: state.git, workerCapacity: 1, managementCapacity: 1 });
-    database.activateScopedGroup({ projectId: state.id, groupRunId: "run-G", groupId: "G", workflowRevision: 1,
+    await database.activateScopedGroup({ projectId: state.id, groupRunId: "run-G", groupId: "G", workflowRevision: 1,
       activationRequestId: "activate-G", baseCommit: "a".repeat(40),
       outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
-    const claim = database.claimScopedLeaderTurn({ projectId: state.id, groupRunId: "run-G", agentId: "main", invocationId: "inv_retained-manager",
-      runtimePath: await storage.invocationRuntimePath(state.id, "inv_retained-manager") })!;
-    database.markScopedLeaderOpened({ projectId: state.id, groupRunId: "run-G", agentId: "main", invocationId: claim.invocationId,
+    const claim = (await database.claimScopedLeaderTurn({ projectId: state.id, groupRunId: "run-G", agentId: "main", invocationId: "inv_retained-manager",
+      runtimePath: await storage.invocationRuntimePath(state.id, "inv_retained-manager") }))!;
+    await database.markScopedLeaderOpened({ projectId: state.id, groupRunId: "run-G", agentId: "main", invocationId: claim.invocationId,
       coordinatorEpoch: claim.coordinatorEpoch });
     const repairScopeKey = createHash("sha256").update(JSON.stringify(["run-G", "main", "plan", null, false])).digest("hex");
-    for (const attempt of [1, 2]) database.appendEvent({ projectId: state.id, agentId: "main", invocationId: claim.invocationId,
+    for (const attempt of [1, 2]) await database.appendEvent({ projectId: state.id, agentId: "main", invocationId: claim.invocationId,
       coordinatorEpoch: claim.coordinatorEpoch, requestId: `retained-plan-repair:${attempt}`, type: "scoped.management.mechanism_repair.requested",
       payload: { groupRunId: "run-G", purpose: "plan", repairScopeKey, attempt, missing: ["finish_task", "formal plan control action"] } });
-    database.recordScopedGroupIssue({ projectId: state.id, groupRunId: "run-G", kind: "plan", reason: "Retained plan did not finish" });
+    await database.recordScopedGroupIssue({ projectId: state.id, groupRunId: "run-G", kind: "plan", reason: "Retained plan did not finish" });
     const schedule = vi.spyOn(coordinator as unknown as { scheduleProjectAfterSettlingRun(...args: unknown[]): void }, "scheduleProjectAfterSettlingRun")
       .mockImplementation(() => undefined);
     try {
-      if (!live) database.releaseScopedLeaderTurn({ projectId: state.id, groupRunId: "run-G", agentId: "main",
+      if (!live) await database.releaseScopedLeaderTurn({ projectId: state.id, groupRunId: "run-G", agentId: "main",
         invocationId: claim.invocationId, residentStopConfirmed: true });
       await coordinator.recoverProject(state);
-      expect(database.scopedManagementRepairCount(state.id, repairScopeKey)).toBe(2);
+      expect((await database.scopedManagementRepairCount(state.id, repairScopeKey))).toBe(2);
       expect(schedule).not.toHaveBeenCalled();
       if (live) {
         await expect(coordinator.resumeProject(state, { preserveRecoveryBudget })).rejects.toThrow(/stopped manager|native stop/);
-        expect(database.scopedManagementRepairCount(state.id, repairScopeKey)).toBe(2);
+        expect((await database.scopedManagementRepairCount(state.id, repairScopeKey))).toBe(2);
         expect(schedule).not.toHaveBeenCalled();
       } else {
         await coordinator.resumeProject(state, { preserveRecoveryBudget });
-        expect(database.scopedManagementRepairCount(state.id, repairScopeKey)).toBe(preserveRecoveryBudget ? 2 : 0);
+        expect((await database.scopedManagementRepairCount(state.id, repairScopeKey))).toBe(2);
         expect(schedule).toHaveBeenCalledOnce();
-        expect(database.scopedGroupPlan(state.id, "run-G")).toBeUndefined();
-        expect(database.projectState(state.id).scopedExecutions).toEqual([]);
-        const grants = database.eventsAfter(state.id, 0, 1000).filter(event => event.type === "scoped.management.recovery.resumed");
-        expect(grants).toHaveLength(preserveRecoveryBudget ? 0 : 1);
-        if (!preserveRecoveryBudget) expect(grants[0]).toMatchObject({ invocationId: claim.invocationId, coordinatorEpoch: claim.coordinatorEpoch,
-          payload: { explicitUserResume: true, nodeRunId: "node-G", rootGroupRunId: "run-G" } });
+        expect((await database.scopedGroupPlan(state.id, "run-G"))).toBeUndefined();
+        expect((await database.projectState(state.id)).scopedExecutions).toEqual([]);
+        const grants = (await database.eventsAfter(state.id, 0, 1000)).filter(event => event.type === "scoped.management.recovery.resumed");
+        expect(grants).toHaveLength(0);
         if (!preserveRecoveryBudget) await coordinator.resumeProject(state);
-        expect(database.eventsAfter(state.id, 0, 1000).filter(event => event.type === "scoped.management.recovery.resumed")).toHaveLength(preserveRecoveryBudget ? 0 : 1);
+        expect((await database.eventsAfter(state.id, 0, 1000)).filter(event => event.type === "scoped.management.recovery.resumed")).toHaveLength(0);
         if (preserveRecoveryBudget) {
           state.status = "paused"; state.phase = "collaboration:main-recovery-waiting-user";
-          database.freezeMainRouteFailure({ projectId: state.id, nodeRunId: "node-G", routeEpoch: claim.coordinatorEpoch,
+          await database.freezeMainRouteFailure({ projectId: state.id, nodeRunId: "node-G", routeEpoch: claim.coordinatorEpoch,
             error: "Retained Main recovery is frozen; this option cannot renew it" });
-          const frozen = database.projectState(state.id), saved = structuredClone(state);
+          const frozen = await database.projectState(state.id), saved = structuredClone(state);
           await expect(coordinator.resumeProject(state, { preserveRecoveryBudget: true })).rejects.toThrow(/nonfrozen paused scope/);
-          expect(database.projectState(state.id)).toEqual(frozen); expect(state).toEqual(saved);
-          expect(database.scopedManagementRepairCount(state.id, repairScopeKey)).toBe(2);
+          expect((await database.projectState(state.id))).toEqual(frozen); expect(state).toEqual(saved);
+          expect((await database.scopedManagementRepairCount(state.id, repairScopeKey))).toBe(2);
           expect(schedule).toHaveBeenCalledOnce();
         }
       }
     } finally {
-      database.releaseScopedLeaderTurn({ projectId: state.id, groupRunId: "run-G", agentId: "main",
+      await database.releaseScopedLeaderTurn({ projectId: state.id, groupRunId: "run-G", agentId: "main",
         invocationId: claim.invocationId, residentStopConfirmed: true });
       schedule.mockRestore(); await coordinator.shutdown();
     }
@@ -2850,7 +3151,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     const first = new CollaborationRuntimeCoordinator({ storage, serviceId: "pause-before-restart", hostId: "host-test", gitFactory });
     if (first instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(first);
     await first.initialize();
-    (first as unknown as { database(): CollaborationStateDatabase }).database().createProject({
+    await (await (first as unknown as { database(): AsyncCollaborationStateStore }).database()).createProject({
       projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git,
       workerCapacity: 1, managementCapacity: 1, requestId: "pending-pause-fixture" });
     if (settled) await first.pauseProject(state);
@@ -2867,7 +3168,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         phase: settled ? "collaboration:user-paused" : "collaboration:user-pause-recovery-required",
         pauseRequest: state.pauseRequest, agentSessionIds: state.agentSessionIds, agentSessions: state.agentSessions,
         runCounts: state.runCounts });
-      expect(restarted.projectReadModel(restored)).toMatchObject({ status: settled ? "paused" : "pausing",
+      expect((await restarted.projectReadModel(restored))).toMatchObject({ status: settled ? "paused" : "pausing",
         runtime: { status: settled ? "paused" : "pausing", activities: [] } });
       expect((await freshStorage.loadState(state.id)).pauseRequest).toEqual(state.pauseRequest);
       expect(gitFactory).not.toHaveBeenCalled();
@@ -2900,7 +3201,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     await storage.createProject(state);
     const seed = new CollaborationRuntimeCoordinator({ storage, serviceId: "pause-crash-seed", hostId: "host-test" });
     await seed.initialize();
-    (seed as unknown as { database(): CollaborationStateDatabase }).database().createProject({
+    await (await (seed as unknown as { database(): AsyncCollaborationStateStore }).database()).createProject({
       projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git,
       workerCapacity: 1, managementCapacity: 1, requestId: "pause-crash-fixture" });
     await seed.shutdown();
@@ -2939,7 +3240,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       if (restarted instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(restarted);
       await restarted.initialize();
       await expect(restarted.recoverProject(restored)).resolves.toBe(true);
-      expect(restarted.projectReadModel(restored)).toMatchObject({ status: "pausing",
+      expect((await restarted.projectReadModel(restored))).toMatchObject({ status: "pausing",
         phase: "collaboration:user-pause-recovery-required", pauseRequest: held.pauseRequest,
         agentSessionIds: held.agentSessionIds });
       expect(gitFactory).not.toHaveBeenCalled();
@@ -2965,7 +3266,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       hostId: "host-test", gitFactory });
     if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
     await coordinator.initialize();
-    (coordinator as unknown as { database(): CollaborationStateDatabase }).database().createProject({
+    await (await (coordinator as unknown as { database(): AsyncCollaborationStateStore }).database()).createProject({
       projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git,
       workerCapacity: 1, managementCapacity: 1, requestId: "paused-init-resume-fixture" });
     try {
@@ -3417,13 +3718,13 @@ describe("CollaborationRuntimeCoordinator", () => {
             return providerFact;
           };
           git.reconcileMergedPullRequest = async request => {
-            await coordinator.database().operationsForProject(state.id).assertExecutionOwnership({ projectId: state.id,
+            await (await coordinator.database().operationsForProject(state.id)).assertExecutionOwnership({ projectId: state.id,
               executionId: request.execution.id, ownershipEpoch: request.ownershipEpoch,
               expectedBranch: request.execution.executionBranch, operation: "provider.reconcile_merged",
               providerNumber: request.providerNumber, expectedHeadSha: request.expectedHead,
               expectedBase: request.expectedBase, expectedMergeCommitSha: request.expectedMergeCommitSha });
             const result = await synchronize(request);
-            coordinator.database().recordMergedSynchronization({ projectId: state.id, executionId: request.execution.id,
+            await coordinator.database().recordMergedSynchronization({ projectId: state.id, executionId: request.execution.id,
               ownershipEpoch: request.ownershipEpoch, providerNumber: request.providerNumber,
               expectedHead: request.expectedHead, expectedBase: request.expectedBase,
               expectedMergeCommitSha: result.mergeCommitSha!, synchronization: result.localSynchronization });
@@ -3459,7 +3760,7 @@ describe("CollaborationRuntimeCoordinator", () => {
               const old = await call({ tool: "github_get_pr", providerNumber: originalPull!.providerNumber }) as GitHubPullRequestFact;
               expect(old).toMatchObject({ id: originalPull!.id, headSha: "b".repeat(40), status: "merged" });
               // A keeps its original identity; B is a separately registered delivery.
-              const projection = coordinator.database().projectState(state.id);
+              const projection = await coordinator.database().projectState(state.id);
               expect(projection.pullRequests).toEqual([
                 expect.objectContaining({ id: originalPull!.id, headSha: "b".repeat(40), status: "merged" })
               ]);
@@ -3474,7 +3775,7 @@ describe("CollaborationRuntimeCoordinator", () => {
             await call({ tool: "github_merge_pr", providerNumber: originalPull.providerNumber, reason: "Agent integrates A" });
             currentHead = "c".repeat(40);
             await call({ tool: "git_push", reason: "Agent publishes independently committed B" });
-            expect(coordinator.database().latestAgentGitFacts(state.id, input.request.executionContext!.executionId!, 1)?.merged).toBeUndefined();
+            expect((await coordinator.database().latestAgentGitFacts(state.id, input.request.executionContext!.executionId!, 1))?.merged).toBeUndefined();
             await call({ tool: "github_create_pr", base: "main", title: "Current B", body: "Current delivery" });
             if (phase === "before-merge") await queryHistory();
             const mergeB: ControlAction = { tool: "github_merge_pr", providerNumber: currentPull!.providerNumber, reason: "Agent integrates B" };
@@ -3499,11 +3800,11 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(state.status, state.lastError).toBe("completed");
       expect(state.artifacts).toEqual([expect.objectContaining({ path: "VERIFICATION.md",
         gitSource: expect.objectContaining({ commitSha: "c".repeat(40), pullRequestId: currentPull!.id }) })]);
-      const facts = coordinator.database().latestAgentGitFacts(state.id, state.executions![0].id, 1)!;
+      const facts = (await coordinator.database().latestAgentGitFacts(state.id, state.executions![0].id, 1))!;
       expect(facts.pushedHeadSha).toBe("c".repeat(40)); expect(facts.merged?.headSha).toBe("c".repeat(40));
       expect(observedResults).toContainEqual(expect.objectContaining({ id: originalPull!.id, headSha: "b".repeat(40) }));
       expect(order.filter(item => item === "merge:idea")).toHaveLength(2);
-      expect(coordinator.database().eventsAfter(state.id, 0, 10_000).filter(item => item.type === "execution.mechanism_repair.requested")).toHaveLength(0);
+      expect((await coordinator.database().eventsAfter(state.id, 0, 10_000)).filter(item => item.type === "execution.mechanism_repair.requested")).toHaveLength(0);
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3563,7 +3864,7 @@ describe("CollaborationRuntimeCoordinator", () => {
               nativeId: "original-worker-session", generation: 0, durable: true, createdAt: new Date().toISOString() }, "original-worker-session");
             // Reproduce the legacy accepted intent plus a later good intent.
             // The later file alone must not let the system discard the first.
-            for (const artifactPath of [invalidPath, "VERIFICATION.md"]) coordinator.database().appendEvent({
+            for (const artifactPath of [invalidPath, "VERIFICATION.md"]) await coordinator.database().appendEvent({
               projectId: state.id, executionId, ownershipEpoch: 1, agentId: "idea", invocationId: turn.invocationId,
               requestId: `legacy-publication:${artifactPath}`, type: "artifact.publication.staged",
               payload: { path: artifactPath, title: "Legacy publication", kind: "report", description: "Original Agent request" } });
@@ -3587,7 +3888,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(state.artifacts ?? []).toHaveLength(0);
         expect(state.executions![0].status).toBe("merged");
       }
-      const events = coordinator.database().eventsAfter(state.id, 0, 10_000);
+      const events = await coordinator.database().eventsAfter(state.id, 0, 10_000);
       expect(events.find((event) => event.payload.path === invalidPath && event.type === "artifact.publication.staged"))
         .toBeDefined();
       expect(events.filter((event) => event.payload.replacesPath === invalidPath)).toHaveLength(correct ? 1 : 0);
@@ -3925,13 +4226,13 @@ describe("CollaborationRuntimeCoordinator", () => {
       const b = await gitCommand(worktreePath, ["rev-parse", "HEAD"]);
       const extra = { ...mergedPull, id: "independent-b", providerNumber: 21, headSha: b, mergeCommitSha: b,
         observedAt: new Date().toISOString() };
-      coordinator.database().appendEvent({ projectId: state.id, executionId, ownershipEpoch: epoch,
+      await coordinator.database().appendEvent({ projectId: state.id, executionId, ownershipEpoch: epoch,
         invocationId: "original-agent-b", type: "execution.agent_git.fact",
         payload: { facts: { pushedHeadSha: b, pullRequest: extra } } });
-      coordinator.database().observeStandaloneDeliveryPullRequest({ projectId: state.id, executionId,
+      await coordinator.database().observeStandaloneDeliveryPullRequest({ projectId: state.id, executionId,
         ownershipEpoch: epoch, pullRequest: extra });
       await internal.commitMergedExecutionArtifacts(state, recovered, extra);
-      state.additionalPullRequests = structuredClone(coordinator.database().projectState(state.id).additionalPullRequests);
+      state.additionalPullRequests = structuredClone((await coordinator.database().projectState(state.id)).additionalPullRequests);
       await storage.saveState(state);
       expect(state.artifacts).toHaveLength(2);
       const current = state.artifacts!.find(item => item.gitSource?.commitSha === b)!;
@@ -3939,7 +4240,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         const exact = await storage.resolvePublishedArtifactRecord(state.id, record);
         expect((await fs.readFile(exact.sourcePath)).toString("utf8")).toBe(text);
       }
-      expect(coordinator.database().projectState(state.id).pullRequests).toEqual([mergedPull]);
+      expect((await coordinator.database().projectState(state.id)).pullRequests).toEqual([mergedPull]);
       await expect(storage.validateGitArtifactRecord(state, { ...current,
         gitSource: { ...current.gitSource!, ownershipEpoch: epoch + 1 } })).rejects.toThrow(/accepted execution/);
       // The integrity and historical-compatibility checks below still target A.
@@ -4179,7 +4480,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           await observe(event, session); // A prepared request has no trusted opened Session.
           expect(state.userInputs[0].status).toBe("pending");
           await input.open.request.onResidentNativeOpened?.({ runtimePath: input.open.executionRuntimePath, session });
-          expect(coordinator.database().latestAgentNativeSessionBinding(state.id, "main")?.invocationId).toBe(input.turn.invocationId);
+          expect((await coordinator.database().latestAgentNativeSessionBinding(state.id, "main"))?.invocationId).toBe(input.turn.invocationId);
           await observe(event);
           await observe({ ...event, invocationId: "another-turn" }, session);
           await observe({ ...event, harnessId: "wrong-harness" }, session);
@@ -4192,7 +4493,7 @@ describe("CollaborationRuntimeCoordinator", () => {
             if (save) {
               await expect(observe(event, session)).rejects.toThrow("Controlled input file publication loss");
               save.mockRestore();
-              expect(coordinator.database().eventsAfter(state.id, 0, 1000).filter(e => e.type === "user.input.delivered")).toHaveLength(1);
+              expect((await coordinator.database().eventsAfter(state.id, 0, 1000)).filter(e => e.type === "user.input.delivered")).toHaveLength(1);
               state.userInputs[0] = { ...state.userInputs[0], status: "pending", deliveredAt: undefined, deliveredInvocationId: undefined };
               expect(JSON.parse(await fs.readFile(path.join(storage.projectDir(state.id), "state.json"), "utf8")).userInputs[0].status).toBe("pending");
             } else {
@@ -4201,7 +4502,7 @@ describe("CollaborationRuntimeCoordinator", () => {
               expect(state.userInputs[0]).toMatchObject({ status: "delivered", deliveredInvocationId: input.turn.invocationId });
               // Reception is independent of Main completing its formal decision.
               expect(state.mainInvocationSeq).toBe(0);
-              expect(coordinator.database().eventsAfter(state.id, 0, 1000).some(e => e.type === "main.route.response.committed")).toBe(false);
+              expect((await coordinator.database().eventsAfter(state.id, 0, 1000)).some(e => e.type === "main.route.response.committed")).toBe(false);
             }
             receivedInvocation = input.turn.invocationId;
           }
@@ -4217,7 +4518,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(state.mainInvocationSeq).toBe(1);
       expect(state.userInputs[0].status).toBe(mode === "prepared" ? "pending" : "delivered");
       expect(state.userInputs[0].deliveredInvocationId).toBe(receivedInvocation);
-      const receipts = coordinator.database().eventsAfter(state.id, 0, 1000).filter(e => e.type === "user.input.delivered");
+      const receipts = (await coordinator.database().eventsAfter(state.id, 0, 1000)).filter(e => e.type === "user.input.delivered");
       expect(receipts).toHaveLength(mode === "prepared" ? 0 : 1);
       expect(JSON.parse(await fs.readFile(path.join(storage.projectDir(state.id), "state.json"), "utf8")).userInputs[0].status)
         .toBe(mode === "prepared" ? "pending" : "delivered");
@@ -4315,7 +4616,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(state.nodeRuns).toHaveLength(2);
     expect(state.executions).toEqual([]);
     expect(Object.keys(state.taskCompletions ?? {})).toHaveLength(3);
-    const completionEvents = coordinator.database().eventsAfter(state.id, 0, 1_000);
+    const completionEvents = await coordinator.database().eventsAfter(state.id, 0, 1_000);
     expect(completionEvents.filter((event) => event.type === "main.route.task_completion.committed")).toHaveLength(3);
     expect(completionEvents.some((event) => event.type === "main.management_memory.committed")).toBe(false);
     await coordinator.shutdown();
@@ -4341,10 +4642,10 @@ describe("CollaborationRuntimeCoordinator", () => {
           decisions += 1;
           if (decisions === 1) {
             const workflowPath = path.join(input.open.inputs!.workspacePath, "workflow.json"), document = mainAgentOrchestrationDocument(state.id, state.orchestration, state.agents, {}, {}, JSON.parse(await fs.readFile(workflowPath, "utf8")).baseVersion);
-            document.agents.main.harness = "claude-code"; await fs.writeFile(workflowPath, JSON.stringify(document));
+            document.agents.main.harness = "dsh"; await fs.writeFile(workflowPath, JSON.stringify(document));
             const decision = await agentFixtureMainDecision(input, { targetNodeId: "__apply_workflow__", decisionRequestId: "late-session-proposal",
               output: "Original Main task completed independently", decisionAction: { tool: "apply_workflow", path: "workflow.json", rationale: "Exact live proposal" } });
-            requestId = coordinator.database().workflowAdjustments(state.id)[0].requestId;
+            requestId = (await coordinator.database().workflowAdjustments(state.id))[0].requestId;
             key = collaborationSessionKey("main", input.open.request.executionContext);
             if (kind === "structured") state.agentSessions = { ...state.agentSessions, [key]: original };
             else state.agentSessionIds = { ...state.agentSessionIds, [key]: original.nativeId };
@@ -4360,16 +4661,16 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.initialize();
     try {
       await coordinator.createProject(state, { enabled: true, provider: "github" });
-      await waitFor(() => Boolean(requestId && coordinator.database().workflowAdjustment(state.id, requestId)?.waitingReason?.includes("Harness")) || Boolean(state.lastError));
+      await waitFor(async () => Boolean(requestId && (await coordinator.database().workflowAdjustment(state.id, requestId))?.waitingReason?.includes("Harness")) || Boolean(state.lastError));
       expect(state.lastError).toBeUndefined();
-      const database = coordinator.database(), record = database.workflowAdjustment(state.id, requestId)!;
-      expect(record).toMatchObject({ status: "pending", proposal: { agents: { main: { harness: "claude-code" } } } });
+      const database = coordinator.database(), record = (await database.workflowAdjustment(state.id, requestId))!;
+      expect(record).toMatchObject({ status: "pending", proposal: { agents: { main: { harness: "dsh" } } } });
       expect(state.workflowRevision).toBe(1); expect(state.agents.main.harness).toBe("codex"); expect(state.pauseRequest).toBeUndefined();
-      database.withdrawWorkflowAdjustment({ projectId: state.id, requestId, operationId: "withdraw-incompatible-original", note: "Keep the original Session" });
+      await database.withdrawWorkflowAdjustment({ projectId: state.id, requestId, operationId: "withdraw-incompatible-original", note: "Keep the original Session" });
       release(); await waitFor(() => state.status === "completed");
       expect(kind === "structured" ? state.agentSessions?.[key] : state.agentSessionIds?.[key]).toEqual(kind === "structured" ? original : original.nativeId);
-      expect(database.eventsAfter(state.id, 0, 10_000).some(event => event.type === "workflow.revision.created")).toBe(false);
-      expect(database.workflowAdjustment(state.id, requestId)!.status).toBe("withdrawn");
+      expect((await database.eventsAfter(state.id, 0, 10_000)).some(event => event.type === "workflow.revision.created")).toBe(false);
+      expect((await database.workflowAdjustment(state.id, requestId))!.status).toBe("withdrawn");
     } finally { release(); await coordinator.shutdown(); }
   });
 
@@ -4399,12 +4700,12 @@ describe("CollaborationRuntimeCoordinator", () => {
               const decision = await agentFixtureMainDecision(input, { targetNodeId: "__apply_workflow__", decisionRequestId: "withdraw-this-tool",
                 output: "Main's original proposal receipt", decisionAction: { tool: "apply_workflow", path: "workflow.json", rationale: "Main's actual public reason" } });
               const database = coordinator.database();
-              const record = database.workflowAdjustments(state.id)[0]; expect(record.status).toBe("pending");
-              originalAccepted = database.eventByRequestId(state.id, record.requestId);
-              originalFinish = database.eventsAfter(state.id, 0, 10_000).find(event => event.type === "main.route.task_completion.committed");
+              const record = (await database.workflowAdjustments(state.id))[0]; expect(record.status).toBe("pending");
+              originalAccepted = (await database.eventByRequestId(state.id, record.requestId));
+              originalFinish = (await database.eventsAfter(state.id, 0, 10_000)).find(event => event.type === "main.route.task_completion.committed");
               expect(originalFinish).toBeDefined();
-              expect(database.withdrawWorkflowAdjustment({ projectId: state.id, requestId: record.requestId, operationId: "withdraw-original-main",
-                ...(note === undefined ? {} : { note }) }).withdrawn).toBe(true);
+              expect((await database.withdrawWorkflowAdjustment({ projectId: state.id, requestId: record.requestId, operationId: "withdraw-original-main",
+                ...(note === undefined ? {} : { note }) })).withdrawn).toBe(true);
               return decision;
             }
             expect(decisions).toBe(2);
@@ -4420,9 +4721,9 @@ describe("CollaborationRuntimeCoordinator", () => {
       try {
         await coordinator.createProject(state, { enabled: true, provider: "github" });
         await waitFor(() => state.status === "completed");
-        const database = coordinator.database(), events = database.eventsAfter(state.id, 0, 10_000);
+        const database = coordinator.database(), events = await database.eventsAfter(state.id, 0, 10_000);
         expect(decisions).toBe(2); expect(state.workflowRevision).toBe(1);
-        expect(database.workflowAdjustments(state.id)[0].status).toBe("withdrawn");
+        expect((await database.workflowAdjustments(state.id))[0].status).toBe("withdrawn");
         expect(events.find(event => event.eventId === originalAccepted?.eventId)).toEqual(originalAccepted);
         expect(events.find(event => event.eventId === originalFinish?.eventId)).toEqual(originalFinish);
         expect(events.some(event => event.type === "workflow.revision.created")).toBe(false);
@@ -4460,15 +4761,15 @@ describe("CollaborationRuntimeCoordinator", () => {
               const decision = await agentFixtureMainDecision(input, { targetNodeId: "__apply_workflow__", decisionRequestId: "withdraw-this-tool",
                 output: "Main's original proposal receipt", decisionAction: { tool: "apply_workflow", path: "workflow.json", rationale: "Main's actual public reason" } });
               const database = coordinator.database();
-              const record = database.workflowAdjustments(state.id)[0]; expect(record.status).toBe("pending");
-              originalAccepted = database.eventByRequestId(state.id, record.requestId);
-              originalFinish = database.eventsAfter(state.id, 0, 10_000).find(event => event.type === "main.route.task_completion.committed");
+              const record = (await database.workflowAdjustments(state.id))[0]; expect(record.status).toBe("pending");
+              originalAccepted = (await database.eventByRequestId(state.id, record.requestId));
+              originalFinish = (await database.eventsAfter(state.id, 0, 10_000)).find(event => event.type === "main.route.task_completion.committed");
               expect(originalFinish).toBeDefined();
-              expect(database.withdrawWorkflowAdjustment({ projectId: state.id, requestId: record.requestId, operationId: "withdraw-original-main",
-                ...(note === undefined ? {} : { note }) }).withdrawn).toBe(true);
+              expect((await database.withdrawWorkflowAdjustment({ projectId: state.id, requestId: record.requestId, operationId: "withdraw-original-main",
+                ...(note === undefined ? {} : { note }) })).withdrawn).toBe(true);
               const append = database.appendEvent.bind(database);
-              vi.spyOn(database, "appendEvent").mockImplementation(event => {
-                const result = append(event);
+              vi.spyOn(database, "appendEvent").mockImplementation(async event => {
+                const result = await append(event);
                 if (!injected && event.type === "main.route.response.committed") {
                   injected = true; throw new Error("fixture lost local response after the immutable Main response commit");
                 }
@@ -4490,14 +4791,14 @@ describe("CollaborationRuntimeCoordinator", () => {
         await coordinator.createProject(state, { enabled: true, provider: "github" });
         await waitFor(() => injected && ["retrying", "completed"].includes(state.status));
         if (state.status !== "completed") await coordinator.resumeProject(state);
-        await waitFor(() => state.status === "completed").catch(error => { throw new Error(JSON.stringify({
+        await waitFor(() => state.status === "completed").catch(async error => { throw new Error(JSON.stringify({
           status: state.status, phase: state.phase, lastError: state.lastError, decisions,
-          failures: coordinator.database().eventsAfter(state.id, 0, 10_000).filter(e => e.type === "failure.attempt.recorded").map(e => e.payload.redactedMessage)
+          failures: (await coordinator.database().eventsAfter(state.id, 0, 10_000)).filter(e => e.type === "failure.attempt.recorded").map(e => e.payload.redactedMessage)
         }), { cause: error }); });
-        const database = coordinator.database(), events = database.eventsAfter(state.id, 0, 10_000);
+        const database = coordinator.database(), events = await database.eventsAfter(state.id, 0, 10_000);
         expect(injected).toBe(true); expect(state.mainInvocationSeq).toBe(2);
         expect(decisions).toBe(2); expect(state.workflowRevision).toBe(1);
-        expect(database.workflowAdjustments(state.id)[0].status).toBe("withdrawn");
+        expect((await database.workflowAdjustments(state.id))[0].status).toBe("withdrawn");
         expect(events.find(event => event.eventId === originalAccepted?.eventId)).toEqual(originalAccepted);
         expect(events.find(event => event.eventId === originalFinish?.eventId)).toEqual(originalFinish);
         expect(events.some(event => event.type === "workflow.revision.created")).toBe(false);
@@ -4532,23 +4833,23 @@ describe("CollaborationRuntimeCoordinator", () => {
           // It is not a claim of a real user application or external provider.
           await Promise.resolve();
           const database = coordinator.database();
-          ownFinish = database.eventsAfter(state.id, 0, 10_000).find(event => event.type === "main.route.task_completion.committed");
+          ownFinish = (await database.eventsAfter(state.id, 0, 10_000)).find(event => event.type === "main.route.task_completion.committed");
           expect(ownFinish).toBeDefined();
-          database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
+          await database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
           if (changed === "configuration") {
-            const configuration = credentialFreeAgentConfiguration(database.scopedConfiguration(state.id)!);
+            const configuration = credentialFreeAgentConfiguration((await database.scopedConfiguration(state.id))!);
             configuration.agents.main.instructions = "New configuration authority from another accepted change";
-            database.appendEvent({ projectId: state.id, requestId: "configuration-during-validator", type: "scoped.configuration.applied", payload: { configuration } });
+            await database.appendEvent({ projectId: state.id, requestId: "configuration-during-validator", type: "scoped.configuration.applied", payload: { configuration } });
           } else {
             const orchestration = structuredClone(state.orchestration); orchestration.decisionPlans.main = "New workflow authority from another accepted change";
-            database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 2, snapshot: orchestration, affectedGroupIds: [], requestId: "workflow-during-validator" });
+            await database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 2, snapshot: orchestration, affectedGroupIds: [], requestId: "workflow-during-validator" });
           }
         }, residentLauncher: {
           async open() { throw new Error("Main remains a management invocation"); },
           async decideRoute(input) {
             decisions += 1;
             if (decisions === 1) {
-              if (initialized) coordinator.database().initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
+              if (initialized) await coordinator.database().initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
               draftPath = path.join(input.open.inputs!.workspacePath, "workflow.json");
               const proposal = mainAgentOrchestrationDocument(state.id, state.orchestration, state.agents, {}, {}, JSON.parse(await fs.readFile(draftPath, "utf8")).baseVersion);
               proposal.agents.main.instructions = "Old draft must not replace newer authority";
@@ -4572,12 +4873,12 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(rejected).toBeInstanceOf(Error);
         expect((rejected as Error).message).toMatch(changed === "configuration" ? /base.*stale/i : /immutable workflow prestate/i);
         expect(state.lastError).toBeUndefined(); expect(decisions).toBe(1); expect(validations).toBe(changed === "configuration" ? 2 : 1);
-        const database = coordinator.database(), events = database.eventsAfter(state.id, 0, 10_000);
-        expect(database.workflowAdjustments(state.id)).toEqual([]);
-        expect(database.projectState(state.id).workflowRevision).toBe(changed === "workflow" ? 2 : 1);
-        if (changed === "workflow") expect(database.projectState(state.id).workflowSnapshot).toMatchObject({ decisionPlans: { main: "New workflow authority from another accepted change" } });
+        const database = coordinator.database(), events = await database.eventsAfter(state.id, 0, 10_000);
+        expect((await database.workflowAdjustments(state.id))).toEqual([]);
+        expect((await database.projectState(state.id)).workflowRevision).toBe(changed === "workflow" ? 2 : 1);
+        if (changed === "workflow") expect((await database.projectState(state.id)).workflowSnapshot).toMatchObject({ decisionPlans: { main: "New workflow authority from another accepted change" } });
         else {
-          expect(database.scopedConfiguration(state.id)?.agents.main.instructions).toBe("New configuration authority from another accepted change");
+          expect((await database.scopedConfiguration(state.id))?.agents.main.instructions).toBe("New configuration authority from another accepted change");
           expect(state.agents.main.instructions).toBe("New configuration authority from another accepted change");
         }
         expect(events.find(event => event.eventId === ownFinish?.eventId)).toEqual(ownFinish);
@@ -4750,13 +5051,13 @@ describe("CollaborationRuntimeCoordinator", () => {
             else if (staleKind === "stale") document.baseVersion = { ...document.baseVersion!, revision: 0 };
             else {
               const database = coordinator.database();
-              database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
-              const original = database.workflowAdjustmentCurrent(state.id);
+              await database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
+              const original = await database.workflowAdjustmentCurrent(state.id);
               const intermediate = structuredClone(original.snapshot.orchestration);
               intermediate.decisionPlans.main = "Intermediate accepted Main plan";
-              database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 2, snapshot: intermediate, affectedGroupIds: [] });
-              database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 3, snapshot: original.snapshot.orchestration, affectedGroupIds: [] });
-              expect(database.workflowAdjustmentCurrent(state.id).version).toEqual({ ...original.version, revision: 3 });
+              await database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 2, snapshot: intermediate, affectedGroupIds: [] });
+              await database.saveWorkflowRevision({ projectId: state.id, workflowRevision: 3, snapshot: original.snapshot.orchestration, affectedGroupIds: [] });
+              expect((await database.workflowAdjustmentCurrent(state.id)).version).toEqual({ ...original.version, revision: 3 });
             }
             const originalDraft = `${JSON.stringify(document, null, 2)}\n`;
             await fs.writeFile(workflowPath, originalDraft);
@@ -4825,8 +5126,8 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(state.nodeRuns).toHaveLength(2);
     expect(state.nodeRuns?.every((item) => item.status === "completed")).toBe(true);
     expect(state.executions).toEqual([]);
-    const collaboration = coordinator.database().projectState(state.id);
-    const mainEvents = coordinator.database().eventsAfter(state.id, 0, 1_000);
+    const collaboration = await coordinator.database().projectState(state.id);
+    const mainEvents = await coordinator.database().eventsAfter(state.id, 0, 1_000);
     const ownCompletion = mainEvents.filter((event) => event.type === "main.route.task_completion.committed");
     expect(ownCompletion).toHaveLength(2);
     expect(ownCompletion[0]!.seq).toBeLessThan(mainEvents.find((event) => event.type === "main.route_action.accepted")!.seq);
@@ -4835,7 +5136,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(collaboration.usage).toHaveLength(4);
     expect(collaboration.usage.every((usage) => usage.groupRunId === undefined)).toBe(true);
     expect(new Set(collaboration.usage.map((usage) => usage.invocationId)).size).toBe(2);
-    const usageFailure = coordinator.database().eventsAfter(state.id, 0, 1_000)
+    const usageFailure = (await coordinator.database().eventsAfter(state.id, 0, 1_000))
       .find((event) => event.type === "usage.persistence.failed");
     expect(usageFailure).toMatchObject({
       type: "usage.persistence.failed",
@@ -4981,7 +5282,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         await first.createProject(state, { enabled: true, provider: "github" });
         await waitFor(() => ["paused", "retrying"].includes(state.status));
         expect(turns).toBe(1); expect(workerOpens).toBe(0);
-        prefix = first.database().eventsAfter(state.id, 0, 2000);
+        prefix = (await first.database().eventsAfter(state.id, 0, 2000));
         expect(prefix.filter(event => event.type === "main.route.failed.frozen")).toHaveLength(1);
         expect(prefix.filter(event => event.type === "main.route_action.accepted")).toHaveLength(1);
       } finally { await first.shutdown(); }
@@ -4996,14 +5297,14 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(turns, "Only the unfinished original Main turn is continued").toBe(finished ? 1 : 2);
         expect(stopObservations, "Initial failure, restart recovery and explicit Resume each probe the same old epoch").toBe(3);
         expect(new Set(sessions).size).toBe(1); expect(new Set(directories).size).toBe(1);
-        const events = restarted.database().eventsAfter(state.id, 0, 2000);
+        const events = await restarted.database().eventsAfter(state.id, 0, 2000);
         expect(events.slice(0, prefix!.length)).toEqual(prefix!);
         expect(events.filter(event => event.type === "main.route.failed.frozen")).toHaveLength(1);
         expect(events.filter(event => event.type === "main.route.recovered")).toHaveLength(1);
         expect(events.filter(event => event.type === "main.route.mechanism_repair.requested")).toHaveLength(0);
         expect(events.filter(event => event.type === "main.route.response.committed")).toHaveLength(1);
         expect(events.filter(event => event.type === "main.route.task_completion.committed")).toHaveLength(1);
-        expect(restarted.database().projectState(state.id).tasks[0]?.assignment).toBe("Preserve this exact Agent-selected task");
+        expect((await restarted.database().projectState(state.id)).tasks[0]?.assignment).toBe("Preserve this exact Agent-selected task");
       } finally { await restarted.shutdown(); }
     }, 15_000);
 
@@ -5082,14 +5383,14 @@ describe("CollaborationRuntimeCoordinator", () => {
     await first.createProject(state, { enabled: true, provider: "github" });
     await waitFor(() => state.status === "completed");
     expect(modelTurns).toBe(1);
-    expect(managementAttempts).toBe(1);
+    expect(managementAttempts).toBe(0);
     expect(stopObservations).toBe(1);
     expect(state.nodeRuns).toEqual([
       expect.objectContaining({ status: "completed" })
     ]);
-    const events = (first as unknown as {
-      database(): CollaborationStateDatabase;
-    }).database().eventsAfter(state.id, 0, 1_000);
+    const events = await (await (first as unknown as {
+      database(): AsyncCollaborationStateStore;
+    }).database()).eventsAfter(state.id, 0, 1_000);
     expect(events.filter((event) => event.type === "main.route_action.accepted")).toHaveLength(1);
     expect(events.filter((event) => event.type === "main.route.task_completion.committed")).toHaveLength(1);
     expect(events.filter((event) => event.type === "main.route.attempt")).toHaveLength(1);
@@ -5265,12 +5566,12 @@ describe("CollaborationRuntimeCoordinator", () => {
     await first.initialize();
     if (legacyLaunch) {
       const appendEvent = first.database().appendEvent.bind(first.database());
-      vi.spyOn(first.database(), "appendEvent").mockImplementation((event) => {
-        if (event.type !== "group.leader.launch.started") return appendEvent(event);
+      vi.spyOn(first.database(), "appendEvent").mockImplementation(async (event) => {
+        if (event.type !== "group.leader.launch.started") return await appendEvent(event);
         // Older durable launch facts predate the workspace anchor. Persist
         // them through the same fenced S operation, without changing history.
         const { managementWorkspaceName: _anchor, ...payload } = event.payload ?? {};
-        return appendEvent({ ...event, payload });
+        return await appendEvent({ ...event, payload });
       });
     }
     try {
@@ -5279,23 +5580,23 @@ describe("CollaborationRuntimeCoordinator", () => {
       // The lightweight Git fake returns repository initialization facts but
       // does not journal repository.create itself. Persist the same finalized
       // authority a production facade leaves for the fresh coordinator.
-      const sourceDatabase = (first as unknown as {
-        database(): CollaborationStateDatabase;
-      }).database();
+      const sourceDatabase = (await (first as unknown as {
+        database(): AsyncCollaborationStateStore;
+      }).database());
       const repository = repositoryFact("accepted-group-rebind");
-      sourceDatabase.prepareOperation(state.id, {
+      await sourceDatabase.prepareOperation(state.id, {
         id: "operation-repository-accepted-group-rebind",
         kind: "repository.create",
         payloadHash: "repository-accepted-group-rebind",
         status: "prepared"
       });
-      sourceDatabase.transitionOperation(state.id, {
+      await sourceDatabase.transitionOperation(state.id, {
         id: "operation-repository-accepted-group-rebind",
         payloadHash: "repository-accepted-group-rebind",
         status: "observed",
         remoteFact: repository
       });
-      sourceDatabase.transitionOperation(state.id, {
+      await sourceDatabase.transitionOperation(state.id, {
         id: "operation-repository-accepted-group-rebind",
         payloadHash: "repository-accepted-group-rebind",
         status: "finalized",
@@ -5338,9 +5639,9 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(restartedState.executions?.filter((execution) =>
         execution.taskId === "accepted-task"
       )).toHaveLength(1);
-      const events = (restarted as unknown as {
-        database(): CollaborationStateDatabase;
-      }).database().eventsAfter(state.id, 0, 10_000);
+      const events = await (await (restarted as unknown as {
+        database(): AsyncCollaborationStateStore;
+      }).database()).eventsAfter(state.id, 0, 10_000);
       const acceptedAssignments = events.filter((event) =>
         event.type === "group.control_action.accepted" &&
         (event.payload.action as { tool?: unknown } | undefined)?.tool === "assign_group_tasks"
@@ -5361,7 +5662,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect.objectContaining({ type: "coordinator.stop_confirmed", coordinatorEpoch: 1 }),
         expect.objectContaining({ type: "group.coordinator.recovered", coordinatorEpoch: 2 })
       ]));
-      expect(managementContents).toHaveLength(3);
+      expect(managementContents).toHaveLength(0);
       expect(leaderDirectories).toHaveLength(2);
       expect(new Set(leaderDirectories).size).toBe(1);
       expect(leaderSessions).toEqual(Array(4).fill("interrupted-leader-session"));
@@ -5372,9 +5673,19 @@ describe("CollaborationRuntimeCoordinator", () => {
   }, 15_000);
 
   it.each([false, true])(
-    "preserves Main's accepted display through explicit memory repair and restart (repeat selection: %s)", async (repeatSelection) => {
+    "preserves Main's accepted display through completion receipt failure and restart (repeat selection: %s)", async (repeatSelection) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-main-display-accepted-")); temporaryRoots.push(root);
       const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+      let completionSaves = 0;
+      const bindCompletionStorage = (target: ProjectStorage) => {
+        const save = target.requestTaskCompletion.bind(target);
+        vi.spyOn(target, "requestTaskCompletion").mockImplementation(async (...args) => {
+          completionSaves += 1;
+          if (completionSaves === 1) throw new Error("fixture completion receipt storage failed");
+          return save(...args);
+        });
+      };
+      bindCompletionStorage(storage);
       const state = projectState("prj_15151515151515151515151515151517");
       state.orchestration = { ...state.orchestration,
         agents: [state.orchestration.agents.find((item) => item.name === "main")!], collaborations: [],
@@ -5443,8 +5754,8 @@ describe("CollaborationRuntimeCoordinator", () => {
             await fs.writeFile(proposalPath, unfinishedProposal);
             await fs.writeFile(path.join(fresh.request.workspacePath, "pending-main-note.txt"), "Agent-authored uncommitted note");
             await call(select);
-            await expect(finish()).rejects.toThrow("fixture display memory write failed"); toolFailureReturned = true;
-            throw new Error("fixture native response lost after Main received its memory tool failure");
+            await expect(finish()).rejects.toThrow("fixture completion receipt storage failed"); toolFailureReturned = true;
+            throw new Error("fixture native response lost after Main received its completion receipt failure");
           }
           expect(modelTurns).toBe(2); expect(toolFailureReturned).toBe(true);
           expect(await fs.readFile(path.join(fresh.request.workspacePath, "workflow.json"), "utf8")).toBe(unfinishedProposal);
@@ -5453,10 +5764,9 @@ describe("CollaborationRuntimeCoordinator", () => {
           await expect(call({ ...select, primary: { ...select.primary, title: "Replace the accepted display" } }))
             .rejects.toThrow("accepted formal action cannot be replaced");
           if (repeatSelection) await call(select);
-          await expect(call(complete)).rejects.toThrow("finish_task for its own management task before complete_project");
           await finish(); await finish();
           await call(complete);
-          return { handoff: "Main explicitly repaired its own memory and completed the project", controlActions: actions };
+          return { handoff: "Main saved its completion receipt and completed the project", controlActions: actions };
         }, async pause() {}, async resume() {}, async probe() { return lease; }, async close() { closes += 1; } };
       } } as unknown as HarnessRuntimeResidentAdapter;
       const native = { reconcileResidentStartup: vi.fn(async () => ({ status: "none" })),
@@ -5467,10 +5777,9 @@ describe("CollaborationRuntimeCoordinator", () => {
       } };
       const gitFactory = (options: CollaborationGitFactoryOptions): CollaborationGitRuntime => {
         const git = happyGitFake(options, [], true, false, memories);
-        return { ...git, async commitManagementMemory(...args) {
+        return { ...git, async commitManagementMemory() {
           expect(finishToolActive).toBe(true); managementAttempts += 1;
-          if (managementAttempts === 1) throw new Error("fixture display memory write failed");
-          return git.commitManagementMemory!(...args);
+          throw new Error("System completion must not write or commit Memory");
         } };
       };
       const first = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-display-first", hostId: "host-test",
@@ -5480,9 +5789,9 @@ describe("CollaborationRuntimeCoordinator", () => {
       try {
         await first.createProject(state, { enabled: true, provider: "github" });
         await waitFor(() => ["paused", "retrying"].includes(state.status));
-        expect(modelTurns).toBe(1); expect(managementAttempts).toBe(1); expect(memories).toHaveLength(0);
+        expect(modelTurns).toBe(1); expect(managementAttempts).toBe(0); expect(memories).toHaveLength(0);
         expect(state.display).toBeUndefined();
-        const facts = first.database().eventsAfter(state.id, 0, 10_000);
+        const facts = await first.database().eventsAfter(state.id, 0, 10_000);
         expect(facts.filter((event) => event.type === "main.route_action.accepted")).toHaveLength(1);
         expect(facts.some((event) => event.type === "main.route.task_completion.committed")).toBe(false);
         // A newer publication appears while the old native writer is stopped;
@@ -5496,6 +5805,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       allowStopProof = true;
       const restartedStorage = new ProjectStorage(root, new EventHub()); await restartedStorage.initialize();
       bindArtifactResolver(restartedStorage);
+      bindCompletionStorage(restartedStorage);
       const restartedState = await restartedStorage.loadState(state.id);
       const restarted = new CollaborationRuntimeCoordinator({ storage: restartedStorage, serviceId: "main-display-second",
         hostId: "host-test", leaseDurationMs: 5_000, gitFactory, residentLauncher });
@@ -5515,13 +5825,13 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(await fs.readFile(snapshots[0]!.path, "utf8")).toBe(snapshots[0]!.content);
         expect(restartedState.orchestration.decisionPlans.main).toBe("Select the trusted report and complete.");
         expect(restartedState.workflowRevision).toBe(1);
-        expect(managementAttempts).toBe(2); expect(memories).toHaveLength(1);
-        expect(memories[0]).toContain("Main explicitly keeps the accepted report version");
+        expect(managementAttempts).toBe(0); expect(memories).toHaveLength(0);
+        expect(Object.values(restartedState.taskCompletions ?? {}).some(receipt => receipt.memory?.includes("Main explicitly keeps the accepted report version"))).toBe(true);
         expect(restartedState.display).toEqual({ primary: { agent: "main", path: "report.md", title: "Trusted report",
           artifactId: "main:report.md", commitSha: "d".repeat(40) }, items: [] });
         expect(artifactLookups.length).toBeGreaterThan(0);
         expect(artifactLookups.every((binding) => (binding as { commitSha: string }).commitSha === "d".repeat(40))).toBe(true);
-        const facts = restarted.database().eventsAfter(state.id, 0, 10_000);
+        const facts = await restarted.database().eventsAfter(state.id, 0, 10_000);
         expect(facts.filter((event) => event.type === "main.route_action.accepted")).toHaveLength(3);
         expect(facts.filter((event) => event.type === "main.route.task_completion.committed")).toHaveLength(1);
         expect(facts.some((event) => event.type === "main.management_memory.committed")).toBe(false);
@@ -5621,20 +5931,20 @@ describe("CollaborationRuntimeCoordinator", () => {
             const database = first.database();
             if (crashBoundary === "sqlite-to-file") {
               const apply = database.rollForwardAcceptedMainWorkflow.bind(database);
-              vi.spyOn(database, "rollForwardAcceptedMainWorkflow").mockImplementationOnce((request) => {
-                const committed = apply(request);
+              vi.spyOn(database, "rollForwardAcceptedMainWorkflow").mockImplementationOnce(async (request) => {
+                const committed = await apply(request);
                 expect(committed).toMatchObject({ replay: false, workflowRevision: 2 });
                 faultInjected = true;
                 throw new Error("fixture crashed after S workflow revision and before file projection");
               });
             } else {
               const append = database.appendEvent.bind(database);
-              vi.spyOn(database, "appendEvent").mockImplementation((event) => {
+              vi.spyOn(database, "appendEvent").mockImplementation(async (event) => {
                 if (!faultInjected && event.type === "main.route.response.committed") {
                   faultInjected = true;
                   throw new Error("fixture crashed after workflow file projection and before Main response receipt");
                 }
-                return append(event);
+                return await append(event);
               });
             }
             return decision;
@@ -5668,11 +5978,11 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(faultInjected).toBe(true);
         originalNodeRunId = modelNodeRuns[0]!;
         expect(modelNodeRuns).toEqual([originalNodeRunId]);
-        const databaseBeforeRestart = (first as unknown as {
-          database(): CollaborationStateDatabase;
-        }).database();
-        expect(databaseBeforeRestart.projectState(state.id).workflowRevision).toBe(2);
-        const acceptedBeforeRestart = databaseBeforeRestart.eventsAfter(state.id, 0, 10_000)
+        const databaseBeforeRestart = (await (first as unknown as {
+          database(): AsyncCollaborationStateStore;
+        }).database());
+        expect((await databaseBeforeRestart.projectState(state.id)).workflowRevision).toBe(2);
+        const acceptedBeforeRestart = (await databaseBeforeRestart.eventsAfter(state.id, 0, 10_000))
           .find((event) => event.type === "main.route_action.accepted");
         expect(acceptedBeforeRestart?.payload).toMatchObject({
           sequence: 0,
@@ -5736,22 +6046,22 @@ describe("CollaborationRuntimeCoordinator", () => {
           gatewayId: gatewaySnapshot.id,
           gatewaySnapshot
         });
-        const database = (restarted as unknown as {
-          database(): CollaborationStateDatabase;
-        }).database();
-        expect(database.eventsAfter(state.id, 0, 10_000).filter((event) =>
+        const database = (await (restarted as unknown as {
+          database(): AsyncCollaborationStateStore;
+        }).database());
+        expect((await database.eventsAfter(state.id, 0, 10_000)).filter((event) =>
           event.type === "workflow.revision.created"
         )).toHaveLength(1);
-        expect(database.eventsAfter(state.id, 0, 10_000).filter((event) =>
+        expect((await database.eventsAfter(state.id, 0, 10_000)).filter((event) =>
           event.type === "main.route_action.accepted"
         )).toHaveLength(2);
-        const facts = database.eventsAfter(state.id, 0, 10_000);
+        const facts = await database.eventsAfter(state.id, 0, 10_000);
         expect(facts.filter((event) => event.type === "main.route.task_completion.committed")).toHaveLength(2);
         expect(facts.some((event) => event.type === "main.management_memory.committed")).toBe(false);
         const firstCompletion = facts.find((event) => event.type === "main.route.task_completion.committed")!;
         const workflowCommit = facts.find((event) => event.type === "workflow.revision.created")!;
         expect(firstCompletion.seq).toBeLessThan(workflowCommit.seq);
-        expect(managementAttempts).toBe(2);
+        expect(managementAttempts).toBe(0);
       } finally { await restarted.shutdown(); }
     }
   );
@@ -5907,15 +6217,15 @@ describe("CollaborationRuntimeCoordinator", () => {
       event.data?.sourceType === "main.route.recovered")).toBe(true);
     const serializedDurableState = JSON.stringify({
       state,
-      collaboration: coordinator.database().projectState(state.id),
+      collaboration: await coordinator.database().projectState(state.id),
       events
     });
     expect(serializedDurableState).not.toContain(leakedRuntimeCredential);
     expect(serializedDurableState).toContain("[REDACTED]");
-    const frozenEvent = coordinator.database().eventsAfter(state.id, 0, 1_000)
+    const frozenEvent = (await coordinator.database().eventsAfter(state.id, 0, 1_000))
       .find((event) => event.type === "main.route.failed.frozen");
     expect(String(frozenEvent?.payload.error ?? "").length).toBeLessThanOrEqual(1_000);
-    const recoveryEvents = coordinator.database().eventsAfter(state.id, 0, 1_000)
+    const recoveryEvents = (await coordinator.database().eventsAfter(state.id, 0, 1_000))
       .filter((event) => event.type.startsWith("resident.recovery."));
     expect(recoveryEvents.map((event) => event.type)).toEqual([
       "resident.recovery.observed",
@@ -6085,7 +6395,7 @@ describe("CollaborationRuntimeCoordinator", () => {
               expect(proposalPath).toBeTruthy();
               retainedDraft = (await fs.readFile(proposalPath!, "utf8")) + "\n ";
               await fs.writeFile(proposalPath!, retainedDraft);
-              if (mode === "bound") coordinator.database().recordResidentRecoveryProof(bindResidentRecoveryProof({
+              if (mode === "bound") await coordinator.database().recordResidentRecoveryProof(bindResidentRecoveryProof({
                 seed: observation(11), newInvocationId: input.turn.invocationId, routeEpoch: 12,
                 inputId: input.turn.inputId, createdAt: "2026-10-09T02:00:00.000Z" }));
               // Simulate process/service loss after reservation, before the
@@ -6108,19 +6418,19 @@ describe("CollaborationRuntimeCoordinator", () => {
         } });
       let coordinator = makeCoordinator(); await coordinator.initialize();
       const database = coordinator.database();
-      database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
         git: state.git, workerCapacity: 2, managementCapacity: 1 });
-      database.activateNode({ projectId: state.id, nodeRunId, node: { kind: "agent", nodeId: "main", agentId: "main" },
+      await database.activateNode({ projectId: state.id, nodeRunId, node: { kind: "agent", nodeId: "main", agentId: "main" },
         activationRequestId: "current-main-activate", inputSnapshotRef: "current-main-input",
         optionalTask: "Continue the original Main task", activatedByAgentId: "main", workflowRevision: 1 });
-      database.recordResidentRecoverySeed(observation(11));
+      await database.recordResidentRecoverySeed(observation(11));
       if (!reserved) {
-        const consumedSeed = observation(12); database.recordResidentRecoverySeed(consumedSeed);
+        const consumedSeed = observation(12); await database.recordResidentRecoverySeed(consumedSeed);
         const proof = bindResidentRecoveryProof({ seed: consumedSeed, newInvocationId: "inv_" + "d".repeat(32),
           routeEpoch: 13, inputId: "current-main-input-13", createdAt: "2026-10-09T02:00:00.000Z" });
-        database.recordResidentRecoveryProof(proof); database.consumeResidentRecoveryProof(proof);
+        await database.recordResidentRecoveryProof(proof); await database.consumeResidentRecoveryProof(proof);
       }
-      database.appendEvent({ projectId: state.id, nodeRunId, agentId: "main", invocationId: "inv_" + "d".repeat(32),
+      await database.appendEvent({ projectId: state.id, nodeRunId, agentId: "main", invocationId: "inv_" + "d".repeat(32),
         coordinatorEpoch: reserved ? 11 : 13, requestId: "current-main-attempt", type: "main.route.attempt",
         payload: { inputId: reserved ? "current-main-input-11" : "current-main-input-13" } });
       if (mode === "user_pause") state.pauseRequest = { requestedAt: "2026-10-09T03:00:00.000Z", settledAt: "2026-10-09T03:00:01.000Z" };
@@ -6142,7 +6452,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           if (["paused", "retrying"].includes(state.status)) await coordinator.resumeProject(state);
         }
         await waitFor(() => state.status === "completed" || ["paused", "retrying"].includes(state.status));
-        const events = coordinator.database().eventsAfter(state.id, 0, 2000);
+        const events = await coordinator.database().eventsAfter(state.id, 0, 2000);
         if (mode === "unconfirmed" || mode === "user_pause" || mode === "changed_input") {
           expect(state.status).toBe(hasUserWorkflowPause(state) ? "paused" : "retrying");
           expect(decisions).toHaveLength(mode === "changed_input" ? 1 : 0);
@@ -6486,7 +6796,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     await restarted.shutdown();
   });
 
-  it.each(["clean", "blocked", "shutdown"] as const)("gates ordinary delivery on the original Agent's pending files (%s)", async (mode) => {
+  it.each(["clean", "blocked", "shutdown"] as const)("returns ordinary delivery and actually runs its successor after finite closing feedback (%s)", async (mode) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-ordinary-closing-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
     const state = projectState("prj_12121212121212121212121212121212");
@@ -6508,7 +6818,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       residentLauncher: { async stopForRecovery() { return { stopped: true, evidence: { processGroupAbsent: true } }; },
         async open(input) {
           opens.push(input.request.agent);
-          if (input.request.agent === "review") expect(pending).toBe(false);
+          if (input.request.agent === "review") expect(pending).toBe(mode !== "clean");
           return { async submit(turn) {
             if (input.request.agent !== "idea") return agentFixtureDelivery(input, turn, { handoff: "Reviewed delivery" }, coordinator);
             const fresh = await input.turnRequestFactory({ baseRequest: input.request, turn });
@@ -6526,7 +6836,7 @@ describe("CollaborationRuntimeCoordinator", () => {
             expect(fresh.request.resumeThreadId).toBe("ordinary-closing-session");
             expect(turn.prompt).toContain(file);
             expect(opens).not.toContain("review");
-            const execution = coordinator.database().projectState(state.id).executions.find((e) => e.id === input.request.executionContext!.executionId)!;
+            const execution = (await coordinator.database().projectState(state.id)).executions.find((e) => e.id === input.request.executionContext!.executionId)!;
             expect(execution.status).not.toBe("succeeded");
             expect(await fs.readFile(path.join(input.request.workspacePath, file), "utf8")).toContain("diagnostic");
             if (mode !== "blocked") { await fs.rm(path.join(input.request.workspacePath, file)); pending = false; }
@@ -6550,29 +6860,19 @@ describe("CollaborationRuntimeCoordinator", () => {
     try {
       await coordinator.createProject(state, { enabled: true, provider: "github" });
       await waitFor(() => ["completed", "paused", "retrying"].includes(state.status));
-      if (mode === "clean") { expect(state.status, state.lastError).toBe("completed"); expect(repairs).toBe(1); }
-      else {
-        expect(state.status).toBe(hasUserWorkflowPause(state) ? "paused" : "retrying"); expect(state.lastError).toContain(file);
-        expect(opens).not.toContain("review");
-        expect(coordinator.database().projectState(state.id).executions.some((e) => e.status === "succeeded")).toBe(false);
-        expect(repairs).toBe(mode === "blocked" ? 2 : 0);
+      expect(state.status, state.lastError).toBe("completed");
+      expect(repairs).toBe(mode === "blocked" ? 3 : mode === "clean" ? 1 : 0);
+      expect(opens).toEqual(["idea", "review"]);
+      const projection = await coordinator.database().projectState(state.id);
+      const original = projection.executions.find(execution => execution.agentId === "idea")!;
+      expect(original.status).toBe("succeeded");
+      expect(projection.executions.find(execution => execution.agentId === "review")?.status).toBe("succeeded");
+      if (mode !== "clean") {
+        expect(await fs.readFile(path.join(original.worktreePath, file), "utf8")).toContain("diagnostic");
+        expect((await coordinator.database().executionSupervisionResult(state.id, original.id))?.missing.join(" ")).toContain(file);
       }
-      expect(order.filter((entry) => entry === "merge:idea")).toHaveLength(1);
-      expect(order.filter((entry) => entry === "push-checkpoint:idea")).toHaveLength(1);
-      if (mode === "shutdown") {
-        const original = coordinator.database().projectState(state.id).executions.find((e) => e.agentId === "idea")!;
-        await coordinator.resumeProject(state);
-        await waitFor(() => state.status === "completed" || repairs > 0 && state.status === "retrying");
-        expect(state.status, state.lastError).toBe("completed");
-        expect(repairs).toBe(1);
-        const recovered = coordinator.database().projectState(state.id).executions.find((e) => e.agentId === "idea")!;
-        expect(recovered.id).toBe(original.id);
-        expect(recovered.executionBranch).toBe(original.executionBranch);
-        expect(opens).toEqual(["idea", "idea", "review"]);
-        expect(order.filter((entry) => entry === "push-checkpoint:idea")).toHaveLength(1);
-        expect(order.filter((entry) => entry === "pr:idea")).toHaveLength(1);
-        expect(order.filter((entry) => entry === "merge:idea")).toHaveLength(1);
-      }
+      expect(order.filter(entry => entry === "merge:idea")).toHaveLength(1);
+      expect(order.filter(entry => entry === "push-checkpoint:idea")).toHaveLength(1);
     } finally { await coordinator.shutdown(); }
   }, 15_000);
 
@@ -6781,7 +7081,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           return { async pause() {}, async resume() {}, async close() {}, async submit(turn) {
             if (context.role !== "leader") return agentFixtureDelivery(input, turn, { handoff: `${input.request.agent} resumed its original task` }, coordinator);
             managementPrompts.push(turn.prompt);
-            const group = coordinator.database().projectState(state.id).groupRuns.find(entry => entry.id === context.groupRunId)!;
+            const group = (await coordinator.database().projectState(state.id)).groupRuns.find(entry => entry.id === context.groupRunId)!;
             const action: ControlAction = group.status === "running"
               ? { tool: "request_group_integration", groupRunId: context.groupRunId!, coordinatorEpoch: context.coordinatorEpoch!, integrationOwnerAgentId: "idea" }
               : { tool: "complete_group", groupRunId: context.groupRunId!, coordinatorEpoch: context.coordinatorEpoch!, output: "Original tasks delivered after Stop/Resume" };
@@ -6797,34 +7097,34 @@ describe("CollaborationRuntimeCoordinator", () => {
     if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
     await coordinator.initialize();
     const database = coordinator.database();
-    database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+    await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
       git: state.git, workerCapacity: 2, managementCapacity: 1 });
     const repository = repositoryFact("bulk-stop");
-    database.prepareOperation(state.id, { id: "bulk-repository", kind: "repository.create", payloadHash: "bulk-repository", status: "prepared" });
-    database.transitionOperation(state.id, { id: "bulk-repository", payloadHash: "bulk-repository", status: "observed", remoteFact: repository });
-    database.transitionOperation(state.id, { id: "bulk-repository", payloadHash: "bulk-repository", status: "finalized", remoteFact: repository });
-    const activation = database.activateGroup({ projectId: state.id, nodeRunId: "bulk-node", groupRunId: "bulk-group",
+    await database.prepareOperation(state.id, { id: "bulk-repository", kind: "repository.create", payloadHash: "bulk-repository", status: "prepared" });
+    await database.transitionOperation(state.id, { id: "bulk-repository", payloadHash: "bulk-repository", status: "observed", remoteFact: repository });
+    await database.transitionOperation(state.id, { id: "bulk-repository", payloadHash: "bulk-repository", status: "finalized", remoteFact: repository });
+    const activation = await database.activateGroup({ projectId: state.id, nodeRunId: "bulk-node", groupRunId: "bulk-group",
       nodeId: "bulk-team", groupId: "bulk-team", activationRequestId: "activate-bulk", inputSnapshotRef: `project:${state.id}:requirement`,
       optionalTask: "Keep original work", memberAgentIds: ["idea", "execution"], origin: { kind: "project-input" },
       baseCommit: "a".repeat(40), groupBranch: "groups/bulk-group", workflowRevision: 1 });
-    database.assignTasks({ projectId: state.id, groupRunId: activation.groupRun.id, actorAgentId: activation.groupRun.leaderAgentId,
+    await database.assignTasks({ projectId: state.id, groupRunId: activation.groupRun.id, actorAgentId: activation.groupRun.leaderAgentId,
       coordinatorEpoch: 1, tasks: ["idea", "execution"].map(agent => ({ id: `bulk-${agent}`, assignment: `Original ${agent} instructions`, assigneeAgentId: agent })) });
-    const originals = ["idea", "execution"].map(agent => database.claimNextTask({ projectId: state.id,
+    const originals = ["idea", "execution"].map(async agent => (await database.claimNextTask({ projectId: state.id,
       groupRunId: activation.groupRun.id, agentId: agent, executionId: `bulk-original-${agent}`, executionBranch: `executions/bulk-original-${agent}`,
       worktreePath: path.join(storage.projectDir(state.id), "git-worktrees", `bulk-original-${agent}`),
-      invocationId: `inv_${agent === "idea" ? "1" : "2"}`.padEnd(36, "0"), residentLaunchProtocol: "trusted-supervisor-v1" })!);
+      invocationId: `inv_${agent === "idea" ? "1" : "2"}`.padEnd(36, "0"), residentLaunchProtocol: "trusted-supervisor-v1" }))!);
     try {
       await coordinator.cancelProject(state, { actor: reason === "shutdown" ? "system" : "user", reason });
       expect(state).toMatchObject({ status: "paused", phase: "collaboration:user-cancelled" });
       expect(opened).toEqual([]);
-      const stopped = database.projectState(state.id);
+      const stopped = await database.projectState(state.id);
       expect(stopped.executions.every(execution => execution.status === "stopped")).toBe(true);
-      expect(database.eventsAfter(state.id, 0).filter(event => event.type === "execution.stop_requested")).toEqual([]);
+      expect((await database.eventsAfter(state.id, 0)).filter(event => event.type === "execution.stop_requested")).toEqual([]);
       await coordinator.resumeProject(state);
       await waitFor(() => state.status === "completed" || ["paused", "retrying"].includes(state.status), 15_000);
       expect(state.lastError, JSON.stringify({ opened, managementPrompts, tasks: state.tasks, executions: state.executions, order })).toBeUndefined();
       expect(state.status).toBe("completed");
-      const after = database.projectState(state.id);
+      const after = await database.projectState(state.id);
       for (const original of originals) {
         expect(after.executions.find(execution => execution.id === original.execution.id)).toMatchObject({
           agentId: original.execution.agentId, taskId: original.task.id, ownershipEpoch: 2, status: "succeeded",
@@ -6832,7 +7132,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(opened.filter(turn => turn.id === original.execution.id)).toEqual([{ id: original.execution.id,
           agent: original.execution.agentId, epoch: 2, cwd: original.execution.worktreePath }]);
       }
-      const events = database.eventsAfter(state.id, 0, 10_000);
+      const events = await database.eventsAfter(state.id, 0, 10_000);
       expect(events.filter(event => event.type === "execution.recovered" && originals.some(original => original.execution.id === event.executionId))).toHaveLength(2);
       expect(events.some(event => event.type === "execution.handed_off")).toBe(false);
       expect(managementPrompts.some(prompt => prompt.includes("Arrange the continuation now"))).toBe(false);
@@ -6875,32 +7175,32 @@ describe("CollaborationRuntimeCoordinator", () => {
     const scheduling = vi.spyOn(coordinator as unknown as { scheduleProject(state: ProjectState): boolean }, "scheduleProject")
       .mockReturnValue(false);
     const database = coordinator.database();
-    database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+    await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
       git: state.git, workerCapacity: 2, managementCapacity: 1 });
-    database.activateGroup({ projectId: state.id, nodeRunId: "repeat-stop-node", groupRunId: "repeat-stop-group",
+    await database.activateGroup({ projectId: state.id, nodeRunId: "repeat-stop-node", groupRunId: "repeat-stop-group",
       nodeId: "stop-team", groupId: "stop-team", activationRequestId: "activate-repeat-stop",
       inputSnapshotRef: `project:${state.id}:requirement`, optionalTask: "Preserve original work",
       memberAgentIds: ["idea", "execution"], origin: { kind: "project-input" },
       baseCommit: "a".repeat(40), groupBranch: "groups/repeat-stop-group", workflowRevision: 1 });
     const realRequest = database.requestGroupCancellation.bind(database);
-    const legacyRequest = legacy ? vi.spyOn(database, "requestGroupCancellation").mockImplementation((input) =>
-      realRequest({ ...input, requestId: `cancel-${state.id}` })) : undefined;
+    const legacyRequest = legacy ? vi.spyOn(database, "requestGroupCancellation").mockImplementation(async (input) =>
+      await realRequest({ ...input, requestId: `cancel-${state.id}` })) : undefined;
     try {
       await expect(coordinator.cancelProject(state, { actor: "user", reason: "user_cancelled" }))
         .rejects.toThrow("Cancellation awaits leader stop proof");
-      const firstIntent = database.resumableProjectCancellationIntent(state.id)!;
+      const firstIntent = (await database.resumableProjectCancellationIntent(state.id))!;
       await expect(coordinator.resumeProject(state)).rejects.toThrow("before native stop is confirmed");
       await coordinator.cancelProject(state, { actor: "user", reason: "user_cancelled" });
-      expect(database.resumableProjectCancellationIntent(state.id)!.seq).toBe(firstIntent.seq);
-      expect(database.eventsAfter(state.id, 0, 100).filter((event) => event.type === "group.cancellation.requested")).toHaveLength(1);
+      expect((await database.resumableProjectCancellationIntent(state.id))!.seq).toBe(firstIntent.seq);
+      expect((await database.eventsAfter(state.id, 0, 100)).filter((event) => event.type === "group.cancellation.requested")).toHaveLength(1);
       expect(state.status).toBe(hasUserWorkflowPause(state) ? "paused" : "retrying");
       legacyRequest?.mockRestore();
       await coordinator.resumeProject(state);
-      expect(database.resumableProjectCancellationIntent(state.id)).toBeUndefined();
+      expect((await database.resumableProjectCancellationIntent(state.id))).toBeUndefined();
       await coordinator.cancelProject(state, { actor: "system", reason: "shutdown" });
-      const secondIntent = database.resumableProjectCancellationIntent(state.id)!;
+      const secondIntent = (await database.resumableProjectCancellationIntent(state.id))!;
       expect(secondIntent.seq).toBeGreaterThan(firstIntent.seq);
-      const groupStops = database.eventsAfter(state.id, 0, 100).filter((event) => event.type === "group.cancellation.requested");
+      const groupStops = (await database.eventsAfter(state.id, 0, 100)).filter((event) => event.type === "group.cancellation.requested");
       expect(groupStops).toHaveLength(2);
       expect(new Set(groupStops.map((event) => event.requestId)).size).toBe(2);
       expect(groupStops[1]!.requestId).toBe(`group-stop:${state.id}:repeat-stop-group:${secondIntent.seq}`);
@@ -6957,14 +7257,14 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(state.nodeRuns?.[0]?.status).toBe("running");
     expect(state.executions![0]).toMatchObject({ id: priorExecution.id, executionBranch: priorExecution.executionBranch,
       worktreePath: priorExecution.worktreePath, status: "stopped" });
-    expect(coordinator.database().eventsAfter(state.id, 0, 10_000).some((event) =>
+    expect((await coordinator.database().eventsAfter(state.id, 0, 10_000)).some((event) =>
       event.executionId === priorExecution.id && event.type === "execution.stop_confirmed")).toBe(true);
     expect(state.pullRequests![0]).toEqual(priorPull);
     expect(coordinator.laneAvailability(state.id)
       .find((lane) => lane.lane === "worker")?.occupied).toBe(0);
     const executionCount = state.executions?.length;
     await expect(coordinator.resumeProject(staleResumeState)).resolves.toBeUndefined();
-    expect(coordinator.database().projectCancellationIntent(state.id)).toBeUndefined();
+    expect((await coordinator.database().projectCancellationIntent(state.id))).toBeUndefined();
     expect((await storage.loadState(state.id)).status).toBe("queued");
     expect(state.executions).toHaveLength(executionCount ?? 0);
     await coordinator.shutdown();
@@ -7010,7 +7310,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     })).rejects.toThrow();
     expect(state.status).not.toBe("cancelled");
     expect(state.executions?.[0]?.status).toBe("stop_requested");
-    expect(deriveProjectRuntimeProjection(coordinator.database().projectState(state.id), {
+    expect(deriveProjectRuntimeProjection((await coordinator.database().projectState(state.id)), {
       status: "paused", phase: "collaboration:user-cancelled"
     }).status).toBe("cancelling");
     expect(state.pullRequests?.[0]?.status).toBe("open");
@@ -7028,7 +7328,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     });
     expect(closeCalls).toBe(2);
     expect(state).toMatchObject({ status: "paused", phase: "collaboration:user-cancelled" });
-    expect(deriveProjectRuntimeProjection(coordinator.database().projectState(state.id), {
+    expect(deriveProjectRuntimeProjection((await coordinator.database().projectState(state.id)), {
       status: "cancelling", phase: "collaboration:cancelling"
     })).toMatchObject({ status: "paused", phase: "collaboration:user-cancelled" });
     expect(state.pullRequests?.[0]?.status).toBe("open");
@@ -7169,8 +7469,8 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(await coordinator.recoverProject(state)).toBe(true);
     expect(stopObservations).toBe(2);
     expect(state).toMatchObject({ status: "paused", phase: "collaboration:user-cancelled" });
-    expect(coordinator.database().resumableProjectCancellationIntent(state.id)).toBeDefined();
-    expect(deriveProjectRuntimeProjection(coordinator.database().projectState(state.id))).toMatchObject({
+    expect((await coordinator.database().resumableProjectCancellationIntent(state.id))).toBeDefined();
+    expect(deriveProjectRuntimeProjection((await coordinator.database().projectState(state.id)))).toMatchObject({
       status: "paused", phase: "collaboration:user-cancelled"
     });
     expect(state.executions).toEqual([
@@ -7337,7 +7637,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       await coordinator.initialize();
       expect(await coordinator.recoverProject(state)).toBe(true);
       expect(state).toMatchObject({ status: "paused", phase: "collaboration:user-cancelled" });
-      expect(coordinator.database().resumableProjectCancellationIntent(state.id)).toBeDefined();
+      expect((await coordinator.database().resumableProjectCancellationIntent(state.id))).toBeDefined();
       expect(discoveries).toBe(0);
       expect(closes).toBe(0);
       expect(opens).toBe(0);
@@ -7503,7 +7803,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     }
     expect(pullRequests).toBe(0);
     expect(state.pullRequests ?? []).toHaveLength(0);
-    expect(coordinator.database().eventsAfter(state.id, 0, 10_000).some((event) =>
+    expect((await coordinator.database().eventsAfter(state.id, 0, 10_000)).some((event) =>
       event.type === "execution.git_stage.persisted" && event.payload.stage === "not_committed"
     )).toBe(true);
     await coordinator.shutdown();
@@ -8249,7 +8549,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       await waitFor(() => waiting || Boolean(state.lastError));
       expect(state.lastError).toBeUndefined();
       expect(waiting).toBe(true);
-      const before = coordinator.database().projectState(state.id);
+      const before = await coordinator.database().projectState(state.id);
       const execution = (mode === "scoped-group" ? before.scopedExecutions : before.executions).find(execution => execution.agentId === "idea")!;
       expect(execution).toBeTruthy();
       pause = coordinator.pauseProject(state);
@@ -8260,7 +8560,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(state.pauseRequest?.settledAt).toBeTruthy();
       expect(state.status).toBe(hasUserWorkflowPause(state) ? "paused" : "retrying");
       expect(continued).toBe(false); expect(closed).toBe(false);
-      const held = coordinator.database().projectState(state.id);
+      const held = await coordinator.database().projectState(state.id);
       expect((mode === "scoped-group" ? held.scopedExecutions : held.executions).find(item => item.id === execution.id)).toEqual(execution);
       expect(held.tasks).toEqual(before.tasks);
       expect(held.scopedArrivals).toEqual(before.scopedArrivals);
@@ -8281,15 +8581,15 @@ describe("CollaborationRuntimeCoordinator", () => {
       await coordinator.resumeProject(state);
       if (mode === "scoped-group") {
         await waitFor(() => continued);
-        expect(coordinator.database().projectState(state.id).scopedExecutions.find(item => item.id === execution.id)).toEqual(execution);
+        expect((await coordinator.database().projectState(state.id)).scopedExecutions.find(item => item.id === execution.id)).toEqual(execution);
         expect(submissions).toBe(1); expect(resumes).toBe(1);
-        expect(coordinator.database().projectState(state.id).scopedAgentReports).toEqual([]);
+        expect((await coordinator.database().projectState(state.id)).scopedAgentReports).toEqual([]);
         return;
       }
       await waitFor(() => state.status === "completed" || Boolean(state.lastError), 10_000);
       expect(state.lastError).toBeUndefined(); expect(state.status).toBe("completed");
       expect(continued).toBe(true); expect(submissions).toBe(1); expect(resumes).toBe(1);
-      expect(coordinator.database().projectState(state.id).executions.find(item => item.id === execution.id))
+      expect((await coordinator.database().projectState(state.id)).executions.find(item => item.id === execution.id))
         .toMatchObject({ ownershipEpoch: execution.ownershipEpoch, taskId: execution.taskId, status: "succeeded" });
     } finally {
       releaseResults(); await coordinator.shutdown(); await pause?.catch(() => undefined);
@@ -8764,10 +9064,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(mirroredSeq).toBe(
         Math.max(...mirrored.map((event) => Number(event.data?.collaborationSeq)))
       );
-      expect(managementContents.some((content) =>
-        content.includes("# Main management memory") &&
-        content.includes("decision-after-restart")
-      )).toBe(true);
+      expect(managementContents).toHaveLength(0);
     } finally { releaseFirstDeliveries(); await coordinator.shutdown(); }
   }, 15_000);
 
@@ -8980,7 +9277,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(deliveryFinalMerge).toBeGreaterThanOrEqual(0);
       expect(reviewActivation).toBeGreaterThan(deliveryFinalMerge);
       expect(order.some((entry) => entry.startsWith("business-memory:"))).toBe(false);
-      const recoveryMemoryAgents = coordinator.database().eventsAfter(state.id, 0, 100_000)
+      const recoveryMemoryAgents = (await coordinator.database().eventsAfter(state.id, 0, 100_000))
         .filter((event) => event.type === "execution.recovery_memory.snapshotted")
         .map((event) => event.agentId);
       expect(recoveryMemoryAgents).toEqual([]);
@@ -9214,9 +9511,9 @@ describe("CollaborationRuntimeCoordinator", () => {
               if (context.role === "leader") {
                 leaderTurn += 1;
                 if (leaderTurn === 2) {
-                  const stopped = coordinator.database().projectState(state.id).executions.find((item) => item.id === originalExecutionId);
+                  const stopped = (await coordinator.database().projectState(state.id)).executions.find((item) => item.id === originalExecutionId);
                   expect(stopped).toMatchObject({ status: "stopped", ownershipEpoch: 1 });
-                  expect(coordinator.database().eventsAfter(state.id, 0, 1000).some((event) =>
+                  expect((await coordinator.database().eventsAfter(state.id, 0, 1000)).some((event) =>
                     event.type === "execution.stop_confirmed" && event.executionId === originalExecutionId && event.ownershipEpoch === 1)).toBe(true);
                   expect(originalCloseConfirmed).toBe(true);
                   expect(explicitFailureObserved).toBe(true);
@@ -9281,7 +9578,7 @@ describe("CollaborationRuntimeCoordinator", () => {
                   adapterVersion: "1", generation: 0, nativeId: "original-retained-session", durable: true,
                   createdAt: new Date().toISOString() }, "original-retained-session");
                 const result = await agentFixtureDelivery(input, turn, { handoff: "Original delivery with an open PR" }, coordinator);
-                originalPullNumber = coordinator.database().projectState(state.id).pullRequests.find((item) => item.ownerExecutionId === executionId)?.providerNumber;
+                originalPullNumber = (await coordinator.database().projectState(state.id)).pullRequests.find((item) => item.ownerExecutionId === executionId)?.providerNumber;
                 return result;
               }
               expect(fresh.request.resumeThreadId).toBe("original-retained-session");
@@ -9506,9 +9803,9 @@ describe("CollaborationRuntimeCoordinator", () => {
                 executionId: context.executionId!,
                 prompt: turn.prompt
               });
-              const owned = coordinator.database().projectState(state.id).executions.find((execution) => execution.id === context.executionId)!;
+              const owned = (await coordinator.database().projectState(state.id)).executions.find((execution) => execution.id === context.executionId)!;
               if (owned.id === failedCanonicalId) {
-                expect(coordinator.database().projectState(state.id).pullRequests.find((pull) => pull.ownerExecutionId === owned.id))
+                expect((await coordinator.database().projectState(state.id)).pullRequests.find((pull) => pull.ownerExecutionId === owned.id))
                   .toMatchObject({ status: "closed" });
                 throw new Error("fixture canonical Agent channel failed after it closed its own conflicting PR and reported it");
               }
@@ -10198,14 +10495,14 @@ describe("CollaborationRuntimeCoordinator", () => {
         throw new Error(`Resumed all-member failure did not reach its Leader: ${JSON.stringify({
           status: state.status, phase: state.phase, lastError: state.lastError, leaderTurn,
           tasks: state.tasks, executions: state.executions, groupRuns: state.groupRuns,
-          latestEvents: coordinator.database().eventsAfter(state.id, 0, 2000).slice(-15)
+          latestEvents: (await coordinator.database().eventsAfter(state.id, 0, 2000)).slice(-15)
         })}`, { cause: error });
       }
       expect(state.executions).toEqual(pausedOwners);
       expect(leaderTurn).toBe(2);
-      expect(coordinator.database().eventsAfter(state.id, 0, 2000).filter(event =>
+      expect((await coordinator.database().eventsAfter(state.id, 0, 2000)).filter(event =>
         event.type === "group.all_members_coordination.resumed")).toHaveLength(1);
-      expect(coordinator.database().eventsAfter(state.id, 0, 2000).some(event =>
+      expect((await coordinator.database().eventsAfter(state.id, 0, 2000)).some(event =>
         event.type === "failure.attempt.recorded" && /scheduler made no progress/.test(String(event.payload.redactedMessage)))).toBe(false);
       expect(state.tasks).toEqual(pausedTasks);
       expect(businessOpens).toEqual(opensBeforeResume);
@@ -10484,11 +10781,11 @@ describe("CollaborationRuntimeCoordinator", () => {
               const executionId = context.executionId!;
               workerSubmits.set(executionId, (workerSubmits.get(executionId) ?? 0) + 1);
               if (executionId === failedCanonicalId) {
-                expect(coordinator.database().projectState(state.id).pullRequests.find((pull) => pull.ownerExecutionId === executionId))
+                expect((await coordinator.database().projectState(state.id)).pullRequests.find((pull) => pull.ownerExecutionId === executionId))
                   .toMatchObject({ status: "closed" });
                 throw new Error("fixture initial canonical Agent channel failed after explicitly closing its PR and reporting the conflict");
               }
-              const owned = coordinator.database().projectState(state.id).executions.find((execution) => execution.id === executionId)!;
+              const owned = (await coordinator.database().projectState(state.id)).executions.find((execution) => execution.id === executionId)!;
               const repair = owned.purpose === "final-integration" && owned.executionBranch.startsWith("executions/");
               const fresh = await input.turnRequestFactory({ baseRequest: input.request, turn });
               if (owned.purpose === "final-integration" && owned.executionBranch.startsWith("groups/") &&
@@ -10550,13 +10847,13 @@ describe("CollaborationRuntimeCoordinator", () => {
       expect(repairImplementations).toBe(1);
       expect(mergeRequests.filter((owner) => owner === repairExecutionId)).toHaveLength(1);
       expect(openedPulls.filter((pull) => pull.executionId === repairExecutionId)).toHaveLength(1);
-      const retainedExecutions = structuredClone(coordinator.database().projectState(state.id).executions);
+      const retainedExecutions = structuredClone((await coordinator.database().projectState(state.id)).executions);
       const repairSubmits = workerSubmits.get(repairExecutionId!) ?? 0;
       expect(repairSubmits).toBe(2);
       await coordinator.resumeProject(state);
       await waitFor(() => canonicalChoiceEntered || Boolean(state.lastError));
       expect(state.lastError).toBeUndefined();
-      expect(coordinator.database().projectState(state.id).executions).toEqual(retainedExecutions);
+      expect((await coordinator.database().projectState(state.id)).executions).toEqual(retainedExecutions);
       expect(workerSubmits.get(repairExecutionId!) ?? 0).toBe(repairSubmits);
       expect(openedPulls.filter((pull) => pull.base === "main")).toHaveLength(1);
       releaseCanonicalChoice();
@@ -11202,10 +11499,10 @@ describe("CollaborationRuntimeCoordinator", () => {
     }
     await waitFor(() => opens === 1);
     expect(stops).toBe(0);
-    const firstDatabase = (first as unknown as {
-      database(): CollaborationStateDatabase;
-    }).database();
-    const actualLaunches = firstDatabase.eventsAfter(state.id, 0, 10_000).filter((event) =>
+    const firstDatabase = (await (first as unknown as {
+      database(): AsyncCollaborationStateStore;
+    }).database());
+    const actualLaunches = (await firstDatabase.eventsAfter(state.id, 0, 10_000)).filter((event) =>
       event.type === "execution.launch.started" &&
       event.executionId === "standalone-double-launch-execution" &&
       event.ownershipEpoch === 1
@@ -11240,10 +11537,10 @@ describe("CollaborationRuntimeCoordinator", () => {
     await second.resumeProject(restartedState);
     await waitFor(() => stops === 1);
     expect(opens).toBe(1);
-    const secondDatabase = (second as unknown as {
-      database(): CollaborationStateDatabase;
-    }).database();
-    expect(secondDatabase.projectState(state.id).executions).toEqual([
+    const secondDatabase = (await (second as unknown as {
+      database(): AsyncCollaborationStateStore;
+    }).database());
+    expect((await secondDatabase.projectState(state.id)).executions).toEqual([
       expect.objectContaining({
         id: "standalone-double-launch-execution",
         ownershipEpoch: 1,
@@ -11391,9 +11688,9 @@ describe("CollaborationRuntimeCoordinator", () => {
       }
       expect(stopProtocols).toEqual(["trusted-supervisor-v1"]);
       expect(opens).toBe(0);
-      expect(coordinator.database().projectState(state.id).executions).toEqual([expect.objectContaining({ id: execution.id,
+      expect((await coordinator.database().projectState(state.id)).executions).toEqual([expect.objectContaining({ id: execution.id,
         ownershipEpoch: 1, status: "stop_requested" })]);
-      expect(coordinator.projectReadModel(state)).toMatchObject({ status: "retrying",
+      expect((await coordinator.projectReadModel(state))).toMatchObject({ status: "retrying",
         phase: "collaboration:resident-stopped", runtime: { status: "retrying", phase: "collaboration:resident-stopped" } });
     } finally { await coordinator.shutdown(); }
   }, 15_000);
@@ -11935,15 +12232,15 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(await coordinator.recoverProject(state)).toBe(true);
     await firstTurnStarted;
 
-    const database = (coordinator as unknown as {
-      database(): CollaborationStateDatabase;
-    }).database();
-    const midRecovery = database.projectState(state.id);
+    const database = (await (coordinator as unknown as {
+      database(): AsyncCollaborationStateStore;
+    }).database());
+    const midRecovery = await database.projectState(state.id);
     expect(stoppedExecutionIds.sort()).toEqual([
       "restart-no-pr-execution",
       "restart-no-pr-idea"
     ]);
-    expect(database.eligibleDeliveryMembers(state.id, activation.groupRun.id).sort()).toEqual([
+    expect((await database.eligibleDeliveryMembers(state.id, activation.groupRun.id)).sort()).toEqual([
       "execution",
       "idea"
     ]);
@@ -11968,12 +12265,12 @@ describe("CollaborationRuntimeCoordinator", () => {
       branch: exactOriginal?.branch,
       worktreePath: exactOriginal?.worktreePath
     });
-    expect(database.latestExecutionStopRequest(
+    expect((await database.latestExecutionStopRequest(
       state.id,
       firstRecoveredExecutionId!,
       1
-    )?.payload.reason).toBe("service_restart_reconcile");
-    const midTail = database.eventsAfter(state.id, 0, 10_000);
+    ))?.payload.reason).toBe("service_restart_reconcile");
+    const midTail = await database.eventsAfter(state.id, 0, 10_000);
     expect(midTail.filter((event) =>
       event.type === "execution.restart_eligibility.restored"
     )).toHaveLength(2);
@@ -11985,7 +12282,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(state.lastError).toBeUndefined();
     expect(state.status).toBe("completed");
     expect(state.phase).toBe("completed");
-    const completed = database.projectState(state.id);
+    const completed = await database.projectState(state.id);
     const survivor = ["idea", "execution"].find((agentId) => agentId !== failedAgentId);
     expect(completed.executions.find((execution) =>
       execution.predecessorExecutionId === firstRecoveredExecutionId
@@ -11997,7 +12294,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         ownershipEpoch: 2
       });
     }
-    const completedTail = database.eventsAfter(state.id, 0, 20_000);
+    const completedTail = await database.eventsAfter(state.id, 0, 20_000);
     expect(completedTail.filter((event) =>
       event.type === "execution.recovered" &&
       event.payload.recoveryMode === "restart_no_remote"
@@ -12433,10 +12730,10 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.initialize();
     expect(await coordinator.recoverProject(restartedState)).toBe(true);
     expect(restartedState).toMatchObject({ status: "paused", phase: "collaboration:user-cancelled" });
-    const database = (coordinator as unknown as {
-      database(): CollaborationStateDatabase;
-    }).database();
-    const cancelled = database.projectState(state.id);
+    const database = (await (coordinator as unknown as {
+      database(): AsyncCollaborationStateStore;
+    }).database());
+    const cancelled = await database.projectState(state.id);
     // HTTP/SSE use this projection, rather than the file envelope. A Stop
     // that proved the original native writers stopped must remain resumable
     // even if that envelope was stale or the service has restarted.
@@ -12455,7 +12752,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       status: "stopped"
     });
     expect(cancelled.routeOutbox).toEqual([]);
-    expect(database.eventsAfter(state.id, leaderLaunch.seq, 10_000).some((event) =>
+    expect((await database.eventsAfter(state.id, leaderLaunch.seq, 10_000)).some((event) =>
       event.type === "execution.launch.started" ||
       event.type === "group.leader.launch.started" ||
       event.type === "route.emitted"
@@ -13229,10 +13526,10 @@ describe("CollaborationRuntimeCoordinator", () => {
     await waitFor(() => state.lastError === "fixture crash after actual leader launch marker");
     expect(stops).toEqual([{ epoch: 1, protocol: "trusted-supervisor-v1" }]);
     expect(openedEpochs).toEqual([2]);
-    const firstDatabase = (first as unknown as {
-      database(): CollaborationStateDatabase;
-    }).database();
-    expect(firstDatabase.eventsAfter(state.id, 0, 10_000).filter((event) =>
+    const firstDatabase = (await (first as unknown as {
+      database(): AsyncCollaborationStateStore;
+    }).database());
+    expect((await firstDatabase.eventsAfter(state.id, 0, 10_000)).filter((event) =>
       event.type === "group.leader.launch.started" &&
       event.groupRunId === groupRunId &&
       event.coordinatorEpoch === 2
@@ -14040,9 +14337,9 @@ async function gitCommand(cwd: string, args: string[]): Promise<string> {
   });
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
+  while (!await predicate()) {
     if (Date.now() > deadline) throw new Error("Timed out waiting for collaboration runtime");
     await new Promise((resolve) => setTimeout(resolve, 5));
   }

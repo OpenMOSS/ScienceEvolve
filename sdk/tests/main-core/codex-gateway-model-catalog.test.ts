@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { prepareCodexGatewayModelCatalog } from "../../src/core/codex-gateway-model-catalog.js";
+import { HarnessPromptCatalog } from "../../src/core/harness-runtime/prompt-catalog.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -45,5 +46,28 @@ describe("Codex external gateway model catalog", () => {
     expect(JSON.parse(await fs.readFile(output!, "utf8")).models).toEqual([expect.objectContaining({
       slug: "external-model-name", display_name: "external-model-name", use_responses_lite: false, tool_mode: null
     })]);
+  });
+
+  it.each(["gpt-6.1-sol", "deepseek-chat", "qwen3-coder", "claude-sonnet-4-5"])(
+    "previews the same Prompt that the gateway launch catalog supplies for %s", async model => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-prompt-catalog-")); roots.push(root);
+    const executable = path.join(root, "catalog.mjs");
+    const models = [
+      { slug: "code-only", use_responses_lite: true, tool_mode: "code_mode_only", base_instructions: "CODE_ONLY_PROMPT" },
+      { slug: "ordinary", use_responses_lite: false, base_instructions: "ACTUAL_GATEWAY_PROMPT\n" }
+    ];
+    await fs.writeFile(executable, `
+      if (process.argv.slice(2).join(" ") === "--version") console.log("codex-cli 0.153.4");
+      else if (process.argv.slice(2).join(" ") === "debug models --bundled") console.log(${JSON.stringify(JSON.stringify({ models }))});
+      else throw new Error("Only source inspection is allowed");
+    `);
+    const output = await prepareCodexGatewayModelCatalog(executable, model, root);
+    const launched = JSON.parse(await fs.readFile(output!, "utf8")).models[0];
+    const preview = await new HarnessPromptCatalog({ resolveExecutable: async () => executable }).query({ harness: "codex", model });
+    expect(launched.slug).toBe(model);
+    expect(preview).toMatchObject({ status: "available", model, resolvedModel: "ordinary", text: launched.base_instructions });
+    expect(preview.text).toBe("ACTUAL_GATEWAY_PROMPT\n");
+    expect(preview.scopeNote).toContain("ordinary");
+    expect(preview.scopeNote).toContain(`请求模型仍为 ${model}`);
   });
 });

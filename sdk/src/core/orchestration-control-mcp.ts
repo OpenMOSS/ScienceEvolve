@@ -616,7 +616,7 @@ function agentGitTools(): RuntimeMcpToolDefinition[] {
 }
 
 function finishTaskTool(): RuntimeMcpToolDefinition {
-  return { name: "finish_task", description: "Request completion of your current logical task, preserving its existing handoff and Agent-authored memory. For a new Git business task supply memory or summary before your final commit/PR: this call appends that Agent-authored record once to agent-memory/<agent>/Memory.md in your actual worktree. This is a completion request; it leaves your tools open. Inspect git_status, then stage, commit, push and deliver all chosen business changes and this Memory together through one PR. Complete validation and corrections before merging; update the same open PR when needed. The system confirms completion only after the real delivery checks pass. Other tasks may omit summary when a handoff already exists or will be returned by this turn. If the current inbox already supplies an accepted receipt for this same task, preserve its immutable summary/memory and supplement only the missing actions; a new physical invocation does not require a replacement receipt. This does not complete a group/project, release successors, or close your tools; continue any authorized completion or workflow actions. Saving failures are returned to you.",
+  return { name: "finish_task", description: "Request completion of your current logical task and save its optional Agent-authored summary/memory in the completion receipt. This tool does not edit Memory.md, create commits or perform Git delivery. Update useful durable Memory yourself with native file tools before your final Git delivery when appropriate. The completion request leaves your tools open. Task return, actual Git delivery and remaining gaps are recorded separately. Do your best to finish the requested actions; if any remain unfinished, return the available result and actual limitations. You may omit summary and memory when the handoff is returned by this turn. If the current inbox already supplies an accepted receipt for this same task, preserve its immutable summary/memory; a new physical invocation does not require a replacement receipt. This does not complete a group/project, release successors, or close your tools; continue any authorized completion or workflow actions. Saving failures are returned to you.",
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     inputSchema: { type: "object", additionalProperties: false, required: ["callId"], properties: {
       callId: CALL_ID_SCHEMA, summary: { type: "string", minLength: 1, maxLength: MAX_TEXT },
@@ -1283,7 +1283,9 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
   if (!TOOL_NAMES.includes(name as typeof TOOL_NAMES[number])) {
     rpcToolError(request.id, bridgeActionRejection({
       code: "CONTROL_TOOL_NOT_AVAILABLE",
-      message: `Unknown tool: ${name}`,
+      message: name === "sleep"
+        ? "This control server has no sleep tool. Timed sleep belongs to the separate scienceevolve-sleep MCP server; use its advertised sleep tool. For monitored SII experiments use sii_defer_task from the selected scienceevolve-sii server."
+        : `Unknown tool: ${name}. Read this server's tools/list for the current invocation's available actions.`,
       invalidField: "name"
     }, context.stateVersion));
     return;
@@ -1412,6 +1414,8 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
       type: "text",
       text: controlResultDisplayText(staged.envelope, staged.result, staged.receiptId)
     }], ...(gitResult ? { structuredContent: { actionAccepted: true, git: gitResult, result: staged.result ?? null } }
+      : action.tool === "finish_task" ? { structuredContent: { actionAccepted: true, status: staged.result === undefined ? "staged" : "recorded",
+          result: staged.result ?? null } }
       : ["publish_artifact", "select_display"].includes(action.tool) ? { structuredContent: { actionAccepted: true, status: "staged", committed: false } } : {}) });
   } catch (error) {
     const rejection = rejectionForError(error, context.stateVersion);

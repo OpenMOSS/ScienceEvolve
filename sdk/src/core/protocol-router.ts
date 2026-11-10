@@ -593,12 +593,9 @@ function firstInvalidToolCall(
   return undefined;
 }
 
-/** A native Harness can report a parsing error as a tool result and let its
- * Agent correct the next call. Preserve that completed historical exchange
- * as diagnostic text instead of forwarding an invalid executable envelope
- * (or silently converting its arguments to {}). Original native history and
- * every new provider tool call remain unchanged and strictly validated. */
-function reportedToolArgumentErrors(messages: NormalizedMessage[]): { messages: NormalizedMessage[]; count: number } {
+/** Preserve malformed historical calls as Agent feedback without inventing
+ * execution receipts. The original native history remains authoritative. */
+function historicalToolArgumentFeedback(messages: NormalizedMessage[]): { messages: NormalizedMessage[]; count: number } {
   const calls = messages.flatMap(message => message.toolCalls ?? []);
   const counts = new Map<string, number>();
   for (const call of calls) counts.set(call.id, (counts.get(call.id) ?? 0) + 1);
@@ -608,7 +605,7 @@ function reportedToolArgumentErrors(messages: NormalizedMessage[]): { messages: 
     if (existing) existing.push(message.content);
     else results.set(message.toolCallId, [message.content]);
   }
-  const recovered = new Set(calls.filter(call => counts.get(call.id) === 1 && results.has(call.id) &&
+  const recovered = new Set(calls.filter(call => counts.get(call.id) === 1 &&
     !validateToolArguments(call.arguments, call.name).valid).map(call => call.id));
   if (!recovered.size) return { messages, count: 0 };
   return { count: recovered.size, messages: messages.flatMap(message => {
@@ -618,7 +615,8 @@ function reportedToolArgumentErrors(messages: NormalizedMessage[]): { messages: 
     const diagnostics = invalid.map(call => [
       `Historical tool argument error for ${call.name} (call_id=${call.id}).`,
       `Original arguments: ${JSON.stringify(call.arguments)}`,
-      `Recorded tool result: ${JSON.stringify(results.get(call.id))}`,
+      results.has(call.id) ? `Recorded tool result: ${JSON.stringify(results.get(call.id))}`
+        : "No native tool result was recorded. Execution outcome is unknown; inspect actual durable effects before retrying.",
       "Use this recorded error to generate a corrected tool call. Inspect current formal state and actual effects before repeating a mutation."
     ].join("\n"));
     return [{ ...message, content: [message.content, ...diagnostics].filter(Boolean).join("\n\n"),
@@ -628,11 +626,18 @@ function reportedToolArgumentErrors(messages: NormalizedMessage[]): { messages: 
 
 function firstInvalidNormalizedToolCall(
   toolCalls: Array<{ name: string; arguments: string }>,
-  context: { sourceProtocol: AgentProtocol; targetProtocol: AgentProtocol; model: string }
+  context: { sourceProtocol: AgentProtocol; targetProtocol: AgentProtocol; model: string;
+    sourceTools?: ProtocolTool[]; onNativeError?: (failure: ProtocolProxyFailure) => void }
 ): ProtocolProxyFailure | undefined {
   for (const [toolIndex, tool] of toolCalls.entries()) {
     const failure = invalidToolArguments(tool, { ...context, toolIndex });
-    if (failure) return failure;
+    if (!failure) continue;
+    if (context.sourceProtocol !== "anthropic-messages" &&
+        !isClientToolSearch(tool.name, context.sourceTools)) {
+      context.onNativeError?.(failure);
+      continue;
+    }
+    return failure;
   }
   return undefined;
 }
@@ -665,8 +670,7 @@ export interface ProtocolProxyOptions {
   modelContextWindows?: Record<string, number>;
   /** Exact server-resolved reasoning option applied after protocol conversion. */
   gatewayReasoning?: ResolvedGatewayReasoning;
-  /** Optional provider model to send upstream when the source client needs a
-   * known catalog alias (for example Claude Code's sonnet alias). */
+  /** Optional provider model to send upstream when the source client needs a known catalog alias. */
   upstreamModel?: string;
   /**
    * Route a native request through the loopback bridge even when both sides
@@ -702,7 +706,7 @@ export interface ProtocolProxyOptions {
   requiredToolName?: string;
   /** Capability-derived delivery policy for this exact Gateway route. */
   deliveryMode?: "native-stream" | "buffered-json";
-  /** Invocation-local response promises shared by fresh Claude recovery
+  /** Invocation-local response promises shared by native recovery
    * processes. The cache contains provider bodies, never credentials. */
   bufferedResponseCache?: Map<string, Promise<BufferedProtocolResponse>>;
   /** Outer Agent-invocation lifetime. A child client disconnect must not
@@ -756,6 +760,8 @@ interface ProxyState {
   token: string;
   server: Server;
   timeoutMs: number;
+  /** Learned only for this invocation after a stream fails before model output. */
+  bufferedDelivery?: boolean;
   /** A probe-only sentinel choice is applied exactly once. */
   requiredToolIssued: boolean;
   providerRequestSequence: number;
@@ -860,14 +866,19 @@ function markProtocolFailure(
 function markProviderFailure(
   state: ProxyState,
   sequence: number,
-  model: string
+  model: string,
+  error: unknown
 ): void {
   if ((state.providerFailure?.sequence ?? 0) > sequence) return;
+  let detail = error instanceof Error ? error.message : String(error);
+  for (const secret of [state.options.gatewayApiKey, state.token]) {
+    if (secret) detail = detail.split(secret).join("[REDACTED]");
+  }
   state.providerFailure = {
     sequence,
     failure: {
       code: "MODEL_PROVIDER_FAILED",
-      message: "Gateway request failed before a response was received",
+      message: `Gateway request failed: ${redactTrace(detail).slice(0, 1_000)}`,
       sourceProtocol: state.options.sourceProtocol,
       targetProtocol: state.options.targetProtocol,
       model
@@ -925,7 +936,7 @@ export async function startProtocolProxy(options: ProtocolProxyOptions): Promise
   }
   await (options.validateGatewayTarget ?? validateGatewayNetworkTarget)(options.gatewayUrl);
   const token = randomUUID().replaceAll("-", "");
-  const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 20 * 60_000, 60 * 60_000));
+  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? 20 * 60_000, 60 * 60_000));
   let state!: ProxyState;
   const server = createServer((request, response) => {
     void handleProxyRequest(request, response, state);
@@ -1496,32 +1507,13 @@ async function handleProxyRequest(
     return;
   }
   const providerRequestSequence = ++state.providerRequestSequence;
-  // Claude Code opens a second, non-user request to generate a local session
-  // title.  Forwarding that long naming prompt to a third-party model both
-  // wastes a real gateway call and races the actual answer stream (some
-  // OpenAI-compatible deployments terminate one of the two streams).  The
-  // title has no bearing on project evidence, so answer it locally while
-  // preserving the Anthropic response shape expected by Claude Code.
-  if (
-    state.options.sourceProtocol === "anthropic-messages" &&
-    isClaudeSessionTitleRequest(sourceBody)
-  ) {
-    trace("status", "Protocol proxy answered Claude session-title request locally", {
-      sourceProtocol: state.options.sourceProtocol,
-      targetProtocol: state.options.targetProtocol,
-      model: requestModel,
-      stream: sourceBody.stream === true
-    });
-    writeSyntheticAnthropicTitle(response, requestModel, sourceBody.stream === true);
-    return;
-  }
   let usageId = `usage_${randomUUID().replaceAll("-", "")}`;
   const normalized = normalizeIncomingRequest(sourceBody, state.options.sourceProtocol);
   const injected = state.options.getContextInjectionBudget?.();
-  const reportedErrors = reportedToolArgumentErrors(normalized.messages);
-  normalized.messages = reportedErrors.messages;
-  if (reportedErrors.count) trace("status", "Protocol proxy preserved reported tool argument errors for Agent correction", {
-    count: reportedErrors.count, automaticRecovery: true, sourceProtocol: state.options.sourceProtocol,
+  const historicalFeedback = historicalToolArgumentFeedback(normalized.messages);
+  normalized.messages = historicalFeedback.messages;
+  if (historicalFeedback.count) trace("status", "Protocol proxy preserved historical tool argument feedback for Agent correction", {
+    count: historicalFeedback.count, automaticRecovery: true, sourceProtocol: state.options.sourceProtocol,
     targetProtocol: state.options.targetProtocol, model: requestModel
   });
   const invalidHistory = firstInvalidToolCall(normalized.messages, {
@@ -1540,10 +1532,8 @@ async function handleProxyRequest(
     );
     return;
   }
-  // A rejected provider response must not poison a later valid request. The
-  // native Harness can retry its original clean input or send corrected
-  // history. Invalid historical calls are still rejected above, before any
-  // upstream call or tool can run.
+  // Native retries retain their route. Ambiguous call identities are rejected
+  // above; ordinary parsing feedback does not block a subsequent model turn.
   if (state.failure && (state.failureSequence ?? 0) > state.providerSuccessSequence) {
     trace("status", "Protocol proxy is retrying valid input after a rejected tool response", {
       errorCode: state.failure.code, sourceProtocol: state.options.sourceProtocol,
@@ -1554,6 +1544,18 @@ async function handleProxyRequest(
     state.options.requiredToolName,
     normalized.tools ?? []
   );
+  const validateProviderTools = (toolCalls: Array<{ name: string; arguments: string }>) =>
+    firstInvalidNormalizedToolCall(toolCalls, {
+      sourceProtocol: state.options.sourceProtocol,
+      targetProtocol: state.options.targetProtocol,
+      model: requestModel,
+      sourceTools: normalized.tools,
+      onNativeError: (failure) => trace("status", "Tool argument error delivered to the native Harness for Agent correction", {
+        diagnostic: true, diagnosticKind: "proxy.tool.arguments", errorCode: failure.code,
+        toolName: failure.toolName, toolIndex: failure.toolIndex, protocolMessage: failure.message,
+        sourceProtocol: failure.sourceProtocol, targetProtocol: failure.targetProtocol, nativeCorrection: true
+      })
+    });
   // A probe sentinel is a one-shot protocol check, not a workflow policy.
   // Native Harness tool_choice remains part of `normalized` and is converted
   // transparently on every request.
@@ -1574,13 +1576,13 @@ async function handleProxyRequest(
     state.options.targetProtocol,
     state.options.gatewayApiKey
   );
-  const bufferedDelivery =
-    state.options.deliveryMode === "buffered-json" && normalized.stream === true;
-  const bufferedAnthropic = bufferedDelivery &&
+  let bufferedDelivery =
+    (state.options.deliveryMode === "buffered-json" || state.bufferedDelivery === true) && normalized.stream === true;
+  let bufferedAnthropic = bufferedDelivery &&
     state.options.sourceProtocol === "anthropic-messages";
-  const bufferedChat = bufferedDelivery &&
+  let bufferedChat = bufferedDelivery &&
     state.options.sourceProtocol === "chat-completions";
-  const bufferedResponses = bufferedDelivery &&
+  let bufferedResponses = bufferedDelivery &&
     state.options.sourceProtocol === "responses";
   const upstreamBody = bufferedDelivery
     ? withoutStreamingUsageOptions(routed.body)
@@ -1619,7 +1621,7 @@ async function handleProxyRequest(
       requestId: usageId,
       timestamp: new Date().toISOString(),
       streaming: wantsStream && !bufferedDelivery,
-      deliveryMode: state.options.deliveryMode ?? "native-stream"
+      deliveryMode: bufferedDelivery ? "buffered-json" : "native-stream"
     });
   };
   trace("status", "Protocol proxy forwarded request", {
@@ -1634,7 +1636,7 @@ async function handleProxyRequest(
       totalEstimatedTokens: injected.estimatedTokens + definitionTokens } } : {}),
     ...outgoingToolDiagnostics(state, upstreamBody.tools, (routedTools ?? []).map(tool => tool.name)),
     ...(requiredToolName ? { requiredToolName } : {}),
-    deliveryMode: state.options.deliveryMode ?? "native-stream",
+    deliveryMode: bufferedDelivery ? "buffered-json" : "native-stream",
     ...(state.options.gatewayReasoning ? {
       reasoningParameter: state.options.gatewayReasoning.parameter,
       reasoningValue: state.options.gatewayReasoning.value,
@@ -1745,19 +1747,11 @@ async function handleProxyRequest(
         usage: {}
       }
     }));
-    // A few Claude Code builds only keep the request alive after observing a
-    // content block, while treating comment-only keep-alives as idle.  Open
-    // an invisible text block immediately; the buffered answer appends to
-    // this block and closes it exactly once below.
+    // The buffered answer appends to this text block and closes it once.
     response.write(formatStreamFrame("anthropic-messages", {
       type: "content_block_start",
       index: 0,
       content_block: { type: "text", text: "" }
-    }));
-    response.write(formatStreamFrame("anthropic-messages", {
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: "\u200b" }
     }));
     response.write(formatStreamFrame("anthropic-messages", { type: "ping" }));
     trace("status", "Protocol proxy flushed buffered Anthropic prelude", {
@@ -1800,21 +1794,12 @@ async function handleProxyRequest(
     requestId: usageId,
     timestamp: new Date().toISOString(),
     streaming: wantsStream && !bufferedDelivery,
-    deliveryMode: state.options.deliveryMode ?? "native-stream"
+    deliveryMode: bufferedDelivery ? "buffered-json" : "native-stream"
   });
   try {
     if (bufferedAnthropic && state.options.bufferedResponseCache) {
-      // The native Claude process can terminate while a third-party model is
-      // still computing. Keep that one non-streaming provider request alive
-      // and share its promise with a fresh recovery process; otherwise every
-      // short-lived client would cancel and restart the same expensive turn.
-      // Claude Code's compatibility watchdog can terminate a process before
-      // a buffered answer arrives. The cache is scoped to exactly one
-      // Agent invocation and model turns are serial, so its key represents
-      // the one response that has not yet been delivered—not the ephemeral
-      // Claude transcript. This also lets a fresh process consume a later
-      // tool-result turn that was computed after its predecessor was already
-      // executed, without replaying that predecessor.
+      // Keep the pending provider response within this invocation so a native
+      // recovery process can receive it without repeating completed work.
       const semanticKey = "undelivered-agent-response";
       usageManagedByBufferedCache = true;
       const cached = await cachedBufferedProtocolResponse(
@@ -1855,11 +1840,7 @@ async function handleProxyRequest(
         requestModel
       );
       completedEstimatedOutputTokens = estimatedNormalizedOutputTokens(normalizedResponse);
-      const invalidResponse = firstInvalidNormalizedToolCall(normalizedResponse.toolCalls, {
-        sourceProtocol: state.options.sourceProtocol,
-        targetProtocol: state.options.targetProtocol,
-        model: requestModel
-      });
+      const invalidResponse = validateProviderTools(normalizedResponse.toolCalls);
       if (invalidResponse) {
         evictBufferedProtocolResponse(state, routed, upstreamBody, semanticKey);
         markProtocolFailure(state, invalidResponse, trace, providerRequestSequence);
@@ -1945,19 +1926,32 @@ async function handleProxyRequest(
     let returnedToolNames: string[] = [];
     let completedProviderResponse = false;
     providerRequestSent = true;
-    const upstream = await fetchWithRetry(
+    const fetchUpstream = (body: Record<string, unknown>, signal: AbortSignal) => fetchWithRetry(
       joinEndpoint(state.options.gatewayUrl, routed.endpointSuffix),
       {
         method: "POST",
         headers: routed.headers,
-        body: JSON.stringify(upstreamBody),
+        body: JSON.stringify(body),
         redirect: "error",
-        signal: controller.signal
+        signal
       },
-      controller.signal,
+      signal,
       rotateProviderUsageId,
       state.options.modelFetch
     );
+    const prepared = wantsStream && !bufferedDelivery
+      ? await recoverInitialProviderStream(state, fetchUpstream, upstreamBody, controller.signal,
+          requestStartedAt, rotateProviderUsageId, () => {
+            if (response.writableEnded || response.destroyed) return;
+            if (!response.headersSent) response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+            response.write(": waiting for provider output\n\n");
+          }, (message, data) => trace("status", message, data))
+      : { response: await fetchUpstream(upstreamBody, controller.signal), buffered: bufferedDelivery };
+    const upstream = prepared.response;
+    bufferedDelivery = prepared.buffered;
+    bufferedAnthropic = bufferedDelivery && state.options.sourceProtocol === "anthropic-messages";
+    bufferedChat = bufferedDelivery && state.options.sourceProtocol === "chat-completions";
+    bufferedResponses = bufferedDelivery && state.options.sourceProtocol === "responses";
     receivedProviderResponse = true;
     touchActivity();
     trace("status", "Protocol proxy received upstream response", {
@@ -2013,11 +2007,7 @@ async function handleProxyRequest(
           requestModel
         );
         completedEstimatedOutputTokens = estimatedNormalizedOutputTokens(normalizedResponse);
-        const invalidResponse = firstInvalidNormalizedToolCall(normalizedResponse.toolCalls, {
-          sourceProtocol: state.options.sourceProtocol,
-          targetProtocol: state.options.targetProtocol,
-          model: requestModel
-        });
+        const invalidResponse = validateProviderTools(normalizedResponse.toolCalls);
         if (invalidResponse) {
           markProtocolFailure(state, invalidResponse, trace, providerRequestSequence);
           writeProtocolFailureResponse(
@@ -2063,11 +2053,7 @@ async function handleProxyRequest(
           requestModel
         );
         completedEstimatedOutputTokens = estimatedNormalizedOutputTokens(normalizedResponse);
-        const invalidResponse = firstInvalidNormalizedToolCall(normalizedResponse.toolCalls, {
-          sourceProtocol: state.options.sourceProtocol,
-          targetProtocol: state.options.targetProtocol,
-          model: requestModel
-        });
+        const invalidResponse = validateProviderTools(normalizedResponse.toolCalls);
         if (invalidResponse) {
           markProtocolFailure(state, invalidResponse, trace, providerRequestSequence);
           writeProtocolFailureResponse(
@@ -2113,11 +2099,7 @@ async function handleProxyRequest(
           requestModel
         );
         completedEstimatedOutputTokens = estimatedNormalizedOutputTokens(normalizedResponse);
-        const invalidResponse = firstInvalidNormalizedToolCall(normalizedResponse.toolCalls, {
-          sourceProtocol: state.options.sourceProtocol,
-          targetProtocol: state.options.targetProtocol,
-          model: requestModel
-        });
+        const invalidResponse = validateProviderTools(normalizedResponse.toolCalls);
         if (invalidResponse) {
           markProtocolFailure(state, invalidResponse, trace, providerRequestSequence);
           writeProtocolFailureResponse(
@@ -2235,11 +2217,7 @@ async function handleProxyRequest(
         requestModel
       );
       completedEstimatedOutputTokens = estimatedNormalizedOutputTokens(normalizedResponse);
-      const invalidResponse = firstInvalidNormalizedToolCall(normalizedResponse.toolCalls, {
-        sourceProtocol: state.options.sourceProtocol,
-        targetProtocol: state.options.targetProtocol,
-        model: requestModel
-      });
+      const invalidResponse = validateProviderTools(normalizedResponse.toolCalls);
       if (invalidResponse) {
         markProtocolFailure(state, invalidResponse, trace, providerRequestSequence);
         writeProtocolFailureResponse(
@@ -2325,14 +2303,14 @@ async function handleProxyRequest(
     if (cancelledAfterClientDisconnect) {
       return;
     }
-    markProviderFailure(state, providerRequestSequence, requestModel);
+    markProviderFailure(state, providerRequestSequence, requestModel, error);
     if ((bufferedAnthropicMessageId || bufferedChatCompletionId) && !controller.signal.aborted && response.headersSent) {
       const message = error instanceof Error
         ? redactTrace(error.message)
         : "protocol proxy upstream failure";
       if (bufferedAnthropicMessageId) writeAnthropicStreamError(response, message);
       else writeChatStreamError(response, bufferedChatCompletionId!, requestModel, message);
-    } else if (bufferedResponses && !response.headersSent) {
+    } else if (wantsStream && (!controller.signal.aborted || timedOut)) {
       writeProtocolFailureResponse(
         response,
         state.options.sourceProtocol,
@@ -2394,7 +2372,7 @@ async function handleProxyRequest(
         requestId: usageId,
         timestamp: new Date().toISOString(),
         streaming: wantsStream && !bufferedDelivery,
-        deliveryMode: state.options.deliveryMode ?? "native-stream",
+        deliveryMode: bufferedDelivery ? "buffered-json" : "native-stream",
         ...(completedEstimatedOutputTokens > 0
           ? { estimatedOutputTokens: completedEstimatedOutputTokens }
           : {})
@@ -2409,71 +2387,6 @@ async function handleProxyRequest(
       abortForInvocation
     );
   }
-}
-
-function isClaudeSessionTitleRequest(body: Record<string, unknown>): boolean {
-  const serialized = JSON.stringify({ system: body.system, messages: body.messages });
-  return /naming a coding session|session content is provided inside <session>/i.test(serialized);
-}
-
-function writeSyntheticAnthropicTitle(
-  response: ServerResponse,
-  model: string,
-  stream: boolean
-): void {
-  const id = `msg_title_${randomUUID().replaceAll("-", "")}`;
-  const title = JSON.stringify({ title: "ScienceEvolve Project Explainer" });
-  if (!stream) {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({
-      id,
-      type: "message",
-      role: "assistant",
-      model,
-      content: [{ type: "text", text: title }],
-      stop_reason: "end_turn",
-      stop_sequence: null,
-      usage: { input_tokens: 0, output_tokens: 1 }
-    }));
-    return;
-  }
-  response.writeHead(200, { "content-type": "text/event-stream" });
-  const frames = [
-    {
-      type: "message_start",
-      message: {
-        id,
-        type: "message",
-        role: "assistant",
-        model,
-        content: [],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 }
-      }
-    },
-    {
-      type: "content_block_start",
-      index: 0,
-      content_block: { type: "text", text: "" }
-    },
-    {
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: title }
-    },
-    { type: "content_block_stop", index: 0 },
-    {
-      type: "message_delta",
-      delta: { stop_reason: "end_turn", stop_sequence: null },
-      usage: { output_tokens: 1 }
-    },
-    { type: "message_stop" }
-  ];
-  for (const frame of frames) {
-    response.write(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
-  }
-  response.end();
 }
 
 /**
@@ -3056,6 +2969,118 @@ function withoutStreamingUsageOptions(
   return { ...rest, stream: false };
 }
 
+/** Hold transport-only frames until real model output or an explicit terminal event. */
+async function initialProviderStream(response: Response, protocol: AgentProtocol, signal: AbortSignal): Promise<Response> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Provider stream has no response body");
+  const chunks: Uint8Array[] = [];
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let bytes = 0;
+  let rejectAbort!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  const abort = () => rejectAbort(signal.reason ?? new Error("Provider stream cancelled"));
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    signal.throwIfAborted();
+    while (true) {
+      const next = await Promise.race([reader.read(), aborted]);
+      if (next.value) { chunks.push(next.value); bytes += next.value.byteLength; }
+      if (bytes > 8 * 1024 * 1024) throw new Error("Provider stream exceeded 8 MiB before its first model event");
+      buffer += decoder.decode(next.value ?? new Uint8Array(), { stream: !next.done });
+      const events = splitSseEvents(next.done && buffer.trim() ? `${buffer}\n\n` : buffer);
+      buffer = events.rest;
+      const ready = events.events.some(event => {
+        const parsed = event.data.trim() === "[DONE]" ? "[DONE]" : safeJson(event.data);
+        return parsed !== undefined && normalizeProtocolStreamEvents(protocol, parsed).some(value =>
+          value.type === "completed" || value.type === "error" || value.type === "tool_call_delta" ||
+          (value.type === "text_delta" || value.type === "reasoning_delta") && Boolean(value.text));
+      });
+      if (ready) {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) { for (const chunk of chunks) controller.enqueue(chunk); chunks.length = 0; },
+          async pull(controller) {
+            try {
+              const chunk = await reader.read();
+              if (chunk.done) { reader.releaseLock(); controller.close(); }
+              else controller.enqueue(chunk.value);
+            } catch (error) { reader.releaseLock(); controller.error(error); }
+          },
+          async cancel(reason) { try { await reader.cancel(reason); } finally { reader.releaseLock(); } }
+        }), { status: response.status, headers: response.headers });
+      }
+      if (next.done) throw new Error("Provider stream ended before model output or a terminal event");
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined);
+    reader.releaseLock();
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
+/** Reserve two thirds of the request budget for one recovery, without replaying model output. */
+async function recoverInitialProviderStream(
+  state: ProxyState,
+  fetchUpstream: (body: Record<string, unknown>, signal: AbortSignal) => Promise<Response>,
+  body: Record<string, unknown>,
+  signal: AbortSignal,
+  startedAt: number,
+  beforeRetry: (reason: string) => Promise<void>,
+  pending: () => void,
+  trace: (message: string, data: Record<string, unknown>) => void
+): Promise<{ response: Response; buffered: boolean }> {
+  const first = new AbortController();
+  const firstOutputMs = Math.max(1, Math.floor(state.timeoutMs / 3));
+  const firstTimer = setTimeout(() => first.abort(new Error("Provider stream first-output deadline exceeded")), firstOutputMs);
+  const heartbeat = setInterval(pending, Math.min(15_000, Math.max(100, Math.floor(firstOutputMs / 2))));
+  heartbeat.unref();
+  let streamError: unknown;
+  const budgetDeadline = startedAt + Math.floor(state.timeoutMs * 0.95);
+  try {
+    const attemptSignal = AbortSignal.any([signal, first.signal]);
+    const response = await fetchUpstream(body, attemptSignal);
+    if (!response.ok) return { response, buffered: false };
+    if ((response.headers.get("content-type") ?? "").includes("application/json")) {
+      state.bufferedDelivery = true;
+      return { response, buffered: true };
+    }
+    return { response: await initialProviderStream(response, state.options.targetProtocol, attemptSignal), buffered: false };
+  } catch (error) {
+    signal.throwIfAborted();
+    streamError = error;
+  } finally {
+    clearTimeout(firstTimer);
+    clearInterval(heartbeat);
+  }
+  state.bufferedDelivery = true;
+  const remainingMs = Math.max(0, budgetDeadline - Date.now());
+  if (!remainingMs) throw streamError;
+  trace("Provider stream failed before output; recovering once with a buffered response", {
+    diagnostic: true, diagnosticKind: "proxy.transport.recovery", deliveryMode: "buffered-json",
+    firstOutputMs, remainingMs, totalBudgetMs: state.timeoutMs,
+    streamError: redactTrace(streamError instanceof Error ? streamError.message : String(streamError))
+  });
+  await beforeRetry("stream-before-output");
+  const recovery = new AbortController();
+  const recoveryTimer = setTimeout(() => recovery.abort(new Error("Buffered recovery exhausted the shared request budget")),
+    Math.max(1, budgetDeadline - Date.now()));
+  const recoveryHeartbeat = setInterval(pending, Math.min(15_000, Math.max(100, Math.floor(remainingMs / 4))));
+  recoveryHeartbeat.unref();
+  try {
+    const response = await fetchUpstream(withoutStreamingUsageOptions(body), AbortSignal.any([signal, recovery.signal]));
+    const text = await response.text();
+    return { response: new Response(text || null, { status: response.status, headers: response.headers }), buffered: true };
+  } catch (error) {
+    signal.throwIfAborted();
+    throw new Error(`Stream failed before output: ${redactTrace(streamError instanceof Error ? streamError.message : String(streamError))}; buffered recovery failed: ${redactTrace(error instanceof Error ? error.message : String(error))}`, { cause: error });
+  } finally {
+    clearTimeout(recoveryTimer);
+    clearInterval(recoveryHeartbeat);
+  }
+}
+
 async function fetchWithRetry(
   url: string,
   init: RequestInit,
@@ -3108,10 +3133,8 @@ async function cachedBufferedProtocolResponse(
   // The cache is already scoped to one invocation/gateway. Hash only the
   // endpoint and normalized provider body, deliberately excluding headers so
   // an API credential can never become cache data or diagnostic metadata.
-  // A fresh Claude process can vary its private system/session prelude while
-  // recovering the same invocation-local response. Use the semantic stage for
-  // that one response. Other requests retain an
-  // exact normalized-body key and cannot be replayed across conversation steps.
+  // Native recovery may change the session prelude while awaiting the same
+  // invocation-local response. Other requests use an exact body key.
   const key = bufferedProtocolResponseKey(routed, body, semanticKey);
   const existing = cache.get(key);
   if (existing) return existing;
@@ -3201,7 +3224,7 @@ async function cachedBufferedProtocolResponse(
     );
   });
   cache.set(key, created);
-  // A transport failure is retryable by the next fresh Claude process. HTTP
+  // A transport failure is retryable by the next native process. HTTP
   // responses remain cached because fetchWithRetry has already exhausted the
   // bounded gateway retry policy.
   void created.catch(() => {
@@ -3798,10 +3821,9 @@ async function streamProxyResponse(
   const sourceToolNames = new Map<number, string>();
   const sourceToolArguments = new Map<number, string>();
   const sourceToolFinals = new Set<number>();
-  // Codex consumes Responses function-call frames as executable input. Hold
-  // those frames until the complete JSON envelope has been validated, while
-  // continuing to stream ordinary assistant text immediately.
-  const bufferedResponsesToolFrames: Record<string, unknown>[] = [];
+  // Responses tool_search needs an object input, so hold those frames until
+  // JSON validation. Ordinary function calls keep their native argument text.
+  const bufferedToolSearchFrames: Record<string, unknown>[] = [];
   const responseToolOutputIndices = new Map<number, number>();
   let nextResponseOutputIndex = 0;
   let responseTextItemId: string | undefined;
@@ -4092,8 +4114,9 @@ async function streamProxyResponse(
             ? []
             : convertForSource(normalized);
           if (converted.length) {
-            if (source === "responses" && normalized.type === "tool_call_delta") {
-              bufferedResponsesToolFrames.push(...converted);
+            if (source === "responses" && normalized.type === "tool_call_delta" &&
+                isClientToolSearch(sourceToolNames.get(normalized.toolIndex ?? 0) ?? "", sourceTools)) {
+              bufferedToolSearchFrames.push(...converted);
             } else {
               writeFrames(converted);
             }
@@ -4145,8 +4168,9 @@ async function streamProxyResponse(
           const converted = normalized.type === "completed"
             ? []
             : convertForSource(normalized);
-          if (source === "responses" && normalized.type === "tool_call_delta") {
-            bufferedResponsesToolFrames.push(...converted);
+          if (source === "responses" && normalized.type === "tool_call_delta" &&
+              isClientToolSearch(sourceToolNames.get(normalized.toolIndex ?? 0) ?? "", sourceTools)) {
+            bufferedToolSearchFrames.push(...converted);
           } else {
             writeFrames(converted);
           }
@@ -4197,13 +4221,22 @@ async function streamProxyResponse(
       }
     );
     if (failure) {
+      if (source !== "anthropic-messages" &&
+          !isClientToolSearch(sourceToolNames.get(toolIndex) ?? "", sourceTools)) {
+        trace?.("Tool argument error delivered to the native Harness for Agent correction", {
+          diagnostic: true, diagnosticKind: "proxy.tool.arguments", errorCode: failure.code,
+          toolName: failure.toolName, toolIndex: failure.toolIndex, protocolMessage: failure.message,
+          sourceProtocol: source, targetProtocol: target, nativeCorrection: true
+        });
+        continue;
+      }
       onProtocolFailure?.(failure);
       writeProtocolFailureResponse(response, source, model, true, failure.message);
       return { toolNames: [...observedToolNames], completed: false };
     }
   }
-  if (bufferedResponsesToolFrames.length) {
-    writeFrames(bufferedResponsesToolFrames);
+  if (bufferedToolSearchFrames.length) {
+    writeFrames(bufferedToolSearchFrames);
   }
   if (source === "anthropic-messages") {
     if (!anthropicMessageStarted) {

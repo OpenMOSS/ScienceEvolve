@@ -2,7 +2,7 @@
 
 [← 返回 SDK README](../../../README_zh-CN.md) · [English](usage-en.md) | **简体中文**
 
-需要 Node >=24。Codex/Claude Code/DSH 按需安装；Pi 随包提供。
+需要 Node >=24。Codex/DSH 按需安装；Pi 随包提供。
 每个 main dataDir 都是显式指定的绝对路径，不能复用 legacy/Web/其他 runtimeRevision 的数据。
 运行中同一目录只能有一个宿主。密钥不进入 workflow、需求或输出。
 
@@ -39,7 +39,7 @@ scievolve start workflow.json research_proposal.txt --data-dir /absolute/new-mai
 ```
 
 示例模板使用 high 思考选项，必须在导入前用 SDK_CODEX_REASONING_FILE（或 JSON）
-定义模型映射。使用其他 Harness 时换成 SDK_PI / SDK_DSH / SDK_CLAUDE_CODE。
+定义模型映射。使用其他 Harness 时换成 SDK_PI / SDK_DSH。
 例如上游确实支持 Responses reasoning.effort 时：
 
 ```json

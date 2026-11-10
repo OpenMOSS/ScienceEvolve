@@ -15,11 +15,30 @@ import { P, openedClosingFixture as fixture, cleanupClosingFixtures } from "./he
 afterEach(cleanupClosingFixtures);
 
 describe("original-Agent closing control factory", () => {
+  it("retains the closing grant and immutable finish across fresh supplemental inputs", async () => {
+    const f = await fixture();
+    const envelope = f.envelope({ tool: "finish_task", summary: "My accepted closing finish" }, "finish");
+    await f.authority.revalidate(envelope, []);
+    const completion = f.db.scopedWorktreeClosingCompletion(P, f.closing.invocationId);
+    const next = await f.factory({ request: f.request, turn: { ...f.turn, inputId: "closing-input:process-cleanup:1" } });
+    expect(next.control.capability).not.toBe(f.authority.control.capability);
+    expect(next.control.capabilityHash).not.toBe(f.authority.control.capabilityHash);
+    expect(next.control.stagingPath).not.toBe(f.authority.control.stagingPath);
+    await expect(f.authority.revalidate(envelope, [])).rejects.toThrow("live native invocation authority");
+    await expect(next.revalidate(envelope, [])).rejects.toThrow("live native invocation authority");
+    await next.revalidate({ ...envelope, capabilityHash: next.control.capabilityHash }, []);
+    expect(f.db.scopedWorktreeClosingCompletion(P, f.closing.invocationId)).toEqual(completion);
+    expect(completion?.capabilityHash).toBe(envelope.capabilityHash);
+    expect(f.db.scopedWorktreeClosingTurns(P)[0].capabilityHash).toBe(f.closing.capabilityHash);
+    expect(() => f.db.completeScopedWorktreeClosing({ ...f.closing, capabilityHash: "f".repeat(64),
+      controlCapabilityHash: next.control.capabilityHash!, envelope: { ...envelope, capabilityHash: next.control.capabilityHash } })).toThrow();
+  });
+
   it("connects real MCP, exact B publication, original request journal and separate finish without claiming native reception", async () => {
     const f = await fixture(), before = f.snapshot(), memory = await fs.readFile(f.memory, "utf8");
     const receipts = controlResultReceipts(f.db, { projectId: P, agentId: "worker", invocationId: f.closing.invocationId, session: f.session, executionContext: f.executionContext });
     const service = new ControlActionService({ projectId: P, agent: "worker", invocationId: f.closing.invocationId, stateVersion: 1,
-      capability: f.capability, capabilityHash: f.closing.capabilityHash, stagingPath: f.authority.control.stagingPath,
+      capability: f.capability, capabilityHash: f.authority.control.capabilityHash, stagingPath: f.authority.control.stagingPath,
       revalidate: f.authority.revalidate, execute: f.authority.execute, onResult: receipts.record });
     const bridge = await startControlActionBridge(service, f.root);
     try {
@@ -171,7 +190,8 @@ describe("original-Agent closing control factory", () => {
     const git = vi.spyOn(f.options.git, "checkpointAndPush").mockImplementation(async request => {
       parent.abort(Error("Original invocation stopped during Git IO")); request.signal!.throwIfAborted(); throw Error("unreachable");
     });
-    await expect(authority.execute!(f.envelope({ tool: "git_push", reason: "My necessary Memory" }), tool.signal)).rejects.toThrow("Original invocation stopped");
+    await expect(authority.execute!({ ...f.envelope({ tool: "git_push", reason: "My necessary Memory" }),
+      capabilityHash: authority.control.capabilityHash }, tool.signal)).rejects.toThrow("Original invocation stopped");
     expect(git).toHaveBeenCalledOnce(); expect(tool.signal.aborted).toBe(false); expect(f.rawGit(["rev-parse", "HEAD"])).toBe(f.A);
   });
 

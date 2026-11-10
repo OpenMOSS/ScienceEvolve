@@ -4,7 +4,7 @@
   "agents": {
     "main": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -22,7 +22,7 @@
     },
     "literature": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -40,7 +40,7 @@
     },
     "ideas": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -58,7 +58,7 @@
     },
     "novelty": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -76,7 +76,7 @@
     },
     "refine": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -94,7 +94,7 @@
     },
     "bridge": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -112,7 +112,7 @@
     },
     "research_loop": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -130,7 +130,7 @@
     },
     "summary": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -148,7 +148,7 @@
     },
     "paper_plan": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -166,7 +166,7 @@
     },
     "figures": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -184,7 +184,7 @@
     },
     "paper_write": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -202,7 +202,7 @@
     },
     "paper_compile": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -220,7 +220,7 @@
     },
     "paper_improve": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],
@@ -238,7 +238,7 @@
     },
     "paper_assurance": {
       "model": "claude-opus-5",
-      "harness": "claude-code",
+      "harness": "pi",
       "skills": [
         "./skills/scienceevolve-aris"
       ],

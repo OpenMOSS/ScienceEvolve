@@ -55,6 +55,8 @@ export function validateMainWorkflowConfig(input: unknown, options: MainWorkflow
     throw new Error("Web accountId is not a headless SDK credential binding; inject git.credentialResolver when creating the SDK");
   }
   for (const [name, agent] of Object.entries((source.agents ?? {}) as Record<string, unknown>)) {
+    if (agent && typeof agent === "object" && "harness" in agent && agent.harness === "hermes")
+      throw new Error(`${name}: unsupported harness hermes; use codex, pi or dsh`);
     if (agent && typeof agent === "object" && Object.keys(agent).some((key) =>
       key !== "gatewayReasoningOption" && /gateway|apiKey|baseUrl|profile/i.test(key))) {
       throw new Error(`${name}: gateway/profile values do not belong in a main workflow; use start.gatewayBindings and SDK gateway configuration`);

@@ -27,7 +27,7 @@ export function contextLimitError(value: unknown): ContextLimit | undefined {
   };
 }
 
-/** Claude Code recognizes this wording and performs its native reactive compaction. */
+/** Normalize context-limit errors for native Harness recovery. */
 export function nativeContextLimitMessage(limit: ContextLimit): string {
   return limit.requestedTokens && limit.limitTokens
     ? `prompt is too long: ${limit.requestedTokens} tokens > ${limit.limitTokens} maximum`

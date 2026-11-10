@@ -532,7 +532,8 @@ async function handle(request) {
     } else {
       throw new Error("unknown filesystem authority tool");
     }
-    rpcResult(request.id, { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
+    const failed = params.name === "shell" && (result.signal !== null || result.exitCode !== 0 && !(args.command === "rg" && result.exitCode === 1));
+    rpcResult(request.id, { ...(failed ? { isError: true } : {}), content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
   } catch (error) {
     const missing = error?.brokerErrorType === "FileNotFoundError";
     const detail = { code: error?.code || (missing ? "FILESYSTEM_PATH_NOT_FOUND" : error?.invalidField ? "FILESYSTEM_ARGUMENT_INVALID" : "FILESYSTEM_OPERATION_REJECTED"),

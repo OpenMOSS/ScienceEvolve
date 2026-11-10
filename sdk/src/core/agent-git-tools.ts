@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { queryAgentGitOperation } from "./agent-git-operation-query.js";
+import { readAgentGitOperation } from "./agent-git-operation-query.js";
 import type { AgentGitDeliveryStatus } from "./agent-git-delivery.js";
 import { CollaborationGitError, GitOperationResultAvailableError } from "./collaboration-git/errors.js";
 import { mergedPullSynchronizationOperationId } from "./collaboration-git/operation.js";
@@ -35,13 +35,15 @@ export interface AgentGitToolInput {
   base: string;
   facts: AgentGitFacts;
   envelope: ControlActionEnvelope;
+  /** Input credential validated by the closing front door; its durable grant stays on execution.restrictedClosing. */
+  controlCapabilityHash?: string;
   signal?: AbortSignal;
   /** Look up only the operation named by the Agent's own call ID. Replaying
    * that request must settle its journal even when GitHub already merged;
    * never select another operation or retry on the Agent's behalf. */
-  recordedOperation?(operationId: string): OperationRecord | undefined;
-  recordRequest?(request: AgentGitOperationRequest): RecordedAgentGitOperationRequest;
-  recordedRequest?(operationId: string): RecordedAgentGitOperationRequest | undefined;
+  recordedOperation?(operationId: string): OperationRecord | undefined | Promise<OperationRecord | undefined>;
+  recordRequest?(request: AgentGitOperationRequest): RecordedAgentGitOperationRequest | Promise<RecordedAgentGitOperationRequest>;
+  recordedRequest?(operationId: string): RecordedAgentGitOperationRequest | undefined | Promise<RecordedAgentGitOperationRequest | undefined>;
   /** Read the same authoritative gate used to wake and accept this Agent. */
   deliveryStatus?(): AgentGitDeliveryStatus | Promise<AgentGitDeliveryStatus>;
   /** Read exact durable synchronization facts for the original merge/query.
@@ -49,21 +51,21 @@ export interface AgentGitToolInput {
   recordedSynchronization?(query: {
     projectId: string; executionId: string; ownershipEpoch: number; providerNumber: number;
     expectedHead: string; expectedBase: string; expectedMergeCommitSha: string
-  }): RemoteMergeSyncFact | undefined;
+  }): RemoteMergeSyncFact | undefined | Promise<RemoteMergeSyncFact | undefined>;
 }
 
 /** Keep existing request identities immutable. Only new oversized IDs
  * need a bounded provider marker; the journal retains their full authority. */
-export function agentGitOperationId(input: Pick<AgentGitToolInput, "execution" | "recordedOperation" | "recordedRequest"> & {
+export async function agentGitOperationId(input: Pick<AgentGitToolInput, "execution" | "recordedOperation" | "recordedRequest"> & {
   envelope: Pick<ControlActionEnvelope, "projectId" | "invocationId" | "callId">;
-}, suffix: "push" | "create" | "merge" | "close" | "update"): string {
+}, suffix: "push" | "create" | "merge" | "close" | "update"): Promise<string> {
   const { execution, envelope } = input;
   const closing = "restrictedClosing" in execution ? execution.restrictedClosing : undefined;
   const legacy = closing
     ? `agent-closing-git-${closing.invocationId}-${execution.id}-epoch-${execution.ownershipEpoch}-${envelope.callId}-${suffix}`
     : `agent-git-${execution.id}-epoch-${execution.ownershipEpoch}-${envelope.callId}-${suffix}`;
   if (legacy.length <= 160 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(legacy) ||
-    input.recordedRequest?.(legacy) || input.recordedOperation?.(legacy)) return legacy;
+    (await input.recordedRequest?.(legacy)) || (await input.recordedOperation?.(legacy))) return legacy;
   const identity = JSON.stringify(closing
     ? [envelope.projectId, closing.invocationId, execution.id, execution.ownershipEpoch, envelope.callId, suffix]
     : [envelope.projectId, execution.id, execution.ownershipEpoch, envelope.callId, suffix]);
@@ -85,12 +87,12 @@ export async function executeAgentGitTool(input: AgentGitToolInput): Promise<unk
       ["OPERATION_PAYLOAD_MISMATCH", "GIT_OWNERSHIP_STALE"].includes(error.code)) throw error;
     let observed: { operation: OperationRecord; status: string; localStage: string };
     try {
-      observed = queryAgentGitOperation({ ...input, projectId: input.envelope.projectId, operationId: dispatched.id });
+      observed = (await readAgentGitOperation({ ...input, projectId: input.envelope.projectId, operationId: dispatched.id }));
     } catch { throw error; }
     if (observed.operation.kind !== dispatched.kind || observed.operation.ownershipEpoch !== input.execution.ownershipEpoch ||
       !["completed", "remote_success_local_pending"].includes(observed.status)) throw error;
     if (observed.operation.kind === "pull.merge" && observed.operation.remoteFact?.status === "merged") {
-      // queryAgentGitOperation has checked this exact owner/epoch/head/base
+      // readAgentGitOperation has checked this exact owner/epoch/head/base
       // and numbered PR. Preserve remote success even when local fetch fails.
       // No synchronized delivery or task completion is inferred from it.
       input.facts.pullRequest = structuredClone(observed.operation.remoteFact) as unknown as GitHubPullRequestFact;
@@ -111,7 +113,7 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     const attemptId = `git-revert-${createHash("sha256").update(JSON.stringify([envelope.projectId, execution.id, execution.ownershipEpoch, envelope.callId])).digest("hex")}`;
     if (action.mode !== "preview" && action.mode !== "status") {
       if (!input.recordRequest) throw new Error("Revert requires the original Agent request journal");
-      input.recordRequest({ operationId: attemptId, projectId: envelope.projectId, executionId: execution.id,
+      await input.recordRequest({ operationId: attemptId, projectId: envelope.projectId, executionId: execution.id,
         ownershipEpoch: execution.ownershipEpoch, executionBranch: execution.executionBranch, integrationTarget: base,
         repository: { owner: repository.owner, name: repository.name }, agentId: envelope.agent, invocationId: envelope.invocationId,
         callId: envelope.callId, requestedAt: envelope.receivedAt, action, expectedHead: action.expectedHead });
@@ -132,18 +134,19 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     if (final || closing || !git.inspectExecution) throw new Error("Git inspection requires a current business task");
     return git.inspectExecution(execution as GitExecutionAuthority, execution.ownershipEpoch, base, action, signal);
   }
-  if (closing && (final || closing.invocationId !== envelope.invocationId || closing.capabilityHash !== envelope.capabilityHash ||
+  if (closing && (final || closing.invocationId !== envelope.invocationId ||
+    !/^[a-f0-9]{64}$/.test(input.controlCapabilityHash ?? "") || input.controlCapabilityHash !== envelope.capabilityHash ||
     !/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(closing.invocationId))) {
     throw new Error("Closing Git operation lost its exact native invocation capability");
   }
   // Closing retains the original execution/epoch. Its callId may legitimately
   // match an old business call; keep every original operation/request immutable.
-  const operationId = (suffix: "push" | "create" | "merge" | "close" | "update") => agentGitOperationId(input, suffix);
+  const operationId = async (suffix: "push" | "create" | "merge" | "close" | "update") => await agentGitOperationId(input, suffix);
   if (action.tool === "git_get_operation") {
-    return queryAgentGitOperation({ ...input, projectId: envelope.projectId, operationId: action.operationId });
+    return await readAgentGitOperation({ ...input, projectId: envelope.projectId, operationId: action.operationId });
   }
-  const recordRequest = (id: string, action: AgentGitOperationRequest["action"], expectedHead?: string) => {
-    input.recordRequest?.({ operationId: id, projectId: envelope.projectId, executionId: execution.id,
+  const recordRequest = async (id: string, action: AgentGitOperationRequest["action"], expectedHead?: string) => {
+    await input.recordRequest?.({ operationId: id, projectId: envelope.projectId, executionId: execution.id,
       ownershipEpoch: execution.ownershipEpoch, executionBranch: execution.executionBranch, integrationTarget: base,
       repository: { owner: repository.owner, name: repository.name }, agentId: envelope.agent,
       invocationId: envelope.invocationId, callId: envelope.callId, requestedAt: envelope.receivedAt, action,
@@ -174,7 +177,7 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
       ...(action.historical === undefined ? {} : { historical: action.historical }), signal });
     if (action.historical === true) {
       const owner = result.historicalOwner;
-      const original = input.recordedOperation?.(action.operationId);
+      const original = await input.recordedOperation?.(action.operationId);
       if (!owner || !("agentId" in execution) || owner.agentId !== execution.agentId ||
         !Number.isSafeInteger(owner.ownershipEpoch) || owner.ownershipEpoch < 1 ||
         result.operation.id !== action.operationId || result.operation.kind !== "git.push" ||
@@ -225,9 +228,9 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
   }
   if (action.tool === "git_push") {
     if (final) throw new Error("Canonical group delivery reuses its verified published head; business pushes belong to member tasks");
-    recordRequest(operationId("push"), action);
+    await recordRequest((await operationId("push")), action);
     const pushed = await git.checkpointAndPush({ repository, execution: execution as GitExecutionAuthority,
-      ownershipEpoch: execution.ownershipEpoch, operationId: operationId("push"), checkpointKind: "checkpoint", reason: action.reason, signal });
+      ownershipEpoch: execution.ownershipEpoch, operationId: await operationId("push"), checkpointKind: "checkpoint", reason: action.reason, signal });
     const canonicalPublishedHead = execution.purpose === "final-integration" && execution.groupRunId &&
       execution.executionBranch === `groups/${execution.groupRunId}` && !pushed.checkpoint.changed;
     const confirmed = (pushed.checkpoint.changed || canonicalPublishedHead) && pushed.remote?.status === "present" &&
@@ -254,11 +257,11 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
   if (action.tool === "github_create_pr") {
     if (action.base !== base) throw new Error(`Agent must use its direct PR target ${JSON.stringify(base)}; requested base ${JSON.stringify(action.base)} is not this task's direct target.`);
     if (!facts.pushedHeadSha) throw new Error("Agent must use its confirmed pushed head before creating a PR. Inspect the original push with git_get_operation and reconcile its exact receipt with git_reconcile_push, or use git_push for the current task's pending publication. A local git_status head alone does not confirm a remote push; do not create unrelated changes just to retry publication.");
-    const common = { repository, ownershipEpoch: execution.ownershipEpoch, operationId: operationId("create"),
+    const common = { repository, ownershipEpoch: execution.ownershipEpoch, operationId: await operationId("create"),
       expectedHead: facts.pushedHeadSha, base, title: action.title, body: action.body, signal };
     // New requests first observe the current delivery. An original retained
     // request still goes through its own journal to settle an uncertain POST.
-    if (!input.recordedOperation?.(common.operationId) && !input.recordedRequest?.(common.operationId)) {
+    if (!(await input.recordedOperation?.(common.operationId)) && !(await input.recordedRequest?.(common.operationId))) {
       const existing = facts.pullRequest && git.observePullRequest
         ? await git.observePullRequest({ repository, providerNumber: facts.pullRequest.providerNumber,
             ownerExecutionId: execution.id, signal })
@@ -274,7 +277,7 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
       }
     }
     if (final && !git.createGroupFinalPullRequest) throw new Error("Canonical PR tool is unavailable");
-    recordRequest(common.operationId, action, common.expectedHead);
+    await recordRequest(common.operationId, action, common.expectedHead);
     const pull = final
       ? await git.createGroupFinalPullRequest!({ ...common, execution: execution as GitGroupFinalAuthority })
       : await git.createPullRequest({ ...common, execution: execution as GitExecutionAuthority });
@@ -314,9 +317,9 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     facts.pushedHeadSha ??= pull.headSha!;
     if (action.tool === "github_update_pr") {
       if (!git.updatePullRequest) throw new Error("Platform PR metadata update is unavailable");
-      recordRequest(operationId("update"), action, pull.headSha!);
+      await recordRequest((await operationId("update")), action, pull.headSha!);
       const updated = await git.updatePullRequest({ repository, execution, ownershipEpoch: execution.ownershipEpoch,
-        operationId: operationId("update"), providerNumber: action.providerNumber, expectedHead: pull.headSha!,
+        operationId: await operationId("update"), providerNumber: action.providerNumber, expectedHead: pull.headSha!,
         expectedBase: base, title: action.title, body: action.body, signal });
       assertPull(updated); facts.pullRequest = updated; return updated;
     }
@@ -324,10 +327,10 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
       // Only the owning Agent chooses closure. Do not run this on failure,
       // return, cancellation or recovery; preserve the actual provider result.
       if (!git.closePullRequest) throw new Error("Agent PR close tool is unavailable");
-      recordRequest(operationId("close"), action, pull.headSha!);
+      await recordRequest((await operationId("close")), action, pull.headSha!);
       const closed = pull.status === "merged" || pull.status === "closed" ? pull
         : await git.closePullRequest({ repository, execution,
-            ownershipEpoch: execution.ownershipEpoch, operationId: operationId("close"),
+            ownershipEpoch: execution.ownershipEpoch, operationId: await operationId("close"),
             providerNumber: action.providerNumber, expectedHead: pull.headSha!, expectedBase: base, signal });
       assertPull(closed);
       if (closed.providerNumber !== action.providerNumber) throw new Error("PR close result differs from the Agent's requested PR number");
@@ -335,9 +338,9 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
       if (closed.status !== "merged") facts.merged = undefined;
       return closed;
     }
-    const common = { repository, ownershipEpoch: execution.ownershipEpoch, operationId: operationId("merge"),
+    const common = { repository, ownershipEpoch: execution.ownershipEpoch, operationId: await operationId("merge"),
       providerNumber: pull.providerNumber, expectedHead: pull.headSha!, expectedBase: base, reason: action.reason, signal };
-    const retainedOperation = input.recordedOperation?.(common.operationId);
+    const retainedOperation = await input.recordedOperation?.(common.operationId);
     if (retainedOperation && (retainedOperation.id !== common.operationId || retainedOperation.kind !== "pull.merge" ||
       retainedOperation.ownerExecutionId !== execution.id || retainedOperation.ownershipEpoch !== execution.ownershipEpoch ||
       retainedOperation.expectedHead !== pull.headSha || retainedOperation.expectedBase !== base)) {
@@ -345,7 +348,7 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     }
     const unfinishedMerge = retainedOperation && ["prepared", "observed", "uncertain"].includes(retainedOperation.status);
     if (final && !git.mergeGroupFinalPullRequest) throw new Error("Canonical merge tool is unavailable");
-    recordRequest(common.operationId, action, common.expectedHead);
+    await recordRequest(common.operationId, action, common.expectedHead);
     // The provider's explicit replay observes an already merged PR without a
     // second remote mutation and finalizes this exact original operation.
     // Skipping that entry would leave its uncertain journal blocking delivery.
@@ -366,9 +369,9 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
         ? prior.localSynchronization : undefined;
       const synchronization = merged.localSynchronization?.operationId === operationId ? merged.localSynchronization
         : retained?.operationId === operationId ? retained
-        : input.recordedSynchronization?.({ projectId: envelope.projectId, executionId: execution.id,
+        : (await input.recordedSynchronization?.({ projectId: envelope.projectId, executionId: execution.id,
             ownershipEpoch: execution.ownershipEpoch, providerNumber: merged.providerNumber,
-            expectedHead: pull.headSha!, expectedBase: base, expectedMergeCommitSha: merged.mergeCommitSha });
+            expectedHead: pull.headSha!, expectedBase: base, expectedMergeCommitSha: merged.mergeCommitSha }));
       if (synchronization) {
         if (synchronization.projectId !== envelope.projectId || synchronization.operationId !== operationId ||
           synchronization.targetBranch !== base || synchronization.expectedSourceHead !== pull.headSha ||

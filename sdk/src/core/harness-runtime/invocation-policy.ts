@@ -20,7 +20,7 @@ export function compileInvocationPolicy(
   if (request.worktreeClosing) {
     return {
       permission: "workspace",
-      constraintPrompt: "OpenFARS permission mode: workspace. This finite turn closes only the exact files in your original Leader's grant. Read evidence and edit the authorized files with native Harness tools. Use the invocation-bound Git tools for necessary checkpoint/publication. Keep this turn within the closing assignment; Git state changes use platform tools. No new research or experiment is authorized.",
+      constraintPrompt: "ScienceEvolve permission mode: workspace. This finite turn closes only the exact files in your original Leader's grant. Read evidence and edit the authorized files with native Harness tools. Use the invocation-bound Git tools for necessary checkpoint/publication. Keep this turn within the closing assignment; Git state changes use platform tools. No new research or experiment is authorized.",
       skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false,
       reasoningEffort: config.reasoningEffort
     };
@@ -28,7 +28,7 @@ export function compileInvocationPolicy(
   if (request.terminalPushCoordination) {
     return {
       permission: "workspace",
-      constraintPrompt: "OpenFARS permission mode: workspace. This invocation coordinates one assigned Agent receipt issue in the running workflow. Read its actual evidence, Inbox and persistent memory with native file tools. Submit only your own coordination decision, finish_task and memory through the assigned control tools. The system transports your decision; it must not perform another Agent's work or choose retry/escalation/user help for you.",
+      constraintPrompt: "ScienceEvolve permission mode: workspace. This invocation coordinates one assigned Agent receipt issue in the running workflow. Read its actual evidence, Inbox and persistent memory with native file tools. Submit only your own coordination decision, finish_task and memory through the assigned control tools. The system transports your decision; it must not perform another Agent's work or choose retry/escalation/user help for you.",
       skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false,
       reasoningEffort: config.reasoningEffort
     };
@@ -36,7 +36,7 @@ export function compileInvocationPolicy(
   if (request.terminalPushObservation) {
     return {
       permission: "workspace",
-      constraintPrompt: "OpenFARS permission mode: workspace. This is a completed-task historical push receipt turn. Read the original Inbox, persistent memory and workspace evidence with native file tools. Business files are read-only. Only the injected invocation-bound control tools may record this supplement's receipt and Agent-authored memory.",
+      constraintPrompt: "ScienceEvolve permission mode: workspace. This is a completed-task historical push receipt turn. Read the original Inbox, persistent memory and workspace evidence with native file tools. Business files are read-only. Only the injected invocation-bound control tools may record this supplement's receipt and Agent-authored memory.",
       skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false,
       reasoningEffort: config.reasoningEffort
     };
@@ -100,8 +100,8 @@ export function compileWorkflowPrompt(
       ? selectedSkillInstructions([...policy.skillPaths, ...policy.autoSkillPaths]) : undefined,
     mandate ? `用户 Prompt：\n${mandate}` : undefined,
     `项目入口：${inputs.projectPath}\n\n本轮直接消息：\n${task}`,
-    recovery ? `来源：OpenFARS\n内容：${recovery}` : undefined,
-    mechanismTurn ? `来源：OpenFARS\n内容：${invocationRoleContext(request)}` : undefined,
+    recovery ? `来源：ScienceEvolve\n内容：${recovery}` : undefined,
+    mechanismTurn ? `来源：ScienceEvolve\n内容：${invocationRoleContext(request)}` : undefined,
     request.worktreeClosing ? "Submit your separate finish_task and actual closing handoff." : undefined,
     request.terminalPushObservation ? "Call finish_task for this supplement and return your actual observation handoff." : undefined
   ].filter(Boolean).join("\n\n");

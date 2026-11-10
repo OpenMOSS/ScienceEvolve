@@ -4,6 +4,5 @@
 
 - [CLI/API 与网关命令](main-cli-zh.md)
 - [网关绑定与原生 Codex profile](../skills/scienceevolve-sdk/references/usage.md)
-- [Hermes 配置](hermes-zh.md)
 
 旧引擎的 gatewaySource 自动绑定机制已移除。现有 API-key 原生配置可使用显式 gateway import 导入。

@@ -21,6 +21,7 @@ import { configuredModelContextWindow, modelAutoCompactTokenLimit } from "./mode
 import { loadCodexProviderSettings } from "./codex-provider-config.js";
 import { prepareCodexGatewayModelCatalog } from "./codex-gateway-model-catalog.js";
 import { nativeSessionHome } from "./harness-runtime/native-input-history.js";
+import { NATIVE_PROCESS_SUPPORT_ENV } from "./harness-runtime/native-processes.js";
 import {
   FIXED_MCP_TOKEN_ENV_VAR,
   fixedMcpToken,
@@ -952,7 +953,7 @@ function tomlMcpServersConfig(
   );
   if (control) {
     const args = control.args.map((arg) => JSON.stringify(arg)).join(", ");
-    const env = Object.entries(control.env)
+    const env = Object.entries({ ...control.env, [NATIVE_PROCESS_SUPPORT_ENV]: "1" })
       .map(([key, value]) => `${JSON.stringify(key)} = ${JSON.stringify(value)}`)
       .join(", ");
     entries.push(
@@ -965,7 +966,7 @@ function tomlMcpServersConfig(
       .map((name) => JSON.stringify(name))
       .join(", ");
     entries.push(
-      `${JSON.stringify("scienceevolve-orchestration-control")} = { command = ${JSON.stringify(orchestrationControl.command)}, args = [${args}], default_tools_approval_mode = "approve", env_vars = [${envVars}]${codexIndexToolOutputConfig(["state_list"])} }`
+      `${JSON.stringify("scienceevolve-orchestration-control")} = { command = ${JSON.stringify(orchestrationControl.command)}, args = [${args}], default_tools_approval_mode = "approve", env = { ${JSON.stringify(NATIVE_PROCESS_SUPPORT_ENV)} = "1" }, env_vars = [${envVars}]${codexIndexToolOutputConfig(["state_list"])} }`
     );
   }
   if (webSearch) {
@@ -974,7 +975,7 @@ function tomlMcpServersConfig(
     );
   }
   if (sleepServer) {
-    entries.push(`${JSON.stringify("scienceevolve-sleep")} = { command = ${JSON.stringify(sleepServer.command)}, args = ${JSON.stringify(sleepServer.args)}, tool_timeout_sec = ${SLEEP_TOOL_TIMEOUT_SEC}, default_tools_approval_mode = "approve" }`);
+    entries.push(`${JSON.stringify("scienceevolve-sleep")} = { command = ${JSON.stringify(sleepServer.command)}, args = ${JSON.stringify(sleepServer.args)}, env = { ${JSON.stringify(NATIVE_PROCESS_SUPPORT_ENV)} = "1" }, tool_timeout_sec = ${SLEEP_TOOL_TIMEOUT_SEC}, default_tools_approval_mode = "approve" }`);
   }
   return `mcp_servers={${entries.join(",")}}`;
 }
