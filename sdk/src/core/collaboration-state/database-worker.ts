@@ -60,6 +60,8 @@ class DatabaseWorkerClient {
   private sequence = 0;
   private callbackSequence = 0;
   private closed = false;
+  private closing?: Promise<void>;
+  private readonly activeCallbacks = new Set<Promise<void>>();
   private failure?: Error;
   private availabilityBound = false;
   private health?: DatabaseHealth;
@@ -85,7 +87,12 @@ class DatabaseWorkerClient {
       this.worker.on("message", (reply: Reply) => {
         if (reply.kind === "ready") { this.health = reply.health; resolve(reply.health); this.releaseIdle(); }
         else if (reply.kind === "fatal") { const error = restoreError(reply.error); reject(error); this.fail(error); }
-        else if (reply.kind === "callback") void this.callback(reply);
+        else if (reply.kind === "callback") {
+          const callback = this.callback(reply);
+          this.activeCallbacks.add(callback);
+          void callback.catch(error => this.fail(error instanceof Error ? error : new Error("Database callback transport failed", { cause: error })))
+            .finally(() => this.activeCallbacks.delete(callback));
+        }
         else {
           const pending = this.pending.get(reply.id);
           if (!pending) return;
@@ -137,7 +144,11 @@ class DatabaseWorkerClient {
   }
   async request(method: string, args: unknown[], operations?: unknown[]): Promise<unknown> {
     if (this.callbackContext.getStore()) throw new Error("A database publication callback cannot issue a nested database request");
+    if (this.closing || this.closed) throw new Error("Collaboration database worker is closing or closed");
     await this.ready;
+    return this.dispatch(method, args, operations);
+  }
+  private dispatch(method: string, args: unknown[], operations?: unknown[]): Promise<unknown> {
     if (this.failure) throw this.failure;
     if (this.closed) throw new Error("Collaboration database worker is closed");
     this.updateClock();
@@ -152,10 +163,25 @@ class DatabaseWorkerClient {
       }
     });
   }
-  async close(): Promise<void> {
-    if (this.closed) return;
-    try { if (!this.failure) await this.request("close", []); }
-    finally { this.closed = true; await this.worker.terminate(); }
+  close(): Promise<void> {
+    if (this.callbackContext.getStore()) return Promise.reject(new Error("A database publication callback cannot close its own database worker"));
+    // Closing admission is synchronous. Already accepted requests keep FIFO
+    // order, including callers waiting on ready; later calls cannot enter it.
+    return this.closing ??= this.drainAndClose();
+  }
+  private async drainAndClose(): Promise<void> {
+    try {
+      if (!this.failure) {
+        await this.ready;
+        await this.dispatch("close", []);
+      }
+    } finally {
+      this.closed = true;
+      await this.worker.terminate();
+      // A transport failure does not cancel a callback already publishing a
+      // filesystem view. Do not report drained while that callback can write.
+      await Promise.allSettled([...this.activeCallbacks]);
+    }
   }
   proxy(): AsyncCollaborationStateStore {
     return new Proxy({} as AsyncCollaborationStateStore, { get: (target, key) => {

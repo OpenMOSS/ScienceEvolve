@@ -90,6 +90,63 @@ it("rejects nested database requests in a publication callback without deadlocki
   expect(await database.projectStateDomain(checkpoint.id)).toBeUndefined();
 });
 
+it("closes admission immediately and shares one drain while an accepted publication completes", async () => {
+  const { database, databasePath, checkpoint } = await fixture();
+  let entered!: () => void, release!: () => void;
+  const publishing = new Promise<void>(resolve => { entered = resolve; });
+  const permitted = new Promise<void>(resolve => { release = resolve; });
+  const write = database.initializeProjectStateDomain({ projectId: checkpoint.id, scheduler: "serial", checkpoint,
+    publishView: async () => { entered(); await permitted; } });
+  await publishing;
+  const acceptedQuery = database.projectStateDomain(checkpoint.id);
+  const first = database.close(), second = database.close();
+  let closed = false;
+  void first.then(() => { closed = true; });
+  try {
+    expect(first).toBe(second);
+    await expect(database.appendEvent({ projectId: checkpoint.id, type: "test.after-close", payload: {} }))
+      .rejects.toThrow("closing or closed");
+    await expect(database.projectStateDomain(checkpoint.id)).rejects.toThrow("closing or closed");
+    expect(closed).toBe(false);
+  } finally { release(); }
+  await write;
+  expect(await acceptedQuery).toMatchObject({ projectId: checkpoint.id, scheduler: "serial" });
+  await first;
+  expect(database.close()).toBe(first);
+  const reader = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    expect(reader.prepare("SELECT count(*) AS count FROM project_state_domains WHERE project_id=?").get(checkpoint.id)).toMatchObject({ count: 1 });
+    expect(reader.prepare("SELECT count(*) AS count FROM project_events WHERE event_type='test.after-close'").get()).toMatchObject({ count: 0 });
+  } finally { reader.close(); }
+});
+
+it("rejects close from its own publication callback without terminating or deadlocking the worker", async () => {
+  const { database, checkpoint } = await fixture();
+  await expect(database.initializeProjectStateDomain({ projectId: checkpoint.id, scheduler: "serial", checkpoint,
+    publishView: async () => { await database.close(); } })).rejects.toThrow("cannot close its own database worker");
+  expect(await database.projectStateDomain(checkpoint.id)).toBeUndefined();
+  await database.initializeProjectStateDomain({ projectId: checkpoint.id, scheduler: "serial", checkpoint });
+  expect(await database.projectStateDomain(checkpoint.id)).toMatchObject({ scheduler: "serial" });
+});
+
+it("preserves a publication error during close and drains without committing the failed write", async () => {
+  const { database, databasePath, checkpoint } = await fixture();
+  let entered!: () => void, release!: () => void;
+  const publishing = new Promise<void>(resolve => { entered = resolve; });
+  const permitted = new Promise<void>(resolve => { release = resolve; });
+  const outcome = database.initializeProjectStateDomain({ projectId: checkpoint.id, scheduler: "serial", checkpoint,
+    publishView: async () => { entered(); await permitted; throw new Error("Original closing publication failure"); } })
+    .catch(error => error);
+  await publishing;
+  const closing = database.close();
+  release();
+  expect(await outcome).toMatchObject({ message: "Original closing publication failure" });
+  await closing;
+  const reader = new DatabaseSync(databasePath, { readOnly: true });
+  try { expect(reader.prepare("SELECT count(*) AS count FROM project_state_domains").get()).toMatchObject({ count: 0 }); }
+  finally { reader.close(); }
+});
+
 it("keeps transport timers live throughout a 30-second database stall and then returns the committed query", async () => {
   const { database, databasePath, checkpoint, resource } = await fixture();
   const failures: Error[] = [];

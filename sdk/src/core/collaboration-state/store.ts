@@ -1322,6 +1322,26 @@ export class CollaborationStateDatabase {
       `).all().map((row) => String((row as Row).name));
       const hasMeta = existingTables.includes("collaboration_state_meta");
       const fresh = existingTables.length === 0;
+      if (hasMeta) {
+        const metadata = database.prepare(
+          "SELECT schema_version FROM collaboration_state_meta WHERE singleton = 1"
+        ).get() as Row | undefined;
+        const version = metadata?.schema_version;
+        if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+          throw new CollaborationStateError(
+            "DATABASE_INTEGRITY_FAILED",
+            "Collaboration database has missing or invalid schema authority metadata"
+          );
+        }
+        // Refuse an incompatible protocol before acquiring/attaching a lease,
+        // so failed-open cleanup cannot change another version's authority.
+        if (version > COLLABORATION_STATE_SCHEMA_VERSION) {
+          throw new CollaborationStateError(
+            "UNSAFE_CONFIGURATION",
+            `Unsupported collaboration state schema ${version}`
+          );
+        }
+      }
       // journal_mode is persistent. Never rewrite it before taking an
       // existing database's writer lease; an active v1 writer must observe
       // byte-for-byte unchanged schema/journal authority on rejection.
