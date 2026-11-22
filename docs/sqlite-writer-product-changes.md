@@ -69,5 +69,19 @@ would incorporate unrelated work. This slice does not claim a clean deliverable
 shared baseline or full stage completion. The baseline owner must reconcile its
 existing work, or it needs a separately authorized reconciliation slice.
 
+## Chained Gate schema migration — 2026-11-18
+
+The v28→v29 migration preserves a valid nullable TEXT `gate_run_id` column when
+an earlier migration has already created it using the current scoped schema.
+It rejects a pre-existing column with the wrong type/nullability/key/default
+rather than silently tolerating it. Ordinary v28 tables still receive the column.
+The journal rebuild, reference checks and transaction boundary remain intact.
+
+Six selected checks passed on each host: original v1 migration, live-writer
+refusal, invalid v1 rollback, v28 with/without the existing Gate column, and
+invalid-column rollback including schema/index/trigger and authority retention.
+This resolves the earlier `duplicate column name: gate_run_id` failure described
+above. SDK pretest checks passed unchanged. The schema number stays 29.
+
 Runtime TTL renewal, native-owner integration, complete migration/recovery and
 platform/package exits remain outstanding. Demo, AuthStore and PG are unchanged.

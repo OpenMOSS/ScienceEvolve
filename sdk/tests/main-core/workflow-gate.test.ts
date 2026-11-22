@@ -154,7 +154,7 @@ describe("Workflow Gate durable execution and migration", () => {
       expect(() => db.saveWorkflowGate({ ...recorded, version: recorded.version + 1, inputHash: "changed" }, recorded.version)).toThrow("immutable");
     } finally { db.close(); }
   });
-  it("migrates v28 node and arrival constraints while preserving records and references", async () => {
+  it.each([false, true])("migrates v28 node and arrival constraints while preserving records and references (existing gate column=%s)", async existingGateColumn => {
     const f = await fixture();
     const file = path.join(f.root, "migration.sqlite");
     const options = { databasePath: file, serviceId: "test", instanceId: "test", hostId: "test", topology: "single-host" as const };
@@ -166,7 +166,7 @@ describe("Workflow Gate durable execution and migration", () => {
     try {
       db.exec("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON; BEGIN IMMEDIATE");
       for (const table of ["node_runs", "scoped_arrivals"]) {
-        db.exec(`ALTER TABLE ${table} DROP COLUMN gate_run_id`);
+        if (!existingGateColumn) db.exec(`ALTER TABLE ${table} DROP COLUMN gate_run_id`);
         const row = db.prepare("SELECT sql FROM sqlite_schema WHERE name=? AND type='table'").get(table) as { sql: string };
         const auxiliary = db.prepare("SELECT sql FROM sqlite_schema WHERE tbl_name=? AND sql IS NOT NULL AND type IN ('index','trigger')").all(table) as { sql: string }[];
         const sql = row.sql.replace(`CREATE TABLE ${table}`, `CREATE TABLE ${table}_v28`)
@@ -184,6 +184,24 @@ describe("Workflow Gate durable execution and migration", () => {
         expect(db.prepare(`PRAGMA table_info(${table})`).all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "gate_run_id" })]));
         expect(String(db.prepare("SELECT sql FROM sqlite_schema WHERE name=?").get(table)!.sql)).toContain("'gate'");
       }
+    } finally { db.close(); }
+  });
+  it("rejects an invalid existing Gate reference column without changing schema or records", async () => {
+    const f = await fixture(), file = path.join(f.root, "invalid-gate-migration.sqlite");
+    const owner = CollaborationStateDatabase.open({ databasePath: file, serviceId: "test", instanceId: "test", hostId: "test", topology: "single-host" });
+    const lease = owner.writerLease(); owner.close();
+    const db = new DatabaseSync(file);
+    try {
+      db.exec("ALTER TABLE scoped_arrivals DROP COLUMN gate_run_id; ALTER TABLE scoped_arrivals ADD COLUMN gate_run_id INTEGER; UPDATE collaboration_state_meta SET schema_version=28");
+      const schema = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type,name").all();
+      const authority = db.prepare("SELECT * FROM writer_service_lease").all();
+      expect(() => initializeCollaborationStateSchema(db, { writerLease: lease, nowMs: Date.now() }))
+        .toThrow("invalid scoped_arrivals.gate_run_id");
+      expect(db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type,name").all()).toEqual(schema);
+      expect(db.prepare("SELECT * FROM writer_service_lease").all()).toEqual(authority);
+      expect(db.prepare("SELECT schema_version FROM collaboration_state_meta").get()).toMatchObject({ schema_version: 28 });
+      expect(db.prepare("PRAGMA foreign_keys").get()).toMatchObject({ foreign_keys: 1 });
+      expect(db.isTransaction).toBe(false);
     } finally { db.close(); }
   });
 });

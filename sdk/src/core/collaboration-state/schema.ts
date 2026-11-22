@@ -409,6 +409,12 @@ function migrateSchemaV28ToV29(database: DatabaseSync, authority?: SchemaMigrati
     for (const [table, column] of [["node_runs", "node_kind"], ["scoped_arrivals", "target_kind"]]) {
       const row = database.prepare("SELECT sql FROM sqlite_schema WHERE type='table' AND name=?").get(table) as { sql: string } | undefined;
       if (!row) throw new Error(`Gate migration requires ${table}`);
+      // Earlier migrations can create this journal from the current scoped
+      // schema. Preserve that valid reference instead of adding it twice.
+      const gateReference = (database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; type: string; notnull: number; pk: number; dflt_value: unknown }>)
+        .find(column => column.name === "gate_run_id");
+      if (gateReference && (gateReference.type !== "TEXT" || gateReference.notnull !== 0 || gateReference.pk !== 0 || gateReference.dflt_value !== null))
+        throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", `Gate migration found an invalid ${table}.gate_run_id column`);
       const auxiliary = database.prepare("SELECT sql FROM sqlite_schema WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL").all(table) as { sql: string }[];
       const sql = row.sql.replace(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?[\"\x60]?${table}[\"\x60]?`), `CREATE TABLE ${table}_v29`)
         .replace(new RegExp(`${column} IN \\('agent', ?'collaboration'\\)`), `${column} IN ('agent','collaboration','gate')`)
@@ -418,7 +424,7 @@ function migrateSchemaV28ToV29(database: DatabaseSync, authority?: SchemaMigrati
       database.exec(`INSERT INTO ${table}_v29 SELECT * FROM ${table}`);
       database.exec(`DROP TABLE ${table}`);
       database.exec(`ALTER TABLE ${table}_v29 RENAME TO ${table}`);
-      database.exec(`ALTER TABLE ${table} ADD COLUMN gate_run_id TEXT`);
+      if (!gateReference) database.exec(`ALTER TABLE ${table} ADD COLUMN gate_run_id TEXT`);
       for (const item of auxiliary) database.exec(item.sql);
     }
     if (database.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Gate migration left invalid foreign-key references");
