@@ -484,7 +484,7 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
         allowUserIntervention: true, allowWorkflowReconfiguration: false, canComplete: false, allowFinishRoute: false };
       const graph = cloneAgentOrchestrationTemplate(); graph.allowMainReconfiguration = false;
       const database = CollaborationStateDatabase.open({ databasePath: path.join(fixture.root, "notification-state.sqlite"), serviceId: "native-notification",
-        hostId: "fixture", topology: "single-host", leaseDurationMs: 30_000 });
+        hostId: "fixture", topology: "single-host" });
       database.createProject({ projectId, workflowRevision: 1, workflowSnapshot: graph, git: { enabled: true, status: "ready" }, workerCapacity: 2 });
       database.initializeScopedConfiguration(projectId, { agents: mergeAgentConfigs(undefined, graph), skillDefinitions: {}, mcpDefinitions: {} });
       database.activateNode({ projectId, nodeRunId: "original-main-node", node: { kind: "agent", nodeId: "main", agentId: "main" },

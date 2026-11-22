@@ -225,7 +225,7 @@ describe("original-session production closing dispatcher", () => {
     const factories: unknown[] = [], targetReads: unknown[] = [];
     const original = await authorizedClosingFixture({ originalStatus: status, businessDelivery: true, openDatabase: async input => {
       const builder = new ProductionCollaborationExecutionInputBuilder(input.storage, { list: vi.fn(async () => []), resolveConfigured: vi.fn(async () => []) } as never);
-      coordinator = new CollaborationRuntimeCoordinator({ ...input, serviceId: "test", hostId: "test", leaseDurationMs: 600_000, serviceUserRoot: input.storage.projectsDir(),
+      coordinator = new CollaborationRuntimeCoordinator({ ...input, serviceId: "test", hostId: "test", serviceUserRoot: input.storage.projectsDir(),
         executionInputBuilder: builder, residentLauncher: { open: async request => f.launcher.open(request),
           stopScopedForRecovery: async request => f.launcher.stopScopedForRecovery(request) },
         gitFactory: options => {
@@ -879,7 +879,7 @@ describe("original-session production closing dispatcher", () => {
       const builder = new ProductionCollaborationExecutionInputBuilder(input.storage, {
         list: vi.fn(async () => []), resolveConfigured: vi.fn(async () => [])
       } as never);
-      coordinator = new CollaborationRuntimeCoordinator({ ...input, serviceId: "test", hostId: "test", leaseDurationMs: 600_000, serviceUserRoot: input.storage.projectsDir(),
+      coordinator = new CollaborationRuntimeCoordinator({ ...input, serviceId: "test", hostId: "test", serviceUserRoot: input.storage.projectsDir(),
         executionInputBuilder: builder, residentLauncher: {
           open: async request => f.launcher.open(request), stopScopedForRecovery: async request => f.launcher.stopScopedForRecovery(request)
         }, gitFactory: options => { factories.push(options); return f.makeGit(undefined, options.operationStore).git; } });

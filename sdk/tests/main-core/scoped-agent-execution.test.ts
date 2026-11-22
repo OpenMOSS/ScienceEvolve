@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
+import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
 import { COLLABORATION_STATE_SCHEMA_VERSION } from "../../src/core/collaboration-state/contracts.js";
 import { initializeCollaborationStateSchema } from "../../src/core/collaboration-state/schema.js";
 import { ScopedAgentExecutionRunner, ScopedAgentTurnFailure, type ScopedAgentExecutionGit,
@@ -95,21 +96,23 @@ async function fixture(weak = false, fixtureOptions: { complete?: boolean } = {}
 }
 
 describe("scoped native execution and report checkpoint", () => {
-  it("retains the task-wide allowance through a restart after each dispatched supplement", async () => {
-    const f = await fixture();
-    let database = f.database;
+  it.each([1, 2, 3])("retains the task-wide allowance and fences the old native turn after restart with %s dispatched supplements", async count => {
+    const f = await fixture(), database = f.database;
     const identity = { ...f.input, invocationId: "persisted-supervision-invocation" };
     database.beginScopedAgentTurn({ ...identity, runtimePath: join(f.root, "runtime", identity.invocationId), baseCommit: BASE });
     database.markScopedAgentTurnOpened({ ...identity, nativeProcessOpened: true });
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= count; attempt += 1) {
       expect(database.reserveScopedAgentMechanismRepair({ ...identity,
         missing: ["Uncommitted result", `New mechanical observation ${attempt}`] })).toBe(attempt);
-      const writerLease = database.writerLease(); database.close();
-      database = CollaborationStateDatabase.open({ ...f.options, writerLease }); databases.push(database);
-      expect(database.executionSupervisionRepairCount("p", f.execution.id)).toBe(attempt);
     }
-    expect(database.reserveScopedAgentMechanismRepair({ ...identity, missing: ["A fourth observation"] })).toBeUndefined();
-    expect(database.eventsAfter("p", 0, 1000).filter(event => event.type === "scoped.agent.mechanism_repair.requested")).toHaveLength(3);
+    if (count === 3) expect(database.reserveScopedAgentMechanismRepair({ ...identity, missing: ["A fourth observation"] })).toBeUndefined();
+    const events = database.eventsAfter("p", 0, 1000), lease = database.writerLease(); database.close();
+    const reopened = CollaborationStateDatabase.open(f.options); databases.push(reopened);
+    expect(reopened.writerLease().epoch).toBe(lease.epoch + 1);
+    expect(reopened.executionSupervisionRepairCount("p", f.execution.id)).toBe(count);
+    expect(() => reopened.reserveScopedAgentMechanismRepair({ ...identity, missing: ["Late old turn"] })).toThrow(/exact live native owner/);
+    expect(reopened.eventsAfter("p", 0, 1000)).toEqual(events);
+    expect(events.filter(event => event.type === "scoped.agent.mechanism_repair.requested")).toHaveLength(count);
   });
 
   it("reads scoped delivery observations through the event-type index while preserving exact ownership and event order", async () => {
@@ -166,8 +169,8 @@ describe("scoped native execution and report checkpoint", () => {
     expect(f.database.scopedAgentTaskCompletion("p", f.execution.id, 1)).toBeUndefined();
     expect(f.database.projectState("p").scopedExecutions).toEqual(before.scopedExecutions);
     expect(f.database.projectState("p").operations).toEqual(before.operations);
-    const writerLease = f.database.writerLease(); f.database.close();
-    const reopened = CollaborationStateDatabase.open({ ...f.options, writerLease }); databases.push(reopened);
+    f.database.close();
+    const reopened = CollaborationStateDatabase.open(f.options); databases.push(reopened);
     expect(reopened.scopedAgentNativeOutputs("p", f.execution.id, 1, identity.invocationId)).toEqual(outputs);
     expect(reopened.scopedAgentReport("p", f.execution.id, 1)).toBeUndefined();
   });
@@ -219,8 +222,8 @@ describe("scoped native execution and report checkpoint", () => {
         expect.objectContaining({ ownershipEpoch: 1, reason: "Original preparation error" }),
         expect.objectContaining({ ownershipEpoch: 2, reason: "Agent worktree is dirty; branch switch would risk unfinished work" })
       ] });
-    const writerLease = f.database.writerLease(); f.database.close();
-    const reopened = CollaborationStateDatabase.open({ ...f.options, writerLease }); databases.push(reopened);
+    f.database.close();
+    const reopened = CollaborationStateDatabase.open(f.options); databases.push(reopened);
     const before = reopened.projectState("p");
     expect(reopened.scopedRecoveryCandidates("p", "run-G")).toEqual([candidate]);
     expect(reopened.projectState("p")).toEqual(before);
@@ -746,7 +749,11 @@ describe("scoped native execution and report checkpoint", () => {
       if (mode === "stopped") f.database.stopScopedAgentTurn({ ...proof, residentStopConfirmed: true });
       if (mode === "cancelled") f.database.appendEvent({ projectId: "p", requestId: "cancel-before-supplement",
         type: "project.cancellation.requested", payload: { actor: "user", resumable: true } });
-      if (mode === "writer") databases.push(CollaborationStateDatabase.open({ ...f.options, instanceId: "new-writer", now: () => 2_000_000 }));
+      if (mode === "writer") {
+        f.database.relinquishWriterLease();
+        expect(() => CollaborationStateDatabase.open({ ...f.options, instanceId: "new-writer", now: () => 2_000_000 }))
+          .toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+      }
       expect(() => f.database.assertScopedAgentReportRepairLaunch(proof)).toThrow();
     });
 
@@ -1575,11 +1582,12 @@ describe("scoped native execution and report checkpoint", () => {
     const lease = database.writerLease();
     database.close();
     const sql = new DatabaseSync(options.databasePath);
+    legacyWriterFixture(sql, lease, options.now());
     sql.exec("DROP TABLE scoped_agent_turns");
     sql.exec("UPDATE collaboration_state_meta SET schema_version = 11");
     expect(() => initializeCollaborationStateSchema(sql)).toThrow(/lease/);
     sql.close();
-    const migrated = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+    const migrated = openUpgradedFixture(options);
     databases.push(migrated);
     expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
     expect(migrated.scopedExecution("p", input.executionId)?.status).toBe("running");

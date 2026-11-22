@@ -51,7 +51,7 @@ const adapter = { async open(input: Parameters<HarnessRuntimeResidentAdapter["op
 } } as unknown as HarnessRuntimeResidentAdapter;
 const native = { reconcileResidentStartup: async () => ({ status: "none" }), residentRecoveryStrategy: () => "native-resume",
   cleanupResidentInterrupted: async () => undefined } as unknown as HarnessRuntimeFacade;
-const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: `owned-restart-${mode}`, hostId: "fixture", leaseDurationMs: 1_000,
+const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: `owned-restart-${mode}`, hostId: "fixture",
   validateWorkflowConfiguration: async (state, proposal) => {
     stage("configuration-validation-start");
     await orchestrator.prepareWorkflowConfiguration(state, proposal);
@@ -104,7 +104,7 @@ const snapshot = async () => {
   if (!projectId) throw new Error("Original project identity is not ready");
   const database = coordinator.database(), state = await storage.loadState(projectId);
   const raw = new DatabaseSync(path.join(root, "collaboration-state.sqlite"), { readOnly: true });
-  const lease = raw.prepare("SELECT * FROM writer_service_lease").get(); raw.close();
+  const lease = raw.prepare("SELECT * FROM writer_service_owner").get(); raw.close();
   return { pid: process.pid, state, projection: await database.projectState(projectId), records: (await coordinator.getWorkflowAdjustments(state)).records,
     events: await database.eventsAfter(projectId, 0, 10_000), openCount, lease };
 };

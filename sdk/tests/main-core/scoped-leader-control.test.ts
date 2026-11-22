@@ -12,6 +12,7 @@ import { mainAgentOrchestrationDocument } from "../../src/core/agent-orchestrati
 import { assertScopedAgentConfigurationRange, credentialFreeAgentConfiguration, restoreAgentConfiguration } from "../../src/core/scoped-agent-configuration.js";
 import { toolsFor, type CapabilityContext } from "../../src/core/orchestration-control-mcp.js";
 import { DatabaseSync } from "node:sqlite";
+import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
 import { initializeCollaborationStateSchema } from "../../src/core/collaboration-state/schema.js";
 import { COLLABORATION_STATE_SCHEMA_VERSION } from "../../src/core/collaboration-state/contracts.js";
 import { prepareOperation, mergedPullSynchronizationOperationId } from "../../src/core/collaboration-git/operation.js";
@@ -594,10 +595,12 @@ describe("formally scoped Leader management", () => {
 
   it("migrates v16 only with the exact writer and preserves all pre-existing local Leader turns as local", async () => {
     const { database, options } = await fixture(); const writerLease = database.writerLease(); database.close();
-    const sql = new DatabaseSync(options.databasePath); sql.exec("ALTER TABLE scoped_leader_turns DROP COLUMN management_role");
+    const sql = new DatabaseSync(options.databasePath);
+    legacyWriterFixture(sql, writerLease, options.now());
+    sql.exec("ALTER TABLE scoped_leader_turns DROP COLUMN management_role");
     sql.exec("UPDATE collaboration_state_meta SET schema_version = 16");
     expect(() => initializeCollaborationStateSchema(sql)).toThrow(/lease/); sql.close();
-    const migrated = CollaborationStateDatabase.open({ ...options, writerLease }); stores.push(migrated);
+    const migrated = openUpgradedFixture(options); stores.push(migrated);
     expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
     expect(migrated.scopedLeaderTurns("p")[0]).toMatchObject({ invocationId: "leader-one", globalMain: false, status: "active" });
   });

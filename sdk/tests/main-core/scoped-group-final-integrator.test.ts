@@ -341,7 +341,7 @@ describe("scoped canonical group final integration", () => {
     expect(database.projectState("project-1").scopedGroupFinalMerges).toEqual([]);
     const lease = database.writerLease();
     database.close();
-    const reopened = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+    const reopened = CollaborationStateDatabase.open(options);
     databases.push(reopened);
     const resumedGit = new StateBackedGit(reopened);
     const resumed = new ScopedGroupFinalIntegrator(reopened, resumedGit);

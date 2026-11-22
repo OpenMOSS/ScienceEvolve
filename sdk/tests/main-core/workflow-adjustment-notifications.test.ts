@@ -23,7 +23,7 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(cano
 async function fixture(harnessId = "codex", allowMain = true) {
   const root = await mkdtemp(join(tmpdir(), "openfars-workflow-notifications-")); roots.push(root);
   const clock = { now: 1_000_000 }, options = { databasePath: join(root, "state.sqlite"), serviceId: "notice", instanceId: "writer-one",
-    hostId: "fixture", topology: "single-host" as const, leaseDurationMs: 1_000, now: () => clock.now };
+    hostId: "fixture", topology: "single-host" as const, now: () => clock.now };
   const database = CollaborationStateDatabase.open(options); stores.push(database);
   const graph = cloneAgentOrchestrationTemplate(); graph.allowMainReconfiguration = allowMain;
   database.createProject({ projectId: "p", workflowRevision: 1, workflowSnapshot: graph, git: { enabled: true, status: "ready" }, workerCapacity: 3 });

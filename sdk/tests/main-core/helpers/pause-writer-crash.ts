@@ -11,7 +11,7 @@ const storage = new ProjectStorage(process.argv[2]!, new EventHub());
 await storage.initialize();
 const state = await storage.loadState(process.argv[3]!);
 const coordinator = new CollaborationRuntimeCoordinator({ storage,
-  serviceId: "pause-crash-owned-writer", hostId: "host-test", leaseDurationMs: 1_000 });
+  serviceId: "pause-crash-owned-writer", hostId: "host-test" });
 await coordinator.initialize();
 storage.readEvents = async () => {
   process.send!({ kind: "pause-publication-held", projectId: state.id });

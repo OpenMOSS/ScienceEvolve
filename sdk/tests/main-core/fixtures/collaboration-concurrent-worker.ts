@@ -3,6 +3,7 @@ import {
   readFileSync,
   writeFileSync
 } from "node:fs";
+import { workerData } from "node:worker_threads";
 import {
   CollaborationStateDatabase,
   type WriterLeaseToken
@@ -37,7 +38,7 @@ function waitForFile(filePath: string, timeoutMs = 10_000): void {
   }
 }
 
-const configPath = process.argv[2];
+const configPath = workerData.configPath as string;
 if (!configPath) throw new Error("Worker configuration path is required");
 const config = JSON.parse(readFileSync(configPath, "utf8")) as WorkerConfig;
 
@@ -47,9 +48,9 @@ const database = CollaborationStateDatabase.open({
   instanceId: config.lease.instanceId,
   hostId: config.lease.hostId,
   topology: "single-host",
-  leaseDurationMs: 60_000,
   now: () => config.nowMs,
   writerLease: config.lease,
+  writerOwner: workerData.attachment,
   ...(config.mode === "fail-after-usage-insert"
     ? {
         transactionFault: (point: "usage.after_insert") => {

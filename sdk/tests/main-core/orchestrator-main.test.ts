@@ -311,7 +311,7 @@ describe("public Main orchestration state machine", () => {
     expect(await orchestrator.getProject(project.id)).toMatchObject({ status: "completed", executionCounts: { worker: 1, main: 2 } });
   }, 10_000);
 
-  it("keeps the existing writer lease alive during concurrent expensive committed project listings", async () => {
+  it("keeps writer ownership and timers responsive during concurrent expensive committed project listings", async () => {
     const { orchestrator, root } = await harness(async request => mainResult(request, decision("finish", "Task complete.")));
     const project = await orchestrator.createProject(projectInput(mainOnlyOrchestration()));
     await orchestrator.waitForIdle(project.id);
@@ -326,29 +326,25 @@ describe("public Main orchestration state machine", () => {
       while (performance.now() < until) { /* A large synchronous read model. */ }
       return originalView(state);
     });
-    const database = CollaborationStateDatabase.open({ databasePath: path.join(root, "listing-heartbeat.sqlite"),
-      serviceId: "listing-heartbeat", hostId: "single-test-host", topology: "single-host", leaseDurationMs: 1000 });
+    const database = CollaborationStateDatabase.open({ databasePath: path.join(root, "listing-owner.sqlite"),
+      serviceId: "listing-owner", hostId: "single-test-host", topology: "single-host" });
     const originalLease = database.writerLease();
     const storage = (orchestrator as unknown as { storage: ProjectStorage }).storage;
     const barrier = vi.spyOn(storage, "waitForProjectReadBarrier");
     const releases = [project.id, ...cloneIds].map(id => storage.reserveProjectMutation(id));
-    let renewalError: unknown, renewals = 0;
-    const timer = setInterval(() => {
-      try { database.renewWriterLease(); renewals++; } catch (error) { renewalError = error; }
-    }, 100);
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 100);
     try {
       const pendingLists = Promise.all([orchestrator.listProjects(), orchestrator.listProjects()]);
       await vi.waitFor(() => expect(barrier.mock.calls.length).toBeGreaterThanOrEqual(50), { interval: 5 });
       // Writer commits may finish in the same turn. Projection work must
-      // still yield to heartbeats after these independent barriers release.
+      // still yield to other event-loop work after these barriers release.
       releases.forEach(release => release());
       const lists = await pendingLists;
       await new Promise<void>(resolve => setTimeout(resolve, 1));
-      expect(renewalError).toBeUndefined();
-      expect(renewals).toBeGreaterThan(0);
+      expect(ticks).toBeGreaterThan(0);
       expect(() => database.assertWriterLeaseHeld()).not.toThrow();
-      expect(database.writerLease()).toMatchObject({ epoch: originalLease.epoch, instanceId: originalLease.instanceId });
-      expect(database.writerLease().expiresAtMs).toBeGreaterThan(originalLease.expiresAtMs);
+      expect(database.writerLease()).toEqual(originalLease);
       expect(lists.every(rows => rows.length === 25 && new Set(rows.map(row => row.id)).size === 25)).toBe(true);
       expect(lists).toEqual([expect.arrayContaining([expect.objectContaining({ id: project.id, status: "completed" })]),
         expect.arrayContaining([expect.objectContaining({ id: project.id, status: "completed" })])]);

@@ -7,7 +7,8 @@ import type { WorkflowReplayConfigurationHistory } from "../workflow-replay.js";
 import { agentGitDeliveryStatus, agentGitFactsSynchronized, type AgentGitDeliveryStatus } from "../agent-git-delivery.js";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { renewLeaseConnection } from "./writer-lease-heartbeat.js";
+import { WriterOwner, type WriterOwnerAttachment } from "./writer-owner.js";
+import { acquireOwnerEpoch, assertOwnerProtocol, initializeOwnerDatabase, writerCommitUnconfirmed } from "./owner-protocol.js";
 import { isDeepStrictEqual } from "node:util";
 import { ZodError } from "zod";
 import { deriveProjectRuntimeProjection } from "../project-runtime-projection.js";
@@ -190,7 +191,6 @@ import { validateScopedWorkflowContract } from "../scoped-workflow-contract.js";
 import type { ScopedWorkflow } from "../scoped-workflow-contract.js";
 import { planScopedInputFanOut, planScopedSuccessor, planScopedPathSuccessor, scopedPathAtEntry } from "../scoped-workflow-planner.js";
 import type { ScopedRoutePlan } from "../scoped-workflow-planner.js";
-import { initializeCollaborationStateSchema } from "./schema.js";
 import { experimentResultReceived } from "../sii-result-receipt.js";
 import { projectDocumentChanges, projectStateCheckpointProjection, projectStateCommitProjection, projectStatePublicValue, projectStateToolValueIsRedacted,
   type ProjectStateDocument, type ProjectStateDocumentName,
@@ -1265,8 +1265,6 @@ export class CollaborationStateDatabase {
   readonly health: DatabaseHealth;
   private closed = false;
   private writerAvailabilityCheck?: () => void;
-  private lastSuccessfulRenewalAtMs: number | null = null;
-  private lastRenewalAttempt?: WriterLeaseDiagnostics["lastRenewalAttempt"];
   private readonly projectStateReadSnapshots = new ProjectStateReadSnapshots(() => this.options.now());
   private readonly schedulingProjectionCache = new Map<string, {
     revision: number;
@@ -1277,12 +1275,12 @@ export class CollaborationStateDatabase {
   private constructor(
     private readonly database: DatabaseSync,
     private readonly options: Required<Pick<CollaborationStateOpenOptions, "databasePath" | "serviceId" | "hostId" | "topology">> & {
-      leaseDurationMs: number;
       now: () => number;
       instanceId: string;
       transactionFault?: CollaborationStateOpenOptions["transactionFault"];
     },
-    private lease: WriterLeaseToken,
+    private readonly lease: WriterLeaseToken,
+    private readonly owner: WriterOwner,
     health: DatabaseHealth
   ) {
     this.health = health;
@@ -1304,18 +1302,18 @@ export class CollaborationStateDatabase {
     }
     const serviceId = requiredString(input.serviceId, "serviceId");
     const hostId = requiredString(input.hostId, "hostId");
-    const leaseDurationMs = input.leaseDurationMs ?? 30_000;
-    if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 1_000 || leaseDurationMs > 86_400_000) {
-      throw new CollaborationStateError(
-        "UNSAFE_CONFIGURATION",
-        "leaseDurationMs must be between 1000 and 86400000"
-      );
-    }
     const now = input.now ?? Date.now;
     const instanceId = input.instanceId ?? randomUUID();
-    const database = new DatabaseSync(databasePath);
-    let acquiredLease: WriterLeaseToken | undefined;
+    if (input.writerLease && !input.writerOwner) throw new CollaborationStateError("WRITER_LEASE_STALE", "An attached writer requires the local lifecycle owner capability");
+    const owner = input.writerOwner ? WriterOwner.attach(input.writerOwner) : WriterOwner.open(databasePath);
+    if (path.resolve(databasePath) !== path.resolve(owner.databasePath) && input.writerOwner) {
+      owner.close(); throw new CollaborationStateError("UNSAFE_CONFIGURATION", "Writer attachment belongs to another database path");
+    }
+    let database: DatabaseSync;
+    try { database = new DatabaseSync(owner.databasePath); }
+    catch (error) { owner.close(); throw error; }
     try {
+      owner.assertHeld();
       const existingTables = database.prepare(`
         SELECT name FROM sqlite_schema
         WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
@@ -1366,11 +1364,10 @@ export class CollaborationStateDatabase {
         );
       }
       const normalizedOptions = {
-        databasePath,
+        databasePath: owner.databasePath,
         serviceId,
         hostId,
         topology: input.topology,
-        leaseDurationMs,
         now,
         instanceId,
         ...(input.transactionFault ? { transactionFault: input.transactionFault } : {})
@@ -1383,49 +1380,24 @@ export class CollaborationStateDatabase {
       }
 
       let lease: WriterLeaseToken;
+      const identity = { serviceId, instanceId, hostId };
+      const nowMs = Math.trunc(now());
+      if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new CollaborationStateError("UNSAFE_CONFIGURATION", "Writer acquisition time must be a nonnegative safe integer");
       if (fresh) {
-        // No persisted writer can race the first schema creation.  The lease
-        // table must exist before the first authority token can be acquired.
-        initializeCollaborationStateSchema(database);
-        lease = input.writerLease
-          ? CollaborationStateDatabase.attachLease(database, normalizedOptions, input.writerLease)
-          : CollaborationStateDatabase.acquireLease(database, normalizedOptions);
-        if (!input.writerLease) acquiredLease = lease;
+        if (input.writerLease) throw new CollaborationStateError("WRITER_LEASE_STALE", "Cannot attach a token to a new writer database");
+        lease = initializeOwnerDatabase(database, owner, identity, nowMs);
+      } else if (input.writerLease) {
+        if (input.writerLease.serviceId !== serviceId || input.writerLease.instanceId !== instanceId || input.writerLease.hostId !== hostId)
+          throw new CollaborationStateError("WRITER_LEASE_STALE", "Attached connection identity does not match the writer token");
+        lease = assertOwnerProtocol(database, owner, input.writerLease);
       } else {
-        // Existing databases are writer-owned even during migration and
-        // CREATE-IF-NOT-EXISTS repair.  Acquire/attach the exact lease before
-        // any schema statement can modify the file.
-        if (!existingTables.includes("writer_service_lease")) {
-          throw new CollaborationStateError(
-            "DATABASE_INTEGRITY_FAILED",
-            "Collaboration database omitted its writer lease table"
-          );
-        }
-        lease = input.writerLease
-          ? CollaborationStateDatabase.attachLease(database, normalizedOptions, input.writerLease)
-          : CollaborationStateDatabase.acquireLease(database, normalizedOptions);
-        if (!input.writerLease) acquiredLease = lease;
-        initializeCollaborationStateSchema(database, {
-          writerLease: lease,
-          nowMs: Math.trunc(now())
-        });
+        lease = acquireOwnerEpoch(database, owner, identity, nowMs);
       }
       const health = CollaborationStateDatabase.verifyPragmas(database, journal);
-      return new CollaborationStateDatabase(database, normalizedOptions, lease, health);
+      return new CollaborationStateDatabase(database, normalizedOptions, lease, owner, health);
     } catch (error) {
-      if (acquiredLease) {
-        try {
-          CollaborationStateDatabase.expireFailedOpenLease(
-            database,
-            acquiredLease,
-            Math.trunc(now())
-          );
-        } catch {
-          // Preserve the schema/integrity failure.  Exact-token expiry is a
-          // best-effort liveness repair and never authorizes another writer.
-        }
-      }
-      database.close();
+      try { database.close(); owner.close(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "Writer startup failed and resource cleanup was not confirmed"); }
       throw error;
     }
   }
@@ -1470,154 +1442,12 @@ export class CollaborationStateDatabase {
     };
   }
 
-  private static acquireLease(
-    database: DatabaseSync,
-    options: {
-      serviceId: string;
-      instanceId: string;
-      hostId: string;
-      leaseDurationMs: number;
-      now: () => number;
-    }
-  ): WriterLeaseToken {
-    const now = Math.trunc(options.now());
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      const existing = database.prepare(
-        "SELECT * FROM writer_service_lease WHERE singleton = 1"
-      ).get() as Row | undefined;
-      let epoch = 1;
-      if (!existing) {
-        database.prepare(`
-          INSERT INTO writer_service_lease(
-            singleton, service_id, instance_id, host_id, epoch, expires_at_ms, renewed_at_ms
-          ) VALUES (1, ?, ?, ?, 1, ?, ?)
-        `).run(
-          options.serviceId,
-          options.instanceId,
-          options.hostId,
-          now + options.leaseDurationMs,
-          now
-        );
-      } else {
-        if (String(existing.host_id) !== options.hostId) {
-          throw new CollaborationStateError(
-            "UNSAFE_CONFIGURATION",
-            "This collaboration database is pinned to another host; multi-host failover is unsupported",
-            { configuredHostId: options.hostId, persistedHostId: existing.host_id }
-          );
-        }
-        if (Number(existing.expires_at_ms) > now) {
-          throw new CollaborationStateError(
-            "WRITER_LEASE_HELD",
-            "Another live collaboration writer service owns this database",
-            {
-              serviceId: existing.service_id,
-              instanceId: existing.instance_id,
-              epoch: existing.epoch,
-              expiresAtMs: existing.expires_at_ms
-            }
-          );
-        }
-        epoch = Number(existing.epoch) + 1;
-        database.prepare(`
-          UPDATE writer_service_lease
-          SET service_id = ?, instance_id = ?, epoch = ?, expires_at_ms = ?, renewed_at_ms = ?
-          WHERE singleton = 1 AND epoch = ? AND expires_at_ms <= ? AND host_id = ?
-        `).run(
-          options.serviceId,
-          options.instanceId,
-          epoch,
-          now + options.leaseDurationMs,
-          now,
-          existing.epoch,
-          now,
-          options.hostId
-        );
-      }
-      database.exec("COMMIT");
-      return {
-        serviceId: options.serviceId,
-        instanceId: options.instanceId,
-        hostId: options.hostId,
-        epoch,
-        expiresAtMs: now + options.leaseDurationMs
-      };
-    } catch (error) {
-      try { database.exec("ROLLBACK"); } catch { /* SQLite may already have rolled back; preserve the acquisition failure. */ }
-      throw error;
-    }
-  }
-
-  private static expireFailedOpenLease(
-    database: DatabaseSync,
-    lease: WriterLeaseToken,
-    now: number
-  ): void {
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      database.prepare(`
-        UPDATE writer_service_lease SET expires_at_ms = ?, renewed_at_ms = ?
-        WHERE singleton = 1 AND service_id = ? AND instance_id = ? AND host_id = ?
-          AND epoch = ?
-      `).run(
-        Math.max(0, now - 1),
-        now,
-        lease.serviceId,
-        lease.instanceId,
-        lease.hostId,
-        lease.epoch
-      );
-      database.exec("COMMIT");
-    } catch (error) {
-      try { database.exec("ROLLBACK"); } catch { /* Preserve the expiry failure. */ }
-      throw error;
-    }
-  }
-
-  private static attachLease(
-    database: DatabaseSync,
-    options: { serviceId: string; instanceId: string; hostId: string; now: () => number },
-    lease: WriterLeaseToken
-  ): WriterLeaseToken {
-    if (
-      lease.serviceId !== options.serviceId ||
-      lease.instanceId !== options.instanceId ||
-      lease.hostId !== options.hostId
-    ) {
-      throw new CollaborationStateError(
-        "WRITER_LEASE_STALE",
-        "Attached connection identity does not match the writer lease"
-      );
-    }
-    const row = database.prepare("SELECT * FROM writer_service_lease WHERE singleton = 1").get() as Row | undefined;
-    const now = Math.trunc(options.now());
-    if (
-      !row ||
-      row.service_id !== lease.serviceId ||
-      row.instance_id !== lease.instanceId ||
-      row.host_id !== lease.hostId ||
-      Number(row.epoch) !== lease.epoch ||
-      Number(row.expires_at_ms) <= now
-    ) {
-      throw new CollaborationStateError(
-        "WRITER_LEASE_STALE",
-        "The supplied writer lease is absent, expired, or fenced"
-      );
-    }
-    return { ...lease, expiresAtMs: Number(row.expires_at_ms) };
-  }
-
   writerLease(): WriterLeaseToken {
     return { ...this.lease };
   }
 
   writerLeaseDiagnostics(): WriterLeaseDiagnostics {
-    return {
-      lease: this.writerLease(),
-      lastSuccessfulRenewalAtMs: this.lastSuccessfulRenewalAtMs,
-      ...(this.lastRenewalAttempt ? { lastRenewalAttempt: { ...this.lastRenewalAttempt } } : {})
-    };
+    return { lease: this.writerLease(), ownership: "lifecycle-lock" };
   }
 
   /** Fresh read-only fence for filesystem publication between asynchronous steps. */
@@ -1626,53 +1456,25 @@ export class CollaborationStateDatabase {
     this.assertLeaseHeld();
   }
 
-  renewWriterLease(): WriterLeaseToken {
-    this.assertOpen();
-    const now = Math.trunc(this.options.now());
-    const diagnostics: Pick<WriterLeaseDiagnostics, "lastRenewalAttempt"> = {};
-    try {
-      this.lease = renewLeaseConnection(this.database, this.lease, this.options.leaseDurationMs, now, diagnostics,
-        () => new CollaborationStateError("WRITER_LEASE_STALE", "The collaboration writer lease expired or was replaced"), this.options.now);
-      // Match the confirmed row's renewed_at_ms; attempted or uncertain
-      // commits must never advance the last successful heartbeat.
-      this.lastSuccessfulRenewalAtMs = this.lease.expiresAtMs - this.options.leaseDurationMs;
-      return this.writerLease();
-    } finally {
-      this.lastRenewalAttempt = diagnostics.lastRenewalAttempt;
-    }
-  }
+  assertWriterAvailable(): void { this.assertOpen(); this.owner.assertHeld(); }
 
+  /** Stop accepting writes without releasing the descriptor before close. */
   relinquishWriterLease(): void {
     this.assertOpen();
-    const now = Math.trunc(this.options.now());
-    this.database.exec("BEGIN IMMEDIATE");
-    try {
-      const update = this.database.prepare(`
-        UPDATE writer_service_lease SET expires_at_ms = ?, renewed_at_ms = ?
-        WHERE singleton = 1 AND service_id = ? AND instance_id = ? AND host_id = ? AND epoch = ?
-      `).run(
-        Math.max(0, now - 1),
-        now,
-        this.lease.serviceId,
-        this.lease.instanceId,
-        this.lease.hostId,
-        this.lease.epoch
-      );
-      if (Number(update.changes) !== 1) {
-        throw new CollaborationStateError("WRITER_LEASE_STALE", "Writer lease was already fenced");
-      }
-      this.database.exec("COMMIT");
-      this.lease = { ...this.lease, expiresAtMs: Math.max(0, now - 1) };
-    } catch (error) {
-      this.rollbackAfterFailure();
-      throw error;
-    }
+    this.owner.fence(new CollaborationStateError("WRITER_LEASE_STALE", "Writer ownership was explicitly relinquished"));
+  }
+
+  writerOwnerAttachment(): WriterOwnerAttachment {
+    this.assertWriterLeaseHeld();
+    return this.owner.attachment();
   }
 
   close(): void {
     if (this.closed) return;
+    this.owner.assertCanClose();
     this.database.close();
     this.projectStateReadSnapshots.clear();
+    this.owner.close();
     this.closed = true;
   }
 
@@ -1694,11 +1496,14 @@ export class CollaborationStateDatabase {
   private rollbackAfterFailure(): void {
     try {
       if (this.database.isTransaction) this.database.exec("ROLLBACK");
-    } catch { /* Preserve the transaction failure even if cleanup also fails. */ }
+    } catch (cleanup) {
+      // Preserve the operation's original error, but never reuse a connection
+      // whose transaction cleanup is unconfirmed.
+      this.owner.fence(cleanup);
+    }
   }
 
-  /** Bind the service heartbeat to every mutation, including callbacks that
-   * execute before the main thread dispatches worker messages. */
+  /** Bind runtime availability to mutations, including queued Worker work. */
   bindWriterAvailabilityCheck(check: () => void): void {
     if (this.writerAvailabilityCheck) throw new Error("Writer availability check is already bound");
     this.writerAvailabilityCheck = check;
@@ -1706,32 +1511,16 @@ export class CollaborationStateDatabase {
 
   private assertLeaseHeld(): void {
     this.writerAvailabilityCheck?.();
-    const now = Math.trunc(this.options.now());
-    const row = this.database.prepare(`
-      SELECT service_id, instance_id, host_id, epoch, expires_at_ms
-      FROM writer_service_lease WHERE singleton = 1
-    `).get() as Row | undefined;
-    if (
-      !row ||
-      row.service_id !== this.lease.serviceId ||
-      row.instance_id !== this.lease.instanceId ||
-      row.host_id !== this.lease.hostId ||
-      Number(row.epoch) !== this.lease.epoch ||
-      Number(row.expires_at_ms) <= now
-    ) {
-      throw new CollaborationStateError(
-        "WRITER_LEASE_STALE",
-        "Collaboration mutation was rejected by the writer epoch/expiry fence",
-        { checkedAtMs: now, expectedLease: this.writerLease(), observedLease: row ? {
-          serviceId: String(row.service_id), instanceId: String(row.instance_id), hostId: String(row.host_id),
-          epoch: Number(row.epoch), expiresAtMs: Number(row.expires_at_ms)
-        } : null }
-      );
+    try { assertOwnerProtocol(this.database, this.owner, this.lease); }
+    catch (error) {
+      if (error instanceof CollaborationStateError) this.owner.fence(error);
+      throw error;
     }
   }
 
   private immediate<T>(work: () => T, diagnostics?: MutationDiagnostics): T {
     this.assertOpen();
+    this.owner.assertHeld();
     const started = performance.now();
     let beganAt: number | undefined;
     let succeeded = false;
@@ -1744,11 +1533,11 @@ export class CollaborationStateDatabase {
       const workStarted = performance.now();
       let value: T;
       try { value = work(); } finally { workMs = performance.now() - workStarted; }
-      // Another heartbeat connection cannot renew while this transaction
-      // owns the write lock. Never commit work after its original lease expires.
       this.assertLeaseHeld();
       const commitStarted = performance.now();
-      try { this.database.exec("COMMIT"); } finally { commitMs = performance.now() - commitStarted; }
+      try { this.database.exec("COMMIT"); }
+      catch (error) { throw writerCommitUnconfirmed(this.owner, error); }
+      finally { commitMs = performance.now() - commitStarted; }
       succeeded = true;
       return value;
     } catch (error) {

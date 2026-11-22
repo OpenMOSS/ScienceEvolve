@@ -49,8 +49,6 @@ export interface AppConfig {
   host: string;
   port: number;
   dataDir: string;
-  /** Writer lease must outlast the deployment's longest synchronous state read. */
-  collaborationLeaseDurationMs?: number;
   /** Internal deployment mapping for retained project directories, verified by storage. */
   projectDirectoryAliases?: Readonly<Record<string, string>>;
   codexBin: string;
@@ -187,15 +185,10 @@ export function loadConfig(cwd = process.cwd()): AppConfig {
     setting("RESIDENT_TOOL_INACTIVITY_TIMEOUT_MS"),
     120 * 60_000
   );
-  const collaborationLeaseDurationMs = Number(setting("COLLABORATION_LEASE_MS") ?? 30_000);
-  if (!Number.isSafeInteger(collaborationLeaseDurationMs) || collaborationLeaseDurationMs < 1_000 || collaborationLeaseDurationMs > 86_400_000) {
-    throw new Error("COLLABORATION_LEASE_MS must be an integer between 1000 and 86400000");
-  }
   return {
     host: process.env.HOST?.trim() || "127.0.0.1",
     port: positiveInt(process.env.PORT, 4311),
     dataDir,
-    collaborationLeaseDurationMs,
     ...(projectDirectoryAliases ? { projectDirectoryAliases } : {}),
     codexBin: useEmbeddedCodex
       ? embeddedCodexBin

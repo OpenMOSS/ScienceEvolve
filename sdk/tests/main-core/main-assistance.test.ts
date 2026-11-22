@@ -34,8 +34,8 @@ async function fixture() {
     return db.saveMainAssistance(assistanceUpdate(received, { status: "replied", reply: { text: "The baseline comparison is missing.", callId: "reply", invocationId: record.main!.invocationId, savedAt: new Date().toISOString() }, delivery: { status: "queued" } }), received.version);
   };
   return { get db() { return db; }, journal, origin, session, checkpoint, enqueue, reply,
-    reopen() { const lease = db.writerLease(); db.close(); databases.splice(databases.indexOf(db), 1);
-      db = CollaborationStateDatabase.open({ ...options, writerLease: lease }); databases.push(db); } };
+    reopen() { db.close(); databases.splice(databases.indexOf(db), 1);
+      db = CollaborationStateDatabase.open(options); databases.push(db); } };
 }
 describe("Main assistance durable task binding", () => {
   it("MA-03/04 deduplicates requests only within the same task and refuses changed questions or Sessions", async () => {

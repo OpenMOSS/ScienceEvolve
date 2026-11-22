@@ -1,24 +1,28 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker, MessageChannel, isMainThread, parentPort, receiveMessageOnPort, workerData, type MessagePort } from "node:worker_threads";
 import type { CollaborationStateDatabase } from "./store.js";
 import type { CollaborationStateOpenOptions, DatabaseHealth } from "./contracts.js";
+import { WriterOwner, type WriterOwnerAttachment } from "./writer-owner.js";
 import * as stateErrors from "./errors.js";
 import * as gitErrors from "../collaboration-git/errors.js";
 import { ZodError } from "zod";
 
-type Methods = Omit<CollaborationStateDatabase, "health" | "operationsForProject" | "bindWriterAvailabilityCheck">;
+type Methods = Omit<CollaborationStateDatabase, "health" | "operationsForProject" | "bindWriterAvailabilityCheck" | "assertWriterAvailable">;
 /** Local state-machine tests may use the same interface without a thread. */
 export type CollaborationStateStore = {
   [K in keyof Methods]: Methods[K] extends (...args: infer A) => infer R ? (...args: A) => R | Promise<R> : Methods[K]
 } & Pick<CollaborationStateDatabase, "health" | "operationsForProject"> & {
-  bindWriterAvailabilityCheck(check: () => void, heartbeat?: SharedArrayBuffer): void | Promise<void>;
+  bindWriterAvailabilityCheck(check: () => void): void | Promise<void>;
+  assertWriterAvailable(): void;
 };
 export type AsyncCollaborationStateStore = {
   [K in keyof Methods]: Methods[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<R> : Methods[K]
 } & Pick<CollaborationStateDatabase, "health" | "operationsForProject"> & {
-  bindWriterAvailabilityCheck(check: () => void, heartbeat?: SharedArrayBuffer): Promise<void>;
+  bindWriterAvailabilityCheck(check: () => void): Promise<void>;
+  assertWriterAvailable(): void;
 };
 
 interface SavedError { name: string; message: string; stack?: string; properties: Record<string, unknown>; cause?: SavedError }
@@ -63,8 +67,12 @@ class DatabaseWorkerClient {
   private closing?: Promise<void>;
   private readonly activeCallbacks = new Set<Promise<void>>();
   private failure?: Error;
+  private ownerFailure?: Error;
   private availabilityBound = false;
   private health?: DatabaseHealth;
+  private readonly owner?: WriterOwner;
+  private readonly workerAttachment?: WriterOwnerAttachment;
+  private availabilityCheck?: () => void;
 
   constructor(configuration: { mode: "writer"; options: CollaborationStateOpenOptions } | { mode: "documents"; databasePath: string },
     private readonly onFailure?: (error: Error) => void) {
@@ -73,16 +81,28 @@ class DatabaseWorkerClient {
     this.now = configuration.mode === "writer" ? configuration.options.now : undefined;
     if (this.now) this.clock = new BigInt64Array(new SharedArrayBuffer(8));
     this.updateClock();
-    let input: Input;
-    if (configuration.mode === "writer") {
-      const { now: _now, transactionFault: _fault, ...options } = configuration.options;
-      input = { protocol: "collaboration-database-v1", mode: "writer", options, gate: this.gate.buffer,
-        ...(this.clock ? { clock: this.clock.buffer as SharedArrayBuffer } : {}) };
-    } else input = { protocol: "collaboration-database-v1", mode: "documents", databasePath: configuration.databasePath, gate: this.gate.buffer };
     const register = import.meta.url.endsWith(".ts")
       ? `const { register } = await import(${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)}); register();` : "";
     const entry = new URL("data:text/javascript," + encodeURIComponent(`${register} await import(${JSON.stringify(import.meta.url)});`));
-    this.worker = new Worker(entry, { workerData: input });
+    let input: Input;
+    try {
+      if (configuration.mode === "writer") {
+        const { now: _now, transactionFault: _fault, ...options } = configuration.options;
+        if (options.topology !== "single-host") throw new stateErrors.CollaborationStateError("UNSAFE_CONFIGURATION", "Collaboration SQLite requires an explicit single-host topology");
+        if (options.writerLease && !options.writerOwner)
+          throw new stateErrors.CollaborationStateError("WRITER_LEASE_STALE", "An attached writer requires the local lifecycle owner capability");
+        this.owner = options.writerOwner ? WriterOwner.attach(options.writerOwner) : WriterOwner.open(options.databasePath);
+        if (options.writerOwner && path.resolve(options.databasePath) !== this.owner.databasePath)
+          throw new stateErrors.CollaborationStateError("UNSAFE_CONFIGURATION", "Writer attachment belongs to another database path");
+        this.workerAttachment = this.owner.attachment();
+        input = { protocol: "collaboration-database-v1", mode: "writer", options: { ...options, databasePath: this.owner.databasePath, writerOwner: this.workerAttachment }, gate: this.gate.buffer,
+          ...(this.clock ? { clock: this.clock.buffer as SharedArrayBuffer } : {}) };
+      } else input = { protocol: "collaboration-database-v1", mode: "documents", databasePath: configuration.databasePath, gate: this.gate.buffer };
+      this.worker = new Worker(entry, { workerData: input });
+    } catch (error) {
+      if (this.workerAttachment) this.owner!.detachTerminatedWorker(this.workerAttachment);
+      this.owner?.close(); throw error;
+    }
     this.ready = new Promise((resolve, reject) => {
       this.worker.on("message", (reply: Reply) => {
         if (reply.kind === "ready") { this.health = reply.health; resolve(reply.health); this.releaseIdle(); }
@@ -98,7 +118,12 @@ class DatabaseWorkerClient {
           if (!pending) return;
           this.pending.delete(reply.id);
           for (const id of pending.callbacks) this.callbacks.delete(id);
-          if (reply.error) pending.reject(restoreError(reply.error)); else pending.resolve(reply.value);
+          if (reply.error) {
+            const error = restoreError(reply.error);
+            pending.reject(error);
+            if (error instanceof stateErrors.CollaborationStateError &&
+                ["WRITER_COMMIT_UNCONFIRMED", "WRITER_LEASE_STALE"].includes(error.code)) this.fenceWriter(error);
+          } else pending.resolve(reply.value);
           this.releaseIdle();
         }
       });
@@ -113,11 +138,16 @@ class DatabaseWorkerClient {
   private readonly now?: () => number;
   private updateClock(): void { if (this.clock) Atomics.store(this.clock, 0, BigInt(Math.trunc(this.now!()))); }
   private releaseIdle(): void { if (!this.pending.size) this.worker.unref(); }
+  private fenceWriter(error: Error): void {
+    if (this.ownerFailure) return;
+    this.ownerFailure = error; Atomics.store(this.gate, 0, 1); this.owner?.fence(error);
+    this.onFailure?.(error);
+  }
   private fail(error: Error): void {
     if (this.failure) return;
-    this.failure = error; Atomics.store(this.gate, 0, 1);
+    this.failure = error;
     for (const pending of this.pending.values()) pending.reject(error);
-    this.pending.clear(); this.callbacks.clear(); this.onFailure?.(error);
+    this.pending.clear(); this.callbacks.clear(); this.fenceWriter(error);
   }
   private encode(value: unknown, callbacks: number[]): unknown {
     if (typeof value === "function") {
@@ -134,6 +164,7 @@ class DatabaseWorkerClient {
     try {
       const callback = this.callbacks.get(reply.callbackId);
       if (!callback) throw new Error("Database callback no longer belongs to a pending request");
+      this.owner?.assertHeld(); this.availabilityCheck?.();
       const value = await this.callbackContext.run(true, () => callback(...reply.args));
       reply.port.postMessage({ value });
     } catch (error) { reply.port.postMessage({ error: saveError(error) }); }
@@ -151,6 +182,12 @@ class DatabaseWorkerClient {
   private dispatch(method: string, args: unknown[], operations?: unknown[]): Promise<unknown> {
     if (this.failure) throw this.failure;
     if (this.closed) throw new Error("Collaboration database worker is closed");
+    if (method !== "close") {
+      try { this.availabilityCheck?.(); }
+      catch (error) { this.fenceWriter(error instanceof Error ? error : new Error("Writer availability failed", { cause: error })); }
+      // Store mutations and publication callbacks check the shared owner gate.
+      // A fenced but live connection can still read committed recovery facts.
+    }
     this.updateClock();
     const id = ++this.sequence, callbacks: number[] = [];
     const encoded = this.encode(args, callbacks) as unknown[];
@@ -181,6 +218,8 @@ class DatabaseWorkerClient {
       // A transport failure does not cancel a callback already publishing a
       // filesystem view. Do not report drained while that callback can write.
       await Promise.allSettled([...this.activeCallbacks]);
+      if (this.workerAttachment) this.owner!.detachTerminatedWorker(this.workerAttachment);
+      this.owner?.close();
     }
   }
   proxy(): AsyncCollaborationStateStore {
@@ -190,10 +229,23 @@ class DatabaseWorkerClient {
       if (Object.hasOwn(Object.prototype, key)) return Reflect.get(target, key);
       if (key === "health") return this.health;
       if (key === "close") return () => this.close();
-      if (key === "bindWriterAvailabilityCheck") return async (check: () => void, heartbeat?: SharedArrayBuffer) => {
+      if (key === "assertWriterAvailable") {
+        const check = () => {
+          if (this.failure) throw this.failure;
+          if (this.ownerFailure) throw this.ownerFailure;
+          if (this.closing || this.closed) throw new Error("Collaboration database worker is closing or closed");
+          try { this.owner?.assertHeld(); this.availabilityCheck?.(); }
+          catch (error) {
+            this.fenceWriter(error instanceof Error ? error : new Error("Writer availability failed", { cause: error }));
+            throw error;
+          }
+        };
+        Object.defineProperty(target, key, { value: check, writable: true, configurable: true });
+        return check;
+      }
+      if (key === "bindWriterAvailabilityCheck") return async (check: () => void) => {
         if (this.availabilityBound) throw new Error("Writer availability check is already bound");
-        check(); this.availabilityBound = true;
-        await this.request("bindHeartbeat", heartbeat ? [heartbeat] : []);
+        check(); this.availabilityBound = true; this.availabilityCheck = check;
       };
       if (key === "operationsForProject") return (...binding: unknown[]) => new Proxy({}, {
         get: (_store, method) => method === "then" || method === "toJSON" || typeof method !== "string" ? undefined
@@ -259,7 +311,6 @@ function decode(value: unknown, requestId: number): unknown {
 
 async function runDatabaseWorker(input: Input): Promise<void> {
   const gate = new Int32Array(input.gate), clock = input.clock ? new BigInt64Array(input.clock) : undefined;
-  let heartbeat: BigInt64Array | undefined;
   let database: CollaborationStateDatabase | undefined;
   let documents: ReturnType<typeof import("../project-state-documents.js")["readOnlyProjectStateDocumentsSync"]> | undefined;
   try {
@@ -268,8 +319,8 @@ async function runDatabaseWorker(input: Input): Promise<void> {
       database = CollaborationStateDatabase.open({ ...input.options,
         ...(clock ? { now: () => Number(Atomics.load(clock, 0)) } : {}) });
       database.bindWriterAvailabilityCheck(() => {
-        if (Atomics.load(gate, 0) || heartbeat && (Atomics.load(heartbeat, 0) !== 1n || Number(Atomics.load(heartbeat, 1)) <= Date.now()))
-          throw new stateErrors.CollaborationStateError("WRITER_LEASE_STALE", "Collaboration writer heartbeat is no longer held");
+        if (Atomics.load(gate, 0))
+          throw new stateErrors.CollaborationStateError("WRITER_LEASE_STALE", "Collaboration writer is no longer available");
       });
     } else {
       const { readOnlyProjectStateDocumentsSync } = await import("../project-state-documents.js");
@@ -280,8 +331,7 @@ async function runDatabaseWorker(input: Input): Promise<void> {
       try {
         const args = decode(request.args, request.id) as unknown[];
         let value: unknown;
-        if (request.method === "bindHeartbeat") { heartbeat = args[0] ? new BigInt64Array(args[0] as SharedArrayBuffer) : undefined; }
-        else if (request.method === "close") database?.close();
+        if (request.method === "close") database?.close();
         else {
           const target = request.operations ? database!.operationsForProject(...request.operations as Parameters<CollaborationStateDatabase["operationsForProject"]>) : database ?? documents!;
           const method = Reflect.get(target, request.method);

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
 import { COLLABORATION_STATE_SCHEMA_VERSION } from "../../src/core/collaboration-state/contracts.js";
+import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
 
 function mergedScopedEvidence(
   executionId: string, base: `groups/${string}`, providerNumber: number, ownershipEpoch = 1
@@ -115,6 +116,7 @@ describe("scoped collaboration state schema", () => {
       const lease = database.writerLease();
       database.close(); database = undefined;
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.exec("DROP INDEX project_events_project_type_seq; UPDATE collaboration_state_meta SET schema_version = 26");
       const originalLease = old.prepare("SELECT * FROM writer_service_lease").get();
       old.close();
@@ -124,11 +126,11 @@ describe("scoped collaboration state schema", () => {
       expect(unchanged.prepare("SELECT name FROM sqlite_master WHERE name = 'project_events_project_type_seq'").get()).toBeUndefined();
       expect(unchanged.prepare("SELECT * FROM writer_service_lease").get()).toEqual(originalLease);
       unchanged.close();
-      database = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      database = openUpgradedFixture(options);
       expect(database.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       expect(database.projectState("project-1")).toEqual(projection);
       expect(database.eventsAfter("project-1")).toEqual(events);
-      expect(database.writerLease()).toEqual(lease);
+      expect(database.writerLease()).toMatchObject({ epoch: lease.epoch + 2, hostId: lease.hostId });
       const inspection = new DatabaseSync(databasePath);
       const plan = inspection.prepare("EXPLAIN QUERY PLAN SELECT payload_json FROM project_events WHERE project_id = ? AND event_type = ? ORDER BY seq")
         .all("project-1", "agent.terminal_push_observation.reserved") as Array<{ detail: string }>;
@@ -157,6 +159,7 @@ describe("scoped collaboration state schema", () => {
       const lease = database.writerLease();
       database.close(); database = undefined;
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       for (const table of ["operations", "scoped_operations"]) {
         const { sql } = old.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(table) as { sql: string };
         const v25 = sql.replace(new RegExp(`CREATE TABLE [\"\x60]?${table}[\"\x60]?`), `CREATE TABLE ${table}_v25`).replace(", 'git.revert'", "").replace(",'git.revert'", "");
@@ -171,7 +174,7 @@ describe("scoped collaboration state schema", () => {
       const unchanged = new DatabaseSync(databasePath, { readOnly: true });
       expect(unchanged.prepare("SELECT schema_version FROM collaboration_state_meta").get()).toMatchObject({ schema_version: 25 });
       unchanged.close();
-      database = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      database = openUpgradedFixture(options);
       expect(database.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       expect(database.recordedGitOperation("project-1", "old-record")).toEqual(oldRecord);
       const inspection = new DatabaseSync(databasePath, { readOnly: true });
@@ -202,6 +205,7 @@ describe("scoped collaboration state schema", () => {
       const lease = created.writerLease();
       created.close();
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.exec("DROP TABLE scoped_final_operations; DROP TABLE scoped_final_integrations; UPDATE collaboration_state_meta SET schema_version = 9 WHERE singleton = 1");
       old.close();
       expect(() => CollaborationStateDatabase.open({ ...options, instanceId: "other-instance" })).toThrow();
@@ -211,7 +215,7 @@ describe("scoped collaboration state schema", () => {
       expect(unchanged.prepare("SELECT name FROM sqlite_schema WHERE name = 'scoped_final_integrations'").get())
         .toBeUndefined();
       unchanged.close();
-      const migrated = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      const migrated = openUpgradedFixture(options);
       expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       expect(migrated.scopedExecution("project-1", "exec-worker")?.status).toBe("completed");
       expect(migrated.scopedGroupReadyForFinalIntegration("project-1", "run-G")).toBe(true);
@@ -287,9 +291,9 @@ describe("scoped collaboration state schema", () => {
         projectId: "project-1", groupRunId: "run-G", ...evidence
       })).toThrow(/resolve uncertain Git operations/);
       const lease = database.writerLease();
-      database.close();
-      database = CollaborationStateDatabase.open({ ...options, writerLease: lease });
-      expect(database.beginScopedFinalIntegration(begin)).toMatchObject({ replay: true, integration: claim.integration });
+      const attached = CollaborationStateDatabase.open({ ...options, writerLease: lease, writerOwner: database.writerOwnerAttachment() });
+      try { expect(attached.beginScopedFinalIntegration(begin)).toMatchObject({ replay: true, integration: claim.integration }); }
+      finally { attached.close(); }
       const recoveredStore = database.operationsForProject("project-1", true);
       await recoveredStore.transition({
         id: operation.id, payloadHash: operation.payloadHash, status: "observed", remoteFact: evidence.pullRequest
@@ -349,13 +353,14 @@ describe("scoped collaboration state schema", () => {
         Object.fromEntries(Object.entries(legacyProof).sort(([left], [right]) => left.localeCompare(right)))
       )).digest("hex");
       const old = new DatabaseSync(options.databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.prepare(`
         UPDATE scoped_group_final_merge_facts SET proof_hash = ?,
           pull_request_json = json_remove(pull_request_json, '$.ownerExecutionId') WHERE group_run_id = 'run-G'
       `).run(legacyHash);
       old.exec("DROP TABLE scoped_final_operations; DROP TABLE scoped_final_integrations; UPDATE collaboration_state_meta SET schema_version = 9 WHERE singleton = 1");
       old.close();
-      database = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      database = openUpgradedFixture(options);
       expect(database.completeScopedGroupAfterFinalMerge({
         projectId: "project-1", groupRunId: "run-G", ...evidence
       })).toMatchObject({ replay: true, revision: priorRevision });
@@ -418,6 +423,7 @@ describe("scoped collaboration state schema", () => {
       const lease = created.writerLease();
       created.close();
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.exec("DROP TABLE scoped_leader_turns; UPDATE collaboration_state_meta SET schema_version = 8 WHERE singleton = 1");
       old.close();
       expect(() => CollaborationStateDatabase.open({ ...options, instanceId: "other-instance" })).toThrow();
@@ -427,7 +433,7 @@ describe("scoped collaboration state schema", () => {
       expect(unchanged.prepare("SELECT name FROM sqlite_schema WHERE name = 'scoped_leader_turns'").get())
         .toBeUndefined();
       unchanged.close();
-      const migrated = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      const migrated = openUpgradedFixture(options);
       expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       migrated.close();
       const inspection = new DatabaseSync(databasePath, { readOnly: true });
@@ -458,6 +464,7 @@ describe("scoped collaboration state schema", () => {
       created.close();
 
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.exec("DROP TABLE scoped_group_final_merge_facts; DROP TABLE scoped_finish_tokens; DROP TABLE scoped_agent_merge_facts; DROP TABLE scoped_executions; DROP TABLE scoped_arrivals; DROP TABLE scoped_group_runs");
       old.exec("UPDATE collaboration_state_meta SET schema_version = 2 WHERE singleton = 1");
       old.close();
@@ -471,7 +478,7 @@ describe("scoped collaboration state schema", () => {
       expect(unchanged.prepare("SELECT name FROM sqlite_schema WHERE name = 'scoped_group_runs'").get()).toBeUndefined();
       unchanged.close();
 
-      const migrated = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      const migrated = openUpgradedFixture(options);
       expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       migrated.close();
       const inspection = new DatabaseSync(databasePath, { readOnly: true });
@@ -496,6 +503,7 @@ describe("scoped collaboration state schema", () => {
       const lease = created.writerLease();
       created.close();
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.exec("DROP TABLE scoped_group_final_merge_facts; DROP TABLE scoped_finish_tokens; DROP TABLE scoped_agent_merge_facts; DROP TABLE scoped_executions; UPDATE collaboration_state_meta SET schema_version = 4 WHERE singleton = 1");
       old.close();
 
@@ -505,7 +513,7 @@ describe("scoped collaboration state schema", () => {
       expect(unchanged.prepare("SELECT name FROM sqlite_schema WHERE name = 'scoped_executions'").get()).toBeUndefined();
       unchanged.close();
 
-      const migrated = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      const migrated = openUpgradedFixture(options);
       expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       migrated.close();
       const inspection = new DatabaseSync(databasePath, { readOnly: true });
@@ -532,10 +540,11 @@ describe("scoped collaboration state schema", () => {
       const lease = created.writerLease();
       created.close();
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.exec("DROP TABLE scoped_group_final_merge_facts; DROP TABLE scoped_finish_tokens; DROP TABLE scoped_agent_merge_facts; UPDATE collaboration_state_meta SET schema_version = 5 WHERE singleton = 1");
       old.close();
       expect(() => CollaborationStateDatabase.open({ ...options, instanceId: "other-instance" })).toThrow();
-      const migrated = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      const migrated = openUpgradedFixture(options);
       expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       migrated.close();
       const inspection = new DatabaseSync(databasePath, { readOnly: true });
@@ -564,10 +573,11 @@ describe("scoped collaboration state schema", () => {
       const lease = created.writerLease();
       created.close();
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.exec("DROP TABLE scoped_group_final_merge_facts; UPDATE collaboration_state_meta SET schema_version = 6 WHERE singleton = 1");
       old.close();
       expect(() => CollaborationStateDatabase.open({ ...options, instanceId: "other-instance" })).toThrow();
-      const migrated = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      const migrated = openUpgradedFixture(options);
       expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       migrated.close();
       const inspection = new DatabaseSync(databasePath, { readOnly: true });
@@ -592,10 +602,11 @@ describe("scoped collaboration state schema", () => {
       const lease = created.writerLease();
       created.close();
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.exec("DROP TABLE scoped_operations; UPDATE collaboration_state_meta SET schema_version = 7 WHERE singleton = 1");
       old.close();
       expect(() => CollaborationStateDatabase.open({ ...options, instanceId: "other-instance" })).toThrow();
-      const migrated = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      const migrated = openUpgradedFixture(options);
       expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       migrated.close();
       const inspection = new DatabaseSync(databasePath, { readOnly: true });
@@ -857,9 +868,8 @@ describe("scoped collaboration state schema", () => {
         lane: "worker", capacity: 2, occupied: 1, available: 1
       });
 
-      const lease = database.writerLease();
       database.close();
-      database = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      database = CollaborationStateDatabase.open(options);
       expect(database.scopedGroupReadyForFinalIntegration("project-1", "run-G")).toBe(false);
       const proofB = mergedScopedEvidence("exec-B", "groups/run-G", 2);
       expect(database.completeScopedAgentArrivalAfterMerge({
@@ -1091,13 +1101,12 @@ describe("scoped collaboration state schema", () => {
       })).toBeUndefined();
       expect(() => database!.releaseScopedLeaderTurn({ ...leader, residentStopConfirmed: false as true }))
         .toThrow(/confirmed resident stop/);
-      const lease = database.writerLease();
+      const attached = CollaborationStateDatabase.open({ ...options, writerLease: database.writerLease(), writerOwner: database.writerOwnerAttachment() });
+      try {
+        expect(attached.claimScopedLeaderTurn(leader)).toMatchObject({ replay: true });
+        expect(attached.claimScopedAgentArrival(work)).toBeUndefined();
+      } finally { attached.close(); }
       database.close();
-      database = CollaborationStateDatabase.open({ ...options, writerLease: lease });
-      expect(database.claimScopedLeaderTurn(leader)).toMatchObject({ replay: true });
-      expect(database.claimScopedAgentArrival(work)).toBeUndefined();
-      database.close();
-      clockMs += 60_000;
       database = CollaborationStateDatabase.open({ ...options, instanceId: "instance-b" });
       expect(() => database!.claimScopedLeaderTurn(leader)).toThrow(/prior-writer/);
       expect(database.claimScopedAgentArrival(work)).toBeUndefined();
@@ -1223,9 +1232,8 @@ describe("scoped collaboration state schema", () => {
       };
       expect(database.claimScopedAgentArrival(claimA2)).toBeUndefined();
       expect(database.scopedGroupReadyForFinalIntegration("project-1", "run-G")).toBe(false);
-      const lease = database.writerLease();
       database.close();
-      database = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      database = CollaborationStateDatabase.open(options);
       expect(database.scopedExecution("project-1", "exec-A")?.status).toBe("failed");
       expect(database.scopedArrivals("run-G").find((arrival) => arrival.requestId === queuedA.requestId)?.status)
         .toBe("queued");
@@ -1297,6 +1305,7 @@ describe("scoped collaboration state schema", () => {
 
       // Simulate the pre-v4 permanent uniqueness restriction on an occupied v3 database.
       const old = new DatabaseSync(databasePath);
+      legacyWriterFixture(old, lease, options.now());
       old.exec(`
         CREATE UNIQUE INDEX member_executions_v3_permanent_worktree
           ON member_executions(project_id, worktree_path);
@@ -1305,7 +1314,7 @@ describe("scoped collaboration state schema", () => {
       old.close();
       expect(() => CollaborationStateDatabase.open({ ...options, instanceId: "another-instance" })).toThrow();
 
-      database = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      database = openUpgradedFixture(options);
       expect(database.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
       expect(database.projectState("project-1").executions[0]).toMatchObject({
         id: "execution-before", worktreePath
@@ -1489,9 +1498,8 @@ describe("scoped collaboration state schema", () => {
       expect(database.claimScopedAgentArrival(childClaim)).toBeUndefined();
       expect(database.scopedArrivals("run-H")[0]?.status).toBe("queued");
 
-      const lease = database.writerLease();
       database.close();
-      database = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      database = CollaborationStateDatabase.open(options);
       expect(database.scopedGroupRun("project-1", "run-H")?.integrationTarget).toBe("groups/run-G");
       expect(database.scopedArrivals("run-H")).toHaveLength(1);
       expect(database.scopedExecution("project-1", "root-worker-1")?.arrivalRequestId).toBe(rootTask.requestId);

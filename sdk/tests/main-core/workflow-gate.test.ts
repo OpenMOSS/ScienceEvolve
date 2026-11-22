@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/index.js";
 import { initializeCollaborationStateSchema } from "../../src/core/collaboration-state/schema.js";
+import { legacyWriterFixture, withOfflineFixtureOwner } from "./helpers/legacy-writer-fixture.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as fs } from "node:fs";
@@ -148,7 +149,7 @@ describe("Workflow Gate durable execution and migration", () => {
       expect(db.completeCodeGateNode("p", "check")).toMatchObject({ replay: false, outbox: { targetNodeId: "next" } });
       expect(db.completeCodeGateNode("p", "check")).toMatchObject({ replay: true });
       expect(db.projectState("p").executions).toHaveLength(0);
-      const lease = db.writerLease(); db.close(); db = CollaborationStateDatabase.open({ ...options, writerLease: lease });
+      db.close(); db = CollaborationStateDatabase.open(options);
       expect(db.workflowGate("p", recorded.id)).toEqual(recorded);
       expect(db.completeCodeGateNode("p", "check").outbox.payload.output).toContain('"originalTask":"research"');
       expect(() => db.saveWorkflowGate({ ...recorded, version: recorded.version + 1, inputHash: "changed" }, recorded.version)).toThrow("immutable");
@@ -164,6 +165,7 @@ describe("Workflow Gate durable execution and migration", () => {
     const lease = owner.writerLease(); owner.close();
     const db = new DatabaseSync(file);
     try {
+      legacyWriterFixture(db, lease, Date.now());
       db.exec("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON; BEGIN IMMEDIATE");
       for (const table of ["node_runs", "scoped_arrivals"]) {
         if (!existingGateColumn) db.exec(`ALTER TABLE ${table} DROP COLUMN gate_run_id`);
@@ -176,7 +178,7 @@ describe("Workflow Gate durable execution and migration", () => {
         for (const item of auxiliary) db.exec(item.sql);
       }
       db.exec("UPDATE collaboration_state_meta SET schema_version=28; COMMIT; PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON");
-      initializeCollaborationStateSchema(db, { writerLease: lease, nowMs: Date.now() });
+      withOfflineFixtureOwner(file, offlineOwner => initializeCollaborationStateSchema(db, { writerLease: lease, offlineOwner }));
       expect(db.prepare("SELECT project_id FROM project_heads").all()).toEqual([{ project_id: "preserved" }]);
       expect(db.prepare("SELECT schema_version FROM collaboration_state_meta").get()).toMatchObject({ schema_version: 29 });
       expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -192,10 +194,11 @@ describe("Workflow Gate durable execution and migration", () => {
     const lease = owner.writerLease(); owner.close();
     const db = new DatabaseSync(file);
     try {
+      legacyWriterFixture(db, lease, Date.now());
       db.exec("ALTER TABLE scoped_arrivals DROP COLUMN gate_run_id; ALTER TABLE scoped_arrivals ADD COLUMN gate_run_id INTEGER; UPDATE collaboration_state_meta SET schema_version=28");
       const schema = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type,name").all();
       const authority = db.prepare("SELECT * FROM writer_service_lease").all();
-      expect(() => initializeCollaborationStateSchema(db, { writerLease: lease, nowMs: Date.now() }))
+      expect(() => withOfflineFixtureOwner(file, offlineOwner => initializeCollaborationStateSchema(db, { writerLease: lease, offlineOwner })))
         .toThrow("invalid scoped_arrivals.gate_run_id");
       expect(db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type,name").all()).toEqual(schema);
       expect(db.prepare("SELECT * FROM writer_service_lease").all()).toEqual(authority);

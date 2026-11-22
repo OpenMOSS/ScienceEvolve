@@ -11,6 +11,7 @@ import { toolsFor } from "../../src/core/orchestration-control-mcp.js";
 import { controlResultReceipts, controlResultMarker, type ControlResultContext } from "../../src/core/control-result-receipts.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
+import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
 import { COLLABORATION_STATE_SCHEMA_VERSION } from "../../src/core/collaboration-state/contracts.js";
 import { cloneAgentOrchestrationTemplate } from "../../src/core/agent-orchestration.js";
 import { normalizeAgentOrchestrationTemplate } from "../../src/core/validation.js";
@@ -291,7 +292,7 @@ describe("unified authoritative project state", () => {
     expect(after.scopedPullRequests).toEqual(before.scopedPullRequests);
     expect(after.businessState?.[0]).toMatchObject({ object, extensions: result.current.extensions });
     const lease = db.writerLease(); db.close();
-    const restarted = CollaborationStateDatabase.open({ ...options, writerLease: lease }); stores.push(restarted);
+    const restarted = CollaborationStateDatabase.open(options); stores.push(restarted);
     expect(read(restarted, system, object).version).toBe(result.current.version);
     expect(read(restarted, system, object).extensions).toEqual(result.current.extensions);
   });
@@ -439,8 +440,8 @@ describe("unified authoritative project state", () => {
     now = 11;
     expect(() => cache.read(snapshot.id, system)).toThrow(/Start a fresh state_list/);
     const page = db.projectStateRequest(system, { operation: "list", kind: "group", limit: 1 }) as any;
-    const writerLease = db.writerLease(); db.close();
-    const restarted = CollaborationStateDatabase.open({ ...options, writerLease }); stores.push(restarted);
+    db.close();
+    const restarted = CollaborationStateDatabase.open(options); stores.push(restarted);
     try { restarted.projectStateRequest(system, { operation: "list", kind: "group", snapshotId: page.snapshotId }); throw Error("Expected expired read snapshot"); }
     catch (error: any) {
       expect(error.code).toBe("STATE_READ_SNAPSHOT_EXPIRED");
@@ -505,11 +506,12 @@ describe("unified authoritative project state", () => {
     patch(db, system, { kind: "agent", id: "idea" }, { observed: "before-migration" });
     const lease = db.writerLease(), before = db.projectState("p"); db.close();
     const raw = new DatabaseSync(options.databasePath);
+    legacyWriterFixture(raw, lease, Date.now());
     raw.exec("DROP INDEX project_state_object_changes; UPDATE collaboration_state_meta SET schema_version=22"); raw.close();
     expect(() => CollaborationStateDatabase.open({ ...options, instanceId: "other" })).toThrow();
     const unchanged = new DatabaseSync(options.databasePath, { readOnly: true });
     expect(unchanged.prepare("SELECT schema_version FROM collaboration_state_meta").get()).toMatchObject({ schema_version: 22 }); unchanged.close();
-    const migrated = CollaborationStateDatabase.open({ ...options, writerLease: lease }); stores.push(migrated);
+    const migrated = openUpgradedFixture(options); stores.push(migrated);
     expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
     expect(migrated.projectState("p")).toEqual(before);
     expect(read(migrated, system, { kind: "agent", id: "idea" }).extensions.observed).toBe("before-migration");
@@ -547,13 +549,17 @@ describe("unified authoritative project state", () => {
     patch(db, worker, { kind: "agent", id: "idea" }, { own_progress: 2 });
   });
 
-  it("fences old-writer state connections after actual lease takeover without losing extensions", async () => {
+  it("fences old-writer state connections after explicit closure without losing extensions", async () => {
     const { db, system, options, lead } = await fixture();
     const leader = lead("run-G", "review", "old-writer-leader");
     const object = { kind: "group" as const, id: "run-I" };
     patch(db, leader.principal, object, { original: true });
+    expect(() => CollaborationStateDatabase.open({ ...options, instanceId: "successor", now: () => 1_031_000 }))
+      .toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+    db.relinquishWriterLease();
+    expect(() => read(db, leader.principal, object)).toThrow(/writer|relinquished/i);
+    db.close();
     const next = CollaborationStateDatabase.open({ ...options, instanceId: "successor", now: () => 1_031_000 }); stores.push(next);
-    expect(() => read(db, leader.principal, object)).toThrow(/writer.*fence/i);
     expect(() => read(next, leader.principal, object)).toThrow(/live invocation/);
     expect(read(next, system, object).extensions).toEqual({ original: true });
   });

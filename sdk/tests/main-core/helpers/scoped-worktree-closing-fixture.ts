@@ -53,7 +53,7 @@ export async function authorizedClosingFixture(options: {
   let now = Date.parse("2026-10-10T11:00:00Z"), current = true;
   const time = () => new Date(now).toISOString(), databasePath = path.join(root, "state.sqlite");
   const db = options.openDatabase ? await options.openDatabase({ storage, databasePath, now: () => now }) : CollaborationStateDatabase.open({ databasePath, serviceId: "test", instanceId: "writer", hostId: "test", topology: "single-host",
-    now: () => now, leaseDurationMs: 600_000 }); if (!options.openDatabase) stores.push(db);
+    now: () => now }); if (!options.openDatabase) stores.push(db);
   const repository = { owner: "example", name: "project", private: true, defaultBranch: "main", htmlUrl: "https://github.com/example/project", observedAt: time() };
   const base = cloneAgentOrchestrationTemplate();
   const workflow: AgentOrchestrationTemplate = { ...base, schemaVersion: 3 as const,

@@ -5,15 +5,14 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
 import { openCollaborationStateWorker, type AsyncCollaborationStateStore } from "../../src/core/collaboration-state/database-worker.js";
 import { CollaborationStateError, StaleProjectRevisionError } from "../../src/core/collaboration-state/errors.js";
-import { WriterLeaseHeartbeat } from "../../src/core/collaboration-state/writer-lease-heartbeat.js";
 import { cloneAgentOrchestrationTemplate } from "../../src/core/agent-orchestration.js";
 import { mergeAgentConfigs } from "../../src/core/validation.js";
 import type { ProjectState } from "../../src/core/types.js";
 
-const resources: Array<{ root: string; database: AsyncCollaborationStateStore; heartbeat?: WriterLeaseHeartbeat }> = [];
+const resources: Array<{ root: string; database: AsyncCollaborationStateStore }> = [];
 afterEach(async () => {
   for (const item of resources.splice(0)) {
-    await item.heartbeat?.stop(); await item.database.close();
+    await item.database.close();
     await fs.rm(item.root, { recursive: true, force: true });
   }
 });
@@ -21,8 +20,8 @@ async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "collaboration-worker-"));
   const databasePath = path.join(root, "state.sqlite");
   const database = await openCollaborationStateWorker({ databasePath, topology: "single-host", serviceId: "test",
-    hostId: "test-host", leaseDurationMs: 180_000 });
-  const resource = { root, database, heartbeat: undefined as WriterLeaseHeartbeat | undefined }; resources.push(resource);
+    hostId: "test-host" });
+  const resource = { root, database }; resources.push(resource);
   const orchestration = cloneAgentOrchestrationTemplate();
   const checkpoint: ProjectState = { id: "project-1", title: "Database publication", requirement: "Retain actual committed state",
     status: "queued", phase: "queued", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
@@ -51,16 +50,19 @@ it("keeps timers responsive during a real SQLite COMMIT wait and commits the req
   }
 });
 
-it("preserves typed errors and rejects an expired writer without changing project facts", async () => {
+it("preserves typed errors and rejects a replaced writer epoch without changing project facts", async () => {
   const { database, databasePath } = await fixture();
   const before = await database.eventsAfter("project-1", 0, 100);
   const observer = new DatabaseSync(databasePath);
-  try { observer.prepare("UPDATE writer_service_lease SET expires_at_ms=?").run(Date.now() - 1); }
+  try { observer.exec("UPDATE writer_service_owner SET epoch=epoch+1"); }
   finally { observer.close(); }
   const error = await database.appendEvent({ projectId: "project-1", type: "test.expired", payload: {} }).catch(error => error);
   expect(error).toBeInstanceOf(CollaborationStateError);
   expect(error).toMatchObject({ code: "WRITER_LEASE_STALE" });
-  expect(await database.eventsAfter("project-1", 0, 100)).toEqual(before);
+  expect(() => database.assertWriterAvailable()).toThrow(expect.objectContaining({ code: "WRITER_LEASE_STALE" }));
+  const reader = new DatabaseSync(databasePath, { readOnly: true });
+  try { expect(reader.prepare("SELECT count(*) AS n FROM project_events WHERE project_id='project-1'").get()).toMatchObject({ n: before.length }); }
+  finally { reader.close(); }
 });
 
 it("retains the original stale revision error details across the thread boundary", async () => {
@@ -148,10 +150,8 @@ it("preserves a publication error during close and drains without committing the
 });
 
 it("keeps transport timers live throughout a 30-second database stall and then returns the committed query", async () => {
-  const { database, databasePath, checkpoint, resource } = await fixture();
-  const failures: Error[] = [];
-  resource.heartbeat = await WriterLeaseHeartbeat.start({ databasePath, lease: await database.writerLease(), leaseDurationMs: 45_000 }, error => failures.push(error));
-  await database.bindWriterAvailabilityCheck(() => resource.heartbeat!.assertHeld(), resource.heartbeat.sharedState());
+  const { database, checkpoint } = await fixture();
+  const original = await database.writerLease();
   await database.initializeProjectStateDomain({ projectId: checkpoint.id, scheduler: "serial", checkpoint });
   const prior = (await database.projectStateDocument(checkpoint.id, "project.checkpoint"))!;
   let started!: () => void;
@@ -168,7 +168,7 @@ it("keeps transport timers live throughout a 30-second database stall and then r
     const saved = await write;
     expect(ticks).toBeGreaterThan(100);
     expect(await query).toMatchObject({ version: saved.version, value: { title: "Committed after waiting" } });
-    expect(failures).toEqual([]);
-    expect(() => resource.heartbeat!.assertHeld()).not.toThrow();
+    expect(await database.writerLease()).toEqual(original);
+    expect(() => database.assertWriterAvailable()).not.toThrow();
   } finally { clearInterval(timer); }
 }, 45_000);

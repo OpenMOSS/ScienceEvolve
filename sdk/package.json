@@ -48,6 +48,7 @@
     "@earendil-works/pi-ai": "0.74.2",
     "@earendil-works/pi-coding-agent": "0.74.2",
     "@modelcontextprotocol/sdk": "^1.30.1",
+    "fs-native-extensions": "1.5.3",
     "smol-toml": "^1.7.1",
     "yaml": "^2.9.1",
     "zod": "^3.25.76",

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
+import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
 import { COLLABORATION_STATE_SCHEMA_VERSION } from "../../src/core/collaboration-state/contracts.js";
 import { initializeCollaborationStateSchema } from "../../src/core/collaboration-state/schema.js";
 import { ProjectStorage } from "../../src/core/storage.js";
@@ -251,8 +252,8 @@ describe("one formal store for project checkpoints and experiment ledgers", () =
     const meta = f.db.projectStateDocument(P, "serial.invocation")!;
     expect(() => f.db.writeProjectStateDocument(P, "serial.invocation", { ...meta.value as object, projectId: OTHER }, meta.version)).toThrow(/another project/);
     expect((await f.storage.loadState(P)).agentSessions?.execution).toEqual(session);
-    const lease = f.db.writerLease(); f.db.close();
-    const reopened = CollaborationStateDatabase.open({ ...f.options, writerLease: lease }); stores.push(reopened);
+    f.db.close();
+    const reopened = CollaborationStateDatabase.open(f.options); stores.push(reopened);
     await f.storage.configureProjectStateStore(f.adapter(reopened));
     expect((await f.storage.loadState(P)).agentSessionIds?.execution).toBe(session.nativeId);
     expect(reopened.projectStateRequest(main, { operation: "get", object: { kind: "execution", id: "original-task" } })).toMatchObject({ extensions: { analysis_stage: "ready" } });
@@ -342,9 +343,10 @@ describe("one formal store for project checkpoints and experiment ledgers", () =
   it("migrates only schema metadata with the original writer and does not register historical project domains", async () => {
     const f = await fixture(), lease = f.db.writerLease(); f.db.close();
     const sql = new DatabaseSync(f.options.databasePath);
+    legacyWriterFixture(sql, lease, Date.now());
     sql.exec("DROP TABLE project_state_documents; DROP TABLE project_state_domains; UPDATE collaboration_state_meta SET schema_version=23");
     expect(() => initializeCollaborationStateSchema(sql)).toThrow(/lease/); sql.close();
-    const reopened = CollaborationStateDatabase.open({ ...f.options, writerLease: lease }); stores.push(reopened);
+    const reopened = openUpgradedFixture(f.options); stores.push(reopened);
     await f.storage.configureProjectStateStore(f.adapter(reopened));
     expect(reopened.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
     expect(reopened.projectStateDomain(P)).toBeUndefined();

@@ -1,0 +1,249 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { DatabaseSync } from "node:sqlite";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, expect, it, vi } from "vitest";
+import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
+import { WriterOwner } from "../../src/core/collaboration-state/writer-owner.js";
+import { initializeCollaborationStateSchema } from "../../src/core/collaboration-state/schema.js";
+import { upgradeOwnerProtocol } from "../../src/core/collaboration-state/owner-protocol.js";
+import { upgradeCollaborationWriter } from "../../src/core/collaboration-state/upgrade-writer.js";
+import { CollaborationRuntimeCoordinator } from "../../src/core/collaboration-runtime.js";
+import { openCollaborationStateWorker } from "../../src/core/collaboration-state/database-worker.js";
+import { ProjectStorage } from "../../src/core/storage.js";
+import { EventHub } from "../../src/core/event-hub.js";
+
+const resources: Array<{ root: string; close(): void }> = [];
+afterEach(async () => {
+  for (const item of resources.splice(0).reverse()) { item.close(); await fs.rm(item.root, { recursive: true }); }
+});
+async function fixture() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-owner-"));
+  const databasePath = path.join(root, "state.sqlite");
+  let now = 100_000;
+  const options = { databasePath, serviceId: "service", instanceId: "original", hostId: "host", topology: "single-host" as const, now: () => now };
+  const database = CollaborationStateDatabase.open(options);
+  resources.push({ root, close: () => database.close() });
+  database.createProject({ projectId: "project", workflowRevision: 1, workflowSnapshot: { agents: [] }, git: { enabled: false, status: "disabled" }, workerCapacity: 2, managementCapacity: 1 });
+  return { root, databasePath, database, options, advance: () => { now += 86_400_000; } };
+}
+
+it("holds ownership across elapsed old TTL without updating the owner row, then advances epoch only on reopen", async () => {
+  const f = await fixture(); const sql = new DatabaseSync(f.databasePath);
+  try {
+    const before = sql.prepare("SELECT * FROM writer_service_owner").get();
+    f.advance();
+    expect(() => f.database.assertWriterLeaseHeld()).not.toThrow();
+    expect(() => CollaborationStateDatabase.open({ ...f.options, instanceId: "competitor" })).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+    f.database.appendEvent({ projectId: "project", type: "still-owned", payload: {}, requestId: "once" });
+    expect(sql.prepare("SELECT * FROM writer_service_owner").get()).toEqual(before);
+    expect(f.database.verifyHealth()).toMatchObject({ schemaVersion: 30, journalMode: "delete", synchronous: "full" });
+    const old = f.database.writerLease(); f.database.close();
+    const next = CollaborationStateDatabase.open({ ...f.options, instanceId: "next" });
+    try {
+      expect(next.writerLease().epoch).toBe(old.epoch + 1);
+      expect(() => f.database.appendEvent({ projectId: "project", type: "late", payload: {} })).toThrow("closed");
+      expect(next.eventsAfter("project").filter(event => event.type === "still-owned")).toHaveLength(1);
+    } finally { next.close(); }
+  } finally { sql.close(); }
+});
+
+it("requires a local connection capability and keeps the owner locked until attached connections close", async () => {
+  const f = await fixture(), lease = f.database.writerLease();
+  expect(() => CollaborationStateDatabase.open({ ...f.options, writerLease: lease })).toThrow("local lifecycle owner capability");
+  const attachment = f.database.writerOwnerAttachment();
+  const attached = CollaborationStateDatabase.open({ ...f.options, writerLease: lease, writerOwner: attachment });
+  try {
+    expect(() => f.database.close()).toThrow("attached connections remain");
+    expect(() => CollaborationStateDatabase.open({ ...f.options, instanceId: "other" })).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+    attached.appendEvent({ projectId: "project", type: "attached", payload: {} });
+  } finally { attached.close(); f.database.close(); }
+});
+
+it("refuses another epoch acquisition through a live owner's attachment", async () => {
+  const f = await fixture(), original = f.database.writerLease();
+  const attachment = f.database.writerOwnerAttachment();
+  expect(() => CollaborationStateDatabase.open({ ...f.options, writerOwner: attachment }))
+    .toThrow("acquisition was already claimed");
+  expect(f.database.writerLease()).toEqual(original);
+  f.database.assertWriterLeaseHeld();
+  f.database.close();
+});
+
+it("rejects an attached Worker's wrong database path and drains its rejected reservation", async () => {
+  const f = await fixture();
+  await expect(openCollaborationStateWorker({ ...f.options, databasePath: path.join(f.root, "wrong.sqlite"),
+    writerLease: f.database.writerLease(), writerOwner: f.database.writerOwnerAttachment() })).rejects.toThrow("another database path");
+  f.database.assertWriterLeaseHeld();
+  expect(() => f.database.close()).not.toThrow();
+});
+
+it("rejects hardlinked databases before creating another sidecar and rejects missing or replaced lock identity", async () => {
+  const f = await fixture(), alias = path.join(f.root, "hardlink.sqlite");
+  await fs.link(f.databasePath, alias);
+  expect(() => CollaborationStateDatabase.open({ ...f.options, databasePath: alias })).toThrow("single-link");
+  await expect(fs.stat(alias + ".writer.lock")).rejects.toMatchObject({ code: "ENOENT" });
+  await fs.unlink(alias);
+  f.database.close();
+  const lock = f.databasePath + ".writer.lock", retained = lock + ".retained";
+  await fs.rename(lock, retained);
+  const before = await fs.readFile(f.databasePath);
+  expect(() => CollaborationStateDatabase.open(f.options)).toThrow(expect.objectContaining({ code: "WRITER_UPGRADE_REQUIRED" }));
+  await fs.copyFile(retained, lock);
+  expect(() => CollaborationStateDatabase.open(f.options)).toThrow("filesystem identity");
+  expect(await fs.readFile(f.databasePath)).toEqual(before);
+});
+
+it("preserves CAS and the original SQLite trigger error with no partial project mutation", async () => {
+  const f = await fixture(), sql = new DatabaseSync(f.databasePath);
+  try {
+    const revision = f.database.projectState("project").stateRevision;
+    f.database.appendEvent({ projectId: "project", expectedRevision: revision, type: "winner", payload: {} });
+    expect(() => f.database.appendEvent({ projectId: "project", expectedRevision: revision, type: "loser", payload: {} })).toThrow(expect.objectContaining({ code: "STALE_PROJECT_REVISION" }));
+    const before = f.database.eventsAfter("project");
+    sql.exec("CREATE TRIGGER fail_event BEFORE INSERT ON project_events BEGIN SELECT RAISE(ROLLBACK, 'original_event_failure'); END");
+    expect(() => f.database.appendEvent({ projectId: "project", type: "failed", payload: {} })).toThrow(expect.objectContaining({ message: "original_event_failure", errcode: 1811 }));
+    expect(f.database.eventsAfter("project")).toEqual(before);
+    expect(() => f.database.assertWriterLeaseHeld()).not.toThrow();
+  } finally { sql.close(); }
+});
+
+it("fences an unconfirmed COMMIT without replay or pretending a committed event rolled back", async () => {
+  const f = await fixture(), raw = Reflect.get(f.database, "database") as DatabaseSync;
+  const original = raw.exec.bind(raw); let commits = 0;
+  const spy = vi.spyOn(raw, "exec").mockImplementation(sql => {
+    original(sql);
+    if (sql === "COMMIT") { commits++; throw new Error("Lost committed result"); }
+  });
+  try {
+    expect(() => f.database.appendEvent({ projectId: "project", type: "unknown", payload: {} })).toThrow(expect.objectContaining({ code: "WRITER_COMMIT_UNCONFIRMED", cause: expect.objectContaining({ message: "Lost committed result" }) }));
+    expect(() => f.database.appendEvent({ projectId: "project", type: "retry-not-allowed", payload: {} })).toThrow();
+    expect(commits).toBe(1);
+    expect(raw.prepare("SELECT count(*) AS n FROM project_events WHERE event_type='unknown'").get()).toMatchObject({ n: 1 });
+    expect(raw.isTransaction).toBe(false);
+  } finally { spy.mockRestore(); }
+});
+
+it("rejects old schemas at ordinary startup and preserves research facts through explicit offline upgrade", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-upgrade-")), file = path.join(root, "legacy.sqlite");
+  let sql: DatabaseSync | undefined = new DatabaseSync(file), owner: WriterOwner | undefined;
+  resources.push({ root, close: () => { sql?.close(); owner?.close(); } });
+  sql.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+  initializeCollaborationStateSchema(sql);
+  sql.exec("INSERT INTO writer_service_lease VALUES(1,'old-service','old-instance','host',21,9999999999999,100000)");
+  const old = sql.prepare("SELECT * FROM writer_service_lease").get();
+  sql.close(); sql = undefined;
+  const before = await fs.readFile(file);
+  const options = { databasePath: file, serviceId: "new", instanceId: "new", hostId: "host", topology: "single-host" as const };
+  expect(() => CollaborationStateDatabase.open(options)).toThrow(expect.objectContaining({ code: "WRITER_UPGRADE_REQUIRED" }));
+  expect(await fs.readFile(file)).toEqual(before);
+  owner = WriterOwner.open(file, { offlineUpgrade: true });
+  sql = new DatabaseSync(file); sql.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+  const next = upgradeOwnerProtocol(sql, owner, { serviceId: "new", instanceId: "upgrade", hostId: "host" }, 200_000);
+  expect(next.epoch).toBe(22);
+  expect(sql.prepare("SELECT * FROM legacy_writer_service_lease_v29").get()).toEqual(old);
+  expect(sql.prepare("SELECT name FROM sqlite_schema WHERE name='writer_service_lease'").get()).toBeUndefined();
+  expect(sql.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  sql.close(); sql = undefined; owner.close(); owner = undefined;
+  const opened = CollaborationStateDatabase.open(options);
+  try { expect(opened.writerLease().epoch).toBe(23); } finally { opened.close(); }
+});
+
+it("keeps lifecycle ownership during a business transaction crossing the old deadline and fences a real epoch replacement", async () => {
+  const f = await fixture(), raw = Reflect.get(f.database, "database") as DatabaseSync;
+  const immediate = Reflect.get(f.database, "immediate").bind(f.database) as (work: () => void) => void;
+  immediate(() => { f.advance(); raw.exec("CREATE TABLE committed_work(value TEXT); INSERT INTO committed_work VALUES('committed')"); });
+  expect(raw.prepare("SELECT * FROM committed_work").all()).toEqual([{ value: "committed" }]);
+  const before = f.database.eventsAfter("project");
+  raw.exec("UPDATE writer_service_owner SET epoch=epoch+1");
+  expect(() => f.database.appendEvent({ projectId: "project", type: "late", payload: {} })).toThrow(expect.objectContaining({ code: "WRITER_LEASE_STALE" }));
+  expect(f.database.eventsAfter("project")).toEqual(before);
+});
+
+it("does not roll back another transaction when BEGIN fails and retains actual SQL errors", async () => {
+  const f = await fixture(), raw = Reflect.get(f.database, "database") as DatabaseSync;
+  raw.exec("BEGIN IMMEDIATE");
+  try {
+    expect(() => f.database.appendEvent({ projectId: "project", type: "nested", payload: {} })).toThrow("within a transaction");
+    expect(raw.isTransaction).toBe(true);
+  } finally { raw.exec("ROLLBACK"); }
+  expect(() => f.database.assertWriterLeaseHeld()).not.toThrow();
+});
+
+it("closes duplicate runtime initialization and shutdown through one lifecycle without heartbeat expiry", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-owner-"));
+  const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+  let clock = Date.now();
+  const runtime = new CollaborationRuntimeCoordinator({ storage, serviceId: "runtime", hostId: "host", now: () => clock });
+  try {
+    const first = runtime.initialize(); expect(runtime.initialize()).toBe(first); await first;
+    const original = runtime.writerLeaseHealth(); clock += 86_400_000;
+    expect(runtime.writerLeaseHealth()).toEqual(original);
+    expect(original).toMatchObject({ status: "ready", ownership: "lifecycle-lock", epoch: 1 });
+    const closing = runtime.shutdown(); expect(runtime.shutdown()).toBe(closing); await closing;
+    expect(runtime.writerLeaseHealth().status).toBe("unavailable");
+    const next = new CollaborationRuntimeCoordinator({ storage, serviceId: "next", hostId: "host" });
+    try { await next.initialize(); expect(next.writerLeaseHealth().epoch).toBe(2); }
+    finally { await next.shutdown(); }
+  } finally { await runtime.shutdown(); await fs.rm(root, { recursive: true }); }
+});
+
+it("retains the descriptor and rejects writes when runtime dispatcher drain fails", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-failed-drain-"));
+  const databasePath = path.join(root, "state.sqlite"), storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+  const failure = new Error("Original dispatcher drain failure");
+  const runtime = new CollaborationRuntimeCoordinator({ storage, databasePath, serviceId: "drain", hostId: "host",
+    invocationDispatcher: { flush: async () => { throw failure; }, decorate: () => {}, trace: () => { throw new Error("No invocation expected"); } } });
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  await runtime.initialize();
+  const database = runtime.database();
+  try {
+    const closing = runtime.shutdown();
+    await expect(closing).rejects.toBe(failure); expect(runtime.shutdown()).toBe(closing);
+    expect(() => CollaborationStateDatabase.open({ databasePath, serviceId: "other", hostId: "host", topology: "single-host" }))
+      .toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+    await expect(database.createProject({ projectId: "late", workflowRevision: 1, workflowSnapshot: {},
+      git: { enabled: false, status: "disabled" }, workerCapacity: 1, managementCapacity: 1 })).rejects.toMatchObject({ code: "WRITER_LEASE_STALE" });
+    expect(await database.listProjectStates()).toEqual([]);
+  } finally {
+    // No Agent or external operation was opened in this fixture. Close its
+    // captured database only after the failed-drain lock assertion above.
+    await database.close(); log.mockRestore(); await fs.rm(root, { recursive: true });
+  }
+});
+
+it("backs up an offline legacy database before upgrading and refuses a foreign host without provisioning", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "offline-writer-")), databasePath = path.join(root, "legacy.sqlite");
+  resources.push({ root, close: () => {} });
+  const raw = new DatabaseSync(databasePath);
+  try {
+    raw.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL"); initializeCollaborationStateSchema(raw);
+    raw.exec("INSERT INTO writer_service_lease VALUES(1,'original','original','host',7,9999999999999,1)");
+  } finally { raw.close(); }
+  const backupDirectory = path.join(root, "backup");
+  await expect(upgradeCollaborationWriter({ databasePath, backupDirectory, hostId: "foreign", serviceId: "new", confirmedStopped: true }))
+    .rejects.toThrow("original writer host");
+  await expect(fs.stat(databasePath + ".writer.lock")).rejects.toMatchObject({ code: "ENOENT" });
+  const result = await upgradeCollaborationWriter({ databasePath, backupDirectory, hostId: "host", serviceId: "new", confirmedStopped: true });
+  expect(result.epoch).toBe(8);
+  const backup = new DatabaseSync(result.backupPath, { readOnly: true });
+  try {
+    expect(backup.prepare("SELECT schema_version FROM collaboration_state_meta").get()).toMatchObject({ schema_version: 29 });
+    expect(backup.prepare("SELECT epoch FROM writer_service_lease").get()).toMatchObject({ epoch: 7 });
+    expect(backup.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
+  } finally { backup.close(); }
+});
+
+it.each(["normal", "exit"])("releases a child-owned database after confirmed %s shutdown", async mode => {
+  const f = await fixture(); f.database.close();
+  const module = new URL("../../src/core/collaboration-state/store.ts", import.meta.url).href;
+  const program = `const {CollaborationStateDatabase}=await import(${JSON.stringify(module)});
+    const db=CollaborationStateDatabase.open(${JSON.stringify({ ...f.options, now: undefined })});
+    ${mode === "normal" ? "db.close();" : ""}process.stdout.write('ready');`;
+  const result = await promisify(execFile)(process.execPath, ["--import", "tsx", "--input-type=module", "-e", program], { timeout: 10_000 });
+  expect(result.stdout).toBe("ready");
+  const next = CollaborationStateDatabase.open(f.options);
+  try { expect(next.writerLease().epoch).toBe(3); } finally { next.close(); }
+});

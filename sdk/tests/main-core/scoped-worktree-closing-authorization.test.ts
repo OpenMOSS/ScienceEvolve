@@ -27,7 +27,7 @@ async function fixture(status: "completed" | "failed" = "completed", seed?: Fixt
   let now = Date.parse("2026-10-10T09:00:00.000Z"), writer = 0;
   const open = () => {
     const db = CollaborationStateDatabase.open({ databasePath, serviceId: "test", hostId: "test", topology: "single-host",
-      instanceId: `writer-${++writer}`, now: () => now, leaseDurationMs: 60_000 }); stores.push(db); return db;
+      instanceId: `writer-${++writer}`, now: () => now }); stores.push(db); return db;
   };
   const db = open();
   db.createProject({ projectId: "p", workflowRevision: 1, workerCapacity: 1,
@@ -586,7 +586,7 @@ describe("separate closing Git journal authority", () => {
     if (fault === "other-base") operation.expectedBase = "groups/another-group";
     if (fault === "other-kind") operation.kind = "memory.commit";
     if (fault === "other-epoch") operation.ownershipEpoch = 2;
-    if (fault === "stale-checkpoint") { f.advance(30_000); f.db.renewWriterLease(); f.advance(30_001); }
+    if (fault === "stale-checkpoint") f.advance(60_001);
     await expect(f.journal.prepare(operation)).rejects.toThrow();
     expect(f.db.recordedGitOperation("p", operation.id)).toBeUndefined();
   });

@@ -10,7 +10,7 @@ if (!root || !projectId || !Number.isSafeInteger(clock)) throw new Error("Invali
 const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
 let nativeCalls = 0;
 const coordinator = new CollaborationRuntimeCoordinator({ storage, databasePath: path.join(root, "writer.sqlite"),
-  serviceId: "git-writer-fixture", hostId: "test", now: () => clock, leaseDurationMs: 300_000,
+  serviceId: "git-writer-fixture", hostId: "test", now: () => clock,
   validateWorkflowConfiguration: async () => undefined,
   residentLauncher: { async open() { nativeCalls++; throw new Error("File publication cannot open a model"); },
     async decideRoute() { nativeCalls++; throw new Error("File publication cannot create a Main turn"); } } });

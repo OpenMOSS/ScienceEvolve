@@ -1,13 +1,13 @@
 import type { DatabaseSync } from "node:sqlite";
-import {
-  COLLABORATION_STATE_SCHEMA_VERSION,
-  type WriterLeaseToken
-} from "./contracts.js";
+import type { WriterLeaseToken } from "./contracts.js";
+import type { WriterOwner } from "./writer-owner.js";
 import { CollaborationStateError } from "./errors.js";
 
+// Research schema upgrades precede the separate lifecycle-owner transition.
+const COLLABORATION_STATE_SCHEMA_VERSION = 29;
 interface SchemaMigrationAuthority {
   writerLease: WriterLeaseToken;
-  nowMs: number;
+  offlineOwner: WriterOwner;
 }
 
 const SCOPED_RUN_SCHEMA_SQL = `
@@ -235,20 +235,21 @@ const SCOPED_FINAL_INTEGRATION_SCHEMA_SQL = `
 `;
 
 function assertMigrationLease(database: DatabaseSync, authority?: SchemaMigrationAuthority): void {
+  if (!authority?.offlineOwner) throw new CollaborationStateError("WRITER_UPGRADE_REQUIRED", "Schema migration requires explicit offline writer ownership and the retained lease identity");
+  authority.offlineOwner.assertHeld();
   const lease = database.prepare(
     "SELECT * FROM writer_service_lease WHERE singleton = 1"
   ).get() as Record<string, unknown> | undefined;
   if (
-    !authority || !lease ||
+    !lease ||
     lease.service_id !== authority.writerLease.serviceId ||
     lease.instance_id !== authority.writerLease.instanceId ||
     lease.host_id !== authority.writerLease.hostId ||
-    Number(lease.epoch) !== authority.writerLease.epoch ||
-    Number(lease.expires_at_ms) <= authority.nowMs
+    Number(lease.epoch) !== authority.writerLease.epoch
   ) {
     throw new CollaborationStateError(
       "WRITER_LEASE_HELD",
-      "Schema migration requires the exact live writer lease"
+      "Schema migration requires the exact retained writer lease identity"
     );
   }
 }
@@ -963,22 +964,7 @@ function migrateSchemaV1ToV2(
   database.exec("PRAGMA legacy_alter_table=ON");
   try {
     database.exec("BEGIN IMMEDIATE");
-    const lease = database.prepare(
-      "SELECT * FROM writer_service_lease WHERE singleton = 1"
-    ).get() as Record<string, unknown> | undefined;
-    if (
-      !authority || !lease ||
-      lease.service_id !== authority.writerLease.serviceId ||
-      lease.instance_id !== authority.writerLease.instanceId ||
-      lease.host_id !== authority.writerLease.hostId ||
-      Number(lease.epoch) !== authority.writerLease.epoch ||
-      Number(lease.expires_at_ms) <= authority.nowMs
-    ) {
-      throw new CollaborationStateError(
-        "WRITER_LEASE_HELD",
-        "Schema migration requires the exact live writer lease"
-      );
-    }
+    assertMigrationLease(database, authority);
     database.exec(`
 
       CREATE TABLE IF NOT EXISTS legacy_v1_direct_main_markers (

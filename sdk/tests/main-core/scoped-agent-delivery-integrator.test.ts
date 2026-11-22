@@ -8,6 +8,7 @@ import { ScopedAgentDeliveryIntegrator, type ScopedAgentDeliveryGit } from "../.
 import type { GitHubPullRequestFact, GitHubRepositoryFact, RemoteMergeSyncFact } from "../../src/core/collaboration-git/contracts.js";
 import type { CreatePullRequestRequest, MergePullRequestRequest } from "../../src/core/collaboration-git/facade.js";
 import { finalizeOperation, prepareOperation } from "../../src/core/collaboration-git/operation.js";
+import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
 import { COLLABORATION_STATE_SCHEMA_VERSION } from "../../src/core/collaboration-state/contracts.js";
 
 const SOURCE = "a".repeat(40);
@@ -276,6 +277,7 @@ describe("scoped Agent PR delivery integration", () => {
     const lease = database.writerLease();
     database.close();
     const old = new DatabaseSync(dbOptions.databasePath);
+    legacyWriterFixture(old, lease, dbOptions.now());
     old.exec("DROP TABLE scoped_agent_reports; UPDATE collaboration_state_meta SET schema_version = 10 WHERE singleton = 1");
     old.close();
     expect(() => CollaborationStateDatabase.open({ ...dbOptions, instanceId: "other-instance" })).toThrow();
@@ -283,7 +285,7 @@ describe("scoped Agent PR delivery integration", () => {
     expect(unchanged.prepare("SELECT schema_version FROM collaboration_state_meta").get()).toMatchObject({ schema_version: 10 });
     expect(unchanged.prepare("SELECT name FROM sqlite_schema WHERE name = 'scoped_agent_reports'").get()).toBeUndefined();
     unchanged.close();
-    const migrated = CollaborationStateDatabase.open({ ...dbOptions, writerLease: lease });
+    const migrated = openUpgradedFixture(dbOptions);
     databases.push(migrated);
     expect(migrated.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
     expect(migrated.scopedAgentReport(input.projectId, input.executionId, 1)).toBeUndefined();
@@ -359,7 +361,7 @@ describe("scoped Agent PR delivery integration", () => {
     });
     const lease = database.writerLease();
     database.close();
-    const reopened = CollaborationStateDatabase.open({ ...dbOptions, writerLease: lease });
+    const reopened = CollaborationStateDatabase.open(dbOptions);
     databases.push(reopened);
     const resumedGit = new StateBackedDeliveryGit(reopened);
     expect(await new ScopedAgentDeliveryIntegrator(reopened, resumedGit).integrate(input)).toMatchObject({ status: "completed" });

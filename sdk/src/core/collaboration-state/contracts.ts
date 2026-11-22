@@ -28,7 +28,7 @@ import type { SessionRef } from "../harness-runtime/contracts.js";
 import type { RemoteMergeSyncFact } from "../collaboration-git/contracts.js";
 import type { ScopedRoutePlan } from "../scoped-workflow-planner.js";
 
-export const COLLABORATION_STATE_SCHEMA_VERSION = 29 as const;
+export const COLLABORATION_STATE_SCHEMA_VERSION = 30 as const;
 
 /** Exact native launch fact written by the trusted launcher, independent of
  * mutable workflow roles. This is evidence, never an Agent wake authority. */
@@ -194,37 +194,28 @@ export interface WriterLeaseToken {
   instanceId: string;
   hostId: string;
   epoch: number;
-  expiresAtMs: number;
 }
 
-/** Local diagnostics only: reading these facts never queries a failing database
- * or establishes permission to write. A successful renewal requires COMMIT. */
+/** Durable writer identity; elapsed time is not authority. */
 export interface WriterLeaseDiagnostics {
   lease: WriterLeaseToken;
-  lastSuccessfulRenewalAtMs: number | null;
-  lastRenewalAttempt?: {
-    startedAtMs: number;
-    durationMs: number;
-    stage: "begin" | "update" | "commit";
-    outcome: "succeeded" | "failed";
-    transactionActive: boolean;
-  };
+  ownership: "lifecycle-lock";
 }
 
 export interface CollaborationStateOpenOptions {
   databasePath: string;
   serviceId: string;
   hostId: string;
-  /** v2 deliberately supports one writer service on one host only. */
+  /** One lifecycle owner per database; multi-host takeover is unsupported. */
   topology: "single-host";
-  leaseDurationMs?: number;
   now?: () => number;
   instanceId?: string;
-  /** Attach another connection owned by the same service instance. */
+  /** Additional connections require both the epoch and the local owner capability. */
   writerLease?: WriterLeaseToken;
+  writerOwner?: import("./writer-owner.js").WriterOwnerAttachment;
   /**
    * Test-only synchronous fault hook used to prove transaction isolation with
-   * independent processes. Production callers must leave this undefined.
+   * independent attached Workers. Production callers must leave this undefined.
    */
   transactionFault?: (
     point: "usage.after_insert",

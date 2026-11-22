@@ -28,7 +28,7 @@ async function fixture(harnessId = "codex") {
     now += 2_000;
     const database = CollaborationStateDatabase.open({ databasePath: path.join(root, "state.sqlite"),
       serviceId: "receipt-fixture", instanceId: `writer-${++writer}`, hostId: "fixture", topology: "single-host",
-      leaseDurationMs: 1_000, now: () => now });
+      now: () => now });
     databases.push(database); return database;
   };
   const database = open();

@@ -145,7 +145,7 @@ describe("atomic original A plus independent B and final directory settlement", 
   it("settles after a writer restart using original receipts without inventing report recovery or rewriting the old writer", async () => {
     const f = await deliveredClosingFixture(), oldRows = f.snapshot(); f.db.close(); f.advance(600_001);
     const next = CollaborationStateDatabase.open({ databasePath: f.databasePath, serviceId: "test", instanceId: "new-writer", hostId: "test", topology: "single-host",
-      now: () => Date.parse(f.time()), leaseDurationMs: 600_000 });
+      now: () => Date.parse(f.time()) });
     try {
       const input = await settlementInput(f, next); expect(next.settleScopedWorktreeClosing(input)?.record.writerLeaseEpoch).toBe(next.writerLease().epoch);
       expect(f.snapshot().slice(1)).toEqual(oldRows.slice(1)); expect(next.scopedExecution(P, f.execution.id)?.status).toBe("completed");

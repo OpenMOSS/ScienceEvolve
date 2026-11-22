@@ -122,7 +122,7 @@ it.each(["commit", "competing-document", "replacement-writer"] as const)("prepar
       expect(raw.isTransaction).toBe(false);
       prepared = true;
       if (scenario === "competing-document") database.writeProjectStateDocument(projectId, "project.checkpoint", { ...initial, turn: 3 }, before.version);
-      if (scenario === "replacement-writer") raw.exec("UPDATE writer_service_lease SET epoch=epoch+1,instance_id='successor'");
+      if (scenario === "replacement-writer") raw.exec("UPDATE writer_service_owner SET epoch=epoch+1,instance_id='successor'");
       return { ...initial, turn: 2 };
     } };
     const commit = () => database.writeProjectStateDocument(projectId, "project.checkpoint", value, before.version, () => { published = true; });

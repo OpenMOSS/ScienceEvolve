@@ -272,8 +272,8 @@ describe("Main's explicit, sourced PR record reconciliation", () => {
     expect(replay).toEqual(result); expect(query).toHaveBeenCalledTimes(1);
     expect(f.db.eventsAfter("p", 0, 1000).filter(e => e.type === "project.state.pull.reconciled")).toHaveLength(1);
     expect(f.db.scopedGroupReadyForFinalIntegration("p", "run-G")).toBe(false);
-    const lease = f.db.writerLease(); f.db.close();
-    const reopened = CollaborationStateDatabase.open({ ...f.options, writerLease: lease }); stores.push(reopened);
+    f.db.close();
+    const reopened = CollaborationStateDatabase.open(f.options); stores.push(reopened);
     expect(f.get(main.principal, reopened).core).toEqual(f.get({ kind: "system", projectId: "p", source: "restart-check" }, reopened).core);
     expect(await executeProjectStateRequest(reopened, main.principal, input, { observePullRequest: query })).toEqual(result);
     expect(query).toHaveBeenCalledTimes(1);

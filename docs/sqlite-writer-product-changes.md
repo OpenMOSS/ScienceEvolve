@@ -1,5 +1,7 @@
 # ScienceEvolve SQLite writer integration changes
 
+For the current schema-30 product contract, offline upgrade and outstanding platform/restore limits see [SQLite writer ownership](sqlite-writer-lifecycle.md). The entries below record earlier prerequisite slices.
+
 ## Schema preflight and database Worker drain — 2026-11-18
 
 These changes are in the **product Store and database Worker**, not only the S0

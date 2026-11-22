@@ -420,9 +420,9 @@ describe("CollaborationRuntimeCoordinator", () => {
   });
 
   it("keeps production coordinator writes current while its business thread stalls", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-independent-heartbeat-")); temporaryRoots.push(root);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-business-stall-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
-    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "worker-heartbeat", hostId: "fixture", leaseDurationMs: 5000 });
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "worker-owner", hostId: "fixture" });
     liveCoordinators.push(coordinator); await coordinator.initialize();
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5700);
     expect(coordinator.writerLeaseHealth()).toMatchObject({ status: "ready", epoch: 1 });
@@ -433,7 +433,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.shutdown();
   }, 20_000);
 
-  it("exposes a service interruption and retained sessions when the writer lease expires", async () => {
+  it("exposes a service interruption and retained sessions when the writer owner is fenced", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-writer-readiness-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
     let clock = Date.now();
@@ -445,7 +445,9 @@ describe("CollaborationRuntimeCoordinator", () => {
       git: state.git, workerCapacity: 1, managementCapacity: 1 });
     const before = structuredClone(state), log = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      expect(coordinator.writerLeaseHealth().status).toBe("ready"); clock += 31_000;
+      expect(coordinator.writerLeaseHealth().status).toBe("ready"); clock += 86_400_000;
+      expect(coordinator.writerLeaseHealth().status).toBe("ready");
+      await coordinator.database().relinquishWriterLease();
       const view = await coordinator.projectReadModel(state);
       expect(view).toMatchObject({ status: "interrupted", phase: "collaboration:writer-lease-lost", runtime: {
         status: "interrupted", activities: [], waiting: { kind: "service", failedAt: new Date(clock).toISOString(), errorCode: "WRITER_LEASE_STALE" } } });
@@ -1119,201 +1121,90 @@ describe("CollaborationRuntimeCoordinator", () => {
     } finally { await orchestrator.shutdown(); }
   });
 
-  it.each(["renewal", "lease-check"] as const)("logs the original SQLite %s failure once and fences the writer", async boundary => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-heartbeat-diagnostic-")); temporaryRoots.push(root);
+  it.each(["io", "unexpected"] as const)("logs the original %s ownership failure once and fences later requests", async boundary => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-owner-diagnostic-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
-    let clock = Date.now();
+    const clock = Date.now(), databasePath = path.join(root, "collaboration.sqlite");
     const state = projectState("prj_17171717171717171717171717171717");
-    state.git = { enabled: true, status: "ready" }; state.phase = "idle";
-    await storage.createProject(state);
-    const coordinator = new CollaborationRuntimeCoordinator({ storage, databasePath: path.join(root, "collaboration.sqlite"),
-      serviceId: "heartbeat-diagnostic", hostId: "test-host", leaseDurationMs: 30_000, now: () => clock });
-    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    try {
-      liveCoordinators.push(coordinator); await coordinator.initialize();
-      const database = coordinator.database();
-      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
-        git: state.git, workerCapacity: 1, managementCapacity: 1 });
-      const lease = await database.writerLease();
-      const error = Object.assign(new Error(boundary === "renewal" ? "disk I/O error" : "database is locked"), {
-        code: "ERR_SQLITE_ERROR", errcode: boundary === "renewal" ? 778 : 5 });
-      const checkError = Object.assign(new Error("lease verification I/O error"), { code: "ERR_SQLITE_ERROR", errcode: 778 });
-      const renew = vi.spyOn(database, "renewWriterLease").mockImplementation(() => { throw error; });
-      if (boundary === "lease-check") vi.spyOn(database, "assertWriterLeaseHeld").mockImplementationOnce(() => { throw checkError; });
-      clock += 10_000; vi.advanceTimersByTime(10_000);
-      expect(log).toHaveBeenCalledExactlyOnceWith("Collaboration writer lease renewal failed; writer fenced", {
-        timestamp: new Date(clock).toISOString(), error: error.message, code: "ERR_SQLITE_ERROR", sqliteCode: error.errcode,
-        sqlitePrimaryCode: error.errcode & 0xff,
-        heartbeat: { intervalMs: 10_000, scheduledAtMs: clock, startedAtMs: clock, delayMs: 0 },
-        leaseEpoch: lease.epoch, leaseExpiresAt: new Date(lease.expiresAtMs).toISOString(),
-        leaseServiceId: lease.serviceId, leaseInstanceId: lease.instanceId, leaseHostId: lease.hostId,
-        leaseRemainingMs: lease.expiresAtMs - clock, lastSuccessfulRenewalAt: null,
-        ...(boundary === "lease-check" ? { leaseCheckFailure: { error: checkError.message, code: "ERR_SQLITE_ERROR",
-          sqliteCode: 778, sqlitePrimaryCode: 10 } } : {})
-      });
-      await expect(database.assertWriterLeaseHeld()).resolves.toBeUndefined();
-      expect((await database.writerLease())).toEqual(lease);
-      expect((await coordinator.projectReadModel(state)).phase).toBe("collaboration:writer-lease-lost");
-      await expect(coordinator.pauseProject(state)).rejects.toMatchObject({ message: "Collaboration writer lease was lost", cause: error });
-      clock += 10_000; vi.advanceTimersByTime(10_000);
-      expect(renew).toHaveBeenCalledOnce(); expect(log).toHaveBeenCalledOnce();
-    } finally { await coordinator.shutdown().catch(() => undefined); vi.useRealTimers(); log.mockRestore(); }
-  });
-
-  it("retains the last committed heartbeat and original trigger failure through runtime fencing", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-original-heartbeat-")); temporaryRoots.push(root);
-    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
-    let clock = Date.now();
-    const databasePath = path.join(root, "collaboration.sqlite");
+    state.git = { enabled: true, status: "ready" }; state.phase = "idle"; await storage.createProject(state);
     const coordinator = new CollaborationRuntimeCoordinator({ storage, databasePath,
-      serviceId: "trigger-heartbeat", hostId: "test-host", leaseDurationMs: 30_000, now: () => clock });
+      serviceId: "owner-diagnostic", hostId: "test-host", now: () => clock });
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    let inspect: DatabaseSync | undefined;
-    try {
-      liveCoordinators.push(coordinator); await coordinator.initialize();
-      const database = coordinator.database();
-      clock += 10_000; vi.advanceTimersByTime(10_000);
-      const confirmedAt = clock, lease = await database.writerLease();
-      inspect = new DatabaseSync(databasePath);
-      inspect.exec(`CREATE TRIGGER reject_heartbeat BEFORE UPDATE ON writer_service_lease
-        BEGIN SELECT RAISE(ROLLBACK, 'original_failure'); END;`);
-      clock += 10_000; vi.advanceTimersByTime(10_000);
-      expect(log).toHaveBeenCalledExactlyOnceWith("Collaboration writer lease renewal failed; writer fenced",
-        expect.objectContaining({ error: "original_failure", code: "ERR_SQLITE_ERROR", sqliteCode: 1811,
-          sqlitePrimaryCode: 19, lastSuccessfulRenewalAt: new Date(confirmedAt).toISOString(),
-          leaseEpoch: lease.epoch, leaseInstanceId: lease.instanceId,
-          lastRenewalAttempt: { startedAtMs: clock, durationMs: expect.any(Number), stage: "update",
-            outcome: "failed", transactionActive: false } }));
-      expect((await database.writerLease())).toEqual(lease);
-      expect(inspect.prepare("SELECT renewed_at_ms FROM writer_service_lease").get()).toMatchObject({ renewed_at_ms: confirmedAt });
-      expect(() => coordinator.assertWritable()).toThrow(expect.objectContaining({
-        message: "Collaboration writer lease was lost", cause: expect.objectContaining({ message: "original_failure", errcode: 1811 })
-      }));
-      clock += 10_000; vi.advanceTimersByTime(10_000);
-      expect(log).toHaveBeenCalledOnce();
-      inspect.exec("DROP TRIGGER reject_heartbeat");
-    } finally {
-      inspect?.close(); await coordinator.shutdown().catch(() => undefined); vi.useRealTimers(); log.mockRestore();
-    }
-  });
-
-  it.each(["expired", "replaced"] as const)("preserves SQLite busy and reports the actual %s lease holder", async outcome => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-busy-lease-check-")); temporaryRoots.push(root);
-    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
-    let clock = Date.now();
-    const databasePath = path.join(root, "collaboration.sqlite");
-    const coordinator = new CollaborationRuntimeCoordinator({ storage, databasePath,
-      serviceId: "original-service", hostId: "test-host", leaseDurationMs: 30_000, now: () => clock });
-    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    let successor: CollaborationStateDatabase | undefined;
     try {
       liveCoordinators.push(coordinator); await coordinator.initialize();
       const database = coordinator.database(), lease = await database.writerLease();
-      const busy = Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
-      vi.spyOn(database, "renewWriterLease").mockImplementation(() => { throw busy; });
-      clock = lease.expiresAtMs + 1;
-      if (outcome === "replaced") successor = CollaborationStateDatabase.open({ databasePath,
-        serviceId: "successor-service", instanceId: "successor-instance", hostId: "test-host",
-        topology: "single-host", leaseDurationMs: 30_000, now: () => clock });
-      vi.advanceTimersByTime(10_000);
-      expect(log).toHaveBeenCalledExactlyOnceWith("Collaboration writer lease renewal failed; writer fenced",
-        expect.objectContaining({ error: "database is locked", sqliteCode: 5,
-          heartbeat: { intervalMs: 10_000, scheduledAtMs: lease.expiresAtMs - 20_000,
-            startedAtMs: clock, delayMs: 20_001 },
-          leaseCheckFailure: expect.objectContaining({ code: "WRITER_LEASE_STALE", leaseCheck: {
-            checkedAtMs: clock, expectedLease: lease, observedLease: successor?.writerLease() ?? lease
-          } }) }));
-      expect(() => coordinator.assertWritable()).toThrow(expect.objectContaining({ cause: busy }));
-      expect((await database.writerLease())).toEqual(lease);
-      if (successor) expect(() => successor!.assertWriterLeaseHeld()).not.toThrow();
-    } finally {
-      successor?.relinquishWriterLease(); successor?.close();
-      await coordinator.shutdown().catch(() => undefined); vi.useRealTimers(); log.mockRestore();
-    }
+      await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+        git: state.git, workerCapacity: 1, managementCapacity: 1 });
+      const error = boundary === "io" ? Object.assign(new Error("disk I/O error"), { code: "ERR_SQLITE_ERROR", errcode: 778 })
+        : new Error("Owner descriptor unavailable");
+      database.assertWriterAvailable();
+      const check = vi.spyOn(database, "assertWriterAvailable").mockImplementationOnce(() => { throw error; });
+      expect(() => coordinator.assertWritable()).toThrow(expect.objectContaining({ cause: error }));
+      check.mockRestore();
+      expect(log).toHaveBeenCalledExactlyOnceWith("Collaboration writer ownership failed; writer fenced", {
+        timestamp: new Date(clock).toISOString(), ownership: "lifecycle-lock", error: error.message,
+        ...(boundary === "io" ? { code: "ERR_SQLITE_ERROR", sqliteCode: 778, sqlitePrimaryCode: 10 } : {}),
+        leaseEpoch: lease.epoch, leaseServiceId: lease.serviceId, leaseInstanceId: lease.instanceId, leaseHostId: lease.hostId
+      });
+      await expect(database.appendEvent({ projectId: state.id, type: "late", payload: {} })).rejects.toMatchObject({ code: "WRITER_LEASE_STALE" });
+      expect((await database.eventsAfter(state.id)).some(event => event.type === "late")).toBe(false);
+      expect((await coordinator.projectReadModel(state)).phase).toBe("collaboration:writer-lease-lost");
+      await expect(coordinator.pauseProject(state)).rejects.toMatchObject({ message: "Collaboration writer ownership was lost", cause: error });
+      expect(() => CollaborationStateDatabase.open({ databasePath, serviceId: "other", hostId: "test-host", topology: "single-host" }))
+        .toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+      expect(log).toHaveBeenCalledOnce();
+    } finally { await coordinator.shutdown(); log.mockRestore(); }
   });
 
-  it.each(["retry", "expired", "replaced", "unexpected"] as const)(
-    "keeps an unexpired writer through actual SQLite reader contention, then handles %s", async outcome => {
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-reader-heartbeat-")); temporaryRoots.push(root);
-      const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
-      let clock = Date.now(); const startedAt = clock;
-      const state = projectState("prj_15151515151515151515151515151515");
-      state.git = { enabled: true, status: "ready" }; state.phase = "idle";
-      await storage.createProject(state);
-      const databasePath = path.join(root, "collaboration.sqlite");
-      const coordinator = new CollaborationRuntimeCoordinator({ storage, databasePath,
-        serviceId: "reader-heartbeat", hostId: "test-host", leaseDurationMs: 30_000, now: () => clock });
-      const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-      let reader: DatabaseSync | undefined; let successor: CollaborationStateDatabase | undefined;
-      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-      try {
-        if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
-        await coordinator.initialize();
-        const database = coordinator.database();
-        await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
-          git: state.git, workerCapacity: 1, managementCapacity: 1 });
-        const original = await database.writerLease();
-        const phase = (await coordinator.projectReadModel(state)).phase;
-        const failures: unknown[] = []; const renew = database.renewWriterLease.bind(database);
-        vi.spyOn(database, "renewWriterLease").mockImplementation(async () => {
-          try { return await renew(); } catch (error) { failures.push(error); throw error; }
-        });
-        reader = new DatabaseSync(databasePath, { readOnly: true });
-        expect(reader.prepare("PRAGMA journal_mode").get()).toMatchObject({ journal_mode: "delete" });
-        reader.exec("BEGIN"); reader.prepare("SELECT * FROM writer_service_lease").get();
-        clock += 10_000;
-        vi.advanceTimersByTime(10_000);
-        expect(failures).toHaveLength(1);
-        expect(failures[0]).toMatchObject({ errcode: 5 });
-        expect((await database.writerLeaseDiagnostics())).toMatchObject({ lastSuccessfulRenewalAtMs: null,
-          lastRenewalAttempt: { startedAtMs: clock, stage: "commit", outcome: "failed", transactionActive: false } });
-        expect(warning).toHaveBeenCalledExactlyOnceWith("Collaboration writer lease renewal delayed; original lease still held",
-          expect.objectContaining({ sqliteCode: 5, sqlitePrimaryCode: 5,
-            lastRenewalAttempt: expect.objectContaining({ stage: "commit", durationMs: expect.any(Number) }) }));
-        // The actual failed COMMIT rolled back. The original epoch still
-        // owns its unexpired lease; a reader did not become a successor.
-        await expect(database.assertWriterLeaseHeld()).resolves.toBeUndefined();
-        expect((await database.writerLease())).toEqual(original);
-        reader.exec("ROLLBACK"); reader.close(); reader = undefined;
-        expect((await coordinator.projectReadModel(state)).phase).toBe(phase);
-        if (outcome === "retry") {
-          clock += 10_000; vi.advanceTimersByTime(10_000);
-          expect((await database.writerLease())).toMatchObject({ epoch: original.epoch, instanceId: original.instanceId,
-            expiresAtMs: startedAt + 50_000 });
-          expect((await database.writerLeaseDiagnostics()).lastSuccessfulRenewalAtMs).toBe(clock);
-          await expect(coordinator.pauseProject(state)).resolves.toBeUndefined();
-          expect(state.pauseRequest?.settledAt).toBeTruthy();
-        } else if (outcome === "unexpected") {
-          vi.mocked(database.renewWriterLease).mockImplementationOnce(() => {
-            throw new Error("Unexpected heartbeat failure");
-          });
-          clock += 10_000; vi.advanceTimersByTime(10_000);
-          await expect(database.assertWriterLeaseHeld()).resolves.toBeUndefined();
-          expect((await coordinator.projectReadModel(state)).phase).toBe("collaboration:writer-lease-lost");
-          await expect(coordinator.pauseProject(state)).rejects.toThrow("writer lease was lost");
-        } else {
-          clock = original.expiresAtMs + 1;
-          if (outcome === "replaced") successor = CollaborationStateDatabase.open({ databasePath,
-            serviceId: "reader-heartbeat-successor", instanceId: "successor", hostId: "test-host", topology: "single-host",
-            leaseDurationMs: 30_000, now: () => clock });
-          vi.advanceTimersByTime(10_000);
-          expect((await coordinator.projectReadModel(state)).phase).toBe("collaboration:writer-lease-lost");
-          await expect(coordinator.pauseProject(state)).rejects.toThrow("writer lease was lost");
-          expect((await database.writerLease()).epoch).toBe(original.epoch);
-          if (successor) {
-            expect(successor.writerLease().epoch).toBe(original.epoch + 1);
-            expect(() => successor!.assertWriterLeaseHeld()).not.toThrow();
-          }
-        }
-      } finally {
-        if (reader) { reader.exec("ROLLBACK"); reader.close(); }
-        successor?.relinquishWriterLease(); successor?.close();
-        await coordinator.shutdown().catch(() => undefined); vi.useRealTimers(); warning.mockRestore();
-      }
-    }, 15_000);
+  it("preserves a known rolled-back trigger failure without losing the runtime owner", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-trigger-failure-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const databasePath = path.join(root, "collaboration.sqlite");
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, databasePath, serviceId: "trigger-owner", hostId: "test-host" });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    const database = coordinator.database(), inspect = new DatabaseSync(databasePath);
+    try {
+      const before = inspect.prepare("SELECT * FROM writer_service_owner").get();
+      inspect.exec(`CREATE TRIGGER reject_project BEFORE INSERT ON project_heads
+        BEGIN SELECT RAISE(ROLLBACK, 'original_failure'); END;`);
+      const create = () => database.createProject({ projectId: "trigger-project", workflowRevision: 1, workflowSnapshot: {},
+        git: { enabled: false, status: "disabled" }, workerCapacity: 1, managementCapacity: 1 });
+      await expect(create()).rejects.toMatchObject({ message: "original_failure", errcode: 1811 });
+      expect(coordinator.writerLeaseHealth()).toMatchObject({ status: "ready", ownership: "lifecycle-lock" });
+      expect(inspect.prepare("SELECT * FROM writer_service_owner").get()).toEqual(before);
+      expect(inspect.prepare("SELECT count(*) AS n FROM project_heads").get()).toMatchObject({ n: 0 });
+      inspect.exec("DROP TRIGGER reject_project"); await create();
+    } finally { inspect.close(); await coordinator.shutdown(); }
+  });
+
+  it("fences actual reader-blocked COMMIT without replay and retains the lock until runtime drain", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-reader-contention-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    let clock = Date.now();
+    const databasePath = path.join(root, "collaboration.sqlite");
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, databasePath,
+      serviceId: "reader-owner", hostId: "test-host", now: () => clock });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    const database = coordinator.database(), lease = await database.writerLease();
+    const reader = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      reader.exec("BEGIN"); reader.prepare("SELECT * FROM writer_service_owner").get();
+      clock += 86_400_000;
+      expect(coordinator.writerLeaseHealth()).toMatchObject({ status: "ready", epoch: lease.epoch });
+      await expect(database.createProject({ projectId: "blocked", workflowRevision: 1, workflowSnapshot: {},
+        git: { enabled: false, status: "disabled" }, workerCapacity: 1, managementCapacity: 1 }))
+        .rejects.toMatchObject({ code: "WRITER_COMMIT_UNCONFIRMED", cause: { code: "ERR_SQLITE_ERROR", errcode: 5 } });
+      reader.exec("ROLLBACK");
+      expect(coordinator.writerLeaseHealth()).toMatchObject({ status: "unavailable", code: "WRITER_COMMIT_UNCONFIRMED" });
+      expect(() => CollaborationStateDatabase.open({ databasePath, serviceId: "other", hostId: "test-host", topology: "single-host" }))
+        .toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+      expect(reader.prepare("SELECT count(*) AS n FROM project_heads").get()).toMatchObject({ n: 0 });
+      await coordinator.shutdown();
+      const successor = CollaborationStateDatabase.open({ databasePath, serviceId: "other", hostId: "test-host", topology: "single-host" });
+      try { expect(successor.writerLease().epoch).toBe(lease.epoch + 1); expect(successor.listProjectStates()).toEqual([]); }
+      finally { successor.close(); }
+    } finally { if (reader.isTransaction) reader.exec("ROLLBACK"); reader.close(); await coordinator.shutdown(); }
+  }, 15_000);
 
   it.each([false, true].flatMap(scoped => ["entry", "event append", "event state", "workflow definition", "workflow state", "durable status", "state file", "management reference"].map(boundary => ({ scoped, boundary }))))(
     "fences the old writer at $boundary after an independent successor publishes the same configuration (scoped=$scoped)", async ({ scoped, boundary }) => {
@@ -1332,8 +1223,9 @@ describe("CollaborationRuntimeCoordinator", () => {
       const native = { open: vi.fn(async () => { throw new Error("Writer publication cannot open a model"); }),
         decideRoute: vi.fn(async () => { throw new Error("Writer publication cannot create a Main turn"); }) };
       const options = { storage, databasePath: path.join(root, "writer.sqlite"), serviceId: "git-writer-fixture", hostId: "test",
-        now: () => clock, leaseDurationMs: 300_000, validateWorkflowConfiguration: async () => undefined, residentLauncher: native };
+        now: () => clock, validateWorkflowConfiguration: async () => undefined, residentLauncher: native };
       const coordinator = new CollaborationRuntimeCoordinator(options); await coordinator.initialize(); const database = coordinator.database();
+      const originalEpoch = (await database.writerLease()).epoch;
       await database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration, git: state.git, workerCapacity: 2 });
       await database.initializeScopedConfiguration(state.id, { agents: state.agents, skillDefinitions: {}, mcpDefinitions: {} });
       await coordinator.saveWorkflowRevision(state, { orchestration: state.orchestration, affectedGroupIds: [] });
@@ -1351,6 +1243,11 @@ describe("CollaborationRuntimeCoordinator", () => {
       let published: Array<{ bytes: Buffer; inode: number }> = [], finalStateWrite = false;
       const handoff = async () => {
         if (successor) return; clock += 1_000_000;
+        expect(coordinator.writerLeaseHealth().status).toBe("ready");
+        // A successor cannot take over by elapsed time. Explicitly fence and
+        // drain this fixture before the independent process acquires its lock.
+        await database.relinquishWriterLease();
+        await coordinator.shutdown();
         successor = await new Promise((resolve, reject) => execFile(process.execPath,
           ["--import", "tsx", "tests/main-core/helpers/workflow-projection-writer.ts", root, state.id, String(clock)],
           { cwd: process.cwd(), encoding: "utf8", timeout: 20_000 }, (error, stdout, stderr) => {
@@ -1379,7 +1276,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           ? coordinator.readMainWorkflowProposal(state, workspace, draft, current.version)
           : coordinator.saveWorkflowRevision(state, { orchestration: state.orchestration, affectedGroupIds: [] });
         await expect(publish).rejects.toThrow(/writer|lease/i);
-        expect(successor!.epoch).toBeGreaterThan((await database.writerLease()).epoch); expect(successor!.version).toEqual(current.version); expect(successor!.nativeCalls).toBe(0);
+        expect(successor!.epoch).toBeGreaterThan(originalEpoch); expect(successor!.version).toEqual(current.version); expect(successor!.nativeCalls).toBe(0);
         for (let index = 0; index < targets.length; index++) {
           expect(await fs.readFile(targets[index])).toEqual(published[index].bytes); expect((await fs.stat(targets[index])).ino).toBe(published[index].inode);
         }
@@ -3179,7 +3076,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "account-binding-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory,
       credentialResolverForAccount: () => async () => ({
         token: "fixture-credential",
@@ -3533,7 +3429,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "runtime-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => initializationFake(options, calls)
     });
     if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
@@ -3617,7 +3512,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage: restartedStorage,
       serviceId: "runtime-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => initializationFake(options, calls)
     });
     if (restarted instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(restarted);
@@ -3679,7 +3573,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "git-retry-fence-test",
       hostId: "host-test",
-      leaseDurationMs: 60 * 60_000,
       now: () => clock.value,
       gitFactory: (options) => {
         const base = happyGitFake(options, []);
@@ -3773,7 +3666,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "git-retry-main-open-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => initializationFake(options, []),
       residentLauncher: {
         async open() {
@@ -3893,7 +3785,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       return storage.resolveExecutionArtifactCandidate(state.id, owner, record.path);
     });
     coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "history-query", hostId: "host-test",
-      leaseDurationMs: 5_000, gitFactory: options => {
+      gitFactory: options => {
         const git = happyGitFake(options, order);
         const create = git.createPullRequest.bind(git), push = git.checkpointAndPush.bind(git);
         if (phase === "after-sync-failure") {
@@ -4022,7 +3914,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     });
     let coordinator!: CollaborationRuntimeCoordinator;
     coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "publication-repair", hostId: "host-test",
-      leaseDurationMs: 5_000, harnessRecoveryDelayMs: () => 60_000, gitFactory: (options) => happyGitFake(options, order), residentLauncher: {
+      harnessRecoveryDelayMs: () => 60_000, gitFactory: (options) => happyGitFake(options, order), residentLauncher: {
         async open(input) {
           opens += 1;
           return { async submit(turn) {
@@ -4254,8 +4146,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       databasePath,
       serviceId: "artifact-epoch-recovery-test",
       hostId: "host-test",
-      topology: "single-host",
-      leaseDurationMs: 5_000
+      topology: "single-host"
     });
     database.createProject({
       projectId: state.id,
@@ -4371,8 +4262,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       databasePath,
       serviceId: "artifact-epoch-recovery-test",
-      hostId: "host-test",
-      leaseDurationMs: 5_000
+      hostId: "host-test"
     });
     const mutableCandidate = vi.spyOn(storage, "resolveExecutionArtifactCandidate")
       .mockRejectedValue(new Error("merged artifact publication must not read the worktree"));
@@ -4652,7 +4542,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     await storage.createProject(state);
     let receivedInvocation: string | undefined;
     const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "root-main-input", hostId: "host-test",
-      leaseDurationMs: 5_000, gitFactory: options => ({ ...happyGitFake(options, []),
+      gitFactory: options => ({ ...happyGitFake(options, []),
         async prepareAgentManagementWorkspace(agentId: string) {
           const directory = path.join(storage.projectDir(state.id), "git-worktrees", "agents", agentId);
           await fs.mkdir(directory, { recursive: true }); return directory;
@@ -4741,7 +4631,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "user-main-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order),
       residentLauncher: {
         async open() { throw new Error("Main management must not open a delivery resident"); },
@@ -4830,7 +4719,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     let decisions = 0, key = "", requestId = "", release!: () => void;
     const nextTurn = new Promise<void>(resolve => { release = resolve; });
     const original = { schemaVersion: 1 as const, harnessId: "codex", adapterVersion: "test", nativeId: "late-original-main", generation: 0, durable: true, createdAt: state.createdAt };
-    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-late-session", hostId: "test", leaseDurationMs: 5_000,
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-late-session", hostId: "test",
       validateWorkflowConfiguration: async () => undefined, gitFactory: options => happyGitFake(options, []), residentLauncher: {
         async open() { throw new Error("Main stays a management invocation"); },
         async decideRoute(input) {
@@ -4881,7 +4770,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       state.agents = { main: state.agents.main }; state.runCounts = { main: 0 }; state.executionCounts = { main: 0 };
       await storage.createProject(state);
       let decisions = 0, originalAccepted: CollaborationEvent | undefined, originalFinish: CollaborationEvent | undefined;
-      const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-withdrawal", hostId: "test", leaseDurationMs: 5_000,
+      const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-withdrawal", hostId: "test",
         gitFactory: options => happyGitFake(options, []), residentLauncher: {
           async open() { throw new Error("Main stays a management invocation"); },
           async decideRoute(input) {
@@ -4941,7 +4830,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       await storage.createProject(state);
       let injected = false;
       let decisions = 0, originalAccepted: CollaborationEvent | undefined, originalFinish: CollaborationEvent | undefined;
-      const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-withdrawal-replay", hostId: "test", leaseDurationMs: 5_000,
+      const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-withdrawal-replay", hostId: "test",
         gitFactory: options => happyGitFake(options, []), residentLauncher: {
           async open() { throw new Error("Main stays a management invocation"); },
           async observeMainRouteRecovery() { return { stopped: true, evidence: { fixtureNativeWasClosed: true } }; },
@@ -5015,7 +4904,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       state.agents = { main: state.agents.main }; state.runCounts = { main: 0 }; state.executionCounts = { main: 0 };
       await storage.createProject(state);
       let decisions = 0, validations = 0, rejected: unknown, draftPath = "", originalDraft = "", ownFinish: CollaborationEvent | undefined;
-      const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-async-base", hostId: "test", leaseDurationMs: 5_000,
+      const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-async-base", hostId: "test",
         gitFactory: options => happyGitFake(options, []),
         validateWorkflowConfiguration: async (_state, proposal) => {
           validations += 1;
@@ -5116,7 +5005,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "main-node-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order),
       residentLauncher: {
         async open() { throw new Error("Main management must not open a delivery resident"); },
@@ -5397,7 +5285,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "main-terminal-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, []),
       residentLauncher: {
         async open() { throw new Error("System Main must remain management-only"); },
@@ -5569,7 +5456,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "main-accepted-action-first",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory,
       residentLauncher
     });
@@ -5752,7 +5638,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "group-accepted-rebind-first",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order, true, false, managementContents),
       residentLauncher
     });
@@ -5806,7 +5691,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage: restartedStorage,
       serviceId: "group-accepted-rebind-second",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order, true, false, managementContents),
       residentLauncher
     });
@@ -5978,7 +5862,7 @@ describe("CollaborationRuntimeCoordinator", () => {
         } };
       };
       const first = new CollaborationRuntimeCoordinator({ storage, serviceId: "main-display-first", hostId: "host-test",
-        leaseDurationMs: 5_000, harnessRecoveryDelayMs: () => 60_000, gitFactory, residentLauncher });
+        harnessRecoveryDelayMs: () => 60_000, gitFactory, residentLauncher });
       if (first instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(first);
       await first.initialize();
       try {
@@ -6003,7 +5887,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       bindCompletionStorage(restartedStorage);
       const restartedState = await restartedStorage.loadState(state.id);
       const restarted = new CollaborationRuntimeCoordinator({ storage: restartedStorage, serviceId: "main-display-second",
-        hostId: "host-test", leaseDurationMs: 5_000, gitFactory, residentLauncher });
+        hostId: "host-test", gitFactory, residentLauncher });
       if (restarted instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(restarted);
       await restarted.initialize();
       try {
@@ -6160,7 +6044,6 @@ describe("CollaborationRuntimeCoordinator", () => {
         storage,
         serviceId: `main-workflow-${crashBoundary}-first`,
         hostId: "host-test",
-        leaseDurationMs: 5_000,
         gitFactory,
         residentLauncher
       });
@@ -6209,7 +6092,6 @@ describe("CollaborationRuntimeCoordinator", () => {
         storage: restartedStorage,
         serviceId: `main-workflow-${crashBoundary}-second`,
         hostId: "host-test",
-        leaseDurationMs: 5_000,
         gitFactory,
         residentLauncher
       });
@@ -6304,7 +6186,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "main-route-recovery-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, []),
       residentLauncher: {
         async open() { throw new Error("System Main must remain management-only"); },
@@ -6449,7 +6330,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     let now = Date.parse("2026-09-27T00:03:00.000Z");
     const options = { databasePath: path.join(root, "collaboration.sqlite"), serviceId: "recorded-session-test",
       instanceId: "recorded-session-instance", hostId: "host-test", topology: "single-host" as const,
-      leaseDurationMs: 1_000, now: () => now };
+      now: () => now };
     let database = CollaborationStateDatabase.open(options);
     try {
       database.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
@@ -6820,7 +6701,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "main-route-bounded-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       harnessRecoveryDelayMs: () => 10,
       gitFactory: (options) => happyGitFake(options, []),
       residentLauncher: {
@@ -6856,7 +6736,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "workflow-revision-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => initializationFake(options, [])
     });
     if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
@@ -6914,7 +6793,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "workflow-projection-crash-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, [])
     });
     if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
@@ -6963,7 +6841,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage: restartedStorage,
       serviceId: "workflow-projection-crash-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, [])
     });
     if (restarted instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(restarted);
@@ -7094,7 +6971,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "pr-gate-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => ({
         ...happyGitFake(options, order),
         async managementMemorySnapshot() {
@@ -7265,7 +7141,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     const order: string[] = [], opened: Array<{ id?: string; agent: string; epoch?: number; cwd: string }> = [];
     const managementPrompts: string[] = [];
     const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "bulk-stop-original-owner-test",
-      hostId: "host-test", leaseDurationMs: 5_000, gitFactory: options => happyGitFake(options, order),
+      hostId: "host-test", gitFactory: options => happyGitFake(options, order),
       residentLauncher: {
         async stopLeaderForRecovery() { return { stopped: true, evidence: { processGroupAbsent: true } }; },
         async stopForRecovery() { return { stopped: true, evidence: { processGroupAbsent: true, sessionNotPreviouslyCommitted: true } }; },
@@ -7359,7 +7235,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     let stopObservations = 0;
     const gitCalls: string[] = [];
     const coordinator = new CollaborationRuntimeCoordinator({ storage, serviceId: "repeat-stop-test",
-      hostId: "host-test", leaseDurationMs: 5_000, gitFactory: (options) => happyGitFake(options, gitCalls),
+      hostId: "host-test", gitFactory: (options) => happyGitFake(options, gitCalls),
       residentLauncher: { async open() { throw new Error("Stop does not open an Agent"); },
         async stopLeaderForRecovery() { stopObservations += 1; return { stopped: stopObservations > 1,
           evidence: { processGroupAbsent: stopObservations > 1 } }; } } });
@@ -7420,7 +7296,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "waiting-pr-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order, false),
       residentLauncher: {
         async open(input) {
@@ -7478,7 +7353,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "cancel-proof-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order, false),
       residentLauncher: {
         async open(input) {
@@ -7885,7 +7759,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "conflict-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order, true, true),
       residentLauncher: {
         async open(input) {
@@ -7939,7 +7812,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "not-committed-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => {
         const base = happyGitFake(options, []);
         return {
@@ -8022,7 +7894,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "close-gate-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order),
       residentLauncher: {
         async open(input) {
@@ -8086,7 +7957,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "agent-route-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order),
       residentLauncher: {
         async open(input) {
@@ -8174,7 +8044,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "main-direct-group-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, []),
       residentLauncher: {
         async open(input) {
@@ -8262,7 +8131,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "main-selected-group-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, []),
       residentLauncher: {
         async open(input) {
@@ -8393,7 +8261,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "autonomous-group-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, []),
       residentLauncher: {
         async open(input) {
@@ -8611,7 +8478,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       databasePath,
       serviceId: "route-origin-restart",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, []),
       residentLauncher: {
         async open(input) {
@@ -8816,7 +8682,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "pause-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order),
       residentLauncher: {
         async open(input) {
@@ -8941,7 +8806,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "group-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order, true, false, managementContents),
       residentLauncher: {
         async open(input) {
@@ -9312,7 +9176,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "group-chain-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(
         options,
         order,
@@ -9524,7 +9387,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "handoff-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order, true, true),
       residentLauncher: {
         async open(input) {
@@ -9873,7 +9735,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "final-repair-topology-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => {
         const git = happyGitFake(options, order, true, (execution) => {
           if (execution.purpose !== "final-integration" ||
@@ -10247,7 +10108,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       databasePath,
       serviceId: "group-auth-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory,
       residentLauncher
     });
@@ -10293,7 +10153,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       databasePath,
       serviceId: "group-auth-restarted",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory,
       residentLauncher
     });
@@ -10569,7 +10428,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "all-failed-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       harnessRecoveryDelayMs: () => 60_000, gitFactory: (options) => happyGitFake(options, order),
       residentLauncher: {
         async open(input) {
@@ -10754,7 +10612,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "leader-substitute-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order),
       residentLauncher: {
         async open(input) {
@@ -13955,7 +13812,6 @@ describe("CollaborationRuntimeCoordinator", () => {
       storage,
       serviceId: "main-freeze-test",
       hostId: "host-test",
-      leaseDurationMs: 5_000,
       gitFactory: (options) => happyGitFake(options, order),
       residentLauncher: {
         async open(input) {

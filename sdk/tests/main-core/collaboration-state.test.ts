@@ -1,14 +1,16 @@
-import { spawn } from "node:child_process";
+import { Worker } from "node:worker_threads";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectGitState, PullRequestRecord } from "../../src/core/types.js";
 import { initializeCollaborationStateSchema } from "../../src/core/collaboration-state/schema.js";
+import { legacyWriterFixture, openUpgradedFixture, withOfflineFixtureOwner } from "./helpers/legacy-writer-fixture.js";
+import type { WriterOwner } from "../../src/core/collaboration-state/writer-owner.js";
 import {
   CollaborationStateDatabase,
   CollaborationStateError,
@@ -20,7 +22,7 @@ import {
 const temporaryRoots: string[] = [];
 const openDatabases: CollaborationStateDatabase[] = [];
 const require = createRequire(import.meta.url);
-const tsxCliPath = require.resolve("tsx/cli");
+const tsxRegister = pathToFileURL(require.resolve("tsx/esm/api")).href;
 const concurrentWorkerPath = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "fixtures",
@@ -53,27 +55,21 @@ async function markerExists(markerPath: string): Promise<boolean> {
   }
 }
 
-function launchConcurrentWorker(configPath: string): Promise<void> {
-  const child = spawn(process.execPath, [tsxCliPath, concurrentWorkerPath, configPath], {
-    cwd: path.dirname(concurrentWorkerPath),
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+function launchConcurrentWorker(configPath: string, database: CollaborationStateDatabase): Promise<void> {
+  const attachment = database.writerOwnerAttachment();
+  const owner = Reflect.get(database, "owner") as WriterOwner;
+  const entry = new URL("data:text/javascript," + encodeURIComponent(
+    `const {register}=await import(${JSON.stringify(tsxRegister)}); register(); await import(${JSON.stringify(pathToFileURL(concurrentWorkerPath).href)});`));
+  let child: Worker;
+  try { child = new Worker(entry, { workerData: { configPath, attachment } }); }
+  catch (error) { owner.detachTerminatedWorker(attachment); throw error; }
   return new Promise<void>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(
-        `Concurrent worker exited with code ${String(code)} signal ${String(signal)}\n${stdout}\n${stderr}`
-      ));
+    let failure: Error | undefined;
+    child.once("error", error => { failure = error; });
+    child.once("exit", code => {
+      owner.detachTerminatedWorker(attachment);
+      if (failure || code !== 0) reject(failure ?? new Error(`Concurrent Worker exited with code ${code}`));
+      else resolve();
     });
   });
 }
@@ -93,7 +89,7 @@ const READY_GIT: ProjectGitState = {
 };
 
 afterEach(async () => {
-  for (const database of openDatabases.splice(0)) database.close();
+  for (const database of openDatabases.splice(0).reverse()) database.close();
   await Promise.all(
     temporaryRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))
   );
@@ -106,6 +102,8 @@ async function stateFixture(input: {
   hostId?: string;
   databasePath?: string;
   writerLease?: CollaborationStateOpenOptions["writerLease"];
+  writerOwner?: CollaborationStateOpenOptions["writerOwner"];
+  upgrade?: true;
 } = {}): Promise<{
   root: string;
   databasePath: string;
@@ -118,15 +116,14 @@ async function stateFixture(input: {
   if (!input.databasePath) temporaryRoots.push(root);
   const databasePath = input.databasePath ?? path.join(root, "collaboration.sqlite");
   const clock = input.clock ?? { value: Date.parse("2026-09-22T00:00:00.000Z") };
-  const database = CollaborationStateDatabase.open({
+  const database = (input.upgrade ? openUpgradedFixture : CollaborationStateDatabase.open)({
     databasePath,
     serviceId: input.serviceId ?? "collaboration-service",
     instanceId: input.instanceId ?? "instance-a",
     hostId: input.hostId ?? "host-a",
     topology: "single-host",
-    leaseDurationMs: 1_000,
     now: () => clock.value,
-    ...(input.writerLease ? { writerLease: input.writerLease } : {})
+    ...(input.writerLease ? { writerLease: input.writerLease, writerOwner: input.writerOwner } : {})
   });
   openDatabases.push(database);
   return { root, databasePath, clock, database };
@@ -134,6 +131,9 @@ async function stateFixture(input: {
 
 function downgradeCollaborationSchemaToV1(databasePath: string): void {
   const legacy = new DatabaseSync(databasePath);
+  const row = legacy.prepare("SELECT * FROM writer_service_owner").get()!;
+  legacyWriterFixture(legacy, { serviceId: String(row.service_id), instanceId: String(row.instance_id),
+    hostId: String(row.host_id), epoch: Number(row.epoch) }, Number(row.acquired_at_ms));
   legacy.exec("PRAGMA foreign_keys=OFF");
   legacy.exec("PRAGMA legacy_alter_table=ON");
   try {
@@ -965,7 +965,7 @@ describe("Collaboration retained worktree capacity projection", () => {
 });
 
 describe("CollaborationStateDatabase writer authority", () => {
-  it("enforces DELETE/FULL health, one renewable writer epoch, and revision CAS", async () => {
+  it("enforces DELETE/FULL health, one lifecycle writer epoch, and revision CAS", async () => {
     const fixture = await stateFixture();
     const { database, databasePath, clock } = fixture;
     expect(database.verifyHealth()).toEqual({
@@ -982,7 +982,7 @@ describe("CollaborationStateDatabase writer authority", () => {
       databasePath,
       clock,
       instanceId: "instance-a",
-      writerLease: database.writerLease()
+      writerLease: database.writerLease(), writerOwner: database.writerOwnerAttachment()
     })).database;
     createProject(database);
     const committed = database.appendEvent({
@@ -1014,13 +1014,18 @@ describe("CollaborationStateDatabase writer authority", () => {
         instanceId: "instance-b",
         hostId: "host-a",
         topology: "single-host",
-        leaseDurationMs: 1_000,
         now: () => clock.value
       }),
       "WRITER_LEASE_HELD"
     );
 
-    clock.value += 1_001;
+    clock.value += 86_400_000;
+    expect(() => database.assertWriterLeaseHeld()).not.toThrow();
+    expect(() => CollaborationStateDatabase.open({ databasePath, serviceId: "competitor", hostId: "host-a", topology: "single-host" }))
+      .toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+    database.relinquishWriterLease();
+    expectStateError(() => database.appendEvent({ projectId: "project-1", type: "fenced", payload: {} }), "WRITER_LEASE_STALE");
+    attached.close(); database.close();
     const replacement = (await stateFixture({
       databasePath,
       clock,
@@ -1035,7 +1040,7 @@ describe("CollaborationStateDatabase writer authority", () => {
         type: "test.writer.stale",
         payload: {}
       }),
-      "WRITER_LEASE_STALE"
+      "UNSAFE_CONFIGURATION"
     );
     expect(replacement.appendEvent({
       projectId: "project-1",
@@ -1086,7 +1091,6 @@ describe("CollaborationStateDatabase writer authority", () => {
       output: "Historical execution retained"
     });
 
-    const lease = database.writerLease();
     database.close();
     openDatabases.splice(openDatabases.indexOf(database), 1);
     downgradeCollaborationSchemaToV1(fixture.databasePath);
@@ -1095,7 +1099,7 @@ describe("CollaborationStateDatabase writer authority", () => {
       databasePath: fixture.databasePath,
       clock: fixture.clock,
       instanceId: "instance-a",
-      writerLease: lease
+      upgrade: true
     })).database;
     expect(database.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
     const migratedInspection = new DatabaseSync(fixture.databasePath, { readOnly: true });
@@ -1127,14 +1131,12 @@ describe("CollaborationStateDatabase writer authority", () => {
       status: "working"
     });
 
-    const migratedLease = database.writerLease();
     database.close();
     openDatabases.splice(openDatabases.indexOf(database), 1);
     const reopened = (await stateFixture({
       databasePath: fixture.databasePath,
       clock: fixture.clock,
-      instanceId: "instance-a",
-      writerLease: migratedLease
+      instanceId: "instance-a"
     })).database;
     expect(reopened.projectState("project-1").executions.map((execution) => execution.id)).toEqual([
       "execution-schema-v1-a",
@@ -1142,7 +1144,7 @@ describe("CollaborationStateDatabase writer authority", () => {
     ]);
   });
 
-  it("does not mutate a v1 schema while another writer lease is live", async () => {
+  it("does not mutate a v1 schema without explicit offline upgrade", async () => {
     const fixture = await stateFixture();
     const database = fixture.database;
     database.close();
@@ -1179,9 +1181,8 @@ describe("CollaborationStateDatabase writer authority", () => {
       instanceId: "other-instance",
       hostId: "host-a",
       topology: "single-host",
-      leaseDurationMs: 1_000,
       now: () => fixture.clock.value
-    }), "WRITER_LEASE_HELD");
+    }), "WRITER_UPGRADE_REQUIRED");
     expect(inspectSchema()).toEqual(before);
   });
 
@@ -1220,15 +1221,13 @@ describe("CollaborationStateDatabase writer authority", () => {
       (object as { name: string }).name === "member_executions_one_active_branch"
     )).toBe(false);
 
-    const openInvalid = () => CollaborationStateDatabase.open({
+    const openInvalid = () => openUpgradedFixture({
       databasePath: fixture.databasePath,
       serviceId: "collaboration-service",
       instanceId: "instance-a",
       hostId: "host-a",
       topology: "single-host",
-      leaseDurationMs: 1_000,
-      now: () => fixture.clock.value,
-      writerLease: lease
+      now: () => fixture.clock.value
     });
     expectStateError(openInvalid, "DATABASE_INTEGRITY_FAILED");
     const afterFirst = new DatabaseSync(fixture.databasePath, { readOnly: true });
@@ -1242,17 +1241,14 @@ describe("CollaborationStateDatabase writer authority", () => {
     expect(schemaSnapshot()).toEqual(schemaBeforeFailure);
     expectStateError(openInvalid, "DATABASE_INTEGRITY_FAILED");
 
-    // An open that acquires a new epoch itself must expire only that exact
-    // token after migration failure, so the same integrity error remains
-    // observable immediately instead of being masked by a 30s live lease.
-    fixture.clock.value += 1_001;
-    const openWithAcquiredLease = () => CollaborationStateDatabase.open({
+    // Repeated explicit upgrades retain the original schema error; failed
+    // openers cannot leak a lock and mask it as a live owner.
+    const openWithAcquiredLease = () => openUpgradedFixture({
       databasePath: fixture.databasePath,
       serviceId: "migration-repair-service",
       instanceId: "migration-repair-instance",
       hostId: "host-a",
       topology: "single-host",
-      leaseDurationMs: 1_000,
       now: () => fixture.clock.value
     });
     expectStateError(openWithAcquiredLease, "DATABASE_INTEGRITY_FAILED");
@@ -1260,135 +1256,86 @@ describe("CollaborationStateDatabase writer authority", () => {
   });
 });
 
-describe("Writer lease acquisition errors", () => {
+describe("Writer owner transaction errors", () => {
   it.each(["ROLLBACK", "ABORT", "cleanup-failure"] as const)(
-    "preserves the original in-memory renewal error with %s cleanup", failure => {
-      const raw = new DatabaseSync(":memory:");
-      raw.exec(`CREATE TABLE writer_service_lease (
-        singleton INTEGER PRIMARY KEY, service_id TEXT, instance_id TEXT,
-        host_id TEXT, epoch INTEGER, expires_at_ms INTEGER, renewed_at_ms INTEGER);
-        INSERT INTO writer_service_lease VALUES (1, 's', 'i', 'h', 1, 120000, 90000);
-        CREATE TRIGGER probe BEFORE UPDATE ON writer_service_lease
+    "preserves the original mutation error with %s cleanup and fences unconfirmed cleanup", async failure => {
+      const { database: state, databasePath } = await stateFixture();
+      const raw = Reflect.get(state, "database") as DatabaseSync;
+      raw.exec(`CREATE TRIGGER probe BEFORE INSERT ON project_heads
         BEGIN SELECT RAISE(${failure === "ROLLBACK" ? "ROLLBACK" : "ABORT"}, 'original_failure'); END;`);
-      const lease = { serviceId: "s", instanceId: "i", hostId: "h", epoch: 1, expiresAtMs: 120000 };
-      const state = Reflect.construct(CollaborationStateDatabase, [raw,
-        { now: () => 100000, leaseDurationMs: 30000 }, lease, {}]) as CollaborationStateDatabase;
+      const lease = state.writerLease(), before = raw.prepare("SELECT * FROM writer_service_owner").get();
       const exec = raw.exec.bind(raw);
       const calls = vi.spyOn(raw, "exec").mockImplementation(sql => {
         if (sql === "ROLLBACK" && failure === "cleanup-failure") throw Error("secondary cleanup failure");
         return exec(sql);
       });
       try {
-        expect(() => state.renewWriterLease()).toThrow(expect.objectContaining({
+        expect(() => createProject(state)).toThrow(expect.objectContaining({
           message: "original_failure", code: "ERR_SQLITE_ERROR", errcode: 1811
         }));
         expect(calls.mock.calls.filter(([sql]) => sql === "ROLLBACK")).toHaveLength(failure === "ROLLBACK" ? 0 : 1);
-        expect(state.writerLease()).toEqual(lease);
-        expect(state.writerLeaseDiagnostics()).toEqual({ lease, lastSuccessfulRenewalAtMs: null,
-          lastRenewalAttempt: { startedAtMs: 100000, durationMs: expect.any(Number), stage: "update",
-            outcome: "failed", transactionActive: failure === "cleanup-failure" } });
-        expect(raw.prepare("SELECT expires_at_ms, renewed_at_ms FROM writer_service_lease").get())
-          .toMatchObject({ expires_at_ms: 120000, renewed_at_ms: 90000 });
+        expect(state.writerLeaseDiagnostics()).toEqual({ lease, ownership: "lifecycle-lock" });
+        expect(raw.prepare("SELECT * FROM writer_service_owner").get()).toEqual(before);
+        expect(raw.prepare("SELECT count(*) AS count FROM project_heads").get()).toMatchObject({ count: 0 });
+        if (failure === "cleanup-failure") {
+          expect(raw.isTransaction).toBe(true);
+          expect(() => state.assertWriterAvailable()).toThrow("secondary cleanup failure");
+          expect(() => CollaborationStateDatabase.open({ databasePath, serviceId: "other", hostId: "host-a", topology: "single-host" }))
+            .toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+        } else expect(() => state.assertWriterLeaseHeld()).not.toThrow();
       } finally {
         calls.mockRestore();
         if (raw.isTransaction) raw.exec("ROLLBACK");
-        state.close();
       }
     });
 
-  it("records confirmed renewals without advancing them on a failed heartbeat", async () => {
-    const fixture = await stateFixture();
+  it("returns defensive ownership diagnostics without timestamp-driven writes", async () => {
+    const fixture = await stateFixture(), lease = fixture.database.writerLease();
     const inspect = new DatabaseSync(fixture.databasePath);
     try {
-      expect(fixture.database.writerLeaseDiagnostics().lastSuccessfulRenewalAtMs).toBeNull();
-      fixture.clock.value += 100;
-      const renewedAt = fixture.clock.value;
-      const lease = fixture.database.renewWriterLease();
-      const copy = fixture.database.writerLeaseDiagnostics();
-      expect(copy).toMatchObject({ lease, lastSuccessfulRenewalAtMs: renewedAt,
-        lastRenewalAttempt: { stage: "commit", outcome: "succeeded", transactionActive: false } });
-      copy.lease.epoch = 999; copy.lastRenewalAttempt!.stage = "begin";
-      expect(fixture.database.writerLeaseDiagnostics()).toMatchObject({ lease,
-        lastRenewalAttempt: { stage: "commit" } });
-      inspect.exec(`CREATE TRIGGER reject_heartbeat BEFORE UPDATE ON writer_service_lease
-        BEGIN SELECT RAISE(ROLLBACK, 'heartbeat_failed'); END;`);
-      fixture.clock.value += 100;
-      expect(() => fixture.database.renewWriterLease()).toThrow("heartbeat_failed");
-      expect(fixture.database.writerLeaseDiagnostics()).toMatchObject({ lease,
-        lastSuccessfulRenewalAtMs: renewedAt,
-        lastRenewalAttempt: { startedAtMs: fixture.clock.value, stage: "update", outcome: "failed", transactionActive: false } });
-      inspect.exec("DROP TRIGGER reject_heartbeat");
-      fixture.database.renewWriterLease();
-      expect(fixture.database.writerLeaseDiagnostics().lastSuccessfulRenewalAtMs).toBe(fixture.clock.value);
+      const before = inspect.prepare("SELECT * FROM writer_service_owner").get();
+      const copy = fixture.database.writerLeaseDiagnostics(); copy.lease.epoch = 999;
+      fixture.clock.value += 86_400_000;
+      expect(fixture.database.writerLeaseDiagnostics()).toEqual({ lease, ownership: "lifecycle-lock" });
+      fixture.database.assertWriterLeaseHeld();
+      expect(inspect.prepare("SELECT * FROM writer_service_owner").get()).toEqual(before);
     } finally { inspect.close(); }
   });
 
-  it("reports a failed BEGIN without rolling back another transaction or extending the lease", async () => {
+  it("reports a failed BEGIN without rolling back another transaction or advancing authority", async () => {
     const fixture = await stateFixture();
     const raw = Reflect.get(fixture.database, "database") as DatabaseSync;
-    const blocker = new DatabaseSync(fixture.databasePath);
-    const lease = fixture.database.writerLease();
-    raw.exec("PRAGMA busy_timeout=1");
-    blocker.exec("BEGIN IMMEDIATE");
+    const blocker = new DatabaseSync(fixture.databasePath), lease = fixture.database.writerLease();
+    raw.exec("PRAGMA busy_timeout=1"); blocker.exec("BEGIN IMMEDIATE");
     try {
-      expect(() => fixture.database.renewWriterLease()).toThrow(expect.objectContaining({ errcode: 5 }));
-      expect(fixture.database.writerLeaseDiagnostics()).toMatchObject({ lease, lastSuccessfulRenewalAtMs: null,
-        lastRenewalAttempt: { stage: "begin", outcome: "failed", transactionActive: false } });
+      expect(() => createProject(fixture.database)).toThrow(expect.objectContaining({ errcode: 5 }));
+      expect(fixture.database.writerLease()).toEqual(lease);
     } finally { blocker.exec("ROLLBACK"); blocker.close(); }
     raw.exec("BEGIN IMMEDIATE");
     try {
-      expect(() => fixture.database.renewWriterLease()).toThrow("within a transaction");
+      expect(() => createProject(fixture.database)).toThrow("within a transaction");
       expect(raw.isTransaction).toBe(true);
-      expect(fixture.database.writerLease()).toEqual(lease);
     } finally { raw.exec("ROLLBACK"); }
-    expect(() => fixture.database.renewWriterLease()).not.toThrow();
+    expect(() => createProject(fixture.database)).not.toThrow();
   });
 
-  it.each(["renew", "release", "mutation"] as const)("preserves the original SQLite error after automatic rollback during %s", async operation => {
-    const fixture = await stateFixture();
+  it.each(["ROLLBACK", "ABORT"] as const)("preserves a %s acquisition failure and releases only the failed opener", async action => {
+    const fixture = await stateFixture(); fixture.database.close();
     const inspect = new DatabaseSync(fixture.databasePath);
-    try {
-      const before = inspect.prepare("SELECT * FROM writer_service_lease").get();
-      const table = operation === "mutation" ? "project_heads" : "writer_service_lease";
-      const event = operation === "mutation" ? "INSERT" : "UPDATE";
-      inspect.exec(`CREATE TRIGGER reject_transaction BEFORE ${event} ON ${table}
-        BEGIN SELECT RAISE(ROLLBACK, 'original SQLite transaction failure'); END`);
-      const invoke = () => operation === "renew" ? fixture.database.renewWriterLease()
-        : operation === "release" ? fixture.database.relinquishWriterLease() : createProject(fixture.database);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const error = (() => { try { invoke(); } catch (error) { return error; } })();
-        expect(error).toMatchObject({ message: "original SQLite transaction failure", code: "ERR_SQLITE_ERROR", errcode: 1811 });
-        expect(inspect.prepare("SELECT * FROM writer_service_lease").get()).toEqual(before);
-        expect(() => fixture.database.assertWriterLeaseHeld()).not.toThrow();
-      }
-      if (operation === "mutation") expect(inspect.prepare("SELECT count(*) AS count FROM project_heads").get()).toMatchObject({ count: 0 });
-      inspect.exec("DROP TRIGGER reject_transaction");
-      expect(() => invoke()).not.toThrow();
-    } finally { inspect.close(); }
-  });
-
-  it("preserves the SQLite failure when lease acquisition has already rolled back its transaction", async () => {
-    const fixture = await stateFixture();
-    fixture.database.close();
-    openDatabases.splice(openDatabases.indexOf(fixture.database), 1);
-    fixture.clock.value += 1_001;
-    const inspect = new DatabaseSync(fixture.databasePath);
-    const before = inspect.prepare("SELECT * FROM writer_service_lease").get();
-    inspect.exec(`CREATE TRIGGER reject_lease_update BEFORE UPDATE ON writer_service_lease
-      BEGIN SELECT RAISE(ROLLBACK, 'original lease acquisition failure'); END`);
+    const before = inspect.prepare("SELECT * FROM writer_service_owner").get();
+    inspect.exec(`CREATE TRIGGER reject_owner_update BEFORE UPDATE ON writer_service_owner
+      BEGIN SELECT RAISE(${action}, 'original owner acquisition failure'); END`);
     inspect.close();
     const open = () => CollaborationStateDatabase.open({ databasePath: fixture.databasePath,
       serviceId: "collaboration-service", instanceId: "new-instance", hostId: "host-a",
-      topology: "single-host", leaseDurationMs: 1_000, now: () => fixture.clock.value });
-    expect(open).toThrow("original lease acquisition failure");
-    expect(open).toThrow("original lease acquisition failure");
+      topology: "single-host", now: () => fixture.clock.value });
+    for (let attempt = 0; attempt < 2; attempt++) expect(open).toThrow(expect.objectContaining({
+      message: "original owner acquisition failure", code: "ERR_SQLITE_ERROR", errcode: 1811 }));
     const after = new DatabaseSync(fixture.databasePath);
-    expect(after.prepare("SELECT * FROM writer_service_lease").get()).toEqual(before);
-    after.exec("DROP TRIGGER reject_lease_update");
-    after.close();
+    expect(after.prepare("SELECT * FROM writer_service_owner").get()).toEqual(before);
+    after.exec("DROP TRIGGER reject_owner_update"); after.close();
     const recovered = open(); openDatabases.push(recovered);
-    expect(recovered.writerLease().instanceId).toBe("new-instance");
-    expect(recovered.writerLease().epoch).toBe(Number((before as { epoch: number }).epoch) + 1);
+    expect(recovered.writerLease()).toMatchObject({ instanceId: "new-instance", epoch: Number(before!.epoch) + 1 });
   });
 });
 
@@ -1670,7 +1617,7 @@ describe("Collaboration runtime activity facts", () => {
     expect(reopened.pendingHarnessRecovery("project-1")).toBeUndefined();
   });
 
-  it("atomically replaces turns and fences late events from an expired writer lease", async () => {
+  it("atomically replaces turns and fences late events from a closed writer", async () => {
     const fixture = await stateFixture();
     createProject(fixture.database, {
       workflowSnapshot: {
@@ -1756,7 +1703,9 @@ describe("Collaboration runtime activity facts", () => {
       .filter((activity) => activity.kind === "turn"))
       .toMatchObject([{ invocationId: "runtime-invocation-2", inputId: "turn-input-2" }]);
 
-    fixture.clock.value += 1_001;
+    fixture.clock.value += 86_400_000;
+    expect(() => fixture.database.assertWriterLeaseHeld()).not.toThrow();
+    fixture.database.close();
     const successor = await stateFixture({
       databasePath: fixture.databasePath,
       clock: fixture.clock,
@@ -1787,7 +1736,7 @@ describe("Collaboration runtime activity facts", () => {
       executionId: "runtime-execution",
       ownershipEpoch: 1,
       outcome: "completed"
-    }), "WRITER_LEASE_STALE");
+    }), "UNSAFE_CONFIGURATION");
   });
 });
 
@@ -1835,7 +1784,7 @@ describe("Additional standalone delivery facts", () => {
       // in the same execution and epoch after a server restart.
       const lease = database.writerLease();
       database.close();
-      database = (await stateFixture({ databasePath: f.databasePath, clock: f.clock, writerLease: lease })).database;
+      database = (await stateFixture({ databasePath: f.databasePath, clock: f.clock })).database;
       await expect(database.operationsForProject("project-1").assertExecutionOwnership({ ...ownership,
         operation: "provider.reconcile_merged", providerNumber: number, expectedHeadSha: merged.headSha,
         expectedBase: "main", expectedMergeCommitSha: merged.mergeCommitSha })).resolves.toBeUndefined();
@@ -1878,7 +1827,7 @@ describe("Additional standalone delivery facts", () => {
     expect(before.executions[0]).toMatchObject({ ownershipEpoch: 1, pullRequestId: a.id, status: "merged" });
     expect(before.additionalPullRequests).toEqual([{ ...merged, originalPullRequestId: a.id, ownershipEpoch: 1 }]);
     const lease = database.writerLease(); database.close();
-    const reopened = (await stateFixture({ databasePath: f.databasePath, clock: f.clock, writerLease: lease })).database;
+    const reopened = (await stateFixture({ databasePath: f.databasePath, clock: f.clock })).database;
     expect(reopened.projectState("project-1")).toEqual(before);
     expect(reopened.observeStandaloneDeliveryPullRequest({ projectId: "project-1", executionId: "additional-execution",
       ownershipEpoch: 1, pullRequest: a })).toMatchObject({ replay: true });
@@ -1929,9 +1878,10 @@ describe("Additional standalone delivery facts", () => {
     const f = await fixture(), lease = f.database.writerLease(); f.database.close();
     const sql = new DatabaseSync(f.databasePath);
     try {
+      legacyWriterFixture(sql, lease, f.clock.value);
       sql.exec("DROP TABLE standalone_delivery_pull_requests; UPDATE collaboration_state_meta SET schema_version=24");
       const before = sql.prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name").all();
-      expect(() => initializeCollaborationStateSchema(sql, { writerLease: { ...lease, instanceId: "foreign" }, nowMs: f.clock.value })).toThrow(/lease/i);
+      expect(() => withOfflineFixtureOwner(f.databasePath, offlineOwner => initializeCollaborationStateSchema(sql, { writerLease: { ...lease, instanceId: "foreign" }, offlineOwner }))).toThrow(/lease/i);
       expect(sql.prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name").all()).toEqual(before);
       expect(sql.prepare("SELECT schema_version FROM collaboration_state_meta").get()).toEqual({ schema_version: 24 });
     } finally { sql.close(); }
@@ -1941,9 +1891,10 @@ describe("Additional standalone delivery facts", () => {
     const f = await fixture(), lease = f.database.writerLease(); f.database.close();
     const sql = new DatabaseSync(f.databasePath);
     try {
+      legacyWriterFixture(sql, lease, f.clock.value);
       sql.exec("DROP TABLE standalone_delivery_pull_requests; UPDATE collaboration_state_meta SET schema_version=24; CREATE VIEW standalone_delivery_pull_requests AS SELECT 1 AS fixture");
       const before = sql.prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name").all();
-      expect(() => initializeCollaborationStateSchema(sql, { writerLease: lease, nowMs: f.clock.value })).toThrow();
+      expect(() => withOfflineFixtureOwner(f.databasePath, offlineOwner => initializeCollaborationStateSchema(sql, { writerLease: lease, offlineOwner }))).toThrow();
       expect(sql.prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name").all()).toEqual(before);
       expect(sql.prepare("SELECT schema_version FROM collaboration_state_meta").get()).toEqual({ schema_version: 24 });
     } finally { sql.close(); }
@@ -1952,10 +1903,11 @@ describe("Additional standalone delivery facts", () => {
   it("adds empty v25 storage under the original v24 writer without rewriting original project records", async () => {
     const f = await fixture(), lease = f.database.writerLease(); f.database.close();
     const sql = new DatabaseSync(f.databasePath);
+    legacyWriterFixture(sql, lease, f.clock.value);
     sql.exec("DROP TABLE standalone_delivery_pull_requests; UPDATE collaboration_state_meta SET schema_version=24");
     const tables = ["project_heads", "member_executions", "pull_requests", "project_events"];
     const before = tables.map(table => sql.prepare(`SELECT * FROM ${table}`).all()); sql.close();
-    const reopened = (await stateFixture({ databasePath: f.databasePath, clock: f.clock, writerLease: lease })).database;
+    const reopened = (await stateFixture({ databasePath: f.databasePath, clock: f.clock, upgrade: true })).database;
     expect(reopened.verifyHealth().schemaVersion).toBe(COLLABORATION_STATE_SCHEMA_VERSION);
     const after = new DatabaseSync(f.databasePath, { readOnly: true });
     try {
@@ -2742,7 +2694,7 @@ describe("Collaboration group activation and scheduling", () => {
       databasePath: fixture.databasePath,
       clock: fixture.clock,
       instanceId: "instance-a",
-      writerLease: fixture.database.writerLease()
+      writerLease: fixture.database.writerLease(), writerOwner: fixture.database.writerOwnerAttachment()
     })).database;
 
     const alice = claim(fixture.database, "alice", "execution-alice-1");
@@ -4283,7 +4235,6 @@ describe("Collaboration completion and recovery", () => {
     // repair uses its fenced execution branch. Migration must remove that
     // historical uniqueness so the next legal canonical epoch can reuse the
     // group branch without deleting or rewriting its predecessor.
-    const lease = database.writerLease();
     database.close();
     openDatabases.splice(openDatabases.indexOf(database), 1);
     downgradeCollaborationSchemaToV1(fixture.databasePath);
@@ -4291,7 +4242,7 @@ describe("Collaboration completion and recovery", () => {
       databasePath: fixture.databasePath,
       clock: fixture.clock,
       instanceId: "instance-a",
-      writerLease: lease
+      upgrade: true
     })).database;
     const canonical = database.startCanonicalFinalRetry({
       projectId: "project-1",
@@ -5052,7 +5003,7 @@ describe("Collaboration completion and recovery", () => {
         databasePath: fixture.databasePath,
         clock: fixture.clock,
         instanceId: "instance-a",
-        writerLease: lease
+        upgrade: true
       })).database;
       if (legacyFact === "lost-create-mismatch") {
         expect(database.executionPullBase("project-1", repair.id)).toBe("groups/group-run-1");
@@ -5951,7 +5902,7 @@ describe("Collaboration exact event fact lookup", () => {
 });
 
 describe("Collaboration transaction isolation", () => {
-  it("isolates an overlapping pre-commit rollback from another process's committed facts", async () => {
+  it("isolates an overlapping pre-commit rollback from another attached Worker's committed facts", async () => {
     const fixture = await stateFixture();
     seedGroup(fixture.database, { origin: { kind: "project-input" } });
     const mainLeader = fixture.database.projectState("project-1").groupRuns[0]!.leaderAgentId;
@@ -5969,7 +5920,7 @@ describe("Collaboration transaction isolation", () => {
       serviceId: "collaboration-service",
       instanceId: "instance-a",
       hostId: "host-a",
-      writerLease: fixture.database.writerLease()
+      writerLease: fixture.database.writerLease(), writerOwner: fixture.database.writerOwnerAttachment()
     })).database;
     attached.assignTasks({
       projectId: "project-1",
@@ -6124,9 +6075,9 @@ describe("Collaboration transaction isolation", () => {
     // transaction. A then pauses after its usage INSERT but before COMMIT.
     // B starts a real competing mutation and blocks on SQLite's write lock;
     // after A faults and rolls back, B must commit all of its own facts.
-    const writerB = launchConcurrentWorker(writerBConfig);
+    const writerB = launchConcurrentWorker(writerBConfig, fixture.database);
     await waitForMarker(concurrent.bReady);
-    const writerA = launchConcurrentWorker(writerAConfig);
+    const writerA = launchConcurrentWorker(writerAConfig, fixture.database);
     await waitForMarker(concurrent.aAfterInsert);
     await fs.writeFile(concurrent.bGo, "go\n", "utf8");
     await waitForMarker(concurrent.bAttempt);
@@ -6181,12 +6132,12 @@ describe("Collaboration transaction isolation", () => {
         donePath: reverse.aDone
       }), "utf8")
     ]);
-    const reverseB = launchConcurrentWorker(reverseBConfig);
+    const reverseB = launchConcurrentWorker(reverseBConfig, fixture.database);
     await waitForMarker(reverse.bReady);
     await fs.writeFile(reverse.bGo, "go\n", "utf8");
     await reverseB;
     await waitForMarker(reverse.bDone);
-    const reverseA = launchConcurrentWorker(reverseAConfig);
+    const reverseA = launchConcurrentWorker(reverseAConfig, fixture.database);
     await waitForMarker(reverse.aAfterInsert);
     await fs.writeFile(reverse.aRelease, "rollback\n", "utf8");
     await reverseA;
@@ -6363,8 +6314,7 @@ describe("Collaboration event log and credential-free projection", () => {
     const reopened = (await stateFixture({
       databasePath: fixture.databasePath,
       clock: fixture.clock,
-      instanceId: "instance-a",
-      writerLease: lease
+      instanceId: "instance-a"
     })).database;
     expect(reopened.eventsAfter("project-1", 1).map((event) => event.type)).toEqual([
       "collaboration.custom",
@@ -6471,8 +6421,7 @@ describe("Collaboration event log and credential-free projection", () => {
     const reopened = (await stateFixture({
       databasePath: fixture.databasePath,
       clock: fixture.clock,
-      instanceId: "instance-a",
-      writerLease: lease
+      instanceId: "instance-a"
     })).database;
     expect(reopened.projectState("project-1").failureAttempts)
       .toEqual(projection.failureAttempts);
@@ -6609,8 +6558,7 @@ describe("Collaboration event log and credential-free projection", () => {
     const reopened = (await stateFixture({
       databasePath: fixture.databasePath,
       clock: fixture.clock,
-      instanceId: "instance-a",
-      writerLease: lease
+      instanceId: "instance-a"
     })).database;
     expect(reopened.projectState("project-1").gitRetryScheduling).toEqual([timeline]);
   });

@@ -27,7 +27,7 @@ import { controlResultReceipts, sameDurableSession } from "./control-result-rece
 import { workflowAdjustmentNotifications } from "./workflow-adjustment-notifications.js";
 import { executeProjectStateRequest } from "./project-state-service.js";
 import { readOnlyProjectStateDocuments, type ProjectStateDocumentStore, type SerialProjectStateInvocation } from "./project-state-documents.js";
-import { WriterLeaseHeartbeat, type HeartbeatDiagnostics } from "./collaboration-state/writer-lease-heartbeat.js";
+import type { WriterLeaseDiagnostics } from "./collaboration-state/contracts.js";
 import os from "node:os";
 import type { ProjectAgentQueueSource } from "./agent-queue-view.js";
 import path from "node:path";
@@ -147,7 +147,6 @@ import {
   assertResidentRecoveryProofSeed
 } from "./recovery-proof.js";
 
-const DEFAULT_LEASE_MS = 30_000;
 const EVENT_PAGE_SIZE = 500;
 const GIT_RETRY_SCHEDULE_SLO_MS = 5_000;
 
@@ -1054,7 +1053,6 @@ export interface CollaborationRuntimeOptions {
   serviceId?: string;
   hostId?: string;
   databasePath?: string;
-  leaseDurationMs?: number;
   gitFactory?: CollaborationGitFacadeFactory;
   /** Production resolver keyed by the immutable account binding on a project. */
   credentialResolverForAccount?: (accountId: string) => GitHubCredentialResolver;
@@ -1080,7 +1078,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   readonly #serviceId: string;
   readonly #hostId: string;
   readonly #databasePath: string;
-  readonly #leaseDurationMs: number;
   readonly #gitFactory: CollaborationGitFacadeFactory;
   readonly #credentialResolverForAccount?: (accountId: string) => GitHubCredentialResolver;
   readonly #residentLauncher?: CollaborationResidentLauncher;
@@ -1091,12 +1088,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   readonly #now?: () => number;
   readonly #harnessRecoveryDelayMs: (attempt: number) => number;
   #database?: CollaborationStateDatabase;
-  #leaseTimer?: NodeJS.Timeout;
-  #leaseRenewal?: Promise<void>;
-  #leaseWorker?: WriterLeaseHeartbeat;
-  #leaseWorkerDiagnostics?: HeartbeatDiagnostics;
+  #leaseWorkerDiagnostics?: WriterLeaseDiagnostics;
   #leaseFailedAt?: string;
-  #leaseHeartbeat?: { intervalMs: number; scheduledAtMs: number; startedAtMs: number; delayMs: number };
+  #initializing?: Promise<void>;
+  #shutdown?: Promise<void>;
   #leaseError?: Error;
   #closed = false;
   readonly #runs = new Map<string, Promise<void>>();
@@ -1148,7 +1143,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       path.dirname(options.storage.projectsDir()),
       "collaboration-state.sqlite"
     );
-    this.#leaseDurationMs = options.leaseDurationMs ?? DEFAULT_LEASE_MS;
     this.#gitFactory = options.gitFactory ?? createCollaborationGitFacade;
     this.#credentialResolverForAccount = options.credentialResolverForAccount;
     this.#residentLauncher = options.residentLauncher;
@@ -1160,87 +1154,30 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     this.#now = options.now;
   }
 
-  async initialize(): Promise<void> {
-    if (this.#database) return;
-    if (this.#closed) throw new Error("Collaboration runtime is closed");
+  initialize(): Promise<void> {
+    if (this.#closed || this.#shuttingDown) return Promise.reject(new Error("Collaboration runtime is closed"));
+    return this.#initializing ??= this.initializeWriter();
+  }
+
+  private async initializeWriter(): Promise<void> {
     await fs.mkdir(path.dirname(this.#databasePath), { recursive: true });
     this.#database = await openCollaborationStateWorker({
       databasePath: this.#databasePath,
       serviceId: this.#serviceId,
       hostId: this.#hostId,
       topology: "single-host",
-      leaseDurationMs: this.#leaseDurationMs,
       ...(this.#now ? { now: this.#now } : {})
     }, error => this.loseWriterLease(error));
-    this.#leaseWorkerDiagnostics = await this.#database.writerLeaseDiagnostics();
-    try { await this.#storage.configureProjectStateStore(this.projectStateDocuments()); }
+    try {
+      this.#leaseWorkerDiagnostics = await this.#database.writerLeaseDiagnostics();
+      await this.#database.bindWriterAvailabilityCheck(() => {
+        if (this.#leaseError) throw this.#leaseError;
+      });
+      await this.#storage.configureProjectStateStore(this.projectStateDocuments());
+    }
     catch (error) {
-      try { await this.#database.relinquishWriterLease(); } catch { /* Preserve the source registration error. */ }
       await this.#database.close(); this.#database = undefined; throw error;
     }
-    // The injected clock is a deterministic test scheduler. Production uses
-    // an independent thread and a connection attached to this exact lease.
-    if (this.#now) this.startControlledHeartbeat();
-    else {
-      try {
-        this.#leaseWorker = await WriterLeaseHeartbeat.start({ databasePath: this.#databasePath,
-          lease: await this.#database.writerLease(), leaseDurationMs: this.#leaseDurationMs }, async (error, diagnostics) => {
-          this.#leaseWorkerDiagnostics = diagnostics;
-          this.loseWriterLease(error);
-        });
-        await this.#database.bindWriterAvailabilityCheck(() => this.#leaseWorker!.assertHeld(), this.#leaseWorker.sharedState());
-      } catch (error) {
-        try { await this.#database.relinquishWriterLease(); } catch { /* Retain the startup failure. */ }
-        await this.#database.close(); this.#database = undefined;
-        throw error;
-      }
-    }
-  }
-
-  private startControlledHeartbeat(): void {
-    const intervalMs = Math.max(500, Math.floor(this.#leaseDurationMs / 3));
-    let scheduledAtMs = (this.#now?.() ?? Date.now()) + intervalMs;
-    this.#leaseTimer = setInterval(() => {
-      const database = this.#database;
-      if (!database || this.#leaseError || this.#leaseRenewal) return;
-      this.#leaseRenewal = (async () => {
-        const startedAtMs = this.#now?.() ?? Date.now();
-        this.#leaseHeartbeat = { intervalMs, scheduledAtMs, startedAtMs,
-          delayMs: Math.max(0, startedAtMs - scheduledAtMs) };
-        scheduledAtMs = startedAtMs + intervalMs;
-        try {
-          await database.renewWriterLease();
-          this.#leaseWorkerDiagnostics = await database.writerLeaseDiagnostics();
-        } catch (error) {
-          const sqliteErrorCode = error && typeof error === "object" && "errcode" in error
-            ? error.errcode : undefined;
-          if (typeof sqliteErrorCode === "number" && (sqliteErrorCode & 0xff) === 5) {
-            // A DELETE-journal reader can block COMMIT without taking ownership.
-            // Retry at the next heartbeat only while the original lease is still
-            // held. An expired or replaced writer must never reacquire here.
-            try {
-              if ((await database.writerLeaseDiagnostics()).lastRenewalAttempt?.transactionActive) {
-                this.loseWriterLease(error);
-                return;
-              }
-              await database.assertWriterLeaseHeld();
-              try {
-                console.warn("Collaboration writer lease renewal delayed; original lease still held",
-                  this.writerLeaseFailureDiagnostics(error));
-              } catch { /* Diagnostic sinks cannot change lease ownership. */ }
-              return;
-            } catch (leaseError) {
-              // Keep the first SQLite failure even if confirming the lease
-              // fails too. Report the fencing/check failure separately.
-              this.loseWriterLease(error, leaseError);
-              return;
-            }
-          }
-          this.loseWriterLease(error);
-        }
-      })().finally(() => { this.#leaseRenewal = undefined; });
-    }, intervalMs);
-    this.#leaseTimer.unref();
   }
 
 
@@ -3297,9 +3234,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return payload;
   }
 
-  async shutdown(): Promise<void> {
-    if (this.#closed) return;
+  shutdown(): Promise<void> {
     this.#shuttingDown = true;
+    return this.#shutdown ??= this.shutdownWriter();
+  }
+
+  private async shutdownWriter(): Promise<void> {
+    if (this.#closed) return;
+    // A concurrent start must settle before resources and execution are drained.
+    if (this.#initializing) await this.#initializing.catch(() => {});
     for (const timer of this.#workflowRecoveryTimers.values()) clearTimeout(timer);
     this.#workflowRecoveryTimers.clear();
     for (const controller of this.#controllers.values()) controller.abort();
@@ -3308,6 +3251,12 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const residentStops = await Promise.allSettled(residentEntries.map(async ([, { handle }]) => {
       await handle.close();
     }));
+    const failedStops = residentStops.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failedStops.length) {
+      const error = new AggregateError(failedStops.map(result => result.reason), "Resident shutdown was not confirmed; writer ownership is retained");
+      this.loseWriterLease(error);
+      throw error;
+    }
     for (const [[key, entry], stopped] of residentEntries.map((item, index) =>
       [item, residentStops[index]!] as const
     )) {
@@ -3343,23 +3292,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         catch { /* A fenced writer cannot publish another Stop fact. */ }
       }
     }
-    try {
-      await this.#invocationDispatcher?.flush?.();
-    } finally {
-      this.#closed = true;
-      if (this.#leaseTimer) clearInterval(this.#leaseTimer);
-      this.#leaseTimer = undefined;
-      await this.#leaseRenewal;
-      await this.#leaseWorker?.stop();
-      if (this.#database) {
-        try {
-          await this.#database.relinquishWriterLease();
-        } finally {
-          await this.#database.close();
-          this.#database = undefined;
-        }
-      }
+    try { await this.#invocationDispatcher?.flush?.(); }
+    catch (error) { this.loseWriterLease(error); throw error; }
+    if (this.#database) {
+      await this.#database.close();
+      this.#database = undefined;
     }
+    this.#closed = true;
   }
 
   private async appendFailureAttempt(
@@ -13197,14 +13136,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   private assertWritable(): void {
     if (!this.#leaseError) {
       try {
-        this.database();
-        this.#leaseWorker?.assertHeld();
-        if (!this.#leaseWorker && this.#leaseWorkerDiagnostics &&
-          this.#leaseWorkerDiagnostics.lease.expiresAtMs <= (this.#now?.() ?? Date.now()))
-          throw new CollaborationStateError("WRITER_LEASE_STALE", "The confirmed writer lease has expired");
+        this.database().assertWriterAvailable();
       } catch (error) { this.loseWriterLease(error); }
     }
-    if (this.#leaseError) throw new Error("Collaboration writer lease was lost", { cause: this.#leaseError });
+    if (this.#leaseError) throw new Error("Collaboration writer ownership was lost", { cause: this.#leaseError });
   }
 
   private async saveState(state: ProjectState): Promise<void> {
@@ -13289,16 +13224,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   }
 
   writerLeaseHealth(): { status: "ready" | "unavailable"; code?: string; reason?: string;
-    failedAt?: string; lastSuccessfulRenewalAt?: string; leaseExpiresAt?: string; epoch?: number } {
-    if (!this.#database || this.#closed || this.#shuttingDown) return { status: "unavailable", reason: "Collaboration runtime is not running" };
+    failedAt?: string; ownership?: "lifecycle-lock"; epoch?: number } {
+    if (!this.#database || !this.#leaseWorkerDiagnostics || this.#closed || this.#shuttingDown)
+      return { status: "unavailable", reason: "Collaboration runtime is not running" };
     if (!this.#leaseError) {
       try { this.assertWritable(); }
       catch (error) { this.loseWriterLease(error); }
     }
-    const diagnostics = this.#leaseWorker?.diagnostics() ?? this.#leaseWorkerDiagnostics!;
+    const diagnostics = this.#leaseWorkerDiagnostics!;
     return { status: this.#leaseError ? "unavailable" : "ready", epoch: diagnostics.lease.epoch,
-      leaseExpiresAt: new Date(diagnostics.lease.expiresAtMs).toISOString(),
-      ...(diagnostics.lastSuccessfulRenewalAtMs != null ? { lastSuccessfulRenewalAt: new Date(diagnostics.lastSuccessfulRenewalAtMs).toISOString() } : {}),
+      ownership: "lifecycle-lock",
       ...(this.#leaseError ? { code: writerLeaseFailureFields(this.#leaseError).code ?? "WRITER_LEASE_UNAVAILABLE",
         reason: safeRuntimeError(this.#leaseError), failedAt: this.#leaseFailedAt } : {}) };
   }
@@ -13308,7 +13243,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const health = this.writerLeaseHealth();
     project.status = hasUserWorkflowPause(project) ? project.status : "interrupted";
     project.phase = "collaboration:writer-lease-lost";
-    project.lastError = `服务写入租约失效：${health.reason ?? "续租线程不可用"}。需要恢复服务后接续原任务，项目记录和原会话已保留。`;
+    project.lastError = `服务写入所有权失效：${health.reason ?? "数据库 writer 不可用"}。需要恢复服务后接续原任务，项目记录和原会话已保留。`;
     project.currentAgent = undefined; project.queuedAgent = undefined; project.activeInvocationId = undefined;
     project.runtime = { stateRevision: 0, executionCount: 0, ...project.runtime, status: project.status, phase: project.phase,
       waiting: { kind: "service", reason: project.lastError, failedAt: health.failedAt, errorCode: health.code },
@@ -13319,34 +13254,30 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
   private writerLeaseFailureDiagnostics(error: unknown, leaseCheckError?: unknown) {
     const timestampMs = this.#now?.() ?? Date.now();
-    const diagnostics = this.#leaseWorker?.diagnostics() ?? this.#leaseWorkerDiagnostics;
+    const diagnostics = this.#leaseWorkerDiagnostics;
     const lease = diagnostics?.lease;
     return {
       timestamp: this.#leaseFailedAt ?? new Date(timestampMs).toISOString(),
-      ...((this.#leaseWorkerDiagnostics?.heartbeat ?? this.#leaseHeartbeat) ? { heartbeat: { ...(this.#leaseWorkerDiagnostics?.heartbeat ?? this.#leaseHeartbeat)! } } : {}),
+      ownership: "lifecycle-lock",
       ...writerLeaseFailureFields(error),
-      ...(lease ? { leaseEpoch: lease.epoch, leaseExpiresAt: new Date(lease.expiresAtMs).toISOString(),
+      ...(lease ? { leaseEpoch: lease.epoch,
         leaseServiceId: boundedSharedText(lease.serviceId, 200),
         leaseInstanceId: boundedSharedText(lease.instanceId, 200),
-        leaseHostId: boundedSharedText(lease.hostId, 200), leaseRemainingMs: lease.expiresAtMs - timestampMs } : {}),
-      lastSuccessfulRenewalAt: diagnostics?.lastSuccessfulRenewalAtMs != null
-        ? new Date(diagnostics.lastSuccessfulRenewalAtMs).toISOString() : null,
-      ...(diagnostics?.lastRenewalAttempt ? { lastRenewalAttempt: diagnostics.lastRenewalAttempt } : {}),
-      ...(this.#leaseWorkerDiagnostics?.leaseCheck ? { leaseCheck: this.#leaseWorkerDiagnostics.leaseCheck } : {}),
+        leaseHostId: boundedSharedText(lease.hostId, 200) } : {}),
       ...(leaseCheckError !== undefined ? { leaseCheckFailure: writerLeaseFailureFields(leaseCheckError) } : {})
     };
   }
 
   private loseWriterLease(error: unknown, leaseCheckError?: unknown): void {
     if (this.#leaseError) return;
-    this.#leaseError = error instanceof Error ? error : new Error("Writer lease renewal failed", { cause: error });
-    this.#leaseFailedAt = this.#leaseWorkerDiagnostics?.failedAt ?? new Date(this.#now?.() ?? Date.now()).toISOString();
+    this.#leaseError = error instanceof Error ? error : new Error("Writer ownership failed", { cause: error });
+    this.#leaseFailedAt = new Date(this.#now?.() ?? Date.now()).toISOString();
     try {
-      console.error("Collaboration writer lease renewal failed; writer fenced",
+      console.error("Collaboration writer ownership failed; writer fenced",
         this.writerLeaseFailureDiagnostics(error, leaseCheckError));
     } catch { /* A diagnostic failure must not prevent fencing/aborting work. */ }
-    void this.#leaseWorker?.stop().catch(error => console.warn("Failed to stop the fenced heartbeat", safeRuntimeError(error)));
     for (const controller of this.#controllers.values()) controller.abort();
+    for (const controller of this.#assistanceControllers.values()) controller.abort();
     // Stop exact resident handles, without further database mutations or an
     // automatic lease reacquisition that could defeat a replacement writer.
     void Promise.allSettled([...this.#residents.values()].map(({ handle }) => handle.close()));

@@ -6,6 +6,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
+import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
 import { initializeCollaborationStateSchema } from "../../src/core/collaboration-state/schema.js";
 import { CollaborationGitFacade } from "../../src/core/collaboration-git/facade.js";
 import { LocalCollaborationGitService } from "../../src/core/collaboration-git/local-git.js";
@@ -31,7 +32,7 @@ async function fixture() {
   let now = Date.parse("2026-10-10T08:00:00.000Z");
   let writer = 0;
   const options = { databasePath: path.join(root, "state.sqlite"), serviceId: "supersession",
-    hostId: "test", topology: "single-host" as const, leaseDurationMs: 1_000_000, now: () => now };
+    hostId: "test", topology: "single-host" as const, now: () => now };
   const open = () => {
     if (writer) now += 1_000_001;
     const db = CollaborationStateDatabase.open({ ...options, instanceId: `writer-${++writer}` });
@@ -210,8 +211,9 @@ describe("Agent-selected unknown push inclusion reconciliation", () => {
   });
 
   it("upgrades v18 legacy and scoped constraints without reinterpreting any original journal or event", async () => {
-    const f = await fixture(); f.db.close();
+    const f = await fixture(), lease = f.db.writerLease(); f.db.close();
     const raw = new DatabaseSync(f.options.databasePath);
+    legacyWriterFixture(raw, lease, f.options.now());
     raw.exec("PRAGMA foreign_keys = ON");
     raw.exec("INSERT INTO operations(operation_id, project_id, kind, payload_hash, status, created_at, updated_at) VALUES ('legacy-unknown','project','git.push','legacy','uncertain','old','old')");
     const original = raw.prepare("SELECT * FROM scoped_operations ORDER BY operation_id").all();
@@ -224,7 +226,7 @@ describe("Agent-selected unknown push inclusion reconciliation", () => {
       raw.exec(`DROP TABLE ${table}`); raw.exec(`ALTER TABLE ${table}_v18 RENAME TO ${table}`);
     }
     raw.exec("UPDATE collaboration_state_meta SET schema_version = 18"); raw.close();
-    const reopened = f.open();
+    const reopened = openUpgradedFixture(f.options); databases.push(reopened);
     expect(reopened.recordedGitOperation("project", f.original.id)).toEqual(f.original);
     const inspect = new DatabaseSync(f.options.databasePath);
     expect(inspect.prepare("SELECT schema_version FROM collaboration_state_meta").get()).toEqual({ schema_version: COLLABORATION_STATE_SCHEMA_VERSION });
