@@ -1,6 +1,6 @@
 # ScienceEvolve SQLite writer ownership: S0 evidence and integration design
 
-Updated: 2026-11-17. **S0 is in progress; the production writer still uses its
+Updated: 2026-11-18. **S0 is in progress; the production writer still uses its
 existing TTL protocol.** This record covers isolated feasibility tests, not
 S1–S4 or a production migration. Demo and Online are outside this slice.
 
@@ -86,11 +86,51 @@ including an event with original invocation/session and unconfirmed-effect facts
 This proves a refusal mechanism, not a finished migration or safe concurrent
 handover from a live old service.
 
+## Identity/lifecycle executable design (2026-11-18)
+
+`identity-guard.mjs`, `identity-holder.mjs` and `identity.test.mjs` in the standalone
+validation package now implement and exercise the identity/lifetime design in
+isolated fixtures. **They are not imported by the product runtime.** The 31 new
+checks passed on Linux/GPFS in both checkouts; `node --check` also passed. The
+17 primitive checks were rerun separately from the pinned-old-source tests.
+Header validation also rejects high-bit bytes rather than accepting lossy ASCII
+decoding. The pinned-old-source suite was not rerun for this identity-only slice.
+
+The prototype normalizes database symlinks, rejects database hardlinks and
+non-regular/linked lock files, binds parent/database/lock device and inode
+identities as decimal strings, and checks an immutable UUID header. GPFS stat
+reports birth time zero here, so birth time is not treated as usable identity.
+Strict decoding rejects omitted/extra/malformed fields and numeric truncation.
+Existing bindings never recreate a missing sidecar. Exclusive provisioning is
+fixture-only; a partial header stays visible rather than being silently repaired.
+
+Tests preserve SQLite bytes, fixture epoch and unknown-effect receipts on rejected
+opens; check sidecar substitution between inspection/open and after acquisition;
+and reject copying a bound database to another root. In-place restarts preserve
+the binding. Changed filesystem identity after restore/remount fails closed:
+an offline restore/rebind protocol must explicitly re-establish it while retaining
+research facts, rather than pretending the physical identity is portable.
+
+The prototype fences immediately on failure and retains the original error and
+lock. Close rejects reentry into work, shares one drain promise, releases only on
+successful drain, and does not rerun or unlock after a failed drain. A child-process
+fixture proves the failure retains exclusion until process death. It does not
+prove actual runtime drain, child-process stop or remote-effect reconciliation.
+
+These checks narrow the S0 design but do not provide an atomic snapshot of mutable
+filesystem paths. Production integration must bind/check the actual SQLite-open,
+transaction and publication boundaries under a trusted non-mutating directory.
+Provisioning currently fsyncs the header only; durable directory creation,
+SQLite-plus-sidecar migration failure, inode reuse across restores, mount failure
+and Windows/macOS behavior remain separate acceptance gates. No production
+schema, public API, dependency manifest, sync baseline or running service changed
+in this slice.
+
 ## Integration design to implement and verify in S1/S2
 
 These are implementation requirements, **not capabilities of the current Store**.
-Detailed API/DDL changes must remain paired and tested, not be inferred from the
-small DDL fixture.
+The standalone prototype exercises part of this design; detailed API/DDL changes
+must remain paired and tested, not be inferred from the small DDL fixture.
 
 ### Owner, connection and shutdown lifetime
 
@@ -132,9 +172,11 @@ small DDL fixture.
 - Detect moved/replaced database, lock or canonical parent identities; retain the
   acquired descriptor on failure until the runtime is fenced/drained. Tests must
   include races around acquisition, not only a renamed path observed later.
-- The precise persistent identity representation and its backup/restore behavior
-  still need cross-platform validation. Persisting a Linux-specific device/inode
-  tuple without specifying restore/remount semantics is not a complete design.
+- The prototype uses strict decimal device/inode identities and a random lock ID.
+  Ordinary restart preserves them; copying/restoring/remounting with changed
+  identity refuses open. A separately controlled offline rebind and cross-platform
+  validation are still required; this representation alone is not a finished
+  backup/restore protocol.
 
 ### Durable epoch and protocol upgrade
 
