@@ -963,7 +963,7 @@ export const projectExplainerConfigSchema = z.object({
   harness: harnessIdSchema,
   gatewayId: z.string().regex(/^gwy_[a-f0-9]{32}$/).optional(),
   model: z.string().trim().min(1).max(500),
-  reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+  reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
   confirmHarnessSwitch: z.boolean().optional()
 }).strict();
 
