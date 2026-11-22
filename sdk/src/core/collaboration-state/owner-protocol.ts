@@ -39,14 +39,18 @@ function token(row: Record<string, unknown>): WriterLeaseToken {
     if (typeof row[key] !== "string" || !(row[key] as string).trim()) invalid(`Missing writer ${key}`);
   return { serviceId: row.service_id as string, instanceId: row.instance_id as string, hostId: row.host_id as string, epoch };
 }
-export function assertOwnerProtocol(database: DatabaseSync, owner: WriterOwner, expected?: WriterLeaseToken): WriterLeaseToken {
-  owner.assertConnection(database);
+function persistedOwner(database: DatabaseSync) {
   const meta = database.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton=1").get();
   if (meta?.schema_version !== COLLABORATION_STATE_SCHEMA_VERSION) invalid("Writer protocol schema does not match this runtime");
   const row = database.prepare("SELECT * FROM writer_service_owner WHERE singleton=1").get();
   if (!row || row.protocol !== "lifecycle-lock-v1" || typeof row.identity_json !== "string") invalid("Writer ownership metadata is missing or invalid");
-  if (!isDeepStrictEqual(decodeWriterOwnerBinding(JSON.parse(row.identity_json)), owner.binding())) invalid("Persisted writer lock identity differs from the acquired owner");
-  const current = token(row);
+  return { lease: token(row), binding: decodeWriterOwnerBinding(JSON.parse(row.identity_json)), identityJson: row.identity_json };
+}
+export function assertOwnerProtocol(database: DatabaseSync, owner: WriterOwner, expected?: WriterLeaseToken): WriterLeaseToken {
+  owner.assertConnection(database);
+  const prior = persistedOwner(database);
+  if (!isDeepStrictEqual(prior.binding, owner.binding())) invalid("Persisted writer lock identity differs from the acquired owner");
+  const current = prior.lease;
   if (expected && !isDeepStrictEqual(current, expected)) throw new CollaborationStateError("WRITER_LEASE_STALE", "Collaboration mutation was rejected by the writer epoch fence", { expected, observed: current });
   return current;
 }
@@ -95,6 +99,37 @@ export function acquireOwnerEpoch(database: DatabaseSync, owner: WriterOwner, id
       .run(identity.serviceId, identity.instanceId, epoch, nowMs, prior.epoch, identity.hostId);
     if (result.changes !== 1) invalid("Writer epoch changed during exclusive acquisition");
     return { ...identity, epoch };
+  });
+}
+/** A restore is only valid for an explicitly identified, self-contained current snapshot. */
+export function inspectRestoreSnapshot(database: DatabaseSync, hostId: string, lockId: string, epoch: number): WriterLeaseToken {
+  const prior = persistedOwner(database);
+  assertHost(prior.lease.hostId, hostId);
+  if (prior.binding.lockId !== lockId || prior.lease.epoch !== epoch)
+    invalid("Restore snapshot does not match the confirmed source lock ID and epoch");
+  nextEpoch(epoch);
+  if (database.prepare("SELECT 1 FROM sqlite_schema WHERE name='writer_service_lease'").get() ||
+      !database.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='legacy_writer_service_lease_v29'").get())
+    invalid("Restore snapshot contains incompatible writer authority tables");
+  if (database.prepare("PRAGMA journal_mode").get()?.journal_mode !== "delete" ||
+      database.prepare("PRAGMA integrity_check").get()?.integrity_check !== "ok" || database.prepare("PRAGMA foreign_key_check").all().length)
+    invalid("Restore snapshot failed SQLite journal, integrity or foreign-key validation");
+  return prior.lease;
+}
+/** The caller copied a confirmed snapshot to a new, exclusively provisioned inode. */
+export function bindRestoredOwner(database: DatabaseSync, owner: WriterOwner, identity: OwnerIdentity, sourceLockId: string, sourceEpoch: number, nowMs: number): WriterLeaseToken {
+  owner.claimAcquisition(database);
+  return transaction(database, owner, () => {
+    const prior = persistedOwner(database);
+    assertHost(prior.lease.hostId, identity.hostId);
+    if (prior.binding.lockId !== sourceLockId || prior.lease.epoch !== sourceEpoch || sourceLockId === owner.binding().lockId)
+      invalid("Restored writer identity changed before rebinding");
+    const epoch = nextEpoch(sourceEpoch);
+    const changed = database.prepare(`UPDATE writer_service_owner SET service_id=?,instance_id=?,epoch=?,acquired_at_ms=?,identity_json=?
+      WHERE singleton=1 AND host_id=? AND epoch=? AND identity_json=?`).run(identity.serviceId, identity.instanceId, epoch, nowMs,
+        JSON.stringify(owner.binding()), identity.hostId, sourceEpoch, prior.identityJson);
+    if (changed.changes !== 1) invalid("Restored writer row was not rebound exactly once");
+    return assertOwnerProtocol(database, owner, { ...identity, epoch });
   });
 }
 /** Offline caller has separately stopped old writers and retained a backup. */

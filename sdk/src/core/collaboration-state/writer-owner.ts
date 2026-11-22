@@ -101,7 +101,7 @@ export class WriterOwner {
     this.databasePath = databasePath; this.#descriptor = descriptor; this.#binding = binding;
     this.#gate = gate; this.#ownsDescriptor = ownsDescriptor; identities.add(this);
   }
-  static open(databasePath: string, options: { offlineUpgrade?: boolean } = {}): WriterOwner {
+  static open(databasePath: string, options: { offlineUpgrade?: true; createOnly?: never } | { createOnly: true; offlineUpgrade?: never } = {}): WriterOwner {
     const canonical = canonicalDatabase(databasePath), parent = path.dirname(canonical), lockPath = canonical + ".writer.lock";
     let databaseStat: BigIntStats | undefined;
     try { databaseStat = regular(lstatSync(canonical, { bigint: true }), "Database"); }
@@ -109,6 +109,11 @@ export class WriterOwner {
     let existingLock: BigIntStats | undefined;
     try { existingLock = regular(lstatSync(lockPath, { bigint: true }), "Writer lock"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (options.createOnly && (databaseStat || existingLock)) throw invalid("Offline restore requires a new database and lock path");
+    if (!databaseStat) for (const suffix of ["-journal", "-wal", "-shm"]) {
+      try { lstatSync(canonical + suffix); throw invalid("Cannot provision a database over existing SQLite journal files"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
     const provision = !databaseStat || options.offlineUpgrade === true && !existingLock;
     if (options.offlineUpgrade && !databaseStat) throw invalid("Offline upgrade requires an existing database");
     if (options.offlineUpgrade) {
