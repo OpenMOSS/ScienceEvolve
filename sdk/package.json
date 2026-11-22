@@ -39,7 +39,7 @@
     "check:main-parity": "node scripts/sync-main-runtime.mjs --check-source",
     "check:main-runtime": "node scripts/sync-main-runtime.mjs --check",
     "check:branding": "node scripts/check-branding.mjs",
-    "pretest": "node scripts/sync-main-runtime.mjs --check && tsc -p tsconfig.json && node scripts/copy-assets.mjs && node scripts/check-branding.mjs",
+    "pretest": "npm run build",
     "test": "vitest run",
     "smoke:package": "node scripts/package-smoke.mjs",
     "prepack": "npm run build"

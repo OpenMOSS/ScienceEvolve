@@ -153,9 +153,15 @@ async function prepareDetailIndex(request: ContextInput, inputs: InvocationInput
 }
 
 function contextIdentity(request: ContextInput): WorkflowContextRequest | undefined {
-  if (!request.project.orchestration?.agents || request.terminalPushObservation || request.terminalPushCoordination ||
+  if (!request.project.orchestration?.agents ||
     (request.purpose !== undefined && request.purpose !== "workflow")) return undefined;
   const context = request.executionContext;
+  if (request.agent === "main" && request.kind === "main") {
+    const groupRunId = request.workflowContext?.groupRunId ?? context?.groupRunId;
+    return { ...request.workflowContext, scope: "global",
+      ...(groupRunId ? { groupRunId, candidates: request.workflowContext?.candidates ?? [] } : {}) };
+  }
+  if (request.terminalPushObservation || request.terminalPushCoordination) return undefined;
   if (request.workflowContext) {
     if (request.workflowContext.scope === "global" || request.workflowContext.groupId) return request.workflowContext;
     const groupRunId = request.workflowContext.groupRunId ?? context?.groupRunId;
@@ -290,7 +296,7 @@ function preview(request: ContextInput, identity: WorkflowContextRequest, nodes:
     ? control.collaboration.sourceArrivalRequestId : undefined;
   const sourceArrival = state.scopedArrivals?.find(arrival => arrival.requestId === sourceArrivalRequestId);
   const sourceNodeId = identity.sourceNodeId ?? sourceArrival?.targetNodeId
-    ?? (identity.scope === "global" ? state.pendingMainDecision?.sourceAgent : undefined)
+    ?? (identity.scope === "global" && !identity.groupRunId ? state.pendingMainDecision?.sourceAgent : undefined)
     ?? state.nodeRuns?.find(node => node.id === request.executionContext?.nodeRunId)?.node.nodeId
     ?? (!request.executionContext && request.kind === "main" ? request.agent : "not specified");
   const candidates = routeCandidatesFor(request, identity);
@@ -327,8 +333,8 @@ function preview(request: ContextInput, identity: WorkflowContextRequest, nodes:
   return redactTrace([
     `## ${identity.scope === "global" ? "Global" : "Current group"} Workflow overview`,
     `Configuration revision: ${metadata.workflowRevision}; state revision: ${metadata.stateRevision}; configuration hash: ${configurationHash}.`,
-    `Current Agent: ${request.agent}; role: ${identity.scope === "global" ? "global Main" : "group Leader"}; scope: ${identity.scope === "global" ? "project" : identity.groupId ?? identity.groupRunId}; group run: ${identity.groupRunId ?? request.executionContext?.groupRunId ?? "none"}.`,
-    `Decision source node: ${sourceNodeId}; purpose/wake reason: ${identity.purpose ?? (identity.scope === "global" ? state.pendingMainDecision?.reason : undefined) ?? "workflow management"}.`,
+    `Current Agent: ${request.agent}; role: ${identity.groupRunId && control?.collaboration?.role !== "scoped-main" ? "group Leader" : identity.scope === "global" ? "Main" : "group Leader"}; Workflow visibility: ${identity.scope}; group run: ${identity.groupRunId ?? request.executionContext?.groupRunId ?? "none"}. Global visibility and workflow editing do not grant global routing, skip or completion authority.`,
+    `Decision source node: ${sourceNodeId}; purpose/wake reason: ${identity.purpose ?? (identity.scope === "global" && !identity.groupRunId ? state.pendingMainDecision?.reason : undefined) ?? "workflow management"}.`,
     `Legal route candidates for this turn (exact node IDs): ${JSON.stringify(candidates)}. An empty list grants no routing target; planning/control tools have their own scope.`,
     `Nodes (${nodes.length} total):\n${nodes.map(node => node.kind === "agent" ? `- ${node.nodeId} => Agent ${node.agentId}` : node.kind === "collaboration" ? `- ${node.nodeId} => Group ${node.groupId}` : `- ${node.nodeId} => Gate ${node.gateId}`).join("\n")}`,
     `Connections (${connections.length} total):\n${connections.join("\n") || "No fixed internal routes; use the current group planning contract."}`,

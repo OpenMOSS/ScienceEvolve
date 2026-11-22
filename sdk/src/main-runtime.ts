@@ -21,7 +21,6 @@ import {
 } from "./core/collaboration-git/index.js";
 import { Orchestrator } from "./core/orchestrator.js";
 import type { AgentRunner } from "./core/types.js";
-import { trackMainResidents, trackResidentOpens } from "./main-resident-tracker.js";
 import { MainSourceWorkspaceStore } from "./main-source-workspace.js";
 import { MainProjectWorkspaceStore } from "./main-project-workspace.js";
 import { MainGitWorkspaceStore } from "./main-git-workspace.js";
@@ -114,7 +113,6 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
   });
   const release = async () => { await lock.close(); await fs.unlink(lockPath); };
   let engine: Orchestrator | undefined;
-  let residents: ReturnType<typeof trackMainResidents> | undefined;
   let collaborationRuntime: CollaborationRuntimeCoordinator | undefined;
   let unsubscribeDelivery: (() => void) | undefined;
   let deliverySweep: ReturnType<typeof setInterval> | undefined;
@@ -167,14 +165,6 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
     });
     const runner = options.internal?.runner ?? facade!;
     if (facade) gatewayStore.setAdapterSmokeProbe(facade);
-    const nativeResidents = facade ? trackResidentOpens(createProductionHarnessRuntimeResidentAdapter(facade)) : undefined;
-    const launcherResidents = trackMainResidents(options.internal?.residentLauncher ?? createProductionCollaborationResidentLauncher(
-      facade!, nativeResidents!.launcher
-    ));
-    residents = { launcher: launcherResidents.launcher, async stopRemaining() {
-      await launcherResidents.stopRemaining();
-      await nativeResidents?.stopRemaining();
-    } };
     collaborationRuntime = new CollaborationRuntimeCoordinator({
       storage,
       // Both HTTPS Git transport and provider API use the same resolver.
@@ -187,7 +177,9 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
       },
       executionInputBuilder: new ProductionCollaborationExecutionInputBuilder(storage, skills),
       invocationDispatcher: new ProductionCollaborationInvocationDispatcher(storage),
-      residentLauncher: residents.launcher,
+      residentLauncher: options.internal?.residentLauncher ?? createProductionCollaborationResidentLauncher(
+        facade!, createProductionHarnessRuntimeResidentAdapter(facade!)
+      ),
       validateWorkflowConfiguration: (state, proposal) => engine!.prepareWorkflowConfiguration(state, proposal)
     });
     // Match main's bootstrap: formal state must exist before SII can import
@@ -235,7 +227,6 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
       const state = await orchestrator.getProject(id);
       if (state) await gitWorkspaces.synchronize(state);
     }
-    const trackedResidents = residents;
     let closing: Promise<void> | undefined;
     let closed = false;
     return {
@@ -250,7 +241,6 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
           try {
             await gatewayStore.close();
             await orchestrator.shutdown();
-            await trackedResidents.stopRemaining();
           } finally { await siiExperiments?.stop(); }
           unsubscribeDelivery?.();
           await Promise.all(deliveryNotifications.values());
@@ -268,7 +258,6 @@ export async function createMainApplicationRuntime(options: MainApplicationRunti
       try {
         if (engine) await engine.shutdown();
         else await collaborationRuntime?.shutdown();
-        await residents?.stopRemaining();
       } finally { await siiExperiments?.stop(); }
     } catch (stopError) {
       throw new AggregateError([error, stopError], "Runtime initialization failed and Stop was not confirmed; directory remains locked");

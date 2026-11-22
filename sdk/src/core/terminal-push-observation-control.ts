@@ -6,7 +6,6 @@ import type { TerminalPushObservationTurn } from "./collaboration-state/contract
 import type { ProjectStorage } from "./storage.js";
 import type { ControlActionEnvelope, ControlMcpRequest, ProjectState } from "./types.js";
 import { executeAgentGitTool } from "./agent-git-tools.js";
-import { terminalPushObservationActionAllowed } from "./internal/terminal-push-observation.js";
 
 /** Internal production control mechanism. It does not schedule a business
  * task, choose a Git retry or manufacture the Agent's output/finish/memory. */
@@ -52,8 +51,7 @@ export function terminalPushObservationControlAuthorityFactory(options: {
     const assertEnvelope = (envelope: ControlActionEnvelope) => {
       if (envelope.projectId !== observation.projectId || envelope.agent !== observation.agentId ||
         envelope.invocationId !== observation.invocationId || envelope.stateVersion !== observation.ownershipEpoch ||
-        envelope.capabilityHash !== capabilityHash || envelope.expiresAt !== control.expiresAt ||
-        !terminalPushObservationActionAllowed(control.terminalPushObservation!, envelope.action)) {
+        envelope.capabilityHash !== capabilityHash || envelope.expiresAt !== control.expiresAt) {
         throw new Error("Terminal observation action lost its exact live receipt authority");
       }
     };
@@ -62,6 +60,21 @@ export function terminalPushObservationControlAuthorityFactory(options: {
       revalidate: async envelope => {
         assertEnvelope(envelope);
         await assertCurrent();
+        if (envelope.action.tool === "publish_artifact") {
+          const projection = await options.database.projectState(observation.projectId);
+          const execution = projection.scopedExecutions?.find(item => item.id === observation.executionId) ??
+            projection.executions.find(item => item.id === observation.executionId);
+          if (!execution) throw new Error("Artifact publication has no recorded owning execution");
+          await options.storage.resolveExecutionArtifactCandidate(observation.projectId, execution, envelope.action.path);
+          await options.database.appendEvent({ projectId: observation.projectId, agentId: observation.agentId,
+            executionId: observation.executionId, ownershipEpoch: observation.ownershipEpoch, invocationId: observation.invocationId,
+            requestId: `artifact-intent:${observation.invocationId}:${envelope.callId}`,
+            type: "groupRunId" in execution && projection.scopedExecutions?.some(item => item.id === execution.id)
+              ? "scoped.artifact.staged" : "artifact.publication.staged",
+            payload: { ...envelope.action, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
+              envelope, callId: envelope.callId } });
+          return { status: "staged", committed: false };
+        }
         if (envelope.action.tool === "finish_task") {
           const completion = await options.database.completeTerminalPushObservation({ ...observation, envelope });
           const saved = await options.storage.saveTerminalPushObservationCompletion(completion);
@@ -72,7 +85,6 @@ export function terminalPushObservationControlAuthorityFactory(options: {
       execute: async (envelope, signal) => {
         assertEnvelope(envelope);
         await assertCurrent();
-        if (envelope.action.tool !== "git_reconcile_push") throw new Error("Terminal observation executes only its original Agent's historical query");
         const result = await executeAgentGitTool({ git: options.git, repository: options.repository,
           execution: { id: observation.executionId, agentId: observation.agentId, purpose: "delivery",
             ownershipEpoch: observation.ownershipEpoch, executionBranch: observation.executionBranch,

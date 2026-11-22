@@ -26,6 +26,7 @@ import type {
   SessionRef
 } from "./contracts.js";
 import { HarnessRuntimeError } from "./errors.js";
+import { rejectResidentOpen } from "../resident-lifetime.js";
 import { harnessSupportsNativeProfile } from "./registry.js";
 import { NATIVE_PROCESS_SCOPE_ENV, NativeProcessScope, nativeProcessScope, newNativeProcessScope,
   recoverNativeProcesses, stopNativeProcessScope, type NativeProcessOwner } from "./native-processes.js";
@@ -354,19 +355,21 @@ export class CommonProcessHost {
       try {
         binding.recoveryBudget.startAttempt(plan.recoveryEvidence ?? { kind: "resident-open" });
         started = this.start({ ...plan, command: launch.command, args: launch.args, stdin: undefined }, callbacks, binding.signal);
+        void started.completed.catch(() => undefined); // May reject before the launch handshake finishes.
         await acknowledgeWindowsResident(cleanupIdentity, launch.claimFile, started.child);
         return started;
       } catch (error) {
-        if (started) {
-          started.terminate();
-          await started.waitForQuiescence();
-          await started.completed.catch(() => undefined);
-        }
-        await cleanupWindowsResident(cleanupIdentity, binding.runtimePath, false);
-        await fs.unlink(launch.configFile).catch((failure: NodeJS.ErrnoException) => {
-          if (failure.code !== "ENOENT") throw failure;
+        return rejectResidentOpen(error, async () => {
+          if (started) {
+            started.terminate();
+            await started.waitForQuiescence();
+            await started.completed.catch(() => undefined);
+          }
+          await cleanupWindowsResident(cleanupIdentity, binding.runtimePath, false);
+          await fs.unlink(launch.configFile).catch((failure: NodeJS.ErrnoException) => {
+            if (failure.code !== "ENOENT") throw failure;
+          });
         });
-        throw error;
       }
     }
     const claim = claimResidentLaunch(cleanupIdentity, binding.runtimePath, plan);
@@ -381,57 +384,39 @@ export class CommonProcessHost {
         args: ["-e", RESIDENT_SUPERVISOR_SOURCE, claim.configFile],
         stdin: undefined
       }, callbacks, binding.signal, binding.nativeProcesses ? { owner: binding.nativeProcesses, runtimePath: binding.runtimePath } : undefined);
+      void started.completed.catch(() => undefined);
       await waitForResidentSupervisorClaim(claim, started);
       return started;
     } catch (error) {
-      if (started) {
-        // The trusted supervisor is the process-group leader, so completion
-        // confirms that no untracked native child survives when its durable
-        // spawn handshake failed.
-        started.terminate();
+      if (!started) {
+        if (error instanceof HarnessRuntimeError && error.details.stopProof === "unconfirmed") {
+          // Raw spawn acquired a child but did not return its handle. Keep the claim;
+          // neither a sent signal nor a missing process marker proves quiescence.
+          return rejectResidentOpen(error, () => this.cleanupResidentInterrupted(cleanupIdentity, binding.runtimePath));
+        }
+        releaseResidentLaunchClaim(claim);
+        throw error;
+      }
+      const supervisor = started;
+      return rejectResidentOpen(error, async () => {
+        supervisor.terminate();
         let quiescenceFailure: unknown;
-        try { await started.waitForQuiescence(); } catch (failure) {
+        try { await supervisor.waitForQuiescence(); } catch (failure) {
           quiescenceFailure = failure;
         }
-        await started.completed.catch(() => undefined);
-        try {
-          const current = readPrivateJsonSync(claim.file) as ResidentLaunchClaim;
-          if (current.status === "launching") {
-            if (quiescenceFailure) throw quiescenceFailure;
-            persistResidentLaunchClaim(claim, "terminated");
-            installResidentStopFenceSync(cleanupIdentity, binding.runtimePath);
-          } else if (current.status === "spawned") {
-            await this.cleanupResidentInterrupted(cleanupIdentity, binding.runtimePath);
-          } else if (quiescenceFailure) {
-            throw quiescenceFailure;
-          }
-        } catch (cleanupError) {
-          // Retain the claim when quiescence cannot be confirmed.  A later
-          // cleanup must fail closed or kill the recorded supervisor group.
-          throw new HarnessRuntimeError(
-            "HARNESS_PROCESS_EXITED",
-            "Resident startup failed and quiescence could not be proven",
-            {
-              scopeId: cleanupIdentity.scopeId,
-              role: cleanupIdentity.role,
-              harnessId: cleanupIdentity.harnessId,
-              executionId: "executionId" in cleanupIdentity ? cleanupIdentity.executionId : undefined,
-              ownershipEpoch: "ownershipEpoch" in cleanupIdentity
-                ? cleanupIdentity.ownershipEpoch
-                : undefined,
-              coordinatorEpoch: "coordinatorEpoch" in cleanupIdentity
-                ? cleanupIdentity.coordinatorEpoch
-                : undefined,
-              stopProof: "unconfirmed",
-              cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-            },
-            { source: "process", cause: error instanceof Error ? error : undefined }
-          );
+        const current = readPrivateJsonSync(claim.file) as ResidentLaunchClaim;
+        if (current.status === "launching") {
+          if (quiescenceFailure) throw quiescenceFailure;
+          await supervisor.completed.catch(() => undefined);
+          persistResidentLaunchClaim(claim, "terminated");
+          installResidentStopFenceSync(cleanupIdentity, binding.runtimePath);
+        } else {
+          // Reconcile the durable tuple, including malformed/substituted claims.
+          await this.cleanupResidentInterrupted(cleanupIdentity, binding.runtimePath);
+          if (quiescenceFailure) throw quiescenceFailure;
+          await supervisor.completed.catch(() => undefined);
         }
-      } else {
-        releaseResidentLaunchClaim(claim);
-      }
-      throw error;
+      });
     }
   }
 
@@ -493,9 +478,8 @@ export class CommonProcessHost {
       throw new HarnessRuntimeError(
         "HARNESS_PROCESS_EXITED",
         "Unable to start Harness process",
-        { command: path.basename(plan.command), ...(cleanupFailure !== undefined ? {
-          stopProof: "unconfirmed", cleanupFailure: cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure)
-        } : {}) },
+        { command: path.basename(plan.command), ...(child?.pid ? { stopProof: "unconfirmed" } : {}),
+          ...(cleanupFailure !== undefined ? { cleanupFailure: cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure) } : {}) },
         { source: "process", cause: error instanceof Error ? error : undefined }
       );
     }

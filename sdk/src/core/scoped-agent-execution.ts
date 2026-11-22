@@ -192,9 +192,6 @@ export class ScopedAgentExecutionRunner {
       expectedHeadSha: report.headSha, selectedWeakTarget: report.selectedWeakTarget,
       output: supervisionHandoff(report.output, { remaining: returned.missing,
         outcome: returned.outcome === "resolved" ? "resolved" : returned.outcome === "exhausted" ? "exhausted" : "unconfirmed" }) };
-    if ((await this.database.scopedManagementBlocksBusiness(input.projectId, execution.groupRunId))) {
-      throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Original Agent preparation must wait for its scoped management turn to stop");
-    }
     const authority: GitExecutionAuthority = { ...execution, purpose: "delivery" };
     await this.database.operationsForProject(input.projectId, true).assertExecutionOwnership({
       projectId: input.projectId, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,

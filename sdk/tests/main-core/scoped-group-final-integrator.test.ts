@@ -235,6 +235,10 @@ describe("scoped canonical group final integration", () => {
       action: { tool: "finish_task" as const, summary: "Leader finished its management task" } });
     database.recordScopedLeaderTaskCompletion({ projectId: "project-1", groupRunId, agentId: "main", invocationId: "leader-integrate",
       coordinatorEpoch: first.coordinatorEpoch, envelope: finish("finish-integrate", "leader-integrate", first.coordinatorEpoch) });
+    // Even the current Leader's own finish is not a returned final integration.
+    expect(() => database.revalidateScopedLeaderAction({ projectId: "project-1", groupRunId, agentId: "main", invocationId: "leader-integrate",
+      coordinatorEpoch: first.coordinatorEpoch, envelope: { ...finish("premature-complete", "leader-integrate", first.coordinatorEpoch),
+        action: { tool: "complete_group", groupRunId, coordinatorEpoch: first.coordinatorEpoch, output: "Not yet integrated" } } })).toThrow(/returned final integration/);
     database.acceptScopedLeaderAction({ projectId: "project-1", groupRunId, agentId: "main", invocationId: "leader-integrate",
       coordinatorEpoch: first.coordinatorEpoch, residentStopConfirmed: true, envelope: { projectId: "project-1", agent: "main", invocationId: "leader-integrate",
         callId: "request-final", stateVersion: first.coordinatorEpoch, capabilityHash: "a".repeat(64), receivedAt: NOW,
@@ -269,14 +273,16 @@ describe("scoped canonical group final integration", () => {
       stateVersion: second.coordinatorEpoch, capabilityHash: "b".repeat(64), receivedAt: NOW,
       action: { tool: "complete_group" as const, groupRunId, coordinatorEpoch: second.coordinatorEpoch, output: returnWithoutMerge ? "Reviewed the returned work" : "Final merge verified" } };
     return { database, git, options, currentAuthority, currentComplete,
-      finishEnvelope: finish("finish-complete", "leader-complete", second.coordinatorEpoch) };
+      integrationEpoch: first.coordinatorEpoch, finishEnvelope: finish("finish-complete", "leader-complete", second.coordinatorEpoch) };
   }
 
   it("keeps the Leader's completion decision separate from its own task receipt", async () => {
-    const { database, currentAuthority, currentComplete } = await leaderCompletionFixture();
+    const { database, currentAuthority, currentComplete, integrationEpoch } = await leaderCompletionFixture();
     // The integration round's finish cannot substitute for this completion
     // round even though both management calls use the same Agent and group.
     const { projectId, groupRunId, agentId, invocationId, coordinatorEpoch } = currentAuthority;
+    expect(database.scopedLeaderTaskCompleted(projectId, groupRunId, agentId, "leader-integrate", integrationEpoch)).toBe(true);
+    expect(() => database.revalidateScopedLeaderAction({ ...currentAuthority, invocationId: "leader-integrate", envelope: currentComplete })).toThrow();
     database.revalidateScopedLeaderAction({ ...currentAuthority, envelope: currentComplete });
     expect(database.scopedLeaderTaskCompleted(projectId, groupRunId, agentId, invocationId, coordinatorEpoch)).toBe(false);
     expect(database.scopedGroupRun(projectId, groupRunId)?.status).toBe("integrating");
@@ -285,17 +291,25 @@ describe("scoped canonical group final integration", () => {
   });
 
   it("commits both completion records once for the Leader's accepted decision", async () => {
-    const { database, git, currentAuthority, currentComplete, finishEnvelope } = await leaderCompletionFixture();
+    const { database, git, options, currentAuthority, currentComplete, finishEnvelope, integrationEpoch } = await leaderCompletionFixture();
     database.recordScopedLeaderTaskCompletion({ ...currentAuthority, envelope: finishEnvelope });
     expect(() => database.completeScopedGroupAfterLeaderDecision({ ...currentAuthority, output: "Final merge verified" }))
       .toThrow(/accepted complete_group/);
     database.acceptScopedLeaderAction({ ...currentAuthority, residentStopConfirmed: true, envelope: currentComplete });
     const command = { ...currentAuthority, output: currentComplete.action.output, requestId: "scoped-group-complete:run-G:complete-final" };
-    const completed = database.completeScopedGroupAfterLeaderDecision(command);
+    expect(() => database.completeScopedGroupAfterLeaderDecision(command)).toThrow(/confirmed resident stop/);
+    const previous = database.writerLease(); database.close();
+    const next = CollaborationStateDatabase.open({ ...options, instanceId: "instance-b" }); databases.push(next);
+    expect(next.writerLease().epoch).toBe(previous.epoch + 1);
+    expect(() => next.completeScopedGroupAfterLeaderDecision(command)).toThrow(/confirmed resident stop/);
+    expect(() => next.releaseScopedLeaderTurn({ ...currentAuthority, coordinatorEpoch: integrationEpoch, residentStopConfirmed: true })).toThrow(/identity changed/);
+    expect(next.scopedGroupRun("project-1", "run-G")?.status).toBe("integrating");
+    next.releaseScopedLeaderTurn({ ...currentAuthority, residentStopConfirmed: true });
+    const completed = next.completeScopedGroupAfterLeaderDecision(command);
     expect(completed.groupRun.status).toBe("completed");
-    expect(database.scopedFinalIntegration("project-1", "run-G")?.status).toBe("completed");
-    expect(database.completeScopedGroupAfterLeaderDecision(command)).toMatchObject({ replay: true, revision: completed.revision });
-    expect(database.projectState("project-1").activeNodeRunId).toBe("node-G");
+    expect(next.projectState("project-1").activeNodeRunId).toBe("node-G");
+    expect(next.scopedFinalIntegration("project-1", "run-G")?.status).toBe("completed");
+    expect(next.completeScopedGroupAfterLeaderDecision(command)).toMatchObject({ replay: true, revision: completed.revision });
     expect(git.remoteMutations).toEqual({ creates: 1, merges: 1 });
   });
 
@@ -310,6 +324,7 @@ describe("scoped canonical group final integration", () => {
     database.recordScopedLeaderTaskCompletion({ ...currentAuthority, envelope: finishEnvelope });
     database.acceptScopedLeaderAction({ ...currentAuthority, residentStopConfirmed: true, envelope: currentComplete });
     const command = { ...currentAuthority, output: currentComplete.action.output, requestId: `scoped-group-complete:${groupRunId}:${currentComplete.callId}` };
+    database.releaseScopedLeaderTurn({ ...currentAuthority, residentStopConfirmed: true });
     const first = database.completeScopedGroupAfterLeaderDecision(command);
     expect(first.parentRoute).toMatchObject({ kind: "activate", activation: { targetNodeId: "G_next", sourceRunId: parentArrivals[0]!.requestId } });
     expect(first).toMatchObject({ replay: false, groupRun: { status: "completed" },

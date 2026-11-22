@@ -798,12 +798,12 @@ if (process.argv.includes("--refresh-runtime-pins-policy")) {
         (_, seconds) => `, process.platform === "win32" ? ${Number(seconds) * 4}_000 : ${seconds}_000);`);
       testAdaptations.push("Bounded Windows-only integration test deadlines (four times Unix); runtime unchanged");
     }
-    const tsxLoader = 'createRequire(import.meta.url).resolve("tsx")';
-    if (text.includes(tsxLoader)) {
-      // Node --import expects a file URL for absolute Windows loader paths.
-      // This changes only the isolated test's loader, not runtime behavior.
+    const bareTsxLoader = /(?<!pathToFileURL\()createRequire\(import\.meta\.url\)\.resolve\("tsx"\)/g;
+    if (text.match(bareTsxLoader)) {
+      // Node --import accepts a file URL on Windows. Preserve fixtures that
+      // already convert their loader path instead of encoding a URL as a path.
       text = 'import { pathToFileURL as sdkFixtureFileURL } from "node:url";\n' +
-        text.replaceAll(tsxLoader, `sdkFixtureFileURL(${tsxLoader}).href`);
+        text.replace(bareTsxLoader, match => `sdkFixtureFileURL(${match}).href`);
       testAdaptations.push("Portable file URL for the test-only tsx loader");
     }
     if (relative === "validation.test.ts") {

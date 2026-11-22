@@ -3,8 +3,8 @@ import type { ProjectStorage } from "./storage.js";
 import type { ControlActionEnvelope, DisplaySelection, ProjectState } from "./types.js";
 import { redactTrace } from "./utils.js";
 
-/** Validate before acknowledging a staged selection. Earlier publication
- * requests in the same transaction count; this function publishes nothing. */
+/** Resolve the requested file and verify any explicitly published identity.
+ * Selecting a workspace file does not register or publish it. */
 export async function validateDisplayArtifacts(
   storage: Pick<ProjectStorage, "resolveWorkspaceArtifact" | "resolvePublishedArtifactRecord">,
   state: ProjectState, display: DisplaySelection, staged: readonly ControlActionEnvelope[] = []
@@ -22,11 +22,7 @@ export async function validateDisplayArtifacts(
       if (pending) continue;
       const registered = state.artifacts?.find(artifact =>
         artifact.agent === item.agent && artifact.path === source.relativePath);
-      if (!registered) throw new ControlActionRejectedError({ code: "DISPLAY_ARTIFACT_NOT_PUBLISHED",
-        message: `Display selection must reference a published artifact: ${item.agent}/${source.relativePath}. The owning Agent must call publish_artifact before select_display; an existing file alone is not a publication.`,
-        invalidField, stateDetails: { agent: item.agent, path: source.relativePath,
-          requiredAction: "publish_artifact", stage: "select_display" } });
-      await storage.resolvePublishedArtifactRecord(state.id, registered);
+      if (registered) await storage.resolvePublishedArtifactRecord(state.id, registered);
     } catch (error) {
       if (error instanceof ControlActionRejectedError) throw error;
       const detail = error as Error & { code?: string; expected?: { size: number; sha256?: string }; actual?: { size: number; sha256: string } };

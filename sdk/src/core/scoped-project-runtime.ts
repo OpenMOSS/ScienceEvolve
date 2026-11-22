@@ -25,7 +25,6 @@ import { ScopedWorkflowRuntime, ScopedManagementDeferredError, type ScopedWorkfl
 import type { CollaborationGitFacade } from "./collaboration-git/facade.js";
 import { ScopedAgentExecutionRunner, type ScopedAgentTurnInput, type ScopedAgentExecutionGit } from "./scoped-agent-execution.js";
 import { ResidentScopedAgentTurnInvoker } from "./scoped-agent-resident.js";
-import { parseScopedWorkflowProposal } from "./scoped-workflow-reconfiguration.js";
 import { mainWorkflowDocument, workflowBaseHash } from "./workflow-reconfiguration.js";
 import { sameWorkflowConfigurationVersion } from "./workflow-adjustments.js";
 import { credentialFreeAgentConfiguration, restoreAgentConfiguration } from "./scoped-agent-configuration.js";
@@ -177,6 +176,19 @@ export class ScopedProjectRuntime {
           beforeInitialWorktreePreparation: (input) => failR04InitialPreparation({ ...input,
             projectTitle: dependencies.state.title, projectRoot: dependencies.storage.projectDir(dependencies.state.id) }) }),
       (id) => dependencies.storage.projectDir(id), async () => { await this.discoverWorktreeClosings(); await this.applyAcceptedRecoveries(); await this.publishArtifacts(); await dependencies.publish(); }, {
+        assistMember: async (group, request) => {
+          try {
+            await this.manage(group, "assist", undefined,
+              `Explicit request from ${request.agentId} (requestId ${request.requestId}):\n${request.payload.message}`);
+          } catch (error) {
+            if (error instanceof ScopedManagementDeferredError) throw error;
+            await dependencies.database.appendEvent({ projectId: dependencies.state.id,
+              requestId: `${request.requestId}:failed`, type: "project.state.leader.failed",
+              payload: { requestId: request.requestId, object: request.payload.object,
+                reason: error instanceof Error ? redactTrace(error.message) : String(error) } });
+            throw error;
+          }
+        },
         planGroup: async (group) => {
           await this.manage(group, "plan");
           // A formal apply_workflow is an alternative management decision.
@@ -197,7 +209,7 @@ export class ScopedProjectRuntime {
         completeGroup: async (group) => {
           await this.manage(group, "complete", undefined, workspace
             ? `Review the returned workspace handoffs, call finish_task for your round and confirm the group with complete_group.\n${scopedGroupOutput(await this.d.database.projectState(this.d.state.id), group.id)}`
-            : `All required arrivals reached Finish. Decide whether to request explicit final integration from an eligible Agent, or complete the group after an existing final merge proof.\n\n${scopedGroupOutput((await this.d.database.projectState(this.d.state.id)), group.id)}`);
+            : `All required arrivals reached Finish. Decide whether to request final integration from an eligible Agent (including yourself), or complete the group after its final delivery task returns. Report actual Git results and any remaining gaps.\n\n${scopedGroupOutput((await this.d.database.projectState(this.d.state.id)), group.id)}`);
         },
         recoverGroup: async (group, arrivals) => { await this.manage(group, "recover", undefined, `Failed direct/delegated arrivals: ${arrivals.join(", ")}`); },
         recoverGlobal: async (root) => {
@@ -225,11 +237,24 @@ export class ScopedProjectRuntime {
 
   async advance(rootGroupRunId: string) {
     await this.reconcileResidents();
+    for (const group of (await this.d.database.projectState(this.d.state.id)).scopedGroupRuns ?? []) {
+      if (group.status === "integrating" || (!group.groupBranch && group.status === "running")) await this.settleAcceptedCompletion(group);
+    }
     await this.discoverWorktreeClosings();
     await this.d.applyWaitingWorkflowAdjustments?.();
     await this.publishRetainedWorkflowAdjustments();
     await this.applyAcceptedRecoveries();
     return this.runtime.advance({ projectId: this.d.state.id, rootGroupRunId, repository: this.d.repository, signal: this.d.signal });
+  }
+
+  private async settleAcceptedCompletion(group: ScopedGroupRunRecord): Promise<void> {
+    const projectId = this.d.state.id;
+    const receipt = (await this.d.database.scopedAcceptedLeaderActions(projectId, group.id))
+      .find(entry => !entry.globalMain && entry.envelope.action.tool === "complete_group");
+    if (receipt?.envelope.action.tool !== "complete_group") return;
+    const { agent, invocationId, action, callId } = receipt.envelope;
+    await this.d.database.completeScopedGroupAfterLeaderDecision({ projectId, groupRunId: group.id, agentId: agent,
+      invocationId, coordinatorEpoch: action.coordinatorEpoch, output: action.output, requestId: `scoped-group-complete:${group.id}:${callId}` });
   }
 
   private async publishRetainedWorkflowAdjustments(): Promise<void> {
@@ -253,16 +278,17 @@ export class ScopedProjectRuntime {
   async reconcileResidents(): Promise<void> {
     const d = this.d;
     await d.reconcileWorktreeClosings?.();
-    for (const turn of (await d.database.scopedLeaderTurns(d.state.id)).filter((entry) => entry.status === "active")) {
+    for (const turn of await d.database.scopedLeaderTurns(d.state.id, true)) {
       if (!turn.runtimePath || !d.launcher.stopScopedForRecovery) throw new Error("Retained scoped Leader requires supervisor stop reconciliation");
       const group = (await d.database.scopedGroupRun(d.state.id, turn.groupRunId))!;
       const nodeRunId = await this.rootNode(group);
       const proof = await d.launcher.stopScopedForRecovery({ state: d.state, nodeRunId,
         scopeId: `management:${nodeRunId}:${group.id}`, agentId: turn.agentId, role: "leader",
         ownershipEpoch: turn.coordinatorEpoch, executionRuntimePath: turn.runtimePath });
-      if (!proof.stopped) throw new Error("Scoped Leader still has an unconfirmed native process");
+      if (proof.stopped !== true) throw new Error("Scoped Leader still has an unconfirmed native process");
       await d.database.releaseScopedLeaderTurn({ projectId: d.state.id, groupRunId: group.id,
-        agentId: turn.agentId, invocationId: turn.invocationId, residentStopConfirmed: true });
+        agentId: turn.agentId, invocationId: turn.invocationId, coordinatorEpoch: turn.coordinatorEpoch,
+        runtimePath: turn.runtimePath, residentStopConfirmed: true, evidence: proof.evidence });
     }
     for (const turn of (await d.database.scopedFinalNativeTurns(d.state.id)).filter((entry) => entry.status !== "stopped")) {
       if (!d.launcher.stopScopedForRecovery) throw new Error("Retained final Agent requires supervisor stop reconciliation");
@@ -322,13 +348,19 @@ export class ScopedProjectRuntime {
     const request: AgentRunRequest = this.d.inputBuilder ? await this.d.inputBuilder.build({ state, agentId, executionContext: context,
       assignment, invocationId, inboxPath: inbox, projectPath: this.d.storage.projectDir(state.id), worktreePath: workspace, runtimePath: runtime }) : {
       project: structuredClone(state), purpose: "workflow", agent: agentId, kind: agentId === "main" ? "main" : "worker",
-      permission: context.role === "leader" ? "workspace" : state.agents[agentId].permission,
+      permission: state.agents[agentId].permission,
       invocationId, inboxPath: inbox, projectPath: this.d.storage.projectDir(state.id), workspacePath: workspace, runtimePath: runtime,
       schemaPath: "", skillPaths: [], autoSkillPaths: [], availableSkillPaths: [], executionContext: context
     };
     request.sessionContinuity = "strict";
     request.resumeThreadId = state.agentSessionIds?.[agentId];
     await this.d.decorate(request);
+    const stateRequest = request.onProjectStateRequest;
+    if (stateRequest) request.onProjectStateRequest = async input => {
+      const result = await stateRequest(input);
+      if (input.operation === "request_leader") this.runtime.wake();
+      return result;
+    };
     this.requests.set(invocationId, request);
     return request;
   }
@@ -353,14 +385,14 @@ export class ScopedProjectRuntime {
     const d = this.d;
     const group = (await d.database.scopedGroupRun(d.state.id, integration.groupRunId))!;
     const agentId = (await d.database.scopedGroupIntegrationRequest(d.state.id, group.id))?.integrationOwnerAgentId;
-    if (!agentId || agentId === group.leaderAgentId) throw new Error("Final delivery requires the Leader's eligible business Agent");
+    if (!agentId) throw new Error("Final delivery requires the Leader's explicit Agent assignment");
     const retained = await d.database.scopedFinalRecoveryPull(d.state.id, integration.id, integration.ownershipEpoch);
     const synchronization = retained?.mergeCommitSha ? (await d.database.scopedMergedSynchronization({
       projectId: d.state.id, executionId: integration.id, ownershipEpoch: integration.ownershipEpoch,
       providerNumber: retained.providerNumber, expectedHead: integration.expectedHeadSha,
       expectedBase: integration.integrationTarget, expectedMergeCommitSha: retained.mergeCommitSha })) : undefined;
     const taskId = `${integration.id}:epoch:${integration.ownershipEpoch}`;
-    if ((await d.database.executionSupervisionResult(d.state.id, integration.id)))
+    if (await d.database.scopedFinalTaskReturned(d.state.id, group.id))
       return retained ? { ...retained, ...(synchronization ? { localSynchronization: synchronization } : {}) } : undefined;
     if (retained?.status === "merged" && synchronization && d.state.taskCompletions?.[taskId])
       return { ...retained, localSynchronization: synchronization };
@@ -381,6 +413,9 @@ export class ScopedProjectRuntime {
       `Preserve your existing business checkout and native session. Only publish the canonical branch ${integration.executionBranch}@${integration.expectedHeadSha} into its direct target ${integration.integrationTarget}. Its head is already confirmed published by member delivery.`,
       "Use github_get_pr, github_create_pr and github_merge_pr to inspect/publish/integrate this exact canonical PR. Every provider result returns to you. Call finish_task for this delivery task. Group completion remains a separate Leader action.",
       "Do not push a new business branch or change completed work in this delivery task. If the provider reports a conflict or an unresolved result, report the real fact in your existing handoff so the Leader can coordinate retained member repair.",
+      ...(d.state.userInputs.some(input => input.status === "pending") ? [
+        `Pending project user requirements (formal queue; Main reception remains separately recorded):\n${sources.record("pending-user-requirements", "Pending project user requirements", d.state.userInputs.filter(input => input.status === "pending").map(input => ({ id: input.id, createdAt: input.createdAt, message: input.message })))}`
+      ] : []),
       ].join("\n\n");
     sources.record("final-delivery-facts", "Retained provider facts", facts);
     let handle: CollaborationResidentHandle | undefined;
@@ -410,7 +445,9 @@ export class ScopedProjectRuntime {
           if ((await d.database.scopedFinalNativeTurns(d.state.id)).find((entry) => entry.invocationId === invocationId)?.status !== "opened")
             throw new Error("Final Agent native authority is not open");
           if (envelope.action.tool === "finish_task") return d.storage.requestTaskCompletion(d.state, taskId, envelope);
-          else if (!isAgentGitAction(envelope.action.tool)) throw new Error("Final delivery only has its task completion and canonical PR tools");
+          if (envelope.action.tool === "publish_artifact" && !(await d.database.scopedExecution(d.state.id, integration.id))) {
+            throw new Error(`Artifact publication has no member execution and merged-file source binding for ${integration.id}`);
+          }
         }, execute: async (envelope, signal) => {
           const result = await executeAgentGitTool({ git: this.git as CollaborationGitFacade, repository: this.repository,
             execution: { ...integration, purpose: "group-final-integration" }, base: integration.integrationTarget,
@@ -624,11 +661,6 @@ export class ScopedProjectRuntime {
         }
         let completion: TaskCompletionRecord | undefined;
         if (envelope.action.tool === "route_to_agent") {
-          const original = retained.find((item) => item.action.tool === "route_to_agent")?.action;
-          const originalTarget = original?.tool === "route_to_agent" ? original.target : input.reportRepair?.report.selectedWeakTarget;
-          if (originalTarget && envelope.action.target !== originalTarget) {
-            throw new Error("Supplemental mechanism turn cannot replace the original Agent's formal route");
-          }
           if (!candidates.includes(envelope.action.target)) throw new Error("Worker route is outside its Agent-owned local candidates");
           await this.d.database.previewScopedArrivalRoute(this.d.state.id, input.arrival.requestId, envelope.action.target);
         } else if (envelope.action.tool === "finish_task") {
@@ -888,7 +920,7 @@ export class ScopedProjectRuntime {
     return receipt;
   }
 
-  private async manage(group: ScopedGroupRunRecord, purpose: "plan" | "route" | "root-route" | "recover" | "complete", sourceArrivalRequestId?: string, context = "", globalMain = false,
+  private async manage(group: ScopedGroupRunRecord, purpose: "plan" | "route" | "root-route" | "recover" | "complete" | "assist", sourceArrivalRequestId?: string, context = "", globalMain = false,
     routeContext: { sourceArrivalGroupRunId?: string; sourceOuterNodeRunId?: string; routeCandidates?: string[] } = {}): Promise<void> {
     const attempt = () => {
       const job = this.managementTail.catch(() => undefined).then(async () => this.performManagement(group, purpose, sourceArrivalRequestId, context, globalMain, routeContext));
@@ -936,9 +968,10 @@ export class ScopedProjectRuntime {
     }
   }
 
-  private async performManagement(group: ScopedGroupRunRecord, purpose: "plan" | "route" | "root-route" | "recover" | "complete", sourceArrivalRequestId: string | undefined, context: string, globalMain: boolean,
+  private async performManagement(group: ScopedGroupRunRecord, purpose: "plan" | "route" | "root-route" | "recover" | "complete" | "assist", sourceArrivalRequestId: string | undefined, context: string, globalMain: boolean,
     routeContext: { sourceArrivalGroupRunId?: string; sourceOuterNodeRunId?: string; routeCandidates?: string[] } = {}): Promise<void> {
     const d = this.d;
+    if (purpose === "recover" && !(await d.database.scopedRecoveryCandidates(d.state.id, group.id, globalMain)).length) return;
     // A management job may have waited in managementTail since the user
     // requested Pause. Check before doing any new durable work and after each
     // asynchronous preparation boundary below. The scheduler turns this
@@ -950,8 +983,7 @@ export class ScopedProjectRuntime {
     const runtime = await d.storage.invocationRuntimePath(d.state.id, invocationId);
     d.assertManagementActive?.();
     group = (await d.database.scopedGroupRun(d.state.id, group.id))!;
-    const worktreeClosingOnly = group.status === "completed";
-    if (worktreeClosingOnly && (purpose !== "recover" || globalMain)) throw new Error("Completed group permits only its original Leader's closing coordination");
+    const completedGroup = group.status === "completed";
     const agentId = globalMain ? "main" : group.leaderAgentId;
     const sourceArrivalGroupRunId = routeContext.sourceArrivalGroupRunId ?? group.id;
     const handoffArrival = sourceArrivalRequestId
@@ -973,18 +1005,17 @@ export class ScopedProjectRuntime {
     let stopped = false;
     let failure: unknown;
     let retired = false;
-    let managementReturned = false;
+    let managementReturned = false, completionAccepted = false;
     try {
       const repairScopeKey = createHash("sha256").update(JSON.stringify([group.id, agentId, purpose,
         sourceArrivalRequestId ?? null, globalMain])).digest("hex");
       const repairScope = { groupRunId: group.id, agentId, purpose, ...(sourceArrivalRequestId ? { sourceArrivalRequestId } : {}) };
-      if ((await d.database.scopedManagementRepairCount(d.state.id, repairScopeKey, repairScope)) >= MAX_TASK_REPAIR_WAKEUPS) return;
       const workflow = await d.database.scopedGroupWorkflow(d.state.id, group.id);
       const source = sourceArrivalRequestId ? (await d.database.scopedArrivals(sourceArrivalGroupRunId)).find((item) => item.requestId === sourceArrivalRequestId) : undefined;
       const routeCandidates = routeContext.routeCandidates ?? (source?.status === "skipped" ? [...workflow.nodes.map((node) => node.nodeId), "finish"]
         : source ? ((await d.database.scopedGroupWorkflow(d.state.id, sourceArrivalGroupRunId)).routes[source.targetNodeId] ?? []).filter((edge) => edge.kind === "weak").map((edge) => edge.target) : []);
       const recoveryCandidates = (await d.database.scopedRecoveryCandidates(d.state.id, group.id, globalMain))
-        .filter(candidate => !worktreeClosingOnly || candidate.kind === "worktree-closing");
+;
       const recoveryOptions = await d.database.scopedRecoveryOptions(d.state.id, group.id, globalMain, recoveryCandidates);
       const failedArrivalRequestIds = recoveryCandidates.map((item) => item.arrivalRequestId);
       const ordinaryFailureIds = recoveryCandidates.filter(item => item.kind !== "worktree-closing").map(item => item.arrivalRequestId);
@@ -992,8 +1023,7 @@ export class ScopedProjectRuntime {
       const closingArrivalRequestIds = globalMain ? [] : closingCandidates.filter(item => item.closing && !item.closingGrantFailure && item.originGroupRunId === group.id && !item.pendingOperation &&
         !item.closingAttempts?.at(-1)?.returned?.observationFailure)
         .map(item => item.arrivalRequestId);
-      const definition = d.state.orchestration.scopedWorkflow!.groups.find((item) => item.id === group.groupId)!;
-      const allowEdit = !worktreeClosingOnly && (globalMain ? d.state.orchestration.allowMainReconfiguration === true : definition.allowLeaderReconfiguration);
+      const allowEdit = agentId === "main" && d.state.orchestration.allowMainReconfiguration === true;
       const projectAllowsUserIntervention = d.state.orchestration.allowUserIntervention !== false;
       const canRequestUser = globalMain && projectAllowsUserIntervention;
       const userEscalationGuidance = projectAllowsUserIntervention ? "GLOBAL Main may request_user."
@@ -1007,13 +1037,15 @@ export class ScopedProjectRuntime {
         integrationRequest: (await d.database.scopedGroupIntegrationRequest(d.state.id, group.id)) ?? null,
         finalMerge: (await d.database.scopedGroupFinalMergeFact(d.state.id, group.id)) ?? null,
         supervision: (await d.database.scopedFinalIntegration(d.state.id, group.id))
-          ? (await d.database.executionSupervisionResult(d.state.id, (await d.database.scopedFinalIntegration(d.state.id, group.id))!.id)) ?? null : null
+          ? (await d.database.executionSupervisionResult(d.state.id, (await d.database.scopedFinalIntegration(d.state.id, group.id))!.id,
+            (await d.database.scopedFinalIntegration(d.state.id, group.id))!.ownershipEpoch)) ?? null : null
       } : undefined;
       const terminalCandidates = (await d.database.scopedRecoveryCandidates(d.state.id,group.id,globalMain))
         .filter(candidate => candidate.kind === "terminal-push");
       const terminalFacts = terminalCandidates.length ? (await d.database.authoritativeWorkflowFiles(d.state.id)).currentState : undefined;
       if (globalMain) await this.restoreReceivedMainInputs();
-      const pendingInputs = globalMain ? d.state.userInputs.filter(input => input.status === "pending").map(input => ({
+      const leaderRequests = purpose === "assist" ? await d.database.pendingLeaderRequests(d.state.id, group.id) : [];
+      const pendingInputs = globalMain || agentId === "main" ? d.state.userInputs.filter(input => input.status === "pending").map(input => ({
         ...structuredClone(input), text: workflowMessagesText([{ sender: "user", body: input.message }])
       })) : [];
       // State the actual role and purpose precisely, including when a retained
@@ -1021,7 +1053,7 @@ export class ScopedProjectRuntime {
       // the system supplies facts, tools, and safe workflow sequencing only.
       const sources = new AgentContextSources();
       const background = [`You are ${agentId}, the management-only ${globalMain ? "GLOBAL Main" : "Leader"} of ${group.groupId}. Purpose: ${purpose}.`,
-        worktreeClosingOnly ? "This group is already completed. Coordinate only its retained original-owner worktree closing or escalate the actual issue to your parent. Your own finish_task closes this coordination turn. Business planning, ordinary retry, routing, workflow editing, integration and group completion remain closed." : "",
+        completedGroup ? "This group is already recorded as completed. Inspect the retained delivery facts and your current assignment before choosing further work; existing completion and Git history remain recorded." : "",
         `Current control identity: ${JSON.stringify({ projectId: d.state.id, groupRunId: group.id,
           coordinatorEpoch: claim.coordinatorEpoch, invocationId, role: globalMain ? "scoped-main" : "scoped-leader" })}. Use this groupRunId and coordinatorEpoch in formal control calls for this turn; do not reuse an earlier turn's epoch or a failed member's ownershipEpoch.`,
         `Requirement: ${d.state.requirement}`, `Graph:\n${sources.record("management-graph", "Current group graph", workflow)}`,
@@ -1029,8 +1061,9 @@ export class ScopedProjectRuntime {
         finalFacts ? `Canonical final integration facts:\n${sources.fields("canonical-final", "Canonical final integration facts", finalFacts)}\nThese are the current authoritative SQLite provider and local synchronization facts for this exact group. Inspect this turn's read-only current-state.json detail reference, scopedRuntime.agentMerges and scopedRuntime.groupFinalMerges, for the full published proof. Earlier Agent-authored business reports describe their own turn; use the current facts when deciding your separate group completion action.` : "",
         `Context:\n${sources.record("management-source-context", "Source task and handoff context", context)}`,
         globalMain ? "Do not execute business work. This is the global recovery control turn, not a local Leader turn. Preserve every Agent identity/session/cwd."
+          : purpose === "assist" ? "Read the member's explicit request and actual error. Decide your response and any authorized follow-up yourself; finish_task returns your assistance turn. No business outcome is implied by message reception."
           : purpose === "complete"
-            ? !d.state.git?.enabled ? "Review the actual member handoffs. Call finish_task for your management turn and complete_group for this group run." : "This is a group completion control turn. Record your management handoff with finish_task. After the final integration task returns, call complete_group and describe its actual delivery facts; otherwise call request_group_integration with an eligible non-leader Agent. Report any remaining process omissions without inventing delivery. Do not perform business Git work yourself."
+            ? !d.state.git?.enabled ? "Review the actual member handoffs. Call finish_task for your management turn and complete_group for this group run." : "This is a group completion control turn. Record your management handoff with finish_task. After the final integration task returns, call complete_group and describe its actual delivery facts; otherwise call request_group_integration with an eligible Agent, including yourself. Report any remaining process omissions without inventing delivery. Assigned business Git work runs in its separate delivery task."
             : purpose === "recover"
               ? "This is a recovery control turn for existing retained failures. Use coordinate_group_task for the distinct recovery actions described below. assign_group_tasks produces a plan and does not resolve these failures. Do not perform business work or dispatch outside this scope."
           : purpose === "route" || purpose === "root-route"
@@ -1041,21 +1074,23 @@ export class ScopedProjectRuntime {
         ordinaryFailureIds.length ? `Use coordinate_group_task for these retained failures: ${ordinaryFailureIds.join(", ")}. Choose only an operation listed for that exact arrival in recoveryOptions. ${globalMain ? userEscalationGuidance : "You cannot skip tasks."}` : "",
         recoveryOptions.length && !d.state.git?.enabled ? `Available decisions: ${sources.list("recovery-options", "Available decisions", recoveryOptions)}. Choose an available action for the failed arrival and finish this management turn.`
           : recoveryOptions.length ? `Current recoveryOptions: ${sources.list("recovery-options", "Current recoveryOptions", recoveryOptions)}. blockedOperations explains prerequisites to resolve; repeating a blocked skip does not settle Git. Retry retains the original Agent/session; repairNodeIds are exact eligible graph nodes for final-conflict retry only. Omit repairNodeId for ordinary retries. After recording your decisions, use finish_task and finish this management turn so the system can apply them.` : "",
-        failedArrivalRequestIds.length > 1 ? "You may coordinate multiple independent failed arrivals in this same turn, with one immutable choice per arrival and a distinct callId per action. Repeating an identical choice keeps its original receipt. These choices take effect only after this management call stops; the system does not choose for you." + (worktreeClosingOnly ? "" : " Global workflow, planning, routing or user-request transitions remain alternatives to the recovery batch.") : "",
+        failedArrivalRequestIds.length > 1 ? "You may coordinate multiple independent failed arrivals in this same turn, with a distinct callId per action. Reuse a callId only for the exact same request. You may adjust a pending choice; actions already performed remain recorded. Choose further authorized actions yourself." : "",
         `Retained failures: ${sources.list("recovery-candidates", "Retained failures", recoveryCandidates)}`,
         closingCandidates.length ? `Identified original-task worktree closing issues: ${sources.list("closing-candidates", "Identified original-task worktree closing issues", closingCandidates)}. Original completed/failed status, report A, finish, business PR and newer reservations remain immutable. These are not ordinary business retries. ${globalMain
           ? `GLOBAL Main cannot grant file writes or skip/retry these issues. ${userEscalationGuidance}`
           : `Only these direct arrivals may receive an explicit close_worktree decision this turn: ${JSON.stringify(closingArrivalRequestIds)}. For each, supply closing={executionId,ownershipEpoch,paths} with exact identified file paths you authorize, and your factual rationale. Issues with closingGrantFailure, without closing.observation, or with a stopped attempt's observationFailure have no current trusted writable manifest: preserve their files and escalate the actual read-failure reason. closingAttempts transports actual output, missing finish/output, current independent B operations and native result reception; a saved or prepared result is not received. After a stopped attempt has formally returned, a new decision permits exactly one new call in the same original Session with no expansion of its previous paths. It does not replay an old grant, restore a capability, or reset any automatic repair budget. The original Agent judges file source and whether to deliver or remove them; bound-report-memory permits only its own necessary Memory. Escalate to your direct parent if source or scope is uncertain. An accepted pending grant cannot be granted again.`} Neither a grant, finish nor Stop proves B delivery or releases FIFO; original A, any independent B with original-Session receipt, and the directory must all settle.` : "",
-        failedArrivalRequestIds.length && !worktreeClosingOnly ? "For an ordinary failed Agent task (no kind=final), omit repairNodeId entirely in coordinate_group_task. Escalation also omits it. Only a final PR conflict retry may supply an actual graph nodeId of the original group; an Agent identity is not a nodeId." : "",
+        failedArrivalRequestIds.length ? "For an ordinary failed Agent task (no kind=final), omit repairNodeId entirely in coordinate_group_task. Escalation also omits it. Only a final PR conflict retry may supply an actual graph nodeId of the original group; an Agent identity is not a nodeId." : "",
         terminalFacts ? `Original completed Agent receipt facts at stateRevision ${terminalFacts.stateRevision}:\n${sources.fields("terminal-receipts", "Original completed Agent receipt facts", {
           terminalPushObservationOperations: terminalFacts.terminalPushObservationOperations?.filter(operation => terminalCandidates.some(candidate => candidate.executionId === operation.ownerExecutionId)),
           terminalPushObservations: terminalFacts.terminalPushObservations?.filter(turn => terminalCandidates.some(candidate => candidate.executionId === turn.executionId)),
           terminalPushObservationIssues: terminalFacts.terminalPushObservationIssues?.filter(issue => terminalCandidates.some(candidate => candidate.executionId === issue.executionId))
         })}\nA terminal-push incident preserves an already successful business task. Its turn.operation is the immutable reservation snapshot; terminalPushObservationOperations carries the current S journal and recorded provider proof. Use the actual Agent handoff and output. An explicit retry authorizes one read-only original-session receipt turn after you stop; it cannot push, replay business or reset automatic repairs. Escalate to your direct parent if you cannot resolve it. ${userEscalationGuidance} The system only transports these facts and your instructions.` : "",
-        d.state.git?.enabled && !worktreeClosingOnly ? `A mechanism incident retains the exact stopped original Agent's task, epoch, branch, PR and unsettled operations. Retry authorizes that Agent to continue once in its original session; it does not replenish automatic supplements. GLOBAL Main may explicitly skip this failed Worker after its original Git operations are settled and its native process has stopped; a skip excludes its report from successful evidence and preserves Git history, including any already merged PR. Group/final-integration incidents cannot be skipped as Workers. Unsettled operations require the original Agent's exact reconciliation, not deletion or a new push ID. Escalate through the direct parent if you cannot resolve it. ${userEscalationGuidance} Supply your factual instructions in the coordination rationale; do not perform the Agent's business or Git work yourself.` : "",
-        d.state.git?.enabled && !worktreeClosingOnly ? `For a final PR conflict, choose repairNodeId from an actual Agent node of the original group. This creates only a repair-only arrival and preserves completed paths; the repaired PR must still merge into that group before its next canonical final PR. Leaders never write business code. A retry without repairNodeId requests Git-only reconciliation; parent managers may delegate selection back to the original Leader. Group-level incidents cannot be marked successful by skip.` : "",
+        d.state.git?.enabled ? `A mechanism incident retains the exact stopped original Agent's task, epoch, branch, PR and unsettled operations. Retry authorizes that Agent to continue once in its original session; it does not replenish automatic supplements. GLOBAL Main may explicitly skip this failed Worker after its original Git operations are settled and its native process has stopped; a skip excludes its report from successful evidence and preserves Git history, including any already merged PR. Group/final-integration incidents cannot be skipped as Workers. Unsettled operations require the original Agent's exact reconciliation, not deletion or a new push ID. Escalate through the direct parent if you cannot resolve it. ${userEscalationGuidance} Supply your factual instructions in the coordination rationale; do not perform the Agent's business or Git work yourself.` : "",
+        d.state.git?.enabled ? `For a final PR conflict, choose repairNodeId from an actual Agent node of the original group. This creates only a repair-only arrival and preserves completed paths; the repaired PR must still merge into that group before its next canonical final PR. Leaders never write business code. A retry without repairNodeId requests Git-only reconciliation; parent managers may delegate selection back to the original Leader. Group-level incidents cannot be marked successful by skip.` : "",
         d.state.userIntervention?.status === "answered" ? `User response: ${d.state.userIntervention.response}` : "",
-        allowEdit ? `You may formally edit ${globalMain ? "the global workflow" : "this group's graph and local shared Agent configuration"}; locked fields and necessary active nodes remain protected.` : "Workflow reconfiguration is disabled."].filter(Boolean).join("\n\n");
+        allowEdit ? "Main may edit the global workflow and submit the bound workflow.json with apply_workflow, including during group management. Whether to adjust is Main's decision. Locked fields and active execution facts remain protected."
+          : agentId === "main" ? "The project's Main workflow adjustment permission is disabled; the global workflow remains readable."
+            : "Only Main can adjust the workflow; this Leader's planning and routing tools do not change the graph."].filter(Boolean).join("\n\n");
       sources.record("management-reference", "Management facts and protocol reference", background);
       const rootNodeId = await this.rootNode(group);
       const rootNode = (await d.database.projectState(d.state.id)).nodeRuns.find(node => node.id === rootNodeId);
@@ -1075,6 +1110,8 @@ export class ScopedProjectRuntime {
       if (context) messages.push({ sender: sourceArrivalRequestId
         ? (await d.database.scopedArrivals(routeContext.sourceArrivalGroupRunId ?? group.id)).find(item => item.requestId === sourceArrivalRequestId)?.agentId ?? "OpenFARS"
         : purpose === "complete" || purpose === "root-route" ? group.leaderAgentId : "OpenFARS", body: context });
+      messages.push(...leaderRequests.map(message => ({ sender: message.agentId ?? "member",
+        body: `Explicit Leader request ${message.requestId}:\n${message.payload.message}` })));
       messages.push(...pendingInputs.map(input => ({ sender: "user", body: input.message })));
       if (globalMain && d.state.userIntervention?.status === "answered")
         messages.push({ sender: "user", body: d.state.userIntervention.response ?? "" });
@@ -1087,9 +1124,10 @@ export class ScopedProjectRuntime {
       const request = await this.request(agentId, invocationId, inputs.workspacePath, runtime, inputs.inboxPath, assignment,
         { role: "leader", nodeRunId: await this.rootNode(group), groupRunId: group.id, coordinatorEpoch: claim.coordinatorEpoch });
       request.contextSources = [...sources.sources, ...(request.contextSources ?? [])];
-      request.nativeInputNotices = pendingInputs.map(input => input.text);
+      request.nativeInputNotices = [...pendingInputs.map(input => input.text),
+        ...leaderRequests.map(message => `Explicit Leader request ${message.requestId}:\n${message.payload.message}`)];
       d.assertManagementActive?.();
-      if (pendingInputs.length) {
+      if (pendingInputs.length || leaderRequests.length) {
         const priorNativeInput = request.onNativeUserInput;
         const mainInvocation = d.state.mainInvocationSeq + 1;
         request.onNativeUserInput = async (event, session) => {
@@ -1101,6 +1139,13 @@ export class ScopedProjectRuntime {
             binding.worktreePath !== inputs.workspacePath || !isDeepStrictEqual(binding.executionContext, request.executionContext) ||
             !sameDurableSession(binding.session, session)) return;
           await d.database.assertScopedLeaderAuthority(identity);
+          for (const message of leaderRequests) {
+            if (!event.message.includes(message.requestId!) || !event.message.includes(String(message.payload.message))) continue;
+            await d.database.appendEvent({ projectId: d.state.id, agentId, invocationId,
+              requestId: `${message.requestId}:received`, type: "project.state.leader.received",
+              payload: { requestId: message.requestId, object: message.payload.object,
+                nativeEventId: event.eventId, session } });
+          }
           for (const input of pendingInputs) {
             if (!event.message.includes(redactTrace(input.text))) continue;
             const requestId = `scoped-user-input-received:${input.id}`;
@@ -1114,17 +1159,15 @@ export class ScopedProjectRuntime {
           await d.storage.saveState(d.state);
         };
       }
-      request.workflowContext = { scope: globalMain ? "global" : "group", groupId: group.groupId,
+      request.workflowContext = { scope: agentId === "main" ? "global" : "group", groupId: group.groupId,
         groupRunId: group.id, sourceNodeId: source?.targetNodeId, purpose, candidates: [...routeCandidates] };
       Object.assign(inputs, await prepareWorkflowContext(request, inputs, (await d.database.authoritativeWorkflowFiles(d.state.id))));
       const proposalCache = new Map<string, Pick<ScopedLeaderActionInput, "proposal" | "baseWorkflowHash" | "configuration" | "baseConfigurationHash" | "baseVersion">>();
       const retainedActions: ControlActionEnvelope[] = [];
-      let finishOnlyRepair = false;
       const controlScope = { role: globalMain ? "scoped-main" as const : "scoped-leader" as const, projectId: d.state.id, nodeRunId: await this.rootNode(group),
         groupRunId: group.id, leaderAgentId: agentId, coordinatorEpoch: claim.coordinatorEpoch,
-        memberNodeIds: worktreeClosingOnly ? [] : workflow.nodes.map((node) => node.nodeId), routeCandidates, failedArrivalRequestIds, recoveryOptions,
+        memberNodeIds: workflow.nodes.map((node) => node.nodeId), routeCandidates, failedArrivalRequestIds, recoveryOptions,
         ...(closingArrivalRequestIds.length ? { closingArrivalRequestIds } : {}),
-        ...(worktreeClosingOnly ? { worktreeClosingOnly: true as const } : {}),
         allowReconfiguration: allowEdit, ...(sourceArrivalRequestId ? { sourceArrivalRequestId } : {}),
         ...(routeContext.sourceOuterNodeRunId ? { sourceOuterNodeRunId: routeContext.sourceOuterNodeRunId } : {}) };
       const openAndRegister = async (): Promise<CollaborationResidentHandle> => {
@@ -1151,7 +1194,6 @@ export class ScopedProjectRuntime {
               memberNodeIds: [...controlScope.memberNodeIds], routeCandidates: [...routeCandidates],
               failedArrivalRequestIds: [...failedArrivalRequestIds], recoveryOptions: structuredClone(recoveryOptions), allowReconfiguration: allowEdit,
               ...(closingArrivalRequestIds.length ? { closingArrivalRequestIds: [...closingArrivalRequestIds] } : {}),
-              ...(worktreeClosingOnly ? { worktreeClosingOnly: true as const } : {}),
               ...(sourceArrivalRequestId ? { sourceArrivalRequestId } : {}),
               ...(routeContext.sourceOuterNodeRunId ? { sourceOuterNodeRunId: routeContext.sourceOuterNodeRunId } : {}) },
             workspacePath: inputs.workspacePath, requireBridge: true },
@@ -1160,13 +1202,11 @@ export class ScopedProjectRuntime {
               if (envelope.action.tool === "request_user" && (!globalMain || d.state.orchestration.allowUserIntervention === false)) {
                 throw new Error("User intervention is disabled by this Workflow");
               }
-              if (finishOnlyRepair && envelope.action.tool !== "finish_task" &&
-                !retainedActions.some((entry) => isDeepStrictEqual(entry.action, envelope.action))) {
-                throw new Error("The management round's staged decision cannot be replaced during finish_task repair");
-              }
               let completion: TaskCompletionRecord | undefined;
               let proposal: Pick<ScopedLeaderActionInput, "proposal" | "baseWorkflowHash" | "configuration" | "baseConfigurationHash" | "baseVersion"> = {};
               if (envelope.action.tool === "apply_workflow") {
+                if (agentId !== "main" || d.state.orchestration.allowMainReconfiguration !== true)
+                  throw new Error("Only authorized Main may adjust the global workflow");
                 const retained = await d.database.scopedWorkflowAdjustmentProposal(d.state.id, invocationId, envelope.callId);
                 if (retained) {
                   proposal = { proposal: retained.proposal, baseWorkflowHash: retained.baseWorkflowHash,
@@ -1188,8 +1228,7 @@ export class ScopedProjectRuntime {
                       : mainWorkflowDocument(d.state.id, current.snapshot.orchestration, current.version),
                     async () => sameWorkflowConfigurationVersion((await d.database.workflowAdjustmentCurrent(d.state.id)).version, current.version));
                   await refreshCurrentReference();
-                  const parsed = globalMain ? parseAgentOrchestrationProposal(raw, d.state.id, d.state.orchestration, d.state.agents, resources)
-                    : parseScopedWorkflowProposal(raw, d.state.id, d.state.orchestration, d.state.agents, group.groupId, resources);
+                  const parsed = parseAgentOrchestrationProposal(raw, d.state.id, d.state.orchestration, d.state.agents, resources);
                   if (parsed.skillDefinitions && parsed.mcpDefinitions) {
                     if (!d.validateConfiguration) throw new Error("Agent configuration proposals require the existing server route/resource validator");
                     await d.validateConfiguration(parsed as AgentOrchestrationProposal);
@@ -1216,6 +1255,15 @@ export class ScopedProjectRuntime {
                 await d.database.revalidateScopedLeaderAction({ ...identity, envelope, ...(sourceArrivalRequestId ? { sourceArrivalRequestId } : {}),
                   ...(routeContext.sourceArrivalGroupRunId ? { sourceArrivalGroupRunId: routeContext.sourceArrivalGroupRunId } : {}),
                   ...(routeContext.sourceOuterNodeRunId ? { sourceOuterNodeRunId: routeContext.sourceOuterNodeRunId } : {}), ...proposal });
+                if (envelope.action.tool === "request_group_integration") {
+                  await d.database.acceptScopedLeaderAction({ ...identity, envelope, residentStopConfirmed: false }, d.state);
+                  this.runtime.wake();
+                  await d.publish();
+                  const accepted = this.capabilities.get(invocationId)!.accepted;
+                  if (!accepted.some(item => item.callId === envelope.callId)) accepted.push(structuredClone(envelope));
+                  return { status: "queued", requestId: `scoped-leader-action:${invocationId}:${envelope.callId}`,
+                    groupRunId: group.id, targetAgentId: envelope.action.integrationOwnerAgentId };
+                }
                 if (envelope.action.tool === "apply_workflow") {
                   proposalCache.set(envelope.callId, proposal);
                   await d.publish();
@@ -1233,12 +1281,11 @@ export class ScopedProjectRuntime {
         ? d.withNativeLaunchFence(openAndRegister)
         : (openAndRegister()));
       if (!handle) throw new Error("Scoped management resident did not open");
-      const formalTools = worktreeClosingOnly ? ["coordinate_group_task"] : purpose === "recover" ? ["coordinate_group_task", ...(canRequestUser ? ["request_user"] : []), "apply_workflow"]
-        : purpose === "complete" ? (d.state.git?.enabled ? ["request_group_integration", "complete_group"] : ["complete_group"])
-        : purpose === "route" || purpose === "root-route" ? ["route_to_agent", "apply_workflow"] : ["assign_group_tasks", "apply_workflow"];
+      const formalTools = ["coordinate_group_task", "request_group_integration", "complete_group", "route_to_agent",
+        "apply_workflow", "assign_group_tasks", "request_user", "complete_project"];
       const stateRequests = async () => purpose === "recover" && !globalMain
         ? (await d.database.projectStateMainCoordinationRequests(d.state.id, invocationId)) : [];
-      const hasDecision = async () => retainedActions.some((entry) => formalTools.includes(entry.action.tool)) || (await stateRequests()).length > 0;
+      const hasDecision = async () => purpose === "assist" || retainedActions.some((entry) => formalTools.includes(entry.action.tool)) || (await stateRequests()).length > 0;
       const missing = async () => [!(await d.database.scopedLeaderTaskCompleted(d.state.id, group.id, agentId,
         invocationId, claim!.coordinatorEpoch)) && "finish_task", !(await hasDecision()) && `formal ${purpose} control action`].filter(Boolean);
       const inputId = `${purpose}:${group.id}:${sourceArrivalRequestId ?? invocationId}`;
@@ -1248,7 +1295,7 @@ export class ScopedProjectRuntime {
           if (!this.capabilities.get(invocationId)!.accepted.some(entry => isDeepStrictEqual(entry, envelope))) {
             throw new Error("Leader result was not accepted by its live scoped broker");
           }
-          if (!retainedActions.some(entry => isDeepStrictEqual(entry.action, envelope.action))) retainedActions.push(envelope);
+          if (!retainedActions.some(entry => entry.invocationId === envelope.invocationId && entry.callId === envelope.callId)) retainedActions.push(envelope);
         }
       };
       const initial = await d.submit(handle, { inputId, invocationId, prompt: assignment });
@@ -1267,7 +1314,6 @@ export class ScopedProjectRuntime {
           return count + 1;
         },
         invoke: async (attempt, absent) => {
-          finishOnlyRepair = (await hasDecision());
           return d.submit(handle!, { inputId: `${inputId}:supervision:${attempt}`, invocationId,
             prompt: [assignment, `Continue this management task in the same session. Remaining facts: ${absent.join("; ")}.`,
               `Accepted actions: ${sources.list("management-staged-actions", "Accepted actions", retainedActions.filter(entry => entry.action.tool !== "finish_task").map(entry => entry.action))}.`,
@@ -1302,11 +1348,7 @@ export class ScopedProjectRuntime {
             ...(routeContext.sourceOuterNodeRunId ? { sourceOuterNodeRunId: routeContext.sourceOuterNodeRunId } : {}),
             ...proposalCache.get(envelope.callId), residentStopConfirmed: stopped }, d.state);
           if (acceptance.workflowAdjustment) workflowAdjustments.push(acceptance.workflowAdjustment);
-          if (d.state.git?.enabled && envelope.action.tool === "complete_group") {
-            await d.database.completeScopedGroupAfterLeaderDecision({ projectId: d.state.id, groupRunId: group.id,
-              agentId, invocationId, coordinatorEpoch: claim!.coordinatorEpoch, output: envelope.action.output,
-              requestId: `scoped-group-complete:${group.id}:${envelope.callId}` });
-          }
+          if (envelope.action.tool === "complete_group") completionAccepted = true;
         }
       }
       managementReturned = true;
@@ -1333,7 +1375,7 @@ export class ScopedProjectRuntime {
         catch (error) { console.warn(`Management cleanup unconfirmed (${invocationId}): ${supervisionError(error)}`); }
         d.unregister(`scoped:${invocationId}`);
       }
-      await d.database.releaseScopedLeaderTurn({ ...identity, residentStopConfirmed: stopped || !launchBegan });
+      if (stopped || !launchBegan) await d.database.releaseScopedLeaderTurn({ ...identity, residentStopConfirmed: true });
       try { await d.publish(); }
       catch (error) {
         if (!managementReturned) throw error;
@@ -1347,7 +1389,7 @@ export class ScopedProjectRuntime {
       // finite business control-repair allowance or invent request_user.
       if (transientHarnessFailure(failure) && (stopped || !launchBegan)) throw failure;
       const failureReason = failure instanceof Error ? redactTrace(failure.message) : "Leader coordination failed";
-      if ((stopped || !launchBegan) && (purpose === "recover" || purpose === "plan" || globalMain) &&
+      if (purpose !== "assist" && (stopped || !launchBegan) && (purpose === "recover" || purpose === "plan" || globalMain) &&
         !d.signal.aborted && !(await d.database.projectCancellationIntent(d.state.id))) {
         if (purpose === "plan" && !globalMain) {
           await d.database.recordScopedGroupIssue({ projectId: d.state.id, groupRunId: group.id, kind: "plan", reason: failureReason });
@@ -1365,6 +1407,8 @@ export class ScopedProjectRuntime {
       }
       throw failure;
     }
+    if (launchBegan && !stopped) throw new Error(`Scoped Leader ${invocationId} Stop is unconfirmed; its management lane is retained`);
+    if (completionAccepted) await this.settleAcceptedCompletion(group);
     if (purpose === "plan" && !globalMain) {
       await d.database.resolveScopedGroupIssueIfPresent(d.state.id, group.id, "plan", "Leader produced a durable group plan after technical recovery");
     }
@@ -1447,8 +1491,12 @@ export class ScopedProjectRuntime {
     const d = this.d;
     if ((await d.database.projectCancellationIntent(d.state.id))) return;
     for (const group of (await d.database.projectState(d.state.id)).scopedGroupRuns ?? []) {
-      for (const receipt of (await d.database.scopedAcceptedLeaderActions(d.state.id, group.id))) {
+      const receipts = await d.database.scopedAcceptedLeaderActions(d.state.id, group.id);
+      for (const [index, receipt] of receipts.entries()) {
         const action = receipt.envelope.action;
+        if (action.tool === "coordinate_group_task" && receipts.slice(index + 1).some(later =>
+          later.envelope.invocationId === receipt.envelope.invocationId &&
+          later.envelope.action.tool === "coordinate_group_task" && later.envelope.action.arrivalRequestId === action.arrivalRequestId)) continue;
         if (action.tool === "request_user" && receipt.globalMain) {
           await this.requestScopedUser(receipt.envelope.invocationId, receipt.envelope.callId, action.message, action.rationale);
           continue;

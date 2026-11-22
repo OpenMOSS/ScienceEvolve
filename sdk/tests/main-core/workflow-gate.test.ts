@@ -144,15 +144,30 @@ describe("Workflow Gate durable execution and migration", () => {
       db.activateNode({ projectId: "p", nodeRunId: "predecessor", node: { kind: "agent", nodeId: "main", agentId: "main" },
         workflowRevision: 1, activationRequestId: "first", inputSnapshotRef: "input", activatedByAgentId: "main" });
       db.completeManagementNode({ projectId: "p", nodeRunId: "predecessor", output: "original input", routeEmissionId: "route-first", route: { kind: "fixed", targetNodeId: gate.id } });
-      db.activateNode({ projectId: "p", nodeRunId: "check", node: { kind: "gate", gateId: gate.id, nodeId: gate.id, agentId: "worker" },
-        gateRunId: recorded.id, workflowRevision: 1, activationRequestId: "gate-entry", inputSnapshotRef: "route-first", sourceNodeRunId: "predecessor", activatedByAgentId: "worker" });
+      const activation = { projectId: "p", nodeRunId: "check", node: { kind: "gate" as const, gateId: gate.id, nodeId: gate.id, agentId: "worker" },
+        gateRunId: recorded.id, workflowRevision: 1, activationRequestId: "gate-entry", inputSnapshotRef: "route-first", sourceNodeRunId: "predecessor", activatedByAgentId: "worker" };
+      const before = db.projectState("p").stateRevision;
+      expect(() => db.activateNode({ ...activation, sourceNodeRunId: "wrong-predecessor" })).toThrow(/exact predecessor/);
+      expect(() => db.activateNode({ ...activation, node: { ...activation.node, agentId: "other" } })).toThrow(/configured Agent/);
+      expect(() => db.activateNode({ ...activation, node: { kind: "agent", nodeId: "worker", agentId: "worker" } })).toThrow(/ordinary Agent/);
+      expect(db.projectState("p").stateRevision).toBe(before);
+      db.activateNode(activation);
       expect(db.completeCodeGateNode("p", "check")).toMatchObject({ replay: false, outbox: { targetNodeId: "next" } });
       expect(db.completeCodeGateNode("p", "check")).toMatchObject({ replay: true });
       expect(db.projectState("p").executions).toHaveLength(0);
       db.close(); db = CollaborationStateDatabase.open(options);
       expect(db.workflowGate("p", recorded.id)).toEqual(recorded);
-      expect(db.completeCodeGateNode("p", "check").outbox.payload.output).toContain('"originalTask":"research"');
+      const outbox = db.completeCodeGateNode("p", "check").outbox;
+      expect(outbox.payload.output).toContain('"originalTask":"research"');
       expect(() => db.saveWorkflowGate({ ...recorded, version: recorded.version + 1, inputHash: "changed" }, recorded.version)).toThrow("immutable");
+      const delivery = { projectId: "p", routeEmissionId: outbox.routeEmissionId, activationRequestId: `route-${outbox.routeEmissionId}` };
+      expect(() => db.deliverRoute(delivery)).toThrow(/actual selected downstream/);
+      expect(db.workflowGate("p", recorded.id)).toEqual(recorded);
+      db.activateNode({ projectId: "p", activationRequestId: delivery.activationRequestId, nodeRunId: "next-run", node: { kind: "agent", nodeId: "next", agentId: "next" },
+        workflowRevision: 1, inputSnapshotRef: "gate-result", sourceNodeRunId: "check", activatedByAgentId: "worker" });
+      expect(db.deliverRoute(delivery).activationInserted).toBe(true);
+      expect(db.deliverRoute(delivery).activationInserted).toBe(false);
+      expect(db.workflowGate("p", recorded.id)).toMatchObject({ status: "delivered", deliveredTo: { nodeRunId: "next-run" } });
     } finally { db.close(); }
   });
   it.each([false, true])("migrates v28 node and arrival constraints while preserving records and references (existing gate column=%s)", async existingGateColumn => {

@@ -29,10 +29,10 @@ jobs:
       - run: node sdk/scripts/sync-main-runtime.mjs --verify-generation
       - run: node sdk/scripts/check-example-semantics.mjs
       - run: node scripts/validation/audit-environment.mjs
+      - run: npm run build
       - run: npm run check:branding
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build
       - run: node scripts/validation/probe-environment.mjs --temp-root "${{ runner.temp }}/scienceevolve-env" --report "${{ runner.temp }}/environment-probes.json"
       - run: node scripts/validation/run-research-node-tests.mjs --temp-root "${{ runner.temp }}/scienceevolve-research" --report "${{ runner.temp }}/research-node-tests.json"
       - run: npm run smoke:package

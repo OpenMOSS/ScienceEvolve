@@ -689,7 +689,7 @@ export function normalizeNewGitOrchestration(value: unknown): NormalizedAgentOrc
       groups: template.collaborations.map((group) => {
         const nodes = group.memberAgentIds.map((agentId) => ({ kind: "agent" as const, agentId,
           nodeId: `scope_${createHash("sha256").update(`${group.id}\0${agentId}`).digest("hex").slice(0, 32)}` }));
-        return { id: group.id, leaderAgentId: "main", decisionBy: "main" as const, allowLeaderReconfiguration: false,
+        return { id: group.id, leaderAgentId: "main", decisionBy: "main" as const,
           workflow: { nodes, input: { source: "input", edges: nodes.map((node) => ({ kind: "parallel", target: node.nodeId })) },
             routes: Object.fromEntries(nodes.map((node) => [node.nodeId, [{ kind: "strong", target: "finish" }]])) } };
       }) } });

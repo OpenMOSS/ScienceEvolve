@@ -31,13 +31,9 @@ type RunJson = (args: string[], cwd: string, signal?: AbortSignal) => Promise<un
 export type SiiFilesystemInput = Pick<CompileFilesystemAuthorityRequest,
   "serviceUserRoot" | "projectWorktreeRoot" | "projectWorktrees" | "protectedRoots" | "ownedMemoryPath">;
 
-/** Accepted business choice and current turn role are separate from file scope. */
+/** Explicit tool selection is independent of orchestration role and file scope. */
 export function canUseSiiExperiments(request: AgentRunRequest): boolean {
-  return request.project.agents[request.agent]?.experimentMcp === true &&
-    request.kind === "worker" && request.agent !== "main" &&
-    (!request.purpose || request.purpose === "workflow") &&
-    request.executionContext?.role !== "leader" &&
-    !request.terminalPushObservation && !request.terminalPushCoordination && !request.worktreeClosing;
+  return request.project.agents[request.agent]?.experimentMcp === true;
 }
 
 interface NativeNotificationReceipt {
@@ -127,17 +123,18 @@ interface Options {
   documentStore?: ProjectStateDocumentStore;
 }
 
-const gates = new Map<string, () => Promise<void>>();
-const gateKey = (project: string, agent: string, invocation: string) => `${project}\0${agent}\0${invocation}`;
+const completionReminders = new Map<string, () => Promise<string[]>>();
+const reminderKey = (project: string, agent: string, invocation: string) => `${project}\0${agent}\0${invocation}`;
 
-/** Runs before any finish/routing side effects or completion receipts. */
-export async function assertSiiControlAction(project: string, agent: string, invocation: string, action: ControlAction): Promise<void> {
+/** Experiment observations inform the Agent without deciding its next action. */
+export async function siiControlReminders(project: string, agent: string, invocation: string, action: ControlAction): Promise<string[]> {
   if (["finish_task", "route_to_agent", "complete_project", "complete_group"].includes(action.tool)) {
-    await gates.get(gateKey(project, agent, invocation))?.();
+    return await completionReminders.get(reminderKey(project, agent, invocation))?.() ?? [];
   }
+  return [];
 }
 
-export const SII_AGENT_GUIDANCE = "SII operations are available through scienceevolve-sii MCP. Use sii_command for CLI help and all existing platform operations, and sii_read_knowledge for the original Inspire operating knowledge. Submit new workloads with sii_submit_experiment. Set check_interval_minutes to an integer from 5 to 60 (default 5) for periodic reviews in this same session while the experiment is still running. Completion/failure notifications do not wait for that interval. At each periodic review, inspect current logs/metrics with the existing tools and decide whether to continue, adjust, stop or submit a revised experiment; the system does not choose for you. For experiments on an existing notebook/ray/serving resource, call sii_register_experiment before starting your background program with sii_command; use a fresh request_id and completion_file for each run. The server monitors and notifies this same session; do not spend model turns polling. You may continue work within this task that does not require the results. When you need to yield, explicitly call sii_defer_task with the required experiment ids and your own continuation context, optionally adjusting check_interval_minutes, then end this turn with a pending handoff. This ends only a model turn: the task remains unfinished and its successors stay blocked. After notification, inspect actual results and choose further work, retry, cleanup or the existing completion/routing tools yourself. Platform success or a periodic review alone is not task completion.";
+export const SII_AGENT_GUIDANCE = "SII operations are available through scienceevolve-sii MCP. Use sii_command for CLI help and all existing platform operations, and sii_read_knowledge for the original Inspire operating knowledge. Submit new workloads with sii_submit_experiment. Set check_interval_minutes to an integer from 5 to 60 (default 5) for periodic reviews in this same session while the experiment is still running. Completion/failure notifications do not wait for that interval. At each periodic review, inspect current logs/metrics with the existing tools and decide whether to continue, adjust, stop or submit a revised experiment; the system does not choose for you. For experiments on an existing notebook/ray/serving resource, call sii_register_experiment before starting your background program with sii_command; use a fresh request_id and completion_file for each run. The server monitors and notifies this same session; do not spend model turns polling. You may continue work within this task that does not require the results. When you need to yield, explicitly call sii_defer_task with the required experiment ids and your own continuation context, optionally adjusting check_interval_minutes, then end this turn with a pending handoff. This records your explicit choice to wait in this task. Running experiments and unreceived results do not prevent completion or routing if you choose those actions instead. After notification, inspect actual results and choose further work, retry, cleanup or the existing completion/routing tools yourself. Platform success or a periodic review alone is not task completion.";
 
 const ARGS_SCHEMA = { type: "array", minItems: 1, maxItems: 256, items: { type: "string", maxLength: 32768 } };
 const CHECK_INTERVAL_SCHEMA = { type: "integer", minimum: 5, maximum: 60, default: DEFAULT_CHECK_INTERVAL_MINUTES,
@@ -167,7 +164,7 @@ export const SII_TOOLS = [
   { name: "sii_register_experiment", description: "Register this task's experiment on an EXISTING authorized workload, without creating or restarting resources. For notebook/ray/serving, register a fresh request_id and completion_file BEFORE launching the background program yourself with sii_command. Use the same run_id in its atomic exit marker. The system only checks status/marker and resumes your original session; you decide the program, resource reuse and cleanup.", inputSchema: { type: "object", additionalProperties: false, required: ["kind", "name", "workspace", "request_id"], properties: { check_interval_minutes: CHECK_INTERVAL_SCHEMA, kind: { type: "string", enum: KINDS }, name: { type: "string", minLength: 1, maxLength: 255 }, workspace: { type: "string", minLength: 1, maxLength: 255 }, request_id: { type: "string", minLength: 1, maxLength: 200 }, completion_file: { type: "string", maxLength: 4096 }, required_for_task: { type: "boolean", default: true } } } },
   { name: "sii_submit_batch", description: "Submit multiple experiments using the same create flags as Inspire job batch items, with per-item stable request ids. Each item is independently persisted, monitored and reported, including partial/ambiguous outcomes. You choose every item's resource/command/options; no automatic retry or resource selection.", inputSchema: { type: "object", additionalProperties: false, required: ["experiments"], properties: { experiments: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", required: ["args", "request_id"], properties: { args: ARGS_SCHEMA, check_interval_minutes: CHECK_INTERVAL_SCHEMA, request_id: { type: "string" }, completion_file: { type: "string" }, required_for_task: { type: "boolean" } } } } } } },
   { name: "sii_get_experiment", description: "Read one registered experiment's current persisted state. This is a one-time diagnostic, not a waiting tool. The runtime acknowledges a terminal result only after your original native Session receives this tool response. Inspect the actual evidence before choosing completion.", inputSchema: { type: "object", additionalProperties: false, required: ["experiment_id"], properties: { experiment_id: { type: "string" } } } },
-  { name: "sii_defer_task", description: "Voluntarily save this UNFINISHED task and your own continuation context while experiments run. Returns immediately; then end your current turn normally with a pending handoff. The server retains this task and session, monitors in code, and wakes you at the configured review interval while experiments run, or as soon as any listed experiment finishes/fails. A periodic review does not complete an experiment. Do not call finish_task or route successors before processing required results. You can keep doing independent work instead of calling this tool.", inputSchema: { type: "object", additionalProperties: false, required: ["experiment_ids", "context"], properties: { check_interval_minutes: { type: "integer", minimum: 5, maximum: 60, description: "Override the review interval for the listed experiments. Omit to retain each experiment's configured interval (default 5 minutes)." }, experiment_ids: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } }, context: { type: "string", minLength: 1, maxLength: 20000 } } } },
+  { name: "sii_defer_task", description: "Voluntarily save this UNFINISHED task and your own continuation context while experiments run. Returns immediately; then end your current turn normally with a pending handoff. The server retains this task and session, monitors in code, and wakes you at the configured review interval while experiments run, or as soon as any listed experiment finishes/fails. A periodic review does not complete an experiment. You decide whether to wait, inspect results, finish this task or route successors. This tool waits only when you explicitly choose it; you may also keep doing independent work.", inputSchema: { type: "object", additionalProperties: false, required: ["experiment_ids", "context"], properties: { check_interval_minutes: { type: "integer", minimum: 5, maximum: 60, description: "Override the review interval for the listed experiments. Omit to retain each experiment's configured interval (default 5 minutes)." }, experiment_ids: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } }, context: { type: "string", minLength: 1, maxLength: 20000 } } } },
   { name: "sii_read_knowledge", description: "Read the original Inspire skill and focused references for resource selection, paths/network, notebooks, compute, images, models, installation and platform API knowledge. Omit path to list available documents. Use SKILL.md as entrypoint; read references only as needed. Paths remain confined to the knowledge directory and the filesystem's actual limits.", inputSchema: { type: "object", additionalProperties: false, properties: { path: { type: "string" } } } }
 ];
 
@@ -351,7 +348,7 @@ export class SiiExperimentService {
 
   async bind(request: AgentRunRequest, signal: AbortSignal, filesystem?: SiiFilesystemInput): Promise<SiiMcpBinding> {
     this.controller.signal.throwIfAborted();
-    if (!canUseSiiExperiments(request)) throw new Error("SII MCP requires explicit experimentMcp selection on a business Worker turn");
+    if (!canUseSiiExperiments(request)) throw new Error("SII MCP requires explicit experimentMcp selection for this Agent");
     if (!/^prj_[a-f0-9]{32}$/.test(request.project.id)) throw new Error("Invalid SII project id");
     const projectPath = await fs.realpath(path.join(this.options.projectsRoot, request.project.id));
     const [actual, physical] = await Promise.all([fs.stat(request.projectPath), fs.stat(projectPath)]);
@@ -580,7 +577,7 @@ export class SiiMcpBinding {
   private active = false;
   private submissions = 0;
   private closed = false;
-  private removeGate?: () => void;
+  private removeReminder?: () => void;
   private readonly permission: AgentRunRequest["permission"];
   private readonly identity: { projectId: string; owner: string };
   request: AgentRunRequest;
@@ -597,35 +594,29 @@ export class SiiMcpBinding {
     if (this.closed || !canUseSiiExperiments(request) || request.permission !== this.permission || ownerFor(request).owner !== this.owner ||
         request.project.id !== this.identity.projectId || path.resolve(request.workspacePath) !== this.files.cwd) {
       this.close();
-      throw new Error("SII capability does not belong to this current Worker task and directory");
+      throw new Error("SII capability does not belong to this current Agent task and directory");
     }
     this.nativeResultCalls.clear();
-    this.removeGate?.(); this.request = request; this.session = session; this.active = true;
-    const key = gateKey(request.project.id, request.agent, request.invocationId);
-    const gate = () => this.assertTaskComplete();
-    gates.set(key, gate);
-    this.removeGate = () => { if (gates.get(key) === gate) gates.delete(key); };
+    this.removeReminder?.(); this.request = request; this.session = session; this.active = true;
+    const key = reminderKey(request.project.id, request.agent, request.invocationId);
+    const reminder = () => this.taskCompletionReminders();
+    completionReminders.set(key, reminder);
+    this.removeReminder = () => { if (completionReminders.get(key) === reminder) completionReminders.delete(key); };
   }
-  // Revoke tool access between native turns, but retain the unfinished task's
-  // completion guard throughout system-only waiting.
+  // Explicit deferred waits retain the original task's observed state.
   deactivate(): void { this.active = false; this.nativeResultCalls.clear(); }
-  close(): void { this.closed = true; this.controller.abort(); this.deactivate(); this.removeGate?.(); this.removeGate = undefined; this.remove(); }
+  close(): void { this.closed = true; this.controller.abort(); this.deactivate(); this.removeReminder?.(); this.removeReminder = undefined; this.remove(); }
 
-  async assertTaskComplete(): Promise<void> {
+  async taskCompletionReminders(): Promise<string[]> {
     let doc = await this.service.document(this.request.projectPath);
     if (doc.waits.some(w => w.owner === this.owner && w.status === "ready" && w.nativeReceipt?.eventId !== w.eventId)) {
       await this.observeNativeNotificationHistory();
       doc = await this.service.document(this.request.projectPath);
     }
     if (this.submissions || doc.waits.some(w => w.owner === this.owner && (w.status === "waiting" || w.nativeReceipt?.eventId !== w.eventId)) || doc.experiments.some(e => e.owner === this.owner && e.required && (!TERMINAL.has(e.status) || !experimentResultReceived(e)))) {
-      throw new Error("This task still needs experiment results. Continue independent work or call sii_defer_task and return a pending handoff. Process the notification/results before finish_task or routing successors.");
+      return ["Experiments are still running or their results have not been received in this task's session. Decide whether to wait, inspect results, return available work or route onward. This reminder does not prevent your completion or routing action and does not mark experiments or result receipt as completed."];
     }
-  }
-
-  private async assertUnfinished(): Promise<void> {
-    if (!this.request.control) return;
-    const staged = await readStagedControlActions(this.request.control.stagingPath);
-    if (staged.some(item => ["finish_task", "route_to_agent", "complete_project", "complete_group"].includes(item.action.tool))) throw new Error("This turn already recorded task completion/routing; submit or defer experiments before finishing the task");
+    return [];
   }
 
   async call(name: string, input: Record<string, any>): Promise<unknown> {
@@ -635,7 +626,7 @@ export class SiiMcpBinding {
   private async callActive(name: string, input: Record<string, any>): Promise<unknown> {
     this.signal.throwIfAborted();
     if (this.closed || !this.active) throw new Error("SII capability is not attached to an active Agent turn");
-    if (!canUseSiiExperiments(this.request)) throw new Error("SII capability is not selected for this current Worker turn");
+    if (!canUseSiiExperiments(this.request)) throw new Error("SII capability is not selected for this current Agent");
     if (name === "sii_get_task_context") {
       const wait = (await this.service.document(this.request.projectPath)).waits.find(item => item.owner === this.owner);
       const notes = { context: wait?.context ?? "", handoff: wait?.handoff ?? "" };
@@ -655,7 +646,6 @@ export class SiiMcpBinding {
       if (!KINDS.includes(input.kind) || typeof input.name !== "string" || !/^[\p{L}\p{N}][\p{L}\p{N}._-]{0,254}$/u.test(input.name) || typeof input.workspace !== "string" || !input.workspace.trim() || input.workspace.length > 255) throw new Error("Provide workload kind, name and workspace");
       this.submissions += 1;
       try {
-        await this.assertUnfinished();
         return await this.submit([input.kind, "create", "--name", input.name, "--workspace", input.workspace, "--project", BILLING_PROJECT], input, true);
       } finally { this.submissions -= 1; }
     }
@@ -692,7 +682,6 @@ export class SiiMcpBinding {
       return { result_receipt: "[OpenFARS SII result " + id + "]", experiment: snapshot };
     });
     if (name === "sii_defer_task") {
-      await this.assertUnfinished();
       if (!Array.isArray(input.experiment_ids) || !input.experiment_ids.length || typeof input.context !== "string" || !input.context.trim() || input.context.length > 20000) throw new Error("Provide experiment_ids and your continuation context");
       const intervalOverride = input.check_interval_minutes === undefined ? undefined : checkIntervalMinutes(input.check_interval_minutes);
       if (!this.session?.durable || this.session.nativeId.startsWith("pending:")) throw new Error("Original session has not been durably recorded");
@@ -716,21 +705,19 @@ export class SiiMcpBinding {
         return { status: "awaiting_experiment_result", task_completed: false,
           checks: doc.experiments.filter(e => wait.ids.includes(e.id) && !TERMINAL.has(e.status))
             .map(e => ({ experiment_id: e.id, check_interval_minutes: e.checkIntervalMinutes, next_agent_check_at: e.nextAgentCheckAt })),
-          message: "Task saved as unfinished. You can now end this model turn with a pending handoff. The system will resume this same session for periodic reviews of running experiments, or immediately on observed completion/failure. Inspect actual logs/metrics and decide whether to continue, adjust or stop; successors remain blocked until you process results and finish the task." };
+          message: "Task saved as unfinished. You can now end this model turn with a pending handoff. The system will resume this same session for periodic reviews of running experiments, or immediately on observed completion/failure. Inspect actual logs/metrics and decide whether to continue, adjust or stop; your explicit wait is retained until you continue it or choose completion/routing. Experiment state does not prevent those actions." };
       });
     }
     if (name !== "sii_command" && name !== "sii_submit_experiment") throw new Error("Unknown SII tool");
     if (name === "sii_submit_experiment" && typeof input.request_id !== "string") throw new Error("Provide a stable request_id for this submission");
     const args = input.args;
     if (!Array.isArray(args) || !args.length || args.length > 256 || args.some((v: unknown) => typeof v !== "string" || v.includes("\0") || v.length > 32768)) throw new Error("args must be an array of literal CLI arguments");
-    if (args.some((v: string) => ["--follow", "--watch", "--wait"].includes(v.split("=")[0]!))) throw new Error("Use a one-time diagnostic; background monitoring already handles waiting");
     const kind = args.find((v: string) => KINDS.includes(v as Kind)) as Kind | undefined;
     const action = kind ? args[args.indexOf(kind) + 1] : undefined;
     const discovery = args.some((value: string) => ["--dry-run", "--dry-run=true", "--help", "--help=true"].includes(value));
-    if (action === "batch" && !discovery) throw new Error("Use sii_submit_batch with each item's create arguments and request_id so every experiment is monitored and resumable");
-    if (action === "create" && !discovery) {
+    if (name === "sii_submit_experiment" && action === "create" && !discovery) {
       this.submissions += 1;
-      try { await this.assertUnfinished(); return await this.submit(args, input); }
+      try { return await this.submit(args, input); }
       finally { this.submissions -= 1; }
     }
     if (name === "sii_submit_experiment") throw new Error("Submit one job/hpc/notebook/ray/serving create operation with explicit name/workspace/project");
@@ -742,14 +729,10 @@ export class SiiMcpBinding {
     const interval = checkIntervalMinutes(input.check_interval_minutes);
     if (!this.session?.durable || this.session.nativeId.startsWith("pending:")) throw new Error("Submission needs this Agent's persisted original session");
     const kind = args.find(v => KINDS.includes(v as Kind)) as Kind;
-    if (kind === "notebook" && !existingResource) {
-      const postStart = option(args, "--post-start");
-      if (args.some(value => value.split("=")[0] === "--post-start-script") ||
-          (postStart !== undefined && !["0", "disable", "disabled", "false", "none", "off"].includes(postStart.toLowerCase()))) {
-        throw new Error("Notebook post-start actions force CLI waiting. Submit the resource first, defer until resource_ready, then register and start your program with sii_command");
-      }
-      // The installed CLI waits by default and configured post-start actions
-      // force waiting even with --no-wait. Disable both at the submission boundary.
+    if (kind === "notebook" && !existingResource &&
+      !args.some(value => ["--wait", "--no-wait", "--post-start", "--post-start-script"].includes(value.split("=")[0]!))) {
+      // Managed submissions default to asynchronous creation. Explicit Agent
+      // choices about waiting and post-start work are passed to the CLI.
       args = [...args, "--no-wait", "--post-start", "none"];
     }
     await this.files.assertCommand(args);
@@ -823,7 +806,7 @@ export class SiiMcpBinding {
         experiment.evidence = bounded(response);
         if (experiment.status === "queued") await this.service.registerUsage(this.request.projectPath, experiment);
       } catch (error) { experiment.queryError = redactTrace(String(error)).slice(0, 2000); }
-      return { experiment, monitoring: "active", message: ["queued", "running"].includes(experiment.status) ? `${existingResource ? "已有资源上的实验已登记。请自行启动后台程序并写入本次完成标记。" : "实验已提交。"}系统已接管状态监测，每 ${interval} 分钟会唤醒本会话检查仍在运行的实验；完成或失败会提前通知，无需持续轮询。你可以继续当前任务内不依赖结果的工作；需要让出执行时调用 sii_defer_task 保存未完成任务，然后结束本轮。处理结果后再完成任务及路由后继。` : existingResource && TERMINAL.has(experiment.status) ? "所登记的实验或资源已进入终态，请检查实际结果并自行决定后续处理；平台终态不完成本任务。" : experiment.status === "failed" ? "平台明确拒绝了本次操作。请检查返回证据，自行决定诊断或用新 request_id 重提；本任务仍未完成。" : "操作结果尚未确认，系统将核对同一任务；不要重复创建。可暂存任务让系统继续查询，或按需诊断。" };
+      return { experiment, monitoring: "active", message: ["queued", "running"].includes(experiment.status) ? `${existingResource ? "已有资源上的实验已登记。请自行启动后台程序并写入本次完成标记。" : "实验已提交。"}系统已接管状态监测，每 ${interval} 分钟会唤醒本会话检查仍在运行的实验；完成或失败会提前通知，无需持续轮询。你可以继续当前任务内不依赖结果的工作；需要让出执行时调用 sii_defer_task 保存未完成任务，然后结束本轮。是否等待、读取结果、交回任务或路由后继由你决定；实验状态只作提醒。` : existingResource && TERMINAL.has(experiment.status) ? "所登记的实验或资源已进入终态，请检查实际结果并自行决定后续处理；平台终态不完成本任务。" : experiment.status === "failed" ? "平台明确拒绝了本次操作。请检查返回证据，自行决定诊断或用新 request_id 重提；本任务仍未完成。" : "操作结果尚未确认，系统将核对同一任务；不要重复创建。可暂存任务让系统继续查询，或按需诊断。" };
     });
   }
 
@@ -844,27 +827,12 @@ export class SiiMcpBinding {
   async wait(handoff: string | undefined, onTrace: TraceSink): Promise<string | undefined> {
     this.signal.throwIfAborted();
     let doc = await this.service.document(this.request.projectPath);
-    const unreceived = doc.experiments.filter(e => this.pendingResultSession(e));
-    if (!doc.waits.some(w => w.owner === this.owner) && unreceived.length) {
-      if (!this.session || unreceived.some(e => !sameDurableSession(this.pendingResultSession(e)!, this.session!))) {
-        throw new Error("Original SII session cannot be replaced during synchronous-result recovery");
+    if (this.request.control) {
+      const actions = await readStagedControlActions(this.request.control.stagingPath);
+      if (actions.some(item => ["finish_task", "route_to_agent", "complete_project", "complete_group"].includes(item.action.tool))) {
+        await this.clearWait();
+        return undefined;
       }
-      // Reuse the existing result-notification wait, not another task or
-      // provider operation. Native receipt may be absent after disconnect,
-      // crash or writer handoff even though the synchronous response exists.
-      const session = structuredClone(this.session);
-      await this.service.mutate(this.request.projectPath, state => {
-        this.signal.throwIfAborted();
-        if (state.waits.some(w => w.owner === this.owner)) return;
-        const pending = state.experiments.filter(e => {
-          const original = this.pendingResultSession(e);
-          return original && sameDurableSession(original, session);
-        });
-        if (!pending.length) return;
-        state.waits.push({ owner: this.owner, ids: pending.map(e => e.id), session, status: "ready",
-          eventId: randomUUID(), context: "Terminal experiment facts were retained without proof of receipt in this original task's native Session. Receive these facts before continuing. No experiment submission, provider mutation or completed business has been repeated." });
-      });
-      doc = await this.service.document(this.request.projectPath);
     }
     const pending = doc.waits.find(w => w.owner === this.owner);
     if (!pending || pending.eventId === this.resumingEvent) return undefined;
@@ -899,14 +867,6 @@ export class SiiMcpBinding {
   }
   private notificationFact(e: SiiExperiment) {
     return { id: e.id, name: e.name, status: e.status, observedAt: e.observedAt, queryError: e.queryError, evidence: e.evidence, completionFile: e.completionFile };
-  }
-  private pendingResultSession(e: SiiExperiment): SessionRef | undefined {
-    if (e.owner !== this.owner || !TERMINAL.has(e.status) || experimentResultReceived(e)) return undefined;
-    if (e.resultDelivery) return createHash("sha256").update(JSON.stringify(this.notificationFact(e))).digest("hex") ===
-      e.resultDelivery.factHash ? e.resultDelivery.session : undefined;
-    // An old handler-side acknowledgement proves no delivery. Recover only
-    // when this same unfinished owner is invoked; never scan/reopen history.
-    return e.acknowledged ? e.session : undefined;
   }
   async observeNativeResult(event: Record<string, unknown>, session: SessionRef | undefined): Promise<void> {
     if (!this.active || this.closed || !session || !this.session || !sameDurableSession(session, this.session) ||

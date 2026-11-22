@@ -124,13 +124,15 @@ export async function requestNativeBackgroundJob(scope: NativeJobScope, value: u
     return record;
   });
 }
-/** User lifecycle intent controls registered jobs; ordinary task return does not kill them. */
-export async function nativeBackgroundJobLifecycle(projectPath: string, operation: "pause" | "resume" | "stop", assertCurrent: () => unknown): Promise<void> {
+/** Explicit lifecycle requests control registered jobs; ordinary return preserves them. */
+export async function nativeBackgroundJobLifecycle(projectPath: string, operation: "pause" | "resume" | "stop", assertCurrent: () => unknown,
+  owner?: Pick<NativeJobScope, "agentId" | "invocationId">): Promise<void> {
   const root = directory(projectPath);
   await serialized(root, async () => {
     const files = await fs.readdir(root).catch(error => { if (error.code === "ENOENT") return []; throw error; });
     for (const file of files.filter(file => /^[A-Za-z0-9][A-Za-z0-9_-]{0,95}\.json$/.test(file))) {
       let job = await read(root, file.slice(0, -5)); if (!job) continue;
+      if (owner && (job.agentId !== owner.agentId || job.invocationId !== owner.invocationId)) continue;
       job = await observe(job);
       if (job.state !== "exited" && (operation !== "resume" || job.pausedByProject)) {
         assertCurrent();
@@ -138,7 +140,7 @@ export async function nativeBackgroundJobLifecycle(projectPath: string, operatio
         job = await signal(job, operation, assertCurrent);
         job.pausedByProject = operation === "pause" ? wasRunning || job.pausedByProject : false;
       }
-      await save(root, job, { operation: `project.${operation}`, actor: "user-lifecycle" });
+      await save(root, job, { operation: `${owner ? "agent" : "project"}.${operation}`, actor: owner ? "main-agent" : "user-lifecycle" });
     }
   });
 }

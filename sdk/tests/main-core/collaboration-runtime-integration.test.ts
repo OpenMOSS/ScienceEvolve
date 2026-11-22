@@ -67,6 +67,7 @@ import type {
   AgentRunner,
   ControlAction,
   ControlActionEnvelope,
+  MemberExecution,
   ProjectGitState,
   ProjectState
 } from "../../src/core/types.js";
@@ -497,6 +498,87 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(state.status).toBe("completed");
     expect((await coordinator.database().unexpectedSystemMessages(state.id))).toHaveLength(2);
   });
+
+  it("overlaps native turns in two projects under one writer and pauses only the requested project", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-project-overlap-"));
+    temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub());
+    await storage.initialize();
+    const projects = ["a", "b"].map(suffix => projectState(`prj_${suffix.repeat(32)}`));
+    const [first, second] = projects;
+    for (const state of projects) {
+      state.orchestration.input.target = "idea";
+      state.orchestration.routes.idea = [{ kind: "strong", target: "finish" }];
+      state.orchestration.termination.agent = "idea";
+      await storage.createProject(state);
+    }
+    const held = new Map<string, () => void>();
+    const paused: string[] = [];
+    const inputs = new Map<string, string[]>();
+    const coordinator = new CollaborationRuntimeCoordinator({
+      storage, serviceId: "overlap-owner", hostId: "host",
+      gitFactory: options => happyGitFake(options, []),
+      residentLauncher: { async open(input) {
+        const projectId = input.request.project.id;
+        return {
+          async submit(turn) {
+            const turns = inputs.get(projectId) ?? [];
+            turns.push(turn.inputId);
+            inputs.set(projectId, turns);
+            if (turns.length === 1) {
+              await new Promise<void>(resolve => held.set(projectId, resolve));
+              held.delete(projectId);
+            }
+            return agentFixtureDelivery(input, turn, { handoff: `Return for ${projectId}` }, coordinator);
+          },
+          async pause() { paused.push(projectId); },
+          async resume() {},
+          async close() { held.get(projectId)?.(); }
+        };
+      } }
+    });
+    liveCoordinators.push(coordinator);
+    await coordinator.initialize();
+    try {
+      const database = coordinator.database();
+      const owner = await database.writerLease();
+      expect(owner).toMatchObject({ serviceId: "overlap-owner", epoch: 1 });
+      await Promise.all(projects.map(state => coordinator.createProject(state, { enabled: true, provider: "github" })));
+      // Neither simulated turn can return until both submit calls have entered.
+      await waitFor(() => held.size === 2 || Boolean(first.lastError || second.lastError));
+      expect(first.lastError ?? second.lastError).toBeUndefined();
+      expect(new Set(held.keys())).toEqual(new Set([first.id, second.id]));
+      const pausing = coordinator.pauseProject(first);
+      await waitFor(async () => (await storage.loadState(first.id)).status === "pausing");
+      held.get(first.id)!();
+      await pausing;
+      expect(first.pauseRequest?.settledAt).toBeTruthy();
+      expect(paused).toEqual([first.id]);
+      expect(held.has(second.id)).toBe(true);
+      expect(second.pauseRequest).toBeUndefined();
+      held.get(second.id)!();
+      await waitFor(() => second.status === "completed" || Boolean(second.lastError));
+      expect(second.lastError).toBeUndefined();
+      expect(second.status).toBe("completed");
+      expect((await storage.loadState(first.id)).status).toBe("paused");
+      const pullIds = new Set<string>();
+      for (const state of projects) {
+        const projection = await database.projectState(state.id);
+        expect(projection.executions).toHaveLength(1);
+        const executionId = projection.executions[0].id;
+        expect(inputs.get(state.id)).toEqual([`input-${executionId}-1`]);
+        const repository = state.git!.repository!;
+        expect(projection.pullRequests).toMatchObject([{ providerNumber: 1, id: `github:${repository.owner}/${repository.name}#1`,
+          ownerExecutionId: executionId }]);
+        pullIds.add(projection.pullRequests[0].id);
+      }
+      expect(pullIds.size).toBe(2);
+      expect(await database.writerLease()).toEqual(owner);
+    } finally {
+      for (const release of held.values()) release();
+      await coordinator.shutdown();
+    }
+  }, 20_000);
 
   it("keeps production coordinator writes current while its business thread stalls", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-business-stall-")); temporaryRoots.push(root);
@@ -2691,7 +2773,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     }, 15_000);
 
   it.each(["missing_finish", "receipt_failure", "rejected_finish"] as const)(
-    "retains an accepted Leader decision while the same Agent explicitly repairs %s", async (mode) => {
+    "executes the Leader's revised pending decision while the same Agent repairs %s", async (mode) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-leader-finish-"));
       temporaryRoots.push(root);
       const storage = new ProjectStorage(root, new EventHub());
@@ -2777,14 +2859,14 @@ describe("CollaborationRuntimeCoordinator", () => {
             }
             if (turn.inputId === planInputId || turn.inputId.startsWith(`${planInputId}-mechanism-repair-`)) {
               expect(leaderTurns).toBe(2);
-              expect(turn.prompt).toContain("decision has already been accepted");
+              expect(turn.prompt).toContain("decision is recorded");
               expect(turn.prompt).toContain("finish_task");
               expect((await coordinator.database().projectState(state.id)).tasks).toHaveLength(0);
               expect((await coordinator.database().projectState(state.id)).executions).toHaveLength(0);
               expect(memoryContents).toHaveLength(0);
               if (mode === "receipt_failure") expect(toolFailureReturned).toBe(true);
-              await expect(call({ ...assign, tasks: [{ taskId: "task-held-plan", assignment: "Unauthorized replacement",
-                assigneeAgentId: "execution" }] })).rejects.toThrow("accepted decision cannot be replaced");
+              await call({ ...assign, tasks: [{ taskId: "task-held-plan", assignment: "Agent revised the pending assignment",
+                assigneeAgentId: "execution" }] });
               await requestFinish();
               await requestFinish(); // Explicit equivalent retry must not write memory twice.
               return { handoff: "Finished the held management plan", controlActions: envelopes };
@@ -2817,9 +2899,9 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(memoryContents).toHaveLength(0);
         expect(Object.values(state.taskCompletions ?? {}).some(receipt => receipt.memory?.includes("Agent-authored memory: retain the original task"))).toBe(true);
         expect(state.tasks?.find((item) => item.id === "task-held-plan"))
-          .toMatchObject({ assignment: "Original Agent-assigned work", assigneeAgentId: "idea", status: "succeeded" });
+          .toMatchObject({ assignment: "Agent revised the pending assignment", assigneeAgentId: "execution", status: "succeeded" });
         const events = await coordinator.database().eventsAfter(state.id, 0, 2000);
-        expect(events.filter((item) => item.type === "group.control_action.accepted")).toHaveLength(3);
+        expect(events.filter((item) => item.type === "group.control_action.accepted")).toHaveLength(4);
         expect(events.filter((item) => item.type === "group.task_completion.committed")).toHaveLength(3);
         expect(events.filter((item) => item.type === "group.control.round.completed")).toHaveLength(3);
       } finally { await coordinator.shutdown(); }
@@ -5202,7 +5284,7 @@ describe("CollaborationRuntimeCoordinator", () => {
                 kind: "configuration",
                 description: "Must never escape the PR gate"
               }
-            }, [])).rejects.toThrow(/not merged business artifacts/);
+            }, [])).rejects.toThrow(/no member execution and merged-file source binding/);
             const action = {
               tool: "apply_workflow" as const,
               path: "workflow.json",
@@ -5831,7 +5913,7 @@ describe("CollaborationRuntimeCoordinator", () => {
   }, 15_000);
 
   it.each([false, true])(
-    "preserves Main's accepted display through completion receipt failure and restart (repeat selection: %s)", async (repeatSelection) => {
+    "retains Main's historical display and applies explicit new selections after restart (repeat selection: %s)", async (repeatSelection) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-main-display-accepted-")); temporaryRoots.push(root);
       const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
       let completionSaves = 0;
@@ -5919,8 +6001,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           expect(await fs.readFile(path.join(fresh.request.workspacePath, "workflow.json"), "utf8")).toBe(unfinishedProposal);
           expect(await fs.readFile(path.join(fresh.request.workspacePath, "pending-main-note.txt"), "utf8"))
             .toBe("Agent-authored uncommitted note");
-          await expect(call({ ...select, primary: { ...select.primary, title: "Replace the accepted display" } }))
-            .rejects.toThrow("accepted formal action cannot be replaced");
+          await call({ ...select, primary: { ...select.primary, title: "Revised selection" } });
           if (repeatSelection) await call(select);
           await finish(); await finish();
           await call(complete);
@@ -5985,16 +6066,21 @@ describe("CollaborationRuntimeCoordinator", () => {
         expect(restartedState.workflowRevision).toBe(1);
         expect(managementAttempts).toBe(0); expect(memories).toHaveLength(0);
         expect(Object.values(restartedState.taskCompletions ?? {}).some(receipt => receipt.memory?.includes("Main explicitly keeps the accepted report version"))).toBe(true);
-        expect(restartedState.display).toEqual({ primary: { agent: "main", path: "report.md", title: "Trusted report",
-          artifactId: "main:report.md", commitSha: "d".repeat(40) }, items: [] });
+        expect(restartedState.display).toEqual({ primary: { agent: "main", path: "report.md", title: repeatSelection ? "Trusted report" : "Revised selection",
+          artifactId: "main:report.md:newer", commitSha: "e".repeat(40) }, items: [] });
         expect(artifactLookups.length).toBeGreaterThan(0);
-        expect(artifactLookups.every((binding) => (binding as { commitSha: string }).commitSha === "d".repeat(40))).toBe(true);
+        const observedHeads = artifactLookups.map(binding => (binding as { commitSha: string }).commitSha);
+        expect(observedHeads).toContain("d".repeat(40)); expect(observedHeads).toContain("e".repeat(40));
+        expect(observedHeads.every(head => ["d".repeat(40), "e".repeat(40)].includes(head))).toBe(true);
         const facts = await restarted.database().eventsAfter(state.id, 0, 10_000);
-        expect(facts.filter((event) => event.type === "main.route_action.accepted")).toHaveLength(3);
+        expect(facts.filter(event => event.type === "main.route_action.accepted").map(event => event.payload.action))
+          .toContainEqual(expect.objectContaining({ tool: "select_display", primary: expect.objectContaining({
+            artifactId: "main:report.md", commitSha: "d".repeat(40) }) }));
+        expect(facts.filter((event) => event.type === "main.route_action.accepted")).toHaveLength(repeatSelection ? 5 : 4);
         expect(facts.filter((event) => event.type === "main.route.task_completion.committed")).toHaveLength(1);
         expect(facts.some((event) => event.type === "main.management_memory.committed")).toBe(false);
         expect((await restartedStorage.readEvents(state.id, 0, 10_000)).filter((event) =>
-          event.data?.sourceType === "display.selected")).toHaveLength(1);
+          event.data?.sourceType === "display.selected")).toHaveLength(repeatSelection ? 3 : 2);
       } finally { await restarted.shutdown(); }
     }, 15_000);
 
@@ -7466,26 +7552,31 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.initialize();
     await coordinator.createProject(state, { enabled: true, provider: "github" });
     await waitFor(() => state.executions?.[0]?.status === "pr_open");
+    const database = coordinator.database();
+    const writer = await database.writerLease();
+    const { id: executionId, ownershipEpoch } = state.executions![0];
+    const stopProofs = async () => (await database.eventsAfter(state.id, 0, 10_000)).filter(event =>
+      event.type === "execution.stop_confirmed" && event.executionId === executionId && event.ownershipEpoch === ownershipEpoch);
 
     await expect(coordinator.cancelProject(state, {
       actor: "user",
       reason: "user_cancelled"
-    })).rejects.toThrow();
+    })).rejects.toThrow("fixture PGID still alive");
     expect(state.status).not.toBe("cancelled");
     expect(state.executions?.[0]?.status).toBe("stop_requested");
     expect(deriveProjectRuntimeProjection((await coordinator.database().projectState(state.id)), {
       status: "paused", phase: "collaboration:user-cancelled"
     }).status).toBe("cancelling");
     expect(state.pullRequests?.[0]?.status).toBe("open");
-    expect((await coordinator.laneAvailability(state.id))
-      .find((lane) => lane.lane === "worker")?.occupied).toBe(1);
+    expect((await coordinator.laneAvailability(state.id)).find(lane => lane.lane === "worker")?.occupied).toBe(1);
+    expect(await stopProofs()).toHaveLength(0);
     await expect(coordinator.resumeProject(state)).rejects.toThrow(/before native stop is confirmed/);
+    // Even a saved checkpoint that says paused cannot replace the exact Stop proof.
     const staleCheckpoint = await storage.loadState(state.id);
     staleCheckpoint.status = "paused";
     staleCheckpoint.phase = "collaboration:user-cancelled";
     await storage.saveState(staleCheckpoint);
-    // A stale file cannot authorize Resume while S still awaits physical Stop.
-    await expect(coordinator.resumeProject(state)).rejects.toThrow(/before native stop is confirmed/);
+    await expect(coordinator.resumeProject(staleCheckpoint)).rejects.toThrow(/before native stop is confirmed/);
     // A failed stop proof leaves durable cancellation state in place, but the
     // in-memory reentrancy guard must not swallow an explicit retry.
     await coordinator.cancelProject(state, {
@@ -7498,8 +7589,9 @@ describe("CollaborationRuntimeCoordinator", () => {
       status: "cancelling", phase: "collaboration:cancelling"
     })).toMatchObject({ status: "paused", phase: "collaboration:user-cancelled" });
     expect(state.pullRequests?.[0]?.status).toBe("open");
-    expect((await coordinator.laneAvailability(state.id))
-      .find((lane) => lane.lane === "worker")?.occupied).toBe(0);
+    expect((await coordinator.laneAvailability(state.id)).find(lane => lane.lane === "worker")?.occupied).toBe(0);
+    expect(await stopProofs()).toHaveLength(1);
+    expect(await database.writerLease()).toEqual(writer);
     await coordinator.shutdown();
   });
 
@@ -7973,7 +8065,92 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.shutdown();
   });
 
-  it("does not terminalize or route a merged standalone execution until resident stop is confirmed", async () => {
+  it.each([false, true])("drains a retired native handle before releasing the writer (shutdown stop confirmed=%s)", async confirmed => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-retired-resident-"));
+    temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub());
+    await storage.initialize();
+    const state = projectState(`prj_${"ab".repeat(16)}`);
+    state.orchestration.input.target = "idea";
+    state.orchestration.routes.idea = [{ target: "finish", kind: "strong" }];
+    state.orchestration.termination.agent = "idea";
+    await storage.createProject(state);
+    const databasePath = path.join(root, "state.sqlite");
+    const peer = () => CollaborationStateDatabase.open({ databasePath, topology: "single-host", hostId: "fixture", serviceId: "peer" });
+    const failure = new Error("fixture native stop unconfirmed");
+    let draining = false, stopped = confirmed, submits = 0;
+    const close = vi.fn(async () => { if (!draining || !stopped) throw failure; });
+    const flush = vi.fn(async () => {});
+    const runtime = new CollaborationRuntimeCoordinator({ storage, databasePath, hostId: "fixture",
+      invocationDispatcher: { decorate() {}, trace: () => async () => {}, flush }, gitFactory: options => happyGitFake(options, []),
+      residentLauncher: { async open(input) { return {
+        async submit(turn) { submits++; return agentFixtureDelivery(input, turn, { handoff: "Original return" }, runtime); },
+        async pause() {}, async resume() {}, close
+      }; } } });
+    await runtime.initialize();
+    const database = runtime.database();
+    try {
+      await runtime.createProject(state, { enabled: true, provider: "github" });
+      await waitFor(async () => (await database.eventsAfter(state.id, 0, 10000)).some(e => e.type === "execution.resource_cleanup.failed"));
+      const owner = await database.writerLease();
+      expect(close).toHaveBeenCalledTimes(1);
+      flush.mockClear(); draining = true;
+      const closing = runtime.shutdown();
+      expect(runtime.shutdown()).toBe(closing);
+      if (confirmed) {
+        await closing;
+        expect(flush).toHaveBeenCalledWith();
+        const next = peer();
+        try { expect(next.writerLease().epoch).toBe(owner.epoch + 1); } finally { next.close(); }
+      } else {
+        await expect(closing).rejects.toBeInstanceOf(AggregateError);
+        expect(() => peer()).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+        await expect(database.appendEvent({ projectId: state.id, type: "late", payload: {} })).rejects.toMatchObject({ code: "WRITER_LEASE_STALE" });
+        expect(flush.mock.calls.filter(args => args.length === 0)).toHaveLength(0);
+      }
+      expect(close).toHaveBeenCalledTimes(2);
+      expect(submits).toBe(1);
+    } finally {
+      draining = stopped = true;
+      await runtime.shutdown();
+    }
+  });
+
+  it.each([false, true])("accounts for a native open returning during shutdown without starting a turn (stop confirmed=%s)", async confirmed => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-late-open-"));
+    temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub());
+    await storage.initialize();
+    const state = projectState(`prj_${"bc".repeat(16)}`);
+    state.orchestration.input.target = "idea";
+    await storage.createProject(state);
+    let opening = false, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const submit = vi.fn(async () => ({ handoff: "must not start" }));
+    let stopped = confirmed;
+    const close = vi.fn(async () => { if (!stopped) throw new Error("late handle still live"); });
+    const databasePath = path.join(root, "state.sqlite");
+    const peer = () => CollaborationStateDatabase.open({ databasePath, topology: "single-host", hostId: "fixture", serviceId: "peer" });
+    const runtime = new CollaborationRuntimeCoordinator({ storage, databasePath, hostId: "fixture", gitFactory: options => happyGitFake(options, []),
+      residentLauncher: { async open() { opening = true; await gate; return { submit, close, async pause() {}, async resume() {} }; } } });
+    await runtime.initialize();
+    try {
+      await runtime.createProject(state, { enabled: true, provider: "github" });
+      await waitFor(() => opening);
+      const closing = runtime.shutdown();
+      expect(() => peer()).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+      release();
+      if (confirmed) { await closing; const next = peer(); try { expect(next.writerLease().epoch).toBe(2); } finally { next.close(); } }
+      else {
+        await expect(closing).rejects.toBeInstanceOf(AggregateError);
+        expect(() => peer()).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+      }
+      expect(submit).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
+    } finally { stopped = true; release(); await runtime.shutdown(); }
+  });
+
+  it.each([false, true])("does not terminalize or route a merged standalone execution until resident stop is confirmed (restart=%s)", async restart => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-collaboration-close-gate-"));
     temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub());
@@ -7985,14 +8162,18 @@ describe("CollaborationRuntimeCoordinator", () => {
     };
     await storage.createProject(state);
     const order: string[] = [];
-    let submits = 0;
-    let closes = 0;
-    const coordinator = new CollaborationRuntimeCoordinator({
+    let submits = 0, closes = 0, confirmRecovery = false;
+    const recoveryStops: Array<{ execution: MemberExecution; runtimePath: string }> = [];
+    const options: ConstructorParameters<typeof CollaborationRuntimeCoordinator>[0] = {
       storage,
       serviceId: "close-gate-test",
       hostId: "host-test",
       gitFactory: (options) => happyGitFake(options, order),
       residentLauncher: {
+        async stopForRecovery({ execution, executionRuntimePath }) {
+          recoveryStops.push({ execution, runtimePath: executionRuntimePath });
+          return { stopped: confirmRecovery, evidence: { originalScopeChecked: true } };
+        },
         async open(input) {
           return {
             async submit(turn) {
@@ -8008,8 +8189,9 @@ describe("CollaborationRuntimeCoordinator", () => {
           };
         }
       }
-    });
-    if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
+    };
+    let coordinator = new CollaborationRuntimeCoordinator(options);
+    liveCoordinators.push(coordinator);
     await coordinator.initialize();
     await coordinator.createProject(state, { enabled: true, provider: "github" });
     await waitFor(() => ["paused", "retrying"].includes(state.status) && closes === 1);
@@ -8017,6 +8199,33 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(state.executions?.[0]?.status).not.toBe("succeeded");
     expect(state.nodeRuns?.[0]?.status).not.toBe("completed");
     expect(state.collaboration?.routeOutbox).toEqual([]);
+    const db = coordinator.database(), original = (await db.projectState(state.id)).executions[0]!;
+    expect(original.invocationId).toBeTruthy();
+    const receipt = await db.pendingExecutionRetirement(state.id, original.id, original.ownershipEpoch);
+    expect(receipt?.output).toContain("merged but process must stop");
+    await expect(db.prepareExecutionRetirement(state.id, original.id, original.ownershipEpoch, "different return"))
+      .rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    await expect(db.completeExecution({ projectId: state.id, executionId: original.id, ownershipEpoch: original.ownershipEpoch,
+      output: receipt!.output })).rejects.toMatchObject({ code: "INVALID_STATE_TRANSITION" });
+    if (restart) {
+      const owner = await db.writerLease();
+      const repository = repositoryFact(state.git!.repository!.name);
+      const operation = { id: "retirement-repository", payloadHash: "retirement-repository-fact" };
+      await db.prepareOperation(state.id, { ...operation, kind: "repository.create", status: "prepared" });
+      await db.transitionOperation(state.id, { ...operation, status: "observed", remoteFact: repository });
+      await db.transitionOperation(state.id, { ...operation, status: "finalized", remoteFact: repository });
+      await coordinator.shutdown();
+      coordinator = new CollaborationRuntimeCoordinator(options);
+      liveCoordinators.push(coordinator);
+      await coordinator.initialize();
+      expect((await coordinator.database().writerLease()).epoch).toBe(owner.epoch + 1);
+      await coordinator.recoverProject(state);
+      await waitFor(() => recoveryStops.length > 0 && ["paused", "retrying"].includes(state.status));
+      expect((await coordinator.database().projectState(state.id)).executions[0]).toEqual(original);
+      expect(state.collaboration?.routeOutbox).toEqual([]);
+      expect(submits).toBe(1);
+      confirmRecovery = true;
+    }
     await coordinator.resumeProject(state);
     await waitFor(() => state.status === "completed" || Boolean(state.lastError));
     expect(state.lastError).toBeUndefined();
@@ -8024,7 +8233,15 @@ describe("CollaborationRuntimeCoordinator", () => {
     expect(submits).toBe(1);
     expect(closes).toBe(2);
     expect(order.filter((item) => item === "pr:idea")).toHaveLength(1);
-    expect(state.executions?.[0]).toMatchObject({ status: "succeeded", ownershipEpoch: 1 });
+    expect(state.executions?.[0]).toMatchObject({ id: original.id, invocationId: original.invocationId, status: "succeeded", ownershipEpoch: 1 });
+    expect(recoveryStops).toHaveLength(restart ? 2 : 0);
+    for (const stop of recoveryStops) {
+      expect(stop.execution).toEqual(original);
+      expect(stop.runtimePath).toBe(await storage.invocationRuntimePath(state.id, original.invocationId!));
+    }
+    const succeeded = (await coordinator.database().eventsAfter(state.id, 0, 10_000)).filter(event => event.type === "execution.succeeded");
+    expect(succeeded).toMatchObject([{ executionId: original.id, invocationId: original.invocationId, ownershipEpoch: 1,
+      payload: { nativeStopConfirmed: true, evidence: restart ? { originalScopeChecked: true } : { residentClosed: true } } }]);
     expect(state.collaboration?.routeOutbox).toEqual([
       expect.objectContaining({ targetNodeId: "finish", status: "delivered" })
     ]);
@@ -8201,7 +8418,7 @@ describe("CollaborationRuntimeCoordinator", () => {
     await coordinator.shutdown();
   });
 
-  it("keeps an ordinary source while Main selects its weak route into a group", async () => {
+  it.each([false, true])("keeps an ordinary source while Main uses its configured tools and selects a weak route into a group (reconfiguration=%s)", async reconfiguration => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-main-selected-group-"));
     temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub());
@@ -8210,8 +8427,11 @@ describe("CollaborationRuntimeCoordinator", () => {
     state.agents.idea.decisionBy = "main";
     state.orchestration = {
       ...state.orchestration,
+      allowMainReconfiguration: reconfiguration,
       collaborations: [{
         id: "main-selected-team",
+        displayName: "Main selected team",
+        renamePolicy: "editable",
         memberAgentIds: ["execution", "review"]
       }],
       routes: {
@@ -8223,6 +8443,11 @@ describe("CollaborationRuntimeCoordinator", () => {
         "main-selected-team": [{ target: "finish", kind: "strong" }]
       }
     };
+    state.orchestration.termination.agent = "main-selected-team";
+    state.orchestration.routes.main = state.orchestration.routes.main.filter(edge => !["execution", "review"].includes(edge.target));
+    for (const member of ["execution", "review"]) {
+      delete state.orchestration.routes[member]; delete state.orchestration.decisionPlans[member];
+    }
     await storage.createProject(state);
     const coordinator = new CollaborationRuntimeCoordinator({
       storage,
@@ -8283,6 +8508,15 @@ describe("CollaborationRuntimeCoordinator", () => {
             turn: input.turn
           });
           expect(authority.control.tasklessRouteTargets).toEqual(["main-selected-team"]);
+          expect(authority.control.allowWorkflowReconfiguration).toBe(reconfiguration);
+          const preparations: Array<{ callId: string; action: ControlAction }> = [];
+          if (reconfiguration) {
+            const proposalPath = path.join(input.open.inputs!.workspacePath, "workflow.json");
+            const proposal = JSON.parse(await fs.readFile(proposalPath, "utf8"));
+            proposal.orchestration.decisionPlans.main = "Use the current explicit Main instructions";
+            await fs.writeFile(proposalPath, JSON.stringify(proposal));
+            preparations.push({ callId: "main-weak-config", action: { tool: "apply_workflow", path: "workflow.json", rationale: "Main explicitly updates its configuration before selecting the route" } });
+          }
           const action = {
             tool: "route_to_agent" as const,
             target: "main-selected-team"
@@ -8291,14 +8525,17 @@ describe("CollaborationRuntimeCoordinator", () => {
             targetNodeId: "main-selected-team",
             decisionRequestId: "main-selected-team-decision",
             decisionAction: action
-          });
+          }, preparations);
         }
       }
     });
     if (coordinator instanceof CollaborationRuntimeCoordinator) liveCoordinators.push(coordinator);
     await coordinator.initialize();
     await coordinator.createProject(state, { enabled: true, provider: "github" });
-    await waitFor(() => state.groupRuns?.length === 1);
+    await waitFor(() => state.groupRuns?.length === 1).catch(error => {
+      throw new Error(`Main weak-route tools did not reach group dispatch: ${JSON.stringify({ status: state.status,
+        phase: state.phase, error: state.lastError, failures: state.failureAttempts?.map(item => item.redactedMessage) })}`, { cause: error });
+    });
     await waitFor(() => state.tasks?.some((task) =>
       task.id === "task-taskless-main-selected"));
 
@@ -8329,7 +8566,7 @@ describe("CollaborationRuntimeCoordinator", () => {
       })
     ]));
     await coordinator.shutdown();
-  });
+  }, 15_000);
 
   it("keeps an ordinary self-selected weak route autonomous when it activates a group", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-autonomous-group-"));
@@ -8928,7 +9165,7 @@ describe("CollaborationRuntimeCoordinator", () => {
           return {
             async submit(turn) {
               if (context.role === "leader") {
-                const liveProject = coordinator.projectReadModel(state);
+                const liveProject = await coordinator.projectReadModel(state);
                 expect(liveProject).toMatchObject({
                   status: "running",
                   phase: "model:running",
@@ -14313,8 +14550,10 @@ function happyGitFake(
         pull.head === request.execution.executionBranch && pull.base === request.base &&
         !["merged", "closed"].includes(pull.status));
       const number = retained?.providerNumber ?? ++pullNumber;
+      const { owner, name } = request.repository;
       const fact = { ...pullFact(number, request.execution.id, request.execution.executionBranch,
-        request.base, request.expectedHead, "open"), repository: request.repository.name };
+        request.base, request.expectedHead, "open"), id: `github:${owner}/${name}#${number}`,
+        owner, repository: name, htmlUrl: `https://github.example/${owner}/${name}/pull/${number}` };
       pulls.set(number, fact);
       order.push(`pr:${request.execution.agentId}`);
       return fact;

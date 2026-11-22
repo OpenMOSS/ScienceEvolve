@@ -30,7 +30,7 @@ export interface AgentGitFacts {
  * decisions, conflict repair and provider retries belong to the Agent. */
 export interface AgentGitToolInput {
   git: Pick<CollaborationGitFacade, "checkpointAndPush" | "createPullRequest" | "mergePullRequest"> &
-    Partial<Pick<CollaborationGitFacade, "revertExecution" | "observeHistoricalPullSource" | "inspectExecution" | "reconcilePushOperation" | "prepareConflictResolution" | "closePullRequest" | "updatePullRequest" | "observePullRequest" | "observePullRequestForExecution" | "createGroupFinalPullRequest" | "mergeGroupFinalPullRequest" | "refreshRecoveryBase" | "reconcileGroupFinalPullRequest" | "reconcileMergedPullRequest">>;
+    Partial<Pick<CollaborationGitFacade, "observeRemoteRef" | "revertExecution" | "observeHistoricalPullSource" | "inspectExecution" | "reconcilePushOperation" | "prepareConflictResolution" | "closePullRequest" | "updatePullRequest" | "observePullRequest" | "observePullRequestForExecution" | "createGroupFinalPullRequest" | "mergeGroupFinalPullRequest" | "refreshRecoveryBase" | "reconcileGroupFinalPullRequest" | "reconcileMergedPullRequest">>;
   repository: GitHubRepositoryFact;
   execution: GitExecutionAuthority | GitGroupFinalAuthority;
   base: string;
@@ -109,8 +109,12 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
   const action = envelope.action;
   const final = execution.purpose === "group-final-integration";
   const closing = "restrictedClosing" in execution ? execution.restrictedClosing : undefined;
+  if (["git_push", "git_log", "git_show", "git_diff", "git_revert", "git_prepare_conflict"].includes(action.tool) &&
+    (!("worktreePath" in execution) || typeof execution.worktreePath !== "string" || !execution.worktreePath)) {
+    throw new Error(`${action.tool} requires an actual execution.worktreePath; this invocation has no bound checkout for that execution`);
+  }
   if (action.tool === "git_revert") {
-    if (final || closing || !git.revertExecution) throw new Error("Revert requires a current authorized business task");
+    if (!git.revertExecution) throw new Error("Git revert service is unavailable");
     const attemptId = `git-revert-${createHash("sha256").update(JSON.stringify([envelope.projectId, execution.id, execution.ownershipEpoch, envelope.callId])).digest("hex")}`;
     if (action.mode !== "preview" && action.mode !== "status") {
       if (!input.recordRequest) throw new Error("Revert requires the original Agent request journal");
@@ -127,12 +131,12 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     return result;
   }
   if (action.tool === "github_get_pr" && action.sourceOperationId !== undefined) {
-    if (final || closing || !git.observeHistoricalPullSource) throw new Error("Historical source lookup requires a current business task");
+    if (!git.observeHistoricalPullSource) throw new Error("Historical PR source lookup service is unavailable");
     return git.observeHistoricalPullSource({ repository, execution: execution as GitExecutionAuthority, directBase: base,
       sourceOperationId: action.sourceOperationId, providerNumber: action.providerNumber, signal });
   }
   if (action.tool === "git_log" || action.tool === "git_show" || action.tool === "git_diff") {
-    if (final || closing || !git.inspectExecution) throw new Error("Git inspection requires a current business task");
+    if (!git.inspectExecution) throw new Error("Git inspection service is unavailable");
     return git.inspectExecution(execution as GitExecutionAuthority, execution.ownershipEpoch, base, action, signal);
   }
   if (closing && (final || closing.invocationId !== envelope.invocationId ||
@@ -170,7 +174,6 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     }
   };
   if (action.tool === "git_reconcile_push") {
-    if (final) throw new Error("Canonical group delivery has no member push journal to reconcile");
     if (!git.reconcilePushOperation) throw new Error("Retained push reconciliation tool is unavailable");
     const result = await git.reconcilePushOperation({ repository, execution: execution as GitExecutionAuthority,
       ownershipEpoch: execution.ownershipEpoch, operationId: action.operationId, retry: action.retry,
@@ -228,7 +231,6 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     return result;
   }
   if (action.tool === "git_push") {
-    if (final) throw new Error("Canonical group delivery reuses its verified published head; business pushes belong to member tasks");
     await recordRequest((await operationId("push")), action);
     const pushed = await git.checkpointAndPush({ repository, execution: execution as GitExecutionAuthority,
       ownershipEpoch: execution.ownershipEpoch, operationId: await operationId("push"), checkpointKind: "checkpoint", reason: action.reason, signal });
@@ -257,7 +259,14 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
   }
   if (action.tool === "github_create_pr") {
     if (action.base !== base) throw new Error(`Agent must use its direct PR target ${JSON.stringify(base)}; requested base ${JSON.stringify(action.base)} is not this task's direct target.`);
-    if (!facts.pushedHeadSha) throw new Error("Agent must use its confirmed pushed head before creating a PR. Inspect the original push with git_get_operation and reconcile its exact receipt with git_reconcile_push, or use git_push for the current task's pending publication. A local git_status head alone does not confirm a remote push; do not create unrelated changes just to retry publication.");
+    if (!facts.pushedHeadSha) {
+      if (!git.observeRemoteRef) throw new Error("Remote branch observation is unavailable; cannot determine the PR head");
+      const remote = await git.observeRemoteRef(repository, gitDeliveryRef(execution.executionBranch), signal);
+      if (remote.status !== "present" || remote.ref !== execution.executionBranch ||
+        remote.owner !== repository.owner || remote.repository !== repository.name || !/^[0-9a-f]{40}$/i.test(remote.sha ?? ""))
+        throw new Error(`Remote branch ${JSON.stringify(execution.executionBranch)} has no confirmed head for this PR`);
+      facts.pushedHeadSha = remote.sha!;
+    }
     const common = { repository, ownershipEpoch: execution.ownershipEpoch, operationId: await operationId("create"),
       expectedHead: facts.pushedHeadSha, base, title: action.title, body: action.body, signal };
     // New requests first observe the current delivery. An original retained
@@ -273,9 +282,7 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
         facts.pullRequest = existing;
         return existing;
       }
-      if (existing && ["open", "unknown", "conflicting"].includes(existing.status)) {
-        throw new Error(`PR #${existing.providerNumber} already exists for this task. Inspect its current head and update that same PR; do not create another PR for a pre-merge correction.`);
-      }
+
     }
     if (final && !git.createGroupFinalPullRequest) throw new Error("Canonical PR tool is unavailable");
     await recordRequest(common.operationId, action, common.expectedHead);
@@ -391,10 +398,12 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
           operationId, expectedMergeCommitSha: merged.mergeCommitSha });
       }
     }
-    assertPull(merged); facts.pullRequest = merged; facts.merged = merged; return merged;
+    assertPull(merged);
+    facts.pullRequest = merged;
+    facts.merged = merged.status === "merged" ? merged : undefined;
+    return merged;
   }
   if (action.tool === "git_prepare_conflict") {
-    if (final) throw new Error("Report canonical PR conflicts to the Leader; repair belongs to a retained member business task");
     const owner = execution as GitExecutionAuthority;
     if (!git.refreshRecoveryBase || !git.prepareConflictResolution) throw new Error("Conflict base refresh or preparation is unavailable");
     const ref = await git.refreshRecoveryBase(repository, owner, owner.ownershipEpoch, base, signal);

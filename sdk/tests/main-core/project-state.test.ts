@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { ControlActionService, startControlActionBridge } from "../../src/core/orchestration-control-bridge.js";
 import { toolsFor } from "../../src/core/orchestration-control-mcp.js";
 import { controlResultReceipts, controlResultMarker, type ControlResultContext } from "../../src/core/control-result-receipts.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
 import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
 import { COLLABORATION_STATE_SCHEMA_VERSION } from "../../src/core/collaboration-state/contracts.js";
@@ -17,12 +17,13 @@ import { cloneAgentOrchestrationTemplate } from "../../src/core/agent-orchestrat
 import { normalizeAgentOrchestrationTemplate } from "../../src/core/validation.js";
 import { deriveProjectRuntimeProjection } from "../../src/core/collaboration-runtime.js";
 import type { ProjectStateEntry, ProjectStatePrincipal, ProjectStateRef } from "../../src/core/project-state.js";
+import { executeProjectStateRequest } from "../../src/core/project-state-service.js";
 import { ProjectStateReadSnapshots } from "../../src/core/project-state-read-snapshots.js";
 
 const roots: string[] = [], stores: CollaborationStateDatabase[] = [];
 afterEach(async () => { for (const db of stores.splice(0)) db.close(); await Promise.all(roots.splice(0).map(p => rm(p, { recursive: true, force: true }))); });
 
-async function fixture(sharedWorker = false, extraAgents = 0) {
+async function fixture(sharedWorker = false, extraAgents = 0, managementCapacity = 1) {
   const root = await mkdtemp(join(tmpdir(), "openfars-project-state-")); roots.push(root);
   const options = { databasePath: join(root, "state.sqlite"), serviceId: "state-test", hostId: "test", instanceId: "one",
     topology: "single-host" as const, now: () => 1_000_000 };
@@ -51,7 +52,7 @@ async function fixture(sharedWorker = false, extraAgents = 0) {
   ] };
   const workflow = normalizeAgentOrchestrationTemplate(draft);
   for (const projectId of ["p", "other"]) db.createProject({ projectId, workflowRevision: 1, workflowSnapshot: workflow,
-    git: { enabled: true, status: "ready" }, workerCapacity: 4 });
+    git: { enabled: true, status: "ready" }, workerCapacity: 4, managementCapacity });
   const g = db.activateScopedGroup({ projectId: "p", groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
     baseCommit: "a".repeat(40), outer: { nodeRunId: "node-G", inputSnapshotRef: "input:p", activatedByAgentId: "main" } });
   const child = (parentGroupRunId: string, groupId: string) => {
@@ -210,7 +211,7 @@ describe("unified authoritative project state", () => {
       executionContext: { role: "delivery", nodeRunId: "node-G", groupRunId: "run-G", executionId: "original-execution", ownershipEpoch: 1 } };
     const receipts = controlResultReceipts(db, context);
     const result = { status: "outcome_unknown", operationId: "original-merge", error: "Provider connection lost" };
-    const id = receipts.record({ requestedCallId: "original-call", envelope: { projectId: "p", agent: "idea",
+    const id = await receipts.record({ requestedCallId: "original-call", envelope: { projectId: "p", agent: "idea",
       invocationId: context.invocationId, callId: "original-call", stateVersion: 1, receivedAt: context.session.createdAt,
       action: { tool: "github_merge_pr", providerNumber: 1 } }, result });
     const object = { kind: "receipt" as const, id };
@@ -219,8 +220,8 @@ describe("unified authoritative project state", () => {
     patch(db, system, object, { main_assessment: "Evidence still unknown", delivered: true });
     expect(read(db, system, object).core).toEqual(before.core);
     const tool = { callId: "native-call", name: "github_merge_pr", server: "openfars-resident-control", toolType: "mcp", input: JSON.stringify({ callId: "original-call" }) };
-    receipts.observeNative({ invocationId: context.invocationId, harnessId: "codex", eventId: "native-start", kind: "tool.started", tool });
-    receipts.observeNative({ invocationId: context.invocationId, harnessId: "codex", eventId: "native-completed", kind: "tool.completed",
+    await receipts.observeNative({ invocationId: context.invocationId, harnessId: "codex", eventId: "native-start", kind: "tool.started", tool });
+    await receipts.observeNative({ invocationId: context.invocationId, harnessId: "codex", eventId: "native-completed", kind: "tool.completed",
       tool: { ...tool, outputPreview: controlResultMarker(id) } });
     const after = read(db, system, object);
     expect(after.core).toMatchObject({ receipt: { result }, received: { receiptId: id } });
@@ -562,5 +563,82 @@ describe("unified authoritative project state", () => {
     const next = CollaborationStateDatabase.open({ ...options, instanceId: "successor", now: () => 1_031_000 }); stores.push(next);
     expect(() => read(next, leader.principal, object)).toThrow(/live invocation/);
     expect(read(next, system, object).extensions).toEqual({ original: true });
+  });
+});
+
+
+describe("Main explicit Agent stop", () => {
+  it("stops the selected invocation once and retains the request and result without completing its work", async () => {
+    const { db, lead } = await fixture(false, 0, 4);
+    const main = lead("run-H", "main", "main-stop").principal;
+    lead("run-G", "review", "review-running");
+    const before = db.projectState("p");
+    const stopAgent = vi.fn(async () => undefined);
+    const services = { stopAgent, observePullRequest: vi.fn(async () => undefined) };
+    const request = { operation: "stop_agent", agentId: "review", invocationId: "review-running", reason: "Main chooses to change assignment", callId: "stop-review" };
+    const result = await executeProjectStateRequest(db, main, request, services);
+    expect(result).toMatchObject({ status: "stopped", agentId: "review", invocationId: "review-running" });
+    expect(stopAgent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agentId: "review", invocationId: "review-running", projectId: "p" }));
+    expect(await executeProjectStateRequest(db, main, request, services)).toEqual(result);
+    expect(stopAgent).toHaveBeenCalledTimes(1);
+    expect(db.projectState("p").scopedExecutions).toEqual(before.scopedExecutions);
+    const events = db.eventsAfter("p", 0, 1000).filter(event => event.type.startsWith("project.agent.stop."));
+    expect(events.map(event => event.type)).toEqual(["project.agent.stop.requested", "project.agent.stop.confirmed"]);
+    await expect(executeProjectStateRequest(db, main, { ...request, invocationId: "replacement-invocation" }, services)).rejects.toThrow("different request");
+  });
+
+  it("exposes Main's stop tool and executes the authenticated MCP request through the bound native service", async () => {
+    const { db, root, lead } = await fixture(false, 0, 4);
+    const main = lead("run-H", "main", "main-stop-mcp").principal;
+    lead("run-G", "review", "review-running");
+    const stopAgent = vi.fn(async () => undefined);
+    const service = new ControlActionService({ projectId: "p", agent: "main", invocationId: main.invocationId,
+      stateVersion: 1, capability: "test-state-secret", stagingPath: join(root, "stop-actions.json"),
+      revalidate: async () => {}, projectState: request => executeProjectStateRequest(db, main, request, {
+        stopAgent, observePullRequest: async () => undefined
+      }) });
+    const bridge = await startControlActionBridge(service, root);
+    try {
+      const responses = await stateMcp(root, { projectId: "p", agent: "main", invocationId: main.invocationId,
+        stateVersion: 1, kind: "main", candidates: [], decisionBy: "main", allowUserIntervention: false, canComplete: false,
+        workspacePath: root, stagingPath: join(root, "stop-actions.json"), projectState: true,
+        bridgePath: bridge.endpoint.path, bridgeHost: bridge.endpoint.host, bridgePort: bridge.endpoint.port, requireBridge: true }, [
+        { id: 1, method: "tools/list" }, { id: 2, method: "tools/call", params: { name: "state_stop_agent", arguments: {
+          agentId: "review", invocationId: "review-running", reason: "Main changes the assignment", callId: "explicit-stop"
+        } } }
+      ]);
+      expect(responses[0].result.tools.map((tool: { name: string }) => tool.name)).toContain("state_stop_agent");
+      expect(responses[1].result.isError).not.toBe(true);
+      expect(responses[1].result.structuredContent).toMatchObject({ status: "stopped", agentId: "review", invocationId: "review-running" });
+      expect(stopAgent).toHaveBeenCalledOnce();
+    } finally { await bridge.close(); }
+  });
+
+  it("returns an actual stop error and preserves it on a repeated request", async () => {
+    const { db, lead } = await fixture(false, 0, 4);
+    const main = lead("run-H", "main", "main-stop-failed").principal;
+    lead("run-G", "review", "review-running");
+    const failure = new Error("Native process stop could not be confirmed");
+    const stopAgent = vi.fn(async () => { throw failure; });
+    const services = { stopAgent, observePullRequest: vi.fn(async () => undefined) };
+    const request = { operation: "stop_agent", agentId: "review", invocationId: "review-running", reason: "Cancel obsolete work", callId: "failed-stop" };
+    await expect(executeProjectStateRequest(db, main, request, services)).rejects.toBe(failure);
+    await expect(executeProjectStateRequest(db, main, request, services)).rejects.toThrow(failure.message);
+    expect(stopAgent).toHaveBeenCalledTimes(1);
+    expect(db.eventsAfter("p", 0, 1000).filter(event => event.type === "project.agent.stop.failed")).toHaveLength(1);
+    expect(db.eventsAfter("p", 0, 1000).filter(event => event.type === "project.agent.stop.confirmed")).toHaveLength(0);
+  });
+
+  it("checks the live Main identity and exact active target before executing a stop", async () => {
+    const { db, lead } = await fixture(false, 0, 4);
+    const main = lead("run-H", "main", "main-stop-validation").principal;
+    const leader = lead("run-G", "review", "review-running").principal;
+    const stopAgent = vi.fn(async () => undefined);
+    const services = { stopAgent, observePullRequest: vi.fn(async () => undefined) };
+    const request = { operation: "stop_agent", agentId: "review", invocationId: "review-running", reason: "Stop selected work", callId: "validate" };
+    await expect(executeProjectStateRequest(db, leader, request, services)).rejects.toThrow("live Main");
+    await expect(executeProjectStateRequest(db, main, { ...request, invocationId: "an-old-invocation" }, services)).rejects.toThrow("not currently active");
+    await expect(executeProjectStateRequest(db, { ...main, invocationId: "stale-main" }, request, services)).rejects.toThrow("live invocation");
+    expect(stopAgent).not.toHaveBeenCalled();
   });
 });

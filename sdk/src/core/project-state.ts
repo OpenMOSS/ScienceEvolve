@@ -81,7 +81,9 @@ export type ProjectStateRequest =
   | { operation: "get"; object: ProjectStateRef; historyOffset?: number; historyLimit?: number; historyThroughSequence?: number }
   | ({ operation: "patch" } & ProjectStateChange)
   | ProjectStatePullReconciliation
-  | ProjectStateMainCoordination;
+  | ProjectStateMainCoordination
+  | { operation: "stop_agent"; agentId: string; invocationId: string; reason: string; callId: string }
+  | { operation: "request_leader"; message: string; callId: string };
 
 export function projectStateError(code: "INVALID_STATE_TRANSITION" | "STATE_SCOPE_DENIED" | "STALE_STATE_VERSION", message: string,
   details: Record<string, unknown> = {}): never {
@@ -119,7 +121,7 @@ export function projectStateVersionMaterial(object: ProjectStateCore): ProjectSt
 export function validateProjectStateRequest(value: unknown): ProjectStateRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) projectStateError("INVALID_STATE_TRANSITION", "State request must be an object");
   const r = { ...value } as Record<string, unknown>;
-  const allowed = r.operation === "list" ? ["operation", "kind", "offset", "limit", "expectedRevision", "snapshotId"]
+  const allowed = r.operation === "stop_agent" ? ["operation", "agentId", "invocationId", "reason", "callId"] : r.operation === "request_leader" ? ["operation", "message", "callId"] : r.operation === "list" ? ["operation", "kind", "offset", "limit", "expectedRevision", "snapshotId"]
     : r.operation === "get" ? ["operation", "object", "historyOffset", "historyLimit", "historyThroughSequence"]
       : r.operation === "patch" ? ["operation", "object", "expectedVersion", "set", "remove", "reason", "callId"]
         : r.operation === "reconcile_pull" ? ["operation", "object", "expectedVersion", "sourceOperationId", "reason", "callId"]
@@ -131,6 +133,18 @@ export function validateProjectStateRequest(value: unknown): ProjectStateRequest
     for (const key of allowed) if (key !== "object" && r[key] === null) delete r[key];
     if (r.operation === "list" && r.expectedRevision === 0) delete r.expectedRevision;
     if (r.operation === "list" && r.snapshotId === "") delete r.snapshotId;
+  }
+  if (r.operation === "stop_agent") {
+    for (const [key, max] of [["agentId", 256], ["invocationId", 256], ["reason", 8192], ["callId", 256]] as const)
+      if (typeof r[key] !== "string" || !(r[key] as string).trim() || (r[key] as string).length > max)
+        projectStateError("INVALID_STATE_TRANSITION", `${key} must be nonempty and at most ${max} characters`);
+    return r as Extract<ProjectStateRequest, { operation: "stop_agent" }>;
+  }
+  if (r.operation === "request_leader") {
+    for (const [key, max] of [["message", 8192], ["callId", 256]] as const)
+      if (typeof r[key] !== "string" || !(r[key] as string).trim() || (r[key] as string).length > max)
+        projectStateError("INVALID_STATE_TRANSITION", `${key} must be nonempty and at most ${max} characters`);
+    return r as Extract<ProjectStateRequest, { operation: "request_leader" }>;
   }
   if (r.operation !== "list") {
     const ref = r.object as ProjectStateRef;

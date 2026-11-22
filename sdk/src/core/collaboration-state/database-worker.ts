@@ -49,7 +49,7 @@ type Input = {
 } & ({ mode: "writer"; options: Omit<CollaborationStateOpenOptions, "now" | "transactionFault"> }
   | { mode: "documents"; databasePath: string });
 interface Request { id: number; method: string; args: unknown[]; operations?: unknown[] }
-type Reply = { kind: "ready"; health?: DatabaseHealth } | { kind: "result"; id: number; value?: unknown; error?: SavedError }
+type Reply = { kind: "ready"; health?: DatabaseHealth } | { kind: "result"; id: number; value?: unknown; error?: SavedError; ownerFailure?: SavedError }
   | { kind: "fatal"; error: SavedError } | { kind: "callback"; id: number; callbackId: number; args: unknown[]; port: MessagePort; signal: SharedArrayBuffer };
 
 /** Every request executes once in FIFO order; loss of a reply never resends it. */
@@ -106,8 +106,15 @@ class DatabaseWorkerClient {
     this.ready = new Promise((resolve, reject) => {
       this.worker.on("message", (reply: Reply) => {
         if (reply.kind === "ready") { this.health = reply.health; resolve(reply.health); this.releaseIdle(); }
-        else if (reply.kind === "fatal") { const error = restoreError(reply.error); reject(error); this.fail(error); }
-        else if (reply.kind === "callback") {
+        else if (reply.kind === "fatal") {
+          const error = restoreError(reply.error);
+          reject(error);
+          // A startup rejection of the caller's attachment token is not loss of
+          // the established owner's authority. No request can dispatch before ready.
+          if (configuration.mode === "writer" && configuration.options.writerLease &&
+              error instanceof stateErrors.CollaborationStateError && error.code === "WRITER_LEASE_STALE") this.failure = error;
+          else this.fail(error);
+        } else if (reply.kind === "callback") {
           const callback = this.callback(reply);
           this.activeCallbacks.add(callback);
           void callback.catch(error => this.fail(error instanceof Error ? error : new Error("Database callback transport failed", { cause: error })))
@@ -121,7 +128,8 @@ class DatabaseWorkerClient {
           if (reply.error) {
             const error = restoreError(reply.error);
             pending.reject(error);
-            if (error instanceof stateErrors.CollaborationStateError &&
+            if (reply.ownerFailure) this.fenceWriter(restoreError(reply.ownerFailure));
+            else if (error instanceof stateErrors.CollaborationStateError &&
                 ["WRITER_COMMIT_UNCONFIRMED", "WRITER_LEASE_STALE"].includes(error.code)) this.fenceWriter(error);
           } else pending.resolve(reply.value);
           this.releaseIdle();
@@ -339,7 +347,15 @@ async function runDatabaseWorker(input: Input): Promise<void> {
           value = await Reflect.apply(method, target, args);
         }
         parentPort!.postMessage({ kind: "result", id: request.id, value } satisfies Reply);
-      } catch (error) { parentPort!.postMessage({ kind: "result", id: request.id, error: saveError(error) } satisfies Reply); }
+      } catch (error) {
+        // A failed statement need not mean ownership loss. Report the actual
+        // owner fence (including path/rollback failures) separately from the original operation error.
+        let ownerFailure: SavedError | undefined;
+        if (database && request.method !== "close") {
+          try { database.assertWriterAvailable(); } catch (cause) { ownerFailure = saveError(cause); }
+        }
+        parentPort!.postMessage({ kind: "result", id: request.id, error: saveError(error), ownerFailure } satisfies Reply);
+      }
       if (request.method === "close") parentPort!.close();
     }); });
     parentPort!.postMessage({ kind: "ready", ...(database ? { health: database.health } : {}) } satisfies Reply);

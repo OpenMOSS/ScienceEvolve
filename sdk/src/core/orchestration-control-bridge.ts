@@ -14,9 +14,8 @@ import {
   isSensitiveCredentialKey,
   redactTrace
 } from "./utils.js";
-import { controlDecisionsConflict } from "./orchestration-control-decisions.js";
 import { sameControlActionRequest } from "./control-action-identity.js";
-import { assertSiiControlAction } from "./sii-experiments.js";
+import { siiControlReminders } from "./sii-experiments.js";
 import { CONTROL_OPERATION_TIMEOUT_MS } from "./control-request-lifetime.js";
 import { CollaborationGitError } from "./collaboration-git/errors.js";
 import { taskCompletionResultFacts, type ControlResultInput } from "./control-result-receipts.js";
@@ -370,17 +369,6 @@ export class ControlActionService {
             throw new Error("callId was already used for a different action");
           }
         }
-        const lockedDecision = current.find((item) => controlDecisionsConflict(item.action, action));
-        if (lockedDecision) {
-          // A provider may repeat its already accepted decision with a
-          // newly generated call id after seeing the tool result. Treat only
-          // an equivalent transition as idempotent: the first envelope stays
-          // authoritative and no second action is appended. A changed route,
-          // a changed user request, or a different decision tool still fails
-          // closed as a conflicting decision. Independent failed arrivals
-          // retain separate choices, validated by the same live authority.
-          if (!sameDecision(lockedDecision.action, action)) throw new Error("the invocation decision is already locked");
-        }
         const equivalentPreparation = current.find((item) =>
           samePreparatoryEffect(item.action, action)
         );
@@ -391,17 +379,14 @@ export class ControlActionService {
         // live finish_task may save Agent-authored memory there. A rejected
         // request must not mint a receipt or cause those filesystem effects.
         // Valid repeats still revalidate current authority before returning.
-        await assertSiiControlAction(this.options.projectId, this.options.agent, this.options.invocationId, action);
         const validated = await this.options.revalidate(envelope!, current);
         const completion = action.tool === "finish_task" && validated !== undefined ? taskCompletionResultFacts(validated) : undefined;
         const accepted = async (canonical: ControlActionEnvelope) => {
           await this.options.onStaged?.(structuredClone(canonical));
-          if (completion !== undefined) this.results.set(callId, completion);
-          if (action.tool === "apply_workflow" && validated !== undefined) this.results.set(callId, validated);
+          if (validated !== undefined && !isAgentGitAction(action)) this.results.set(callId, completion ?? validated);
           return canonical;
         };
         if (existing) return await accepted(existing);
-        if (lockedDecision) return await accepted(lockedDecision);
         if (equivalentPreparation) return await accepted(equivalentPreparation);
         if (action.tool === "select_display") {
           const previousDisplayIndex = current.findIndex(
@@ -512,7 +497,7 @@ export class ControlActionService {
     callId: string,
     action: ControlAction,
     onPending?: () => void
-  ): Promise<{ envelope: ControlActionEnvelope; result?: unknown; receiptId?: string }> {
+  ): Promise<{ envelope: ControlActionEnvelope; result?: unknown; receiptId?: string; reminders?: string[] }> {
     const request = this.executeStagedRequest(capability, callId, action, onPending);
     this.activeRequests.add(request);
     void request.then(() => this.activeRequests.delete(request), () => this.activeRequests.delete(request));
@@ -524,7 +509,7 @@ export class ControlActionService {
     callId: string,
     action: ControlAction,
     onPending?: () => void
-  ): Promise<{ envelope: ControlActionEnvelope; result?: unknown; receiptId?: string }> {
+  ): Promise<{ envelope: ControlActionEnvelope; result?: unknown; receiptId?: string; reminders?: string[] }> {
     // Pending means only that this exact authenticated request is being
     // handled. Revalidation, native cancellation and tool budgets still own
     // permission/lifetime; the bridge must never decide or retry Agent work.
@@ -573,7 +558,14 @@ export class ControlActionService {
     const receiptId = await this.options.onResult?.({ envelope, requestedCallId,
       ...(result === undefined ? {} : { result }) });
     if (receiptId !== undefined && !/^[a-f0-9]{64}$/.test(receiptId)) throw new Error("Invalid control result receipt identity");
-    return { envelope, ...(result === undefined ? {} : { result }), ...(receiptId ? { receiptId } : {}) };
+    let reminders: string[];
+    try {
+      reminders = await siiControlReminders(this.options.projectId, this.options.agent, this.options.invocationId, envelope.action);
+    } catch (error) {
+      reminders = [`Experiment status reminder unavailable: ${redactTrace(error instanceof Error ? error.message : String(error))}. The action result above remains unchanged.`];
+    }
+    return { envelope, ...(result === undefined ? {} : { result }), ...(receiptId ? { receiptId } : {}),
+      ...(reminders.length ? { reminders } : {}) };
   }
 
   private assertCapability(capability: string, admission = false): void {
@@ -591,46 +583,6 @@ export class ControlActionService {
       throw new Error("control capability is invalid");
     }
   }
-}
-
-function sameDecision(existing: ControlAction, candidate: ControlAction): boolean {
-  if (existing.tool === "coordinate_agent_receipt" && candidate.tool === "coordinate_agent_receipt") return JSON.stringify(existing) === JSON.stringify(candidate);
-  if (existing.tool === "coordinate_group_task" && candidate.tool === "coordinate_group_task") return JSON.stringify(existing) === JSON.stringify(candidate);
-  if (existing.tool === "route_to_agent" && candidate.tool === "route_to_agent") {
-    return existing.target === candidate.target;
-  }
-  if (existing.tool === "complete_project" && candidate.tool === "complete_project") {
-    return true;
-  }
-  if (existing.tool === "request_user" && candidate.tool === "request_user") {
-    return JSON.stringify(existing) === JSON.stringify(candidate);
-  }
-  if (existing.tool === "apply_workflow" && candidate.tool === "apply_workflow") {
-    return existing.path === candidate.path;
-  }
-  if (existing.tool === "assign_group_tasks" && candidate.tool === "assign_group_tasks") {
-    return existing.groupRunId === candidate.groupRunId &&
-      existing.coordinatorEpoch === candidate.coordinatorEpoch &&
-      JSON.stringify(existing.tasks) === JSON.stringify(candidate.tasks);
-  }
-  if (existing.tool === "claim_group_task" && candidate.tool === "claim_group_task") {
-    return existing.taskId === candidate.taskId &&
-      existing.coordinatorEpoch === candidate.coordinatorEpoch;
-  }
-  if (
-    existing.tool === "request_group_integration" &&
-    candidate.tool === "request_group_integration"
-  ) {
-    return existing.groupRunId === candidate.groupRunId &&
-      existing.coordinatorEpoch === candidate.coordinatorEpoch &&
-      existing.integrationOwnerAgentId === candidate.integrationOwnerAgentId;
-  }
-  if (existing.tool === "complete_group" && candidate.tool === "complete_group") {
-    return existing.groupRunId === candidate.groupRunId &&
-      existing.coordinatorEpoch === candidate.coordinatorEpoch &&
-      existing.output === candidate.output;
-  }
-  return false;
 }
 
 function samePreparatoryEffect(existing: ControlAction, candidate: ControlAction): boolean {
@@ -867,6 +819,7 @@ async function handleBridgeLine(
     );
     response = { ok: true, envelope: staged.envelope,
       ...(staged.receiptId ? { receiptId: staged.receiptId } : {}),
+      ...(staged.reminders?.length ? { reminders: staged.reminders } : {}),
       ...(staged.result === undefined ? {} : { result: staged.result }) };
   } catch (error) {
     const message = error instanceof Error

@@ -16,7 +16,6 @@ import { isDeepStrictEqual } from "node:util";
 import { ZodError } from "zod";
 import { deriveProjectRuntimeProjection } from "../project-runtime-projection.js";
 import { ProjectStateReadSnapshots } from "../project-state-read-snapshots.js";
-import { assertScopedWorkflowProposalRange } from "../scoped-workflow-reconfiguration.js";
 import { workflowBaseHash } from "../workflow-reconfiguration.js";
 import { workflowAdjustmentRuntimeImpact } from "../workflow-adjustment-impact.js";
 import { assertWorkflowNotificationContext, buildWorkflowAdjustmentNotification, sameWorkflowNotificationContext,
@@ -182,7 +181,7 @@ import { assertWorkflowSessionHarnesses, type WorkflowSessionState } from "../wo
 import type { SerialMainWorkflowAdjustmentInput, SerialWorkflowPublicationAuthority } from "../serial-workflow-adjustment-contracts.js";
 import { sameDurableSession, type ControlResultReceipt } from "../control-result-receipts.js";
 import type { ScopedLeaderTurnRecord, ScopedLeaderActionInput } from "./contracts.js";
-import { credentialFreeAgentConfiguration, assertScopedAgentConfigurationRange, type ScopedAgentConfiguration } from "../scoped-agent-configuration.js";
+import { credentialFreeAgentConfiguration, type ScopedAgentConfiguration } from "../scoped-agent-configuration.js";
 import {
   CollaborationStateError,
   StaleCoordinatorEpochError,
@@ -201,7 +200,7 @@ import { projectDocumentChanges, projectStateCheckpointProjection, projectStateC
   type ProjectStateDomain, type SerialProjectStateInvocation, type UnifiedProjectStateProjection } from "../project-state-documents.js";
 import { projectStateCanWrite, projectStateDigest, projectStateError, projectStateKey, projectStateObjects, projectStateVersionMaterial,
   validateBusinessState, validateProjectStateRequest, type ProjectStateAuthority, type ProjectStateChange,
-  type ProjectStateCore, type ProjectStateEntry, type ProjectStatePrincipal, type ProjectStateRef,
+  type ProjectStateRequest, type ProjectStateCore, type ProjectStateEntry, type ProjectStatePrincipal, type ProjectStateRef,
   type ProjectStatePullPreparation, type ProjectStatePullReconciliation, type ProjectStateMainCoordination } from "../project-state.js";
 import {
   containsCredentialMaterial,
@@ -550,7 +549,6 @@ function failureTimestamp(value: string, field: string): string {
   }
   return normalized;
 }
-
 
 function sameOptional(left: unknown, right: unknown): boolean {
   return (left ?? undefined) === (right ?? undefined);
@@ -1073,6 +1071,7 @@ function acceptedGroupControlFact(event: CollaborationEvent): AcceptedGroupContr
   }
   assertCredentialFree(action);
   return {
+    requestId: requiredEventString(event.requestId, "requestId"),
     projectId: event.projectId,
     nodeRunId: event.nodeRunId,
     groupRunId: event.groupRunId,
@@ -1533,7 +1532,10 @@ export class CollaborationStateDatabase {
     this.writerAvailabilityCheck?.();
     try { assertOwnerProtocol(this.database, this.owner, this.lease); }
     catch (error) {
-      if (error instanceof CollaborationStateError) this.owner.fence(error);
+      // A busy/locked authority read rejects this operation, not the existing owner.
+      // Other failures reading or decoding authority leave ownership unverifiable.
+      const code = (error as { errcode?: number } | null)?.errcode;
+      if (typeof code !== "number" || ![5, 6].includes(code & 0xff)) this.owner.fence(error);
       throw error;
     }
   }
@@ -1543,7 +1545,7 @@ export class CollaborationStateDatabase {
     this.owner.assertHeld();
     const started = performance.now();
     let beganAt: number | undefined;
-    let succeeded = false;
+    let committed: boolean | null = false;
     let began = false;
     let workMs = 0, commitMs = 0;
     try {
@@ -1556,9 +1558,9 @@ export class CollaborationStateDatabase {
       this.assertLeaseHeld();
       const commitStarted = performance.now();
       try { this.database.exec("COMMIT"); }
-      catch (error) { throw writerCommitUnconfirmed(this.owner, error); }
+      catch (error) { committed = null; throw writerCommitUnconfirmed(this.owner, error); }
       finally { commitMs = performance.now() - commitStarted; }
-      succeeded = true;
+      committed = true;
       return value;
     } catch (error) {
       if (began) this.rollbackAfterFailure();
@@ -1571,7 +1573,7 @@ export class CollaborationStateDatabase {
           totalDurationMs: durationMs + (diagnostics?.timings?.preparationMs ?? 0),
           lockWaitMs: beganAt === undefined ? durationMs : beganAt - started,
           transactionMs: beganAt === undefined ? 0 : performance.now() - beganAt,
-          workMs, commitMs, committed: succeeded, epoch: this.lease.epoch,
+          workMs, commitMs, committed, epoch: this.lease.epoch,
           ...(diagnostics ?? {})
         }); } catch { /* Diagnostics cannot replace the transaction outcome. */ }
       }
@@ -1960,8 +1962,7 @@ export class CollaborationStateDatabase {
       if (this.scopedFinalNativeTurns(input.projectId).some((turn) => turn.status !== "stopped" &&
         (turn.agentId === input.agentId || turn.executionId === input.executionId)) ||
         this.scopedAgentHasLiveInvocation(input.projectId, input.agentId) ||
-        this.openRuntimeActivities(input.projectId, false).some((activity) => activity.agentId === input.agentId) ||
-        this.scopedManagementBlocksBusiness(input.projectId, input.groupRunId)) return { changed: false, value: false };
+        this.openRuntimeActivities(input.projectId, false).some((activity) => activity.agentId === input.agentId)) return { changed: false, value: false };
       const slot = this.firstAvailableLaneSlot(input.projectId, "worker");
       if (slot === undefined) return { changed: false, value: false };
       const timestamp = this.isoNow();
@@ -2185,20 +2186,19 @@ export class CollaborationStateDatabase {
         !this.scopedGroupHierarchyActive(input.projectId, execution.groupRunId, head) || this.projectCancellationIntent(input.projectId)) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Missing-report repair requires exact stopped ownership, merged PR or interrupted Git incident, and released manager retry");
       }
-      if (this.scopedManagementBlocksBusiness(input.projectId, execution.groupRunId) ||
-        this.scopedAgentHasLiveInvocation(input.projectId, execution.agentId) ||
+      if (this.scopedAgentHasLiveInvocation(input.projectId, execution.agentId) ||
         this.openRuntimeActivities(input.projectId, false).some(activity => activity.agentId === execution.agentId) ||
         this.database.prepare(`SELECT 1 FROM member_executions WHERE project_id = ? AND agent_id = ?
-          AND status IN ('queued','working','waiting_authorization','waiting_review','pr_open','resolving','merged','stop_requested','failed') LIMIT 1`)
-          .get(input.projectId, execution.agentId) ||
+              AND status IN ('queued','working','waiting_authorization','waiting_review','pr_open','resolving','merged','stop_requested','failed') LIMIT 1`)
+            .get(input.projectId, execution.agentId) ||
         this.database.prepare(`SELECT 1 FROM scoped_arrivals AS arrival JOIN scoped_group_runs AS group_run
-          ON group_run.group_run_id = arrival.group_run_id WHERE group_run.project_id = ? AND arrival.agent_id = ?
-          AND arrival.request_id != ? AND (arrival.status IN ('running','integrating','failed','paused') OR
-            arrival.status = 'queued' AND arrival.arrival_seq < (SELECT arrival_seq FROM scoped_arrivals WHERE request_id = ?)) LIMIT 1`)
-          .get(input.projectId, execution.agentId, execution.arrivalRequestId, execution.arrivalRequestId) ||
+              ON group_run.group_run_id = arrival.group_run_id WHERE group_run.project_id = ? AND arrival.agent_id = ?
+              AND arrival.request_id != ? AND (arrival.status IN ('running','integrating','failed','paused') OR
+                arrival.status = 'queued' AND arrival.arrival_seq < (SELECT arrival_seq FROM scoped_arrivals WHERE request_id = ?)) LIMIT 1`)
+            .get(input.projectId, execution.agentId, execution.arrivalRequestId, execution.arrivalRequestId) ||
         this.scopedLeaderTurns(input.projectId).some(turn => turn.agentId === execution.agentId && turn.status === "active") ||
         this.database.prepare(`SELECT 1 FROM scoped_executions WHERE project_id = ? AND agent_id = ? AND execution_id != ?
-          AND status IN ('running','integrating','merged','paused') LIMIT 1`).get(input.projectId, execution.agentId, execution.id)) {
+              AND status IN ('running','integrating','merged','paused') LIMIT 1`).get(input.projectId, execution.agentId, execution.id)) {
         return { changed: false, value: undefined };
       }
       const retainedSlot = retainedInterruption ? this.database.prepare(`SELECT slot FROM lane_leases
@@ -2282,8 +2282,7 @@ export class CollaborationStateDatabase {
         turn.runtimePath !== input.runtimePath || !repair || this.scopedAgentReport(input.projectId, execution.id, input.ownershipEpoch)) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Missing-report launch requires its exact unused reserved lineage");
       }
-      if (this.scopedManagementBlocksBusiness(input.projectId, execution.groupRunId) ||
-        this.scopedLeaderTurns(input.projectId).some(turn => turn.agentId === execution.agentId && turn.status === "active")) {
+      if (this.scopedLeaderTurns(input.projectId).some(turn => turn.agentId === execution.agentId && turn.status === "active")) {
         throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Missing-report launch cannot overlap its Agent or manager");
       }
       this.currentScopedGitOwner({ projectId: input.projectId, executionId: execution.id, ownershipEpoch: input.ownershipEpoch,
@@ -2320,9 +2319,8 @@ export class CollaborationStateDatabase {
         path.dirname(previous.runtimePath) !== path.dirname(input.runtimePath)) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped report repair requires its original report and exact persisted native stop");
       }
-      if (this.scopedManagementBlocksBusiness(input.projectId, execution.groupRunId) ||
-        this.database.prepare("SELECT 1 FROM scoped_leader_turns WHERE project_id = ? AND agent_id = ? AND status = 'active'")
-          .get(input.projectId, execution.agentId)) {
+      if (this.database.prepare("SELECT 1 FROM scoped_leader_turns WHERE project_id = ? AND agent_id = ? AND status = 'active'")
+        .get(input.projectId, execution.agentId)) {
         throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Scoped report repair cannot overlap its Agent or management scope");
       }
       this.currentScopedGitOwner({ projectId: input.projectId, executionId: execution.id,
@@ -2387,9 +2385,8 @@ export class CollaborationStateDatabase {
         !report || report.invocationId !== input.originalReportInvocationId || !previous) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped supplemental launch requires its exact reserved original report-repair lineage");
       }
-      if (this.scopedManagementBlocksBusiness(input.projectId, execution.groupRunId) ||
-        this.database.prepare("SELECT 1 FROM scoped_leader_turns WHERE project_id = ? AND agent_id = ? AND status = 'active'")
-          .get(input.projectId, execution.agentId)) {
+      if (this.database.prepare("SELECT 1 FROM scoped_leader_turns WHERE project_id = ? AND agent_id = ? AND status = 'active'")
+        .get(input.projectId, execution.agentId)) {
         throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Scoped supplemental launch cannot overlap its Agent or management scope");
       }
       this.currentScopedGitOwner({ projectId: input.projectId, executionId: execution.id,
@@ -2431,9 +2428,6 @@ export class CollaborationStateDatabase {
       }
       this.currentScopedGitOwner({ projectId: input.projectId, executionId: execution.id,
         ownershipEpoch: input.ownershipEpoch, expectedBranch: requiredString(execution.executionBranch, "executionBranch"), operation: "provider.mutate" });
-      if (this.scopedManagementBlocksBusiness(input.projectId, execution.groupRunId)) {
-        throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Scoped report repair result cannot cross its management barrier");
-      }
       const timestamp = this.isoNow();
       this.insertEvent(head, { projectId: input.projectId, eventId: `evt_${randomUUID()}`, requestId,
         agentId: execution.agentId, invocationId: input.invocationId, ts: timestamp,
@@ -2470,12 +2464,13 @@ export class CollaborationStateDatabase {
     return this.executionSupervisionRepairCount(projectId, executionId);
   }
 
-  executionSupervisionResult(projectId: string, executionId: string): { outcome: string; missing: string[]; reason?: string } | undefined {
+  executionSupervisionResult(projectId: string, executionId: string, ownershipEpoch?: number): { outcome: string; missing: string[]; reason?: string } | undefined {
     this.assertOpen();
     const row = this.database.prepare(`SELECT payload_json FROM project_events WHERE project_id = ?
       AND event_type = 'execution.supervision.finished'
-      AND (execution_id = ? OR json_extract(payload_json, '$.executionId') = ?) ORDER BY seq DESC LIMIT 1`)
-      .get(projectId, executionId, executionId) as Row | undefined;
+      AND (execution_id = ? OR json_extract(payload_json, '$.executionId') = ?)
+      AND (? IS NULL OR json_extract(payload_json, '$.ownershipEpoch') = ?) ORDER BY seq DESC LIMIT 1`)
+      .get(projectId, executionId, executionId, ownershipEpoch ?? null, ownershipEpoch ?? null) as Row | undefined;
     return row ? parseJson(row.payload_json, {} as never) : undefined;
   }
 
@@ -2487,7 +2482,21 @@ export class CollaborationStateDatabase {
 
   scopedFinalTaskReturned(projectId: string, groupRunId: string): boolean {
     const final = this.scopedFinalIntegration(projectId, groupRunId);
-    return Boolean(final && (final.status === "completed" || this.executionSupervisionResult(projectId, final.id)));
+    return Boolean(final && (final.status === "completed" ||
+      this.executionSupervisionResult(projectId, final.id, final.ownershipEpoch) && !this.pendingScopedFinalRequest(projectId, final)));
+  }
+
+  private pendingScopedFinalRequest(projectId: string, final: ScopedFinalIntegrationRecord): CollaborationEvent | undefined {
+    const request = this.database.prepare(`SELECT * FROM project_events WHERE project_id = ?
+      AND event_type = 'scoped.leader.action.accepted' AND json_extract(payload_json, '$.groupRunId') = ?
+      AND json_extract(payload_json, '$.envelope.action.tool') = 'request_group_integration'
+      ORDER BY seq DESC LIMIT 1`).get(projectId, final.groupRunId) as Row | undefined;
+    if (!request) return undefined;
+    const returned = this.database.prepare(`SELECT seq FROM project_events WHERE project_id = ?
+      AND event_type = 'execution.supervision.finished' AND json_extract(payload_json, '$.executionId') = ?
+      AND json_extract(payload_json, '$.ownershipEpoch') = ? ORDER BY seq DESC LIMIT 1`)
+      .get(projectId, final.id, final.ownershipEpoch) as Row | undefined;
+    return !returned || Number(request.seq) > Number(returned.seq) ? rowToEvent(request) : undefined;
   }
 
   stoppedAgentWorktreeOwners(projectId: string): Array<{ execution: GitExecutionAuthority; binding: AgentNativeSessionBinding }> {
@@ -2675,9 +2684,7 @@ export class CollaborationStateDatabase {
         turn.status !== "opened" || !turn.openedAt) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped mechanism repair requires its exact live native owner");
       }
-      if (this.scopedManagementBlocksBusiness(input.projectId, execution.groupRunId)) {
-        throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Scoped mechanism repair cannot cross a management barrier");
-      }
+
       this.currentScopedGitOwner({ projectId: input.projectId, executionId: execution.id,
         ownershipEpoch: input.ownershipEpoch, expectedBranch: requiredString(execution.executionBranch, "executionBranch"), operation: "provider.mutate" });
       const count = this.scopedAgentMechanismRepairCount(input.projectId, execution.id);
@@ -2808,15 +2815,6 @@ export class CollaborationStateDatabase {
       if (!execution || execution.ownershipEpoch !== input.ownershipEpoch || execution.status !== "running" ||
         this.scopedAgentReport(input.projectId, input.executionId, input.ownershipEpoch)) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped native launch requires an unreported live execution");
-      }
-      if (this.scopedWorktreeClosingBlocksAgent(input.projectId, execution.agentId)) {
-        throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Original Agent closing must settle before another business native turn");
-      }
-      if (this.scopedManagementBlocksBusiness(input.projectId, execution.groupRunId)) {
-        throw new CollaborationStateError(
-          "ACTIVE_NODE_CONFLICT",
-          "Scoped native launch is blocked by an overlapping management turn"
-        );
       }
       if (Boolean(execution.executionBranch) !== Boolean(input.baseCommit))
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Native turn base must match execution delivery mode");
@@ -3258,20 +3256,14 @@ export class CollaborationStateDatabase {
       SELECT 1 FROM scoped_leader_turns
       WHERE project_id = ? AND agent_id = ? AND status = 'active' LIMIT 1
     `).get(projectId, agentId);
-    return Boolean(agentId === "main" && this.mainAssistanceOwnsMain(projectId) || execution || leadership || this.scopedFinalNativeTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped" && !this.executionSupervisionResult(projectId, turn.executionId)) ||
-      this.scopedWorktreeClosingBlocksAgent(projectId, agentId));
-  }
-
-  private scopedWorktreeClosingBlocksAgent(projectId: string, agentId: string, exceptExecutionId?: string): boolean {
-    return this.scopedGroupIssues(projectId).some(issue => issue.kind === "worktree-closing" && issue.executionId &&
-      issue.executionId !== exceptExecutionId && this.scopedExecution(projectId, issue.executionId)?.agentId === agentId);
+    return Boolean(agentId === "main" && this.mainAssistanceOwnsMain(projectId) || execution || leadership || this.scopedFinalNativeTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped"));
   }
 
   private scopedAgentHasLiveInvocation(projectId: string, agentId: string, exceptClosingInvocationId?: string): boolean {
     if (agentId === "main" && this.mainAssistanceOwnsMain(projectId)) return true;
     if (this.scopedWorktreeClosingTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped" &&
       turn.invocationId !== exceptClosingInvocationId)) return true;
-    if (this.scopedFinalNativeTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped" && !this.executionSupervisionResult(projectId, turn.executionId))) return true;
+    if (this.scopedFinalNativeTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped")) return true;
     return Boolean(this.database.prepare(`SELECT 1 FROM scoped_executions AS execution
       LEFT JOIN scoped_agent_turns AS turn ON turn.execution_id = execution.execution_id AND turn.ownership_epoch = execution.ownership_epoch
       WHERE execution.project_id = ? AND execution.agent_id = ? AND execution.status IN ('running','integrating','merged','failed','paused')
@@ -3281,10 +3273,8 @@ export class CollaborationStateDatabase {
   }
 
   /**
-   * Return the GroupRun subtree governed by one management turn.  A Leader
-   * turn is a workflow barrier for its group and every nested group. Business
-   * admission also includes its ancestors: either direction must agree about
-   * overlap, without pulling in the ancestors' other children (siblings).
+   * Return a management scope and, when requested, its ancestors.
+   * Sibling scopes remain independent.
    */
   private scopedGroupScopeIds(projectId: string, groupRunId: string, includeAncestors = false): Set<string> {
     const rows = this.database.prepare(`
@@ -3325,78 +3315,6 @@ export class CollaborationStateDatabase {
     if (leftScope.has(rightGroupRunId)) return true;
     const rightScope = this.scopedGroupScopeIds(projectId, rightGroupRunId);
     return rightScope.has(leftGroupRunId);
-  }
-
-  /** A live business execution or native turn blocks management acquisition.
-   * A recovery-only fault exception keeps stopped owners' leases/journals;
-   * it must never admit a live, reserved or unproved native process. */
-  private scopedBusinessExecutionBlocksManagement(projectId: string, groupRunId: string,
-    allowStoppedWorkerHandoff = false, allowStoppedWorkerHandoffExecutionId?: string,
-    allowStoppedRepairFaults = false): boolean {
-    if (this.scopedWorktreeClosingTurns(projectId).some(turn => turn.status !== "stopped" &&
-      this.scopedGroupScopesOverlap(projectId, groupRunId, turn.groupRunId))) return true;
-    if (this.scopedFinalNativeTurns(projectId).some((turn) => turn.status !== "stopped" &&
-      this.scopedGroupScopesOverlap(projectId, groupRunId, turn.groupRunId))) return true;
-    // The system queues management until the original Agent has delivered or
-    // stopped through its own formal lifecycle. A child Leader must not seize
-    // authority that would block an ancestor Agent's pending completion.
-    const scope = this.scopedGroupScopeIds(projectId, groupRunId, true);
-    if (!scope.size) return false;
-    const placeholders = [...scope].map(() => "?").join(",");
-    const executions = this.database.prepare(`
-      SELECT execution_id, ownership_epoch, status FROM scoped_executions
-      WHERE project_id = ? AND group_run_id IN (${placeholders})
-        AND status IN ('running','integrating')
-    `).all(projectId, ...scope) as Row[];
-    for (const execution of executions) {
-      if (allowStoppedRepairFaults && this.scopedGroupIssues(projectId).some((issue) => issue.kind === "mechanism" &&
-        issue.executionId === String(execution.execution_id) && issue.ownershipEpoch === Number(execution.ownership_epoch))) {
-        const native = this.scopedAgentTurn(projectId, String(execution.execution_id), Number(execution.ownership_epoch));
-        if (native?.status === "stopped" && native.stoppedAt &&
-          (native.openedAt || this.scopedAgentRecoveredForCurrentWriter(projectId, String(execution.execution_id),
-            Number(execution.ownership_epoch), native.invocationId)) &&
-          (native.writerLeaseEpoch === this.lease.epoch || this.scopedAgentRecoveredForCurrentWriter(projectId,
-            String(execution.execution_id), Number(execution.ownership_epoch), native.invocationId))) continue;
-      }
-      // A worker's native turn may have already stopped and explicitly
-      // recorded finish_task while its report is being accepted. That short
-      // handoff window has no live business writer; allow the scope Leader to
-      // persist a management-owned weak-route decision before Git delivery.
-      if (allowStoppedWorkerHandoff && String(execution.execution_id) === allowStoppedWorkerHandoffExecutionId &&
-        String(execution.status) === "running") {
-        const turn = this.scopedAgentTurn(projectId, String(execution.execution_id), Number(execution.ownership_epoch));
-        if (turn?.status === "stopped" && this.scopedAgentTaskCompleted(projectId,
-          String(execution.execution_id), Number(execution.ownership_epoch), turn.invocationId)) continue;
-      }
-      return true;
-    }
-    const turn = this.database.prepare(`
-      SELECT 1 FROM scoped_agent_turns AS turn
-      JOIN scoped_executions AS execution
-        ON execution.execution_id = turn.execution_id
-       AND execution.ownership_epoch = turn.ownership_epoch
-      WHERE execution.project_id = ? AND execution.group_run_id IN (${placeholders})
-        AND execution.status NOT IN ('completed','stopped') AND turn.status != 'stopped' LIMIT 1
-    `).get(projectId, ...scope);
-    return Boolean(turn);
-  }
-
-  /** Read-only scheduler view of the persisted management barrier. */
-  scopedManagementBlocksBusiness(projectId: string, groupRunId: string): boolean {
-    const active = this.database.prepare(`
-      SELECT group_run_id FROM scoped_leader_turns
-      WHERE project_id = ? AND status = 'active'
-    `).all(projectId) as Row[];
-    return active.some((row) => this.scopedGroupScopesOverlap(projectId, groupRunId, String(row.group_run_id)));
-  }
-
-  /** Management turns themselves also serialize overlapping management scopes. */
-  private scopedManagementScopeBusy(projectId: string, groupRunId: string): boolean {
-    const active = this.database.prepare(`
-      SELECT group_run_id FROM scoped_leader_turns
-      WHERE project_id = ? AND status = 'active'
-    `).all(projectId) as Row[];
-    return active.some((row) => this.scopedGroupScopesOverlap(projectId, groupRunId, String(row.group_run_id)));
   }
 
   scopedExecutionHasUnsettledGitOperation(
@@ -3536,9 +3454,7 @@ export class CollaborationStateDatabase {
             invocationId, managementSlot: Number(existing.management_slot), coordinatorEpoch: Number(existing.coordinator_epoch) }
         };
       }
-      // A management turn is a scope-wide barrier.  Do not enter it while a
-      // Worker/native/Git delivery in this group, an ancestor or a nested group can still
-      // mutate the graph, and do not overlap another management scope.
+      // Configuration publication still serializes its actual graph mutation.
       if (this.scopedGroupActivationPreparations(projectId).some(record => record.status === "preparing" && record.input.parentGroupRunId &&
         this.scopedGroupScopesOverlap(projectId, groupRunId, record.input.parentGroupRunId))) return { changed: false, value: undefined };
       const adjustment = this.workflowAdjustmentAdmission(projectId, { agentId, groupId: String(group.group_id), groupRunId });
@@ -3550,11 +3466,6 @@ export class CollaborationStateDatabase {
             execution.groupRunId === groupRunId && execution.status !== "completed");
         const recoveringOriginal = input.allowStoppedRepairFaults === true && this.scopedRecoveryCandidates(projectId, groupRunId, input.globalMain).length > 0;
         if (!continuingManager && !continuingWorker && !recoveringOriginal) this.assertWorkflowAdjustmentAdmission(projectId, { agentId, groupId: String(group.group_id) });
-      }
-      if (this.scopedBusinessExecutionBlocksManagement(projectId, groupRunId, input.allowStoppedWorkerHandoff === true,
-        input.allowStoppedWorkerHandoffExecutionId, input.allowStoppedRepairFaults === true) ||
-        this.scopedManagementScopeBusy(projectId, groupRunId)) {
-        return { changed: false, value: undefined };
       }
       if (this.scopedAgentHasLiveInvocation(projectId, agentId)) {
         return { changed: false, value: undefined };
@@ -3620,19 +3531,32 @@ export class CollaborationStateDatabase {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(invocationId)) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped Leader invocation requires a safe identity");
     }
-    if (typeof input.residentStopConfirmed !== "boolean") {
-      throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped Leader release requires the actual native cleanup result");
+    if (input.residentStopConfirmed !== true) {
+      throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped Leader release requires confirmed resident stop");
     }
     const result = this.mutateProject(projectId, input.expectedRevision, (head) => {
       const turn = this.database.prepare(`
         SELECT * FROM scoped_leader_turns WHERE project_id = ? AND invocation_id = ?
       `).get(projectId, invocationId) as Row | undefined;
       if (!turn) throw new CollaborationStateError("RECORD_NOT_FOUND", "Scoped Leader turn does not exist");
-      if (turn.group_run_id !== groupRunId || turn.agent_id !== agentId) {
+      if (turn.group_run_id !== groupRunId || turn.agent_id !== agentId ||
+        (input.coordinatorEpoch !== undefined && Number(turn.coordinator_epoch) !== input.coordinatorEpoch)) {
         throw new CollaborationStateError("IDEMPOTENCY_CONFLICT", "Scoped Leader release identity changed");
       }
       if (turn.status === "released") {
-        return { changed: false, value: { released: false, replay: true } };
+        if (this.scopedLeaderReleaseProvesStop(projectId, invocationId))
+          return { changed: false, value: { released: false, replay: true } };
+        const release = this.eventByRequestId(projectId, `scoped-leader-release:${invocationId}`);
+        if (release?.type !== "scoped.leader.released" || release.invocationId !== invocationId || release.agentId !== agentId ||
+          release.payload.groupRunId !== groupRunId || release.payload.originalWriterLeaseEpoch !== turn.writer_lease_epoch)
+          throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", "Scoped Leader lost its original release receipt");
+        if (!input.evidence || !Object.keys(input.evidence).length || input.runtimePath !== turn.runtime_path || !turn.runtime_path ||
+          input.coordinatorEpoch !== Number(turn.coordinator_epoch))
+          throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Reconciling an unconfirmed release requires the original scoped Leader Stop observation");
+        this.insertEvent(head, { projectId, eventId: `evt_${randomUUID()}`, requestId: `scoped-leader-stop:${invocationId}`,
+          workflowRevision: head.workflow_revision, agentId, invocationId, coordinatorEpoch: input.coordinatorEpoch, ts: this.isoNow(),
+          type: "scoped.leader.stop_reconciled", payload: { groupRunId, releaseEventId: release.eventId, evidence: input.evidence } });
+        return { changed: true, value: { released: false, replay: false } };
       }
       const deleted = this.database.prepare(`
         DELETE FROM lane_leases
@@ -3660,9 +3584,24 @@ export class CollaborationStateDatabase {
     return { revision: result.revision, ...result.value };
   }
 
-  scopedLeaderTurns(projectId: string): ScopedLeaderTurnRecord[] {
+  private scopedLeaderReleaseProvesStop(projectId: string, invocationId: string): boolean {
+    const receipt = this.eventByRequestId(projectId, `scoped-leader-release:${invocationId}`);
+    // Released rows from earlier writers may explicitly record failed cleanup.
+    if (receipt?.type !== "scoped.leader.released" || receipt.invocationId !== invocationId) return false;
+    if (receipt.payload.nativeStopConfirmed === true) return true;
+    const proof = this.eventByRequestId(projectId, `scoped-leader-stop:${invocationId}`);
+    return proof?.type === "scoped.leader.stop_reconciled" && proof.invocationId === invocationId && proof.payload.releaseEventId === receipt.eventId;
+  }
+
+  scopedLeaderTurns(projectId: string, pendingStopOnly = false): ScopedLeaderTurnRecord[] {
     this.assertOpen();
-    return (this.database.prepare("SELECT * FROM scoped_leader_turns WHERE project_id = ? ORDER BY created_at, invocation_id")
+    const pending = `AND (turn.status = 'active' OR NOT EXISTS (
+      SELECT 1 FROM project_events r WHERE r.project_id = turn.project_id AND r.request_id = 'scoped-leader-release:' || turn.invocation_id
+        AND r.event_type = 'scoped.leader.released' AND r.invocation_id = turn.invocation_id
+        AND (json_type(r.payload_json, '$.nativeStopConfirmed') = 'true' OR EXISTS (
+          SELECT 1 FROM project_events p WHERE p.project_id = r.project_id AND p.request_id = 'scoped-leader-stop:' || turn.invocation_id
+            AND p.event_type = 'scoped.leader.stop_reconciled' AND p.invocation_id = turn.invocation_id AND json_extract(p.payload_json, '$.releaseEventId') = r.event_id))))`;
+    return (this.database.prepare(`SELECT turn.* FROM scoped_leader_turns turn WHERE project_id = ? ${pendingStopOnly ? pending : ""} ORDER BY created_at, invocation_id`)
       .all(projectId) as Row[]).map((row) => ({ projectId, groupRunId: String(row.group_run_id), agentId: String(row.agent_id),
         invocationId: String(row.invocation_id), coordinatorEpoch: Number(row.coordinator_epoch),
         writerLeaseEpoch: Number(row.writer_lease_epoch), status: row.status as "active" | "released",
@@ -3760,7 +3699,6 @@ export class CollaborationStateDatabase {
         AND invocation_id = ? AND coordinator_epoch = ? LIMIT 1`)
       .get(projectId, groupRunId, agentId, invocationId, coordinatorEpoch));
   }
-
 
   /** Missing mechanism facts only. A different native turn, service writer
    * or management epoch must not reset the original task's repair budget. */
@@ -4197,8 +4135,8 @@ export class CollaborationStateDatabase {
         payloadHash(report) !== grant.candidate.reportHash || turn.reportHeadSha !== report.headSha ||
         turn.status !== "stopped" || !turn.openedAt || !turn.stoppedAt ||
         !this.eventByRequestId(input.projectId, `scoped-worktree-closing:${turn.invocationId}:stopped`) ||
-        !this.scopedWorktreeClosingHierarchyActive(input.projectId, owner.groupRunId, head) || this.projectCancellationIntent(input.projectId) ||
-        this.scopedManagementBlocksBusiness(input.projectId, owner.groupRunId) || this.scopedAgentHasLiveInvocation(input.projectId, turn.agentId) ||
+        !this.scopedWorktreeClosingHierarchyActive(input.projectId, owner.groupRunId, head) || this.projectCancellationIntent(input.projectId)
+        || this.scopedAgentHasLiveInvocation(input.projectId, turn.agentId) ||
         binding.invocationId !== turn.invocationId || binding.runtimePath !== turn.runtimePath || binding.worktreePath !== turn.worktreePath ||
         binding.executionContext.role !== "delivery" || binding.executionContext.executionId !== turn.executionId ||
         binding.executionContext.ownershipEpoch !== turn.ownershipEpoch || binding.executionContext.groupRunId !== turn.groupRunId ||
@@ -4429,9 +4367,9 @@ export class CollaborationStateDatabase {
         this.terminalPushCoordinatorTurns(input.projectId).some(turn => turn.invocationId === input.invocationId)) {
         throw new CollaborationStateError("IDEMPOTENCY_CONFLICT", "Closing invocation already belongs to another native turn");
       }
-      if (manager.status !== "released" || this.scopedAgentHasLiveInvocation(input.projectId, owner.agentId) ||
-        this.scopedManagementBlocksBusiness(input.projectId, owner.groupRunId) ||
-        this.openRuntimeActivities(input.projectId, false).some(activity => activity.agentId === owner.agentId)) return { changed: false, value: undefined };
+      if (manager.status !== "released" || this.scopedAgentHasLiveInvocation(input.projectId, owner.agentId)
+        ||
+            this.openRuntimeActivities(input.projectId, false).some(activity => activity.agentId === owner.agentId)) return { changed: false, value: undefined };
       const slot = this.firstAvailableLaneSlot(input.projectId, "worker");
       if (slot === undefined) return { changed: false, value: undefined };
       const turn: ScopedWorktreeClosingTurn = { projectId: input.projectId, executionId: owner.id,
@@ -4472,9 +4410,8 @@ export class CollaborationStateDatabase {
       binding.executionContext.role !== "delivery" || binding.executionContext.executionId !== turn.executionId ||
       binding.executionContext.ownershipEpoch !== turn.ownershipEpoch ||
       !(binding.invocationId === turn.previousInvocationId && binding.runtimePath === turn.previousRuntimePath ||
-        binding.invocationId === turn.invocationId && binding.runtimePath === turn.runtimePath) ||
-      this.scopedAgentHasLiveInvocation(input.projectId, input.agentId, turn.invocationId) ||
-      this.scopedManagementBlocksBusiness(input.projectId, turn.groupRunId)) {
+          binding.invocationId === turn.invocationId && binding.runtimePath === turn.runtimePath) ||
+      this.scopedAgentHasLiveInvocation(input.projectId, input.agentId, turn.invocationId)) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Closing native authority is stale, stopped or overlaps another owner");
     }
     return turn;
@@ -4806,10 +4743,11 @@ export class CollaborationStateDatabase {
     const workflow = this.scopedGroupWorkflow(input.projectId, input.groupRunId);
     const action = envelope.action;
     if (this.scopedGroupRun(input.projectId, input.groupRunId)?.status === "completed" && action.tool !== "finish_task" &&
+      action.tool !== "apply_workflow" &&
       !(action.tool === "coordinate_group_task" && ["close_worktree", "escalate"].includes(action.operation) &&
         this.scopedRecoveryCandidates(input.projectId, input.groupRunId).some(candidate =>
           candidate.kind === "worktree-closing" && candidate.arrivalRequestId === action.arrivalRequestId))) {
-      throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Completed group management permits only original-owner closing coordination and its own finish_task");
+      throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Completed group management permits only original-owner closing coordination, its own finish_task and authorized Main workflow proposals");
     }
     if (action.tool === "finish_task") {
       if (input.proposal || input.configuration) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "finish_task cannot apply a workflow proposal");
@@ -4850,7 +4788,7 @@ export class CollaborationStateDatabase {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped plan may instruct direct graph references only; it cannot invent tasks or dependencies");
       }
     } else if (action.tool === "coordinate_group_task") {
-      const candidate = this.scopedRecoveryCandidates(input.projectId, input.groupRunId, input.globalMain).find((item) => item.arrivalRequestId === action.arrivalRequestId);
+      const candidate = this.scopedRecoveryCandidates(input.projectId, input.groupRunId, input.globalMain, input.invocationId).find((item) => item.arrivalRequestId === action.arrivalRequestId);
       if (action.groupRunId !== input.groupRunId || action.coordinatorEpoch !== input.coordinatorEpoch || !candidate ||
         !(input.globalMain ? ["retry", "skip"] : ["retry", "escalate", "close_worktree"]).includes(action.operation)) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Leader may coordinate direct failures only; skipping remains Main-only");
@@ -4881,18 +4819,14 @@ export class CollaborationStateDatabase {
       if (action.path !== "workflow.json" || !input.proposal) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Formal scoped reconfiguration requires its validated proposal");
       const current = this.workflowSnapshot(input.projectId, this.head(input.projectId).workflow_revision) as AgentOrchestrationTemplate;
       if (input.baseWorkflowHash !== workflowBaseHash(current)) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Formal scoped proposal base hash is stale");
-      const group = this.scopedGroupRun(input.projectId, input.groupRunId)!;
-      if (input.globalMain) {
-        if (!current.allowMainReconfiguration || input.proposal.allowMainReconfiguration !== current.allowMainReconfiguration ||
-          (input.proposal.allowUserIntervention !== false) !== (current.allowUserIntervention !== false))
-          throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Global Main workflow editing is disabled or changes its authority");
-        this.assertHistoricalWorkflowNodeKinds(input.projectId, input.proposal);
-      } else assertScopedWorkflowProposalRange(current, input.proposal, group.groupId);
+      if (input.agentId !== "main" || !current.allowMainReconfiguration ||
+        input.proposal.allowMainReconfiguration !== current.allowMainReconfiguration ||
+        (input.proposal.allowUserIntervention !== false) !== (current.allowUserIntervention !== false))
+        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Only authorized Main may adjust the global workflow without changing its authority");
+      this.assertHistoricalWorkflowNodeKinds(input.projectId, input.proposal);
       this.assertScopedWorkflowLocks(input.projectId, current, input.proposal);
-      if (input.configuration) {
+      if (input.configuration)
         this.assertScopedConfigurationPrestate(input.projectId, input.configuration, input.baseConfigurationHash, input.agentId);
-        if (!input.globalMain) assertScopedAgentConfigurationRange(current, group.groupId, this.scopedConfiguration(input.projectId)!, input.configuration);
-      }
     } else if (action.tool === "request_user" && input.globalMain && action.message.trim() && action.rationale.trim()) {
       const current = this.workflowSnapshot(input.projectId, this.head(input.projectId).workflow_revision) as AgentOrchestrationTemplate;
       if (current.allowUserIntervention === false) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "User intervention is disabled by this Workflow");
@@ -4904,9 +4838,9 @@ export class CollaborationStateDatabase {
         WHERE group_run_id IN (${scope.map(() => "?").join(",")}) AND agent_id = ? LIMIT 1`)
         .get(...scope, action.integrationOwnerAgentId) : undefined;
       if (!group.groupBranch || input.globalMain || action.groupRunId !== input.groupRunId || action.coordinatorEpoch !== input.coordinatorEpoch ||
-        action.integrationOwnerAgentId === group.leaderAgentId || !member ||
+        (!member && action.integrationOwnerAgentId !== group.leaderAgentId) ||
         !this.scopedGroupReadyForFinalIntegration(input.projectId, input.groupRunId)) {
-        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Group integration requires a live Finish barrier and an eligible non-leader Agent");
+        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Group integration requires its current Leader decision and an Agent in the group");
       }
     } else if (action.tool === "complete_group") {
       if (input.globalMain || action.groupRunId !== input.groupRunId || action.coordinatorEpoch !== input.coordinatorEpoch ||
@@ -4978,9 +4912,8 @@ export class CollaborationStateDatabase {
     const identity = { acceptedRequestId: requestId, acceptedEventId: staged.eventId, invocationId: input.invocationId,
       callId: input.envelope.callId, nodeRunId: String(rootNode.node_run_id), ...(binding ? { session: structuredClone(binding.session) } : {}) };
     this.appendWorkflowAdjustmentSubmission(head, { projectId: input.projectId, requestId,
-      source: input.globalMain ? { kind: "main", ...identity, routeEpoch: input.coordinatorEpoch,
-        scope: { kind: "scoped", groupRunId: input.groupRunId, coordinatorEpoch: input.coordinatorEpoch } }
-        : { kind: "scoped_leader", ...identity, agentId: input.agentId, groupRunId: input.groupRunId, coordinatorEpoch: input.coordinatorEpoch },
+      source: { kind: "main", ...identity, routeEpoch: input.coordinatorEpoch,
+        scope: { kind: "scoped", groupRunId: input.groupRunId, coordinatorEpoch: input.coordinatorEpoch } },
       submittedAt: timestamp, base: current.version, baseSnapshot: current.snapshot, proposal: snapshot,
       explanation: input.envelope.action.rationale, changes: workflowAdjustmentChanges(current.snapshot, snapshot) }, payloadHash(durable));
     return { changed: true, value: undefined };
@@ -5737,6 +5670,21 @@ export class CollaborationStateDatabase {
     });
   }
 
+  updateScopedRuntimeConfiguration(projectId: string, previous: ScopedAgentConfiguration, next: ScopedAgentConfiguration): void {
+    const safe = credentialFreeAgentConfiguration(next);
+    this.mutateProject(projectId, undefined, head => {
+      const current = this.scopedConfiguration(projectId);
+      if (!current) return { changed: false, value: undefined };
+      if (!isDeepStrictEqual(current, credentialFreeAgentConfiguration(previous)))
+        throw new CollaborationStateError("WORKFLOW_ADJUSTMENT_CONFLICT", "Agent configuration changed; refresh before applying this update");
+      if (isDeepStrictEqual(current, safe)) return { changed: false, value: undefined };
+      if (!isDeepStrictEqual(Object.keys(current.agents).sort(), Object.keys(safe.agents).sort()))
+        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Runtime configuration cannot add or remove Agent identities");
+      this.recordScopedConfiguration(head, safe, head.workflow_revision, `runtime-configuration:${randomUUID()}`);
+      return { changed: true, value: undefined };
+    });
+  }
+
   scopedConfiguration(projectId: string): ScopedAgentConfiguration | undefined {
     const row = this.database.prepare("SELECT * FROM project_events WHERE project_id = ? AND event_type = 'scoped.configuration.applied' ORDER BY seq DESC LIMIT 1").get(projectId) as Row | undefined;
     return row ? rowToEvent(row).payload.configuration as ScopedAgentConfiguration : undefined;
@@ -5940,7 +5888,7 @@ export class CollaborationStateDatabase {
     const after = record.proposal.orchestration.scopedWorkflow?.groups.find(group => group.id === run.groupId);
     const impact = workflowAdjustmentRuntimeImpact(record);
     const ownership = (group: typeof before) => group && { parentGroupId: group.parentGroupId, leaderAgentId: group.leaderAgentId,
-      decisionBy: group.decisionBy ?? "main", allowLeaderReconfiguration: group.allowLeaderReconfiguration };
+      decisionBy: group.decisionBy ?? "main" };
     const projection = this.projectState(projectId);
     const enclosing = run.parentArrivalRequestId ? projection.scopedArrivals?.find(arrival => arrival.requestId === run.parentArrivalRequestId)
       : projection.nodeRuns.find(node => node.activationRequestId === run.activationRequestId);
@@ -6194,9 +6142,17 @@ export class CollaborationStateDatabase {
     if (turn.status === "active") {
       if (!nativeStopped) return wait("等待本提案原管理调用的原生停止确认");
       this.currentScopedLeader(input);
-    } else if (turn.status !== "released" || !this.eventByRequestId(projectId, `scoped-leader-release:${input.invocationId}`))
+    } else if (turn.status !== "released" || !this.scopedLeaderReleaseProvesStop(projectId, input.invocationId))
       return wait("等待本提案原管理调用的持久停止事实");
-    if (!this.scopedGroupHierarchyActive(projectId, input.groupRunId, head)) return wait("原提案作用域尚未处于可继续的逻辑状态");
+    if (input.agentId !== "main") {
+      this.appendWorkflowAdjustmentTransition(head, { requestId, status: "failed", at: this.isoNow(),
+        reason: "Only authorized Main may adjust the global workflow; the original Leader proposal remains in history" },
+        `workflow-adjustment-unauthorized:${payloadHash(requestId)}`);
+      return { changed: true, value: this.workflowAdjustmentPublication(projectId, requestId, false) };
+    }
+    if (!this.scopedGroupHierarchyActive(projectId, input.groupRunId, head) &&
+      !this.scopedWorktreeClosingHierarchyActive(projectId, input.groupRunId, head))
+      return wait("原提案作用域尚未处于可继续的逻辑状态");
     const scope = this.scopedGroupScopeIds(projectId, input.groupRunId, true);
     if (this.scopedLeaderTurns(projectId).some(other => other.status === "active" && other.invocationId !== input.invocationId && scope.has(other.groupRunId)))
       return wait("等待受影响作用域的其他管理调用收尾");
@@ -6207,20 +6163,17 @@ export class CollaborationStateDatabase {
     if (user) return wait(`等待同一基础版本的用户修改优先处理：${user.requestId}`);
     const current = this.workflowSnapshot(projectId, head.workflow_revision) as AgentOrchestrationTemplate;
     if (input.baseWorkflowHash !== workflowBaseHash(current)) throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", "Pending scoped proposal does not match its original base");
-    const group = this.scopedGroupRun(projectId, input.groupRunId)!;
-    if (input.globalMain) {
-      if (!current.allowMainReconfiguration || input.proposal!.allowMainReconfiguration !== current.allowMainReconfiguration ||
-        (input.proposal!.allowUserIntervention !== false) !== (current.allowUserIntervention !== false))
-        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Global Main workflow editing is disabled or changes its authority");
-      this.assertHistoricalWorkflowNodeKinds(projectId, input.proposal!);
-    } else assertScopedWorkflowProposalRange(current, input.proposal!, group.groupId);
+    if (input.agentId !== "main" || !current.allowMainReconfiguration ||
+      input.proposal!.allowMainReconfiguration !== current.allowMainReconfiguration ||
+      (input.proposal!.allowUserIntervention !== false) !== (current.allowUserIntervention !== false))
+      throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Only authorized Main may adjust the global workflow without changing its authority");
+    this.assertHistoricalWorkflowNodeKinds(projectId, input.proposal!);
     const waitingReason = this.workflowAdjustmentWaitingReason(projectId, record, input.invocationId, undefined, sessions);
     if (waitingReason) return wait(waitingReason);
     try {
       this.assertScopedWorkflowLocks(projectId, current, input.proposal!, true);
       if (input.configuration) {
         this.assertScopedConfigurationPrestate(projectId, input.configuration, input.baseConfigurationHash, input.agentId);
-        if (!input.globalMain) assertScopedAgentConfigurationRange(current, group.groupId, this.scopedConfiguration(projectId)!, input.configuration);
       }
     } catch (error) {
       if (error instanceof CollaborationStateError && error.code === "INVALID_STATE_TRANSITION") return wait(error.message);
@@ -6290,11 +6243,8 @@ export class CollaborationStateDatabase {
       this.validateScopedLeaderAction(input);
       if (input.envelope.action.tool === "finish_task") throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Own task completion is separate from a scoped control decision");
       const action = input.envelope.action;
-      if (action.tool === "route_to_agent" && input.sourceArrivalRequestId && this.scopedArrivalRouteDecision(input.projectId, input.sourceArrivalRequestId)) {
-        throw new CollaborationStateError("IDEMPOTENCY_CONFLICT", "Scoped arrival already has an immutable formal route decision");
-      }
       const group = this.scopedGroupRun(input.projectId, input.groupRunId)!;
-      const candidate = action.tool === "coordinate_group_task" ? this.scopedRecoveryCandidates(input.projectId, input.groupRunId, input.globalMain).find((item) => item.arrivalRequestId === action.arrivalRequestId) : undefined;
+      const candidate = action.tool === "coordinate_group_task" ? this.scopedRecoveryCandidates(input.projectId, input.groupRunId, input.globalMain, input.invocationId).find((item) => item.arrivalRequestId === action.arrivalRequestId) : undefined;
       const execution = candidate?.executionId ? this.scopedExecution(input.projectId, candidate.executionId) : undefined;
       const closingAuthorization = action.tool === "coordinate_group_task" && action.operation === "close_worktree" && candidate
         ? this.scopedClosingAuthorization(input, candidate) : undefined;
@@ -6312,7 +6262,8 @@ export class CollaborationStateDatabase {
           ...(candidate?.incidentId ? { incidentId: candidate.incidentId } : {}) } });
       if (!group.groupBranch && action.tool === "complete_group") {
         if (!input.residentStopConfirmed) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workspace group completion needs the current Leader's native stop");
-        this.applyScopedLeaderCompletion(head, { ...input, output: action.output });
+        if (!this.scopedLeaderTaskCompleted(input.projectId, group.id, input.agentId, input.invocationId, input.coordinatorEpoch))
+          throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workspace group completion requires its Leader task receipt");
       }
       return { changed: true, value: { replay: false } };
     });
@@ -6358,7 +6309,7 @@ export class CollaborationStateDatabase {
   }
 
   scopedArrivalRouteDecision(projectId: string, arrivalRequestId: string): { targetNodeId: string; invocationId: string } | undefined {
-    const row = this.database.prepare("SELECT * FROM project_events WHERE project_id = ? AND event_type = 'scoped.leader.action.accepted' AND json_extract(payload_json, '$.sourceArrivalRequestId') = ? AND json_extract(payload_json, '$.envelope.action.tool') = 'route_to_agent' ORDER BY seq LIMIT 1")
+    const row = this.database.prepare("SELECT * FROM project_events WHERE project_id = ? AND event_type = 'scoped.leader.action.accepted' AND json_extract(payload_json, '$.sourceArrivalRequestId') = ? AND json_extract(payload_json, '$.envelope.action.tool') = 'route_to_agent' ORDER BY seq DESC LIMIT 1")
       .get(projectId, arrivalRequestId) as Row | undefined;
     if (!row) return undefined;
     const envelope = rowToEvent(row).payload.envelope as ControlActionEnvelope;
@@ -6366,7 +6317,7 @@ export class CollaborationStateDatabase {
   }
 
   scopedRootRouteDecision(projectId: string, sourceOuterNodeRunId: string): { targetNodeId: string; invocationId: string; decisionRequestId: string } | undefined {
-    const row = this.database.prepare("SELECT payload_json FROM project_events WHERE project_id = ? AND event_type = 'scoped.leader.action.accepted' AND json_extract(payload_json, '$.sourceOuterNodeRunId') = ? AND json_extract(payload_json, '$.envelope.action.tool') = 'route_to_agent' ORDER BY seq LIMIT 1")
+    const row = this.database.prepare("SELECT payload_json FROM project_events WHERE project_id = ? AND event_type = 'scoped.leader.action.accepted' AND json_extract(payload_json, '$.sourceOuterNodeRunId') = ? AND json_extract(payload_json, '$.envelope.action.tool') = 'route_to_agent' ORDER BY seq DESC LIMIT 1")
       .get(projectId, sourceOuterNodeRunId) as Row | undefined;
     if (!row) return undefined;
     const payload = rowToEvent(row).payload;
@@ -6418,7 +6369,7 @@ export class CollaborationStateDatabase {
 
   /** One failed leaf is delegated through direct child nodes, never exposed
    * as an arbitrary outside Agent. Root Leader and global Main are distinct. */
-  scopedRecoveryCandidates(projectId: string, managerGroupRunId: string, globalMain = false): ScopedRecoveryCandidate[] {
+  scopedRecoveryCandidates(projectId: string, managerGroupRunId: string, globalMain = false, pendingInvocationId?: string): ScopedRecoveryCandidate[] {
     const failures = (this.database.prepare("SELECT * FROM scoped_executions WHERE project_id = ? AND status = 'failed' ORDER BY created_at, execution_id").all(projectId) as Row[])
       .map((row) => { const entry = rowToScopedExecution(row); return { groupRunId: entry.groupRunId, arrivalRequestId: entry.arrivalRequestId, ownershipEpoch: entry.ownershipEpoch,
         executionId: entry.id, incidentId: undefined as string | undefined, kind: undefined as ScopedGroupIssue["kind"] | undefined, reason: undefined as string | undefined }; });
@@ -6456,8 +6407,19 @@ export class CollaborationStateDatabase {
       let manager: string | undefined = failure.groupRunId;
       let pendingOperation: "retry" | "skip" | "close_worktree" | undefined;
       let mainStateRequest: ScopedRecoveryCandidate["mainStateRequest"];
-      for (const decision of decisions) {
+      for (const [index, decision] of decisions.entries()) {
         const payload = decision.payload;
+        const envelope = payload.envelope as ControlActionEnvelope | undefined;
+        if (decision.type === "scoped.leader.action.accepted" && envelope?.action.tool === "coordinate_group_task") {
+          // These requests take effect after their owner returns. Validate
+          // further calls against the same source, then use its latest choice.
+          if (envelope.invocationId === pendingInvocationId || decisions.slice(index + 1).some(later => {
+            const next = later.payload.envelope as ControlActionEnvelope | undefined;
+            return later.type === "scoped.leader.action.accepted" && next?.invocationId === envelope.invocationId &&
+              next.action.tool === "coordinate_group_task" && envelope.action.tool === "coordinate_group_task" &&
+              next.action.arrivalRequestId === envelope.action.arrivalRequestId;
+          })) continue;
+        }
         const authorization = payload.closingGrant as unknown as ScopedWorktreeClosingAuthorization | undefined;
         const failedEpoch = decision.type === "scoped.agent.failed" ? payload.ownershipEpoch : payload.failedOwnershipEpoch ?? authorization?.candidate.ownershipEpoch;
         if (decision.type === "project.state.main.requested" && !failure.incidentId) continue;
@@ -6576,10 +6538,14 @@ export class CollaborationStateDatabase {
    * exhausted automatic recovery. */
   scopedManagementSupervisionEnded(projectId: string, groupRunId: string, purpose: string, globalMain = false): boolean {
     const agentId = globalMain ? "main" : this.scopedGroupRun(projectId, groupRunId)?.leaderAgentId;
-    const row = this.database.prepare(`SELECT payload_json FROM project_events WHERE project_id=? AND agent_id=?
+    const row = this.database.prepare(`SELECT seq, payload_json FROM project_events WHERE project_id=? AND agent_id=?
       AND event_type='scoped.management.round.completed' AND json_extract(payload_json,'$.groupRunId')=?
       AND json_extract(payload_json,'$.purpose')=? AND coalesce(json_extract(payload_json,'$.globalMain'),0)=?
       ORDER BY seq DESC LIMIT 1`).get(projectId, agentId ?? "", groupRunId, purpose, globalMain ? 1 : 0) as Row | undefined;
+    if (row && purpose === "complete" && this.database.prepare(`SELECT 1 FROM project_events WHERE project_id = ? AND seq > ?
+      AND json_extract(payload_json, '$.groupRunId') = ?
+      AND event_type IN ('scoped.final.native.stopped','scoped.management.recovery.resumed') LIMIT 1`)
+      .get(projectId, Number(row.seq), groupRunId)) return false;
     const repairScopeKey = createHash("sha256").update(JSON.stringify([groupRunId, agentId, purpose, null, globalMain])).digest("hex");
     return Boolean(row && parseJson<Record<string, unknown>>(row.payload_json, {}).decisionRecorded === false) ||
       Boolean(agentId && this.scopedManagementRepairCount(projectId, repairScopeKey, { groupRunId, agentId, purpose }) >= MAX_TASK_REPAIR_WAKEUPS);
@@ -7058,9 +7024,9 @@ export class CollaborationStateDatabase {
           return { changed: false, value: false };
         }
       }
-      if (this.scopedManagementBlocksBusiness(projectId, execution.groupRunId) || this.scopedAgentHasLiveInvocation(projectId, execution.agentId) ||
+      if (this.scopedAgentHasLiveInvocation(projectId, execution.agentId) ||
         this.database.prepare(`SELECT 1 FROM scoped_executions WHERE project_id = ? AND agent_id = ? AND execution_id != ?
-          AND status IN ('running','integrating','merged','paused') LIMIT 1`).get(projectId, execution.agentId, execution.id)) return { changed: false, value: false };
+              AND status IN ('running','integrating','merged','paused') LIMIT 1`).get(projectId, execution.agentId, execution.id)) return { changed: false, value: false };
       const slot = this.firstAvailableLaneSlot(projectId, "worker");
       if (slot === undefined || this.scopedLeaderTurns(projectId).some((turn) => turn.agentId === execution.agentId && turn.status === "active")) return { changed: false, value: false };
       const timestamp = this.isoNow();
@@ -7153,9 +7119,7 @@ export class CollaborationStateDatabase {
       const decision = this.scopedArrivalRouteDecision(projectId, arrivalRequestId);
       if (!group || arrival?.status !== "skipped" || !decision || !this.eventByRequestId(projectId, `scoped-skip:${arrivalRequestId}`) || !this.scopedGroupHierarchyActive(projectId, groupRunId, head))
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Skipped continuation requires Main approval and this group's formal explicit Leader plan");
-      if (this.scopedManagementBlocksBusiness(projectId, groupRunId)) {
-        throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Skipped continuation is blocked by an overlapping management turn");
-      }
+
       const workflow = this.scopedGroupWorkflow(projectId, groupRunId);
       const route = planScopedSuccessor({ ...workflow, routes: { ...workflow.routes, [arrival.targetNodeId]: [{ kind: "weak", target: decision.targetNodeId }] } },
         groupRunId, group.workflowRevision, arrival.targetNodeId, arrivalRequestId, decision.targetNodeId);
@@ -7231,8 +7195,6 @@ export class CollaborationStateDatabase {
       SELECT status FROM scoped_group_runs WHERE project_id = ? AND group_run_id = ?
     `).get(projectId, groupRunId) as Row | undefined;
     if (!group || !["running", "integrating"].includes(String(group.status))) return false;
-    const subtree = this.scopedGroupScopeIds(projectId, groupRunId);
-    if (this.scopedGroupIssues(projectId).some(issue => issue.kind === "worktree-closing" && subtree.has(issue.groupRunId))) return false;
     const unfinished = this.database.prepare(`
       SELECT 1 FROM scoped_arrivals AS arrival WHERE group_run_id = ? AND status != 'completed'
         AND NOT (status = 'skipped' AND EXISTS (SELECT 1 FROM project_events AS event
@@ -7251,8 +7213,7 @@ export class CollaborationStateDatabase {
     this.assertNotFrozen(head);
     const group = this.scopedGroupRun(projectId, groupRunId);
     if (!group || group.status !== "running" || !this.scopedGroupHierarchyActive(projectId, groupRunId, head) ||
-      !this.scopedGroupReadyForFinalIntegration(projectId, groupRunId) || this.scopedGroupIssues(projectId).some((issue) => issue.groupRunId === groupRunId) ||
-      this.scopedManagementBlocksBusiness(projectId, groupRunId)) {
+      !this.scopedGroupReadyForFinalIntegration(projectId, groupRunId) || this.scopedGroupIssues(projectId).some((issue) => issue.groupRunId === groupRunId)) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "A completion record requires the live Finish barrier and stopped management");
     }
     const arrivals = this.scopedArrivals(groupRunId).map((arrival) => ({ requestId: arrival.requestId, nodeId: arrival.targetNodeId,
@@ -7283,13 +7244,31 @@ export class CollaborationStateDatabase {
         SELECT * FROM scoped_final_integrations WHERE project_id = ? AND group_run_id = ?
       `).get(projectId, groupRunId) as Row | undefined;
       if (prior) {
+        const final = rowToScopedFinalIntegration(prior);
+        const requested = this.pendingScopedFinalRequest(projectId, final);
+        if (group.status === "integrating" && requested &&
+          this.executionSupervisionResult(projectId, final.id, final.ownershipEpoch)) {
+          this.assertNotFrozen(head);
+          if (final.expectedHeadSha !== expectedHeadSha || final.executionBranch !== group.group_branch ||
+            final.integrationTarget !== group.integration_target)
+            throw new CollaborationStateError("IDEMPOTENCY_CONFLICT", "New final delivery request must retain its canonical group head and target");
+          if (this.scopedFinalNativeTurns(projectId).some(turn => turn.executionId === final.id && turn.status !== "stopped"))
+            throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "The previous final delivery Agent is still running", { reason: "native-occupancy" });
+          const epoch = final.ownershipEpoch + 1;
+          this.database.prepare(`UPDATE scoped_final_integrations SET ownership_epoch = ?, writer_lease_epoch = ?, updated_at = ?
+            WHERE execution_id = ?`).run(epoch, this.lease.epoch, this.isoNow(), final.id);
+          this.insertEvent(head, { projectId, eventId: `evt_${randomUUID()}`, ts: this.isoNow(),
+            requestId: `scoped-final-request:${requested.eventId}`, type: "scoped.group.final_integration_requested",
+            payload: { groupRunId, executionId: final.id, ownershipEpoch: epoch, previousOwnershipEpoch: final.ownershipEpoch,
+              leaderRequestEventId: requested.eventId, leaderInvocationId: requested.invocationId } });
+          return { changed: true, value: { replay: false, integration: this.scopedFinalIntegration(projectId, groupRunId)! } };
+        }
         const repair = this.database.prepare(`SELECT * FROM project_events WHERE project_id = ? AND event_type = 'scoped.final.repair_started'
           AND json_extract(payload_json, '$.groupRunId') = ? AND json_extract(payload_json, '$.finalOwnershipEpoch') = ? ORDER BY seq DESC LIMIT 1`)
           .get(projectId, groupRunId, Number(prior.ownership_epoch)) as Row | undefined;
         if (group.status === "running" && repair && this.scopedGroupReadyForFinalIntegration(projectId, groupRunId)) {
           this.assertNotFrozen(head);
-          if (!this.scopedGroupHierarchyActive(projectId, groupRunId, head) ||
-            this.scopedManagementBlocksBusiness(projectId, groupRunId))
+          if (!this.scopedGroupHierarchyActive(projectId, groupRunId, head))
             throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Final repair takeover lost live hierarchy or confirmed Leader release");
           const epoch = Number(prior.ownership_epoch) + 1;
           this.database.prepare(`UPDATE scoped_final_integrations SET ownership_epoch = ?, writer_lease_epoch = ?, expected_head_sha = ?, updated_at = ? WHERE execution_id = ?`)
@@ -7315,15 +7294,6 @@ export class CollaborationStateDatabase {
       if (!this.scopedGroupReadyForFinalIntegration(projectId, groupRunId) ||
         !this.scopedGroupHierarchyActive(projectId, groupRunId, head)) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped group has unfinished or failed necessary paths");
-      }
-      if (this.database.prepare(`
-        SELECT 1 FROM scoped_leader_turns
-        WHERE project_id = ? AND group_run_id = ? AND status = 'active'
-      `).get(projectId, groupRunId)) {
-        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped final integration requires the Leader's confirmed-stop release");
-      }
-      if (this.scopedManagementBlocksBusiness(projectId, groupRunId)) {
-        throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Scoped final integration is blocked by an overlapping management turn");
       }
       const executionId = `group-final-${groupRunId}`;
       if (this.database.prepare("SELECT 1 FROM scoped_executions WHERE execution_id = ?").get(executionId) ||
@@ -7404,15 +7374,11 @@ export class CollaborationStateDatabase {
         scopedNode: { groupId: group.groupId, nodeId: String(candidate.target_node_id),
           activeLoopIds: Object.keys(this.scopedArrivals(group.id).find(arrival => arrival.requestId === arrivalRequestId)?.pathContext?.loops ?? {}) } }))
         return { changed: false, value: undefined };
-      if (this.scopedWorktreeClosingBlocksAgent(projectId, agentId)) {
-        return { changed: false, value: undefined };
-      }
+
       if (!this.scopedGroupHierarchyActive(projectId, String(candidate.group_run_id), head)) {
         return { changed: false, value: undefined };
       }
-      if (this.scopedManagementBlocksBusiness(projectId, String(candidate.group_run_id))) {
-        return { changed: false, value: undefined };
-      }
+
       const predecessor = this.database.prepare(`
         SELECT arrival.request_id FROM scoped_arrivals AS arrival
         JOIN scoped_group_runs AS group_run ON group_run.group_run_id = arrival.group_run_id
@@ -7451,7 +7417,7 @@ export class CollaborationStateDatabase {
           "The Agent's fixed worktree path changed between scoped executions"
         );
       }
-      if (this.scopedFinalNativeTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped" && !this.executionSupervisionResult(projectId, turn.executionId)))
+      if (this.scopedFinalNativeTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped"))
         return { changed: false, value: undefined };
       const workerSlot = this.firstAvailableLaneSlot(projectId, "worker");
       if (workerSlot === undefined) return { changed: false, value: undefined };
@@ -7633,13 +7599,7 @@ export class CollaborationStateDatabase {
         !this.scopedGroupHierarchyActive(projectId, String(execution.group_run_id), head)) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped retry requires failed work in an active group");
       }
-      // Retry must obey the same original-Agent closing barrier as first
-      // admission and native/Git ownership. Do not acquire a lane or advance
-      // the epoch while the previous owner's separate delivery is unresolved.
-      if (this.scopedWorktreeClosingBlocksAgent(projectId, String(execution.agent_id)) ||
-        this.scopedManagementBlocksBusiness(projectId, String(execution.group_run_id))) {
-        return { changed: false, value: undefined };
-      }
+
       if (this.scopedExecutionHasUnsettledGitOperation(projectId, executionId, failedEpoch)) {
         throw new CollaborationStateError(
           "INVALID_STATE_TRANSITION",
@@ -7820,12 +7780,7 @@ export class CollaborationStateDatabase {
       arrival.agent_id !== execution.agent_id) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped execution has no matching Agent arrival");
     }
-    if (this.scopedManagementBlocksBusiness(projectId, String(group.group_run_id))) {
-      throw new CollaborationStateError(
-        "ACTIVE_NODE_CONFLICT",
-        "Late scoped Agent completion cannot cross an overlapping management barrier"
-      );
-    }
+
     if (pull.status !== "merged" || pull.ownerExecutionId !== executionId ||
       pull.head !== execution.execution_branch || pull.base !== group.group_branch ||
       !pull.headSha || !pull.mergeCommitSha ||
@@ -7994,12 +7949,7 @@ export class CollaborationStateDatabase {
       const existing = this.database.prepare(`
         SELECT * FROM scoped_group_final_merge_facts WHERE group_run_id = ?
       `).get(groupRunId) as Row | undefined;
-      if (!existing && this.scopedManagementBlocksBusiness(projectId, groupRunId)) {
-        throw new CollaborationStateError(
-          "ACTIVE_NODE_CONFLICT",
-          "Late scoped group completion cannot cross an overlapping management barrier"
-        );
-      }
+
       // v7-v9 may contain an already-completed canonical merge proof without
       // a runtime owner. Retain its exact read-only replay; never manufacture
       // an active owner or rewrite the historical proof during migration.
@@ -8135,9 +8085,13 @@ export class CollaborationStateDatabase {
       const parentRoute = (existingEvent.payload.parentRoute as ScopedRoutePlan | null | undefined) ?? recordedRoute;
       return this.scopedGroupCompletionResult(projectId, groupRunId, parentRoute, "replay");
     }
-    this.currentScopedLeader(input);
     this.assertNotFrozen(head);
-    if (!this.scopedGroupReadyForFinalIntegration(projectId, groupRunId)) {
+    const turn = this.database.prepare("SELECT * FROM scoped_leader_turns WHERE project_id = ? AND invocation_id = ?")
+      .get(projectId, input.invocationId) as Row | undefined;
+    if (turn?.status !== "released" || turn.group_run_id !== groupRunId || turn.agent_id !== input.agentId ||
+      Number(turn.coordinator_epoch) !== input.coordinatorEpoch || !this.scopedLeaderReleaseProvesStop(projectId, input.invocationId))
+      throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped group completion requires confirmed resident stop for its original Leader decision");
+    if (!this.scopedGroupHierarchyActive(projectId, groupRunId, head) || !this.scopedGroupReadyForFinalIntegration(projectId, groupRunId)) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Leader completion awaits every necessary path and original-owner closing");
     }
     const parent = this.scopedCompletionParent(group);
@@ -8484,8 +8438,7 @@ export class CollaborationStateDatabase {
       const arrival = this.scopedArrivals(parent.id).find(arrival => arrival.requestId === input.parentArrivalRequestId);
       if (arrival?.status !== "queued" || arrival.targetKind !== "collaboration" || arrival.childGroupId !== input.groupId)
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped child preparation requires its queued direct parent arrival");
-      if (this.scopedManagementBlocksBusiness(input.projectId, parent.id)) throw new CollaborationStateError("ACTIVE_NODE_CONFLICT",
-        "Scoped activation is queued behind overlapping management", { reason: "management-occupancy" });
+
     } else {
       this.assertRootActivationPreparation(input.projectId, input);
       if (head.active_node_run_id || !input.outer || !graph.agents.some(agent => agent.name === input.outer!.activatedByAgentId) ||
@@ -8640,13 +8593,7 @@ export class CollaborationStateDatabase {
       if (parent && !this.scopedGroupHierarchyActive(projectId, parentGroupRunId!, head)) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Child activation requires its live ancestor hierarchy and outer slot");
       }
-      if (parent && this.scopedManagementBlocksBusiness(projectId, parentGroupRunId!)) {
-        throw new CollaborationStateError(
-          "ACTIVE_NODE_CONFLICT",
-          "Child activation is blocked while an overlapping scoped management turn is active",
-          { reason: "management-occupancy", parentGroupRunId, childGroupRunId: groupRunId }
-        );
-      }
+
       if (!parent && head.workflow_revision !== workflowRevision) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Top-level activation requires the current workflow revision");
       }
@@ -9119,10 +9066,6 @@ export class CollaborationStateDatabase {
           { gitStatus: git.status }
         );
       }
-      if ((this.terminalPushObservationTurns(input.projectId).some(turn => turn.status !== "stopped") ||
-        this.terminalPushCoordinatorTurns(input.projectId).some(turn => turn.status !== "stopped"))) {
-        throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Standalone delivery waits for the terminal receipt observation");
-      }
       const node = this.requiredNode(input.nodeRunId, input.projectId);
       const gate = node.gate_run_id ? this.workflowGate(input.projectId, String(node.gate_run_id)) : undefined;
       const configuredDecision = node.node_kind === "gate" && gate?.status === "result" && gate.decisionAgentId === input.agentId;
@@ -9330,15 +9273,10 @@ export class CollaborationStateDatabase {
       input.expectedRevision,
       (head) => {
         this.assertNotFrozen(head);
-        if ((this.terminalPushObservationTurns(input.projectId).some(turn => turn.status !== "stopped") ||
-        this.terminalPushCoordinatorTurns(input.projectId).some(turn => turn.status !== "stopped"))) {
-          return { changed: false, value: undefined };
-        }
         const group = this.requiredGroup(input.groupRunId, input.projectId);
-      if (group.status !== "running" || Number(group.cancellation_requested) === 1) {
-        return { changed: false, value: undefined };
-      }
-      const member = this.database.prepare(`
+        if (group.status !== "running" || Number(group.cancellation_requested) === 1)
+          return { changed: false, value: undefined };
+        const member = this.database.prepare(`
         SELECT 1 FROM group_members
         WHERE group_run_id = ? AND agent_id = ? AND failed_excluded = 0
       `).get(input.groupRunId, input.agentId);
@@ -9469,10 +9407,6 @@ export class CollaborationStateDatabase {
   }): ClaimedTask {
     const result = this.mutateProject(input.projectId, input.expectedRevision, (head) => {
       this.assertNotFrozen(head);
-      if ((this.terminalPushObservationTurns(input.projectId).some(turn => turn.status !== "stopped") ||
-        this.terminalPushCoordinatorTurns(input.projectId).some(turn => turn.status !== "stopped"))) {
-        throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Final delivery waits for the terminal receipt observation");
-      }
       const group = this.requiredGroup(input.groupRunId, input.projectId);
       this.assertCoordinator(group, input.actorAgentId, input.coordinatorEpoch);
       if (group.status === "integrating" && group.integration_owner_execution_id === input.executionId) {
@@ -9486,17 +9420,11 @@ export class CollaborationStateDatabase {
           "Final integration can start only from a running group"
         );
       }
-      if (input.ownerAgentId === group.leader_agent_id) {
-        throw new CollaborationStateError(
-          "INVALID_STATE_TRANSITION",
-          "The management-only leader cannot own final integration"
-        );
-      }
       const member = this.database.prepare(`
         SELECT 1 FROM group_members
         WHERE group_run_id = ? AND agent_id = ? AND failed_excluded = 0
       `).get(input.groupRunId, input.ownerAgentId);
-      if (!member) {
+      if (!member && input.ownerAgentId !== group.leader_agent_id) {
         throw new CollaborationStateError(
           "INVALID_STATE_TRANSITION",
           "Final integration owner must be an eligible member snapshot"
@@ -10023,10 +9951,39 @@ export class CollaborationStateDatabase {
     return { changed: true, value: { pullRequest: rowToPullRequest(row), replay: false } };
   }
 
+  /** Latch the supervised return before attempting native Stop. Recovery may only settle this output. */
+  prepareExecutionRetirement(projectId: string, executionId: string, ownershipEpoch: number, output: string): void {
+    this.mutateProject(projectId, undefined, head => {
+      this.assertNotFrozen(head);
+      const execution = this.assertCurrentExecutionOwner(projectId, executionId, ownershipEpoch);
+      if (head.active_node_run_id !== execution.node_run_id || !execution.invocation_id || typeof output !== "string" ||
+        execution.status === "queued" || execution.status === "stop_requested" || this.projectCancellationIntent(projectId))
+        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Execution retirement requires the active invocation and its returned output");
+      const receipt = this.insertExecutionEvent(head, execution, { type: "execution.retirement.prepared",
+        requestId: `execution-retirement:${executionId}:${ownershipEpoch}`, timestamp: this.isoNow(),
+        payload: { outputHash: payloadHash(output), ...(execution.session_id ? { sessionId: String(execution.session_id) } : {}) } });
+      if (receipt.inserted) this.database.prepare("UPDATE member_executions SET output = ? WHERE execution_id = ? AND ownership_epoch = ?")
+        .run(output, executionId, ownershipEpoch);
+      return { changed: receipt.inserted, value: undefined };
+    });
+  }
+
+  pendingExecutionRetirement(projectId: string, executionId: string, ownershipEpoch: number): { output: string } | undefined {
+    const receipt = this.eventByRequestId(projectId, `execution-retirement:${executionId}:${ownershipEpoch}`);
+    if (!receipt) return undefined;
+    const execution = this.requiredExecution(executionId, projectId);
+    if (execution.status === "succeeded") return undefined;
+    if (receipt.type !== "execution.retirement.prepared" || receipt.executionId !== executionId || receipt.ownershipEpoch !== ownershipEpoch ||
+      execution.ownership_epoch !== ownershipEpoch || receipt.invocationId !== execution.invocation_id || receipt.payload.sessionId !== optionalString(execution.session_id) || typeof execution.output !== "string" ||
+      receipt.payload.outputHash !== payloadHash(execution.output)) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Retained execution return does not match its original invocation and output");
+    return { output: execution.output };
+  }
+
   completeExecution(input: {
     projectId: string;
     executionId: string;
     ownershipEpoch: number;
+    stopEvidence?: Readonly<Record<string, unknown>>;
     output?: string;
     expectedRevision?: number;
     requestId?: string;
@@ -10034,6 +9991,9 @@ export class CollaborationStateDatabase {
     const result = this.mutateProject(input.projectId, input.expectedRevision, (head) => {
       this.assertNotFrozen(head);
       const execution = this.requiredExecution(input.executionId, input.projectId);
+      if (Number(execution.ownership_epoch) !== input.ownershipEpoch) {
+        throw new StaleOwnershipEpochError(input.executionId, input.ownershipEpoch, Number(execution.ownership_epoch));
+      }
       if (execution.status === "succeeded") {
         const task = this.requiredTask(String(execution.task_id));
         return {
@@ -10066,12 +10026,15 @@ export class CollaborationStateDatabase {
           `Execution cannot return from ${String(current.status)}`
         );
       }
+      const retirement = this.pendingExecutionRetirement(input.projectId, input.executionId, input.ownershipEpoch);
+      if ((retirement !== undefined) !== (input.stopEvidence !== undefined) || this.projectCancellationIntent(input.projectId))
+        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Execution retirement must settle the prepared return with its Stop observation");
       const timestamp = this.isoNow();
       this.database.prepare(`
         UPDATE member_executions
-        SET status = 'succeeded', output = ?, completed_at = ?, updated_at = ?
+        SET status = 'succeeded', output = ?, completed_at = ?, updated_at = ?, process_stop_confirmed = MAX(process_stop_confirmed, ?)
         WHERE execution_id = ? AND ownership_epoch = ?
-      `).run(input.output ?? null, timestamp, timestamp, input.executionId, input.ownershipEpoch);
+      `).run(input.output ?? null, timestamp, timestamp, input.stopEvidence !== undefined ? 1 : 0, input.executionId, input.ownershipEpoch);
       this.database.prepare(`
         UPDATE work_tasks
         SET status = 'succeeded', completed_at = ?, updated_at = ?
@@ -10085,6 +10048,7 @@ export class CollaborationStateDatabase {
         requestId: input.requestId,
         type: "execution.succeeded",
         payload: {
+          ...(input.stopEvidence !== undefined ? { nativeStopConfirmed: true, evidence: input.stopEvidence } : {}),
           ...(pull ? { pullRequestId: pull.pull_request_id, pullRequestStatus: pull.status,
             ...(pull.merge_commit_sha ? { mergeCommitSha: pull.merge_commit_sha } : {}) } : {})
         },
@@ -10516,11 +10480,6 @@ export class CollaborationStateDatabase {
           "The completing Main node no longer owns the outer-node slot"
         );
       }
-      if (node.node_kind === "gate") {
-        const run = node.gate_run_id && this.workflowGate(input.projectId, String(node.gate_run_id));
-        if (!run || requireGateChoice(run, run.origin, String(node.node_id)).selectedTarget !== input.route.targetNodeId)
-          throw new Error("Gate completion differs from its bound result and path");
-      }
       this.insertEvent(head, {
         projectId: input.projectId,
         eventId: `evt_${randomUUID()}`,
@@ -10661,6 +10620,11 @@ export class CollaborationStateDatabase {
           "INVALID_STATE_TRANSITION",
           "Standalone node completion requires its current succeeded execution"
         );
+      }
+      if (node.node_kind === "gate") {
+        const run = node.gate_run_id && this.workflowGate(input.projectId, String(node.gate_run_id));
+        if (!run || requireGateChoice(run, run.origin, String(node.node_id)).selectedTarget !== input.route.targetNodeId)
+          throw new Error("Gate completion differs from its bound result and path");
       }
       const timestamp = this.isoNow();
       const decisionId = `route-decision:${input.nodeRunId}`;
@@ -11522,9 +11486,9 @@ export class CollaborationStateDatabase {
         : input.action.tool === "complete_project"
         ? systemMain && input.canComplete && input.candidateNodeIds.includes("finish")
         : input.action.tool === "select_display"
-          ? systemMain
+          ? true
         : input.action.tool === "apply_workflow"
-          ? systemMain && (!input.accepted || input.accepted.workflowProposal !== undefined)
+          ? !input.accepted || input.accepted.workflowProposal !== undefined
         : input.action.tool === "route_to_agent" &&
           routeHasRequiredInput &&
           input.candidateNodeIds.includes(input.action.target) &&
@@ -11673,16 +11637,6 @@ export class CollaborationStateDatabase {
           "Accepted Main action sequence is not the next immutable semantic slot"
         );
       }
-      const acceptingDisplay = input.action.tool === "select_display";
-      const duplicateSlotKind = priorSlots.some((fact) =>
-        (fact.action.tool === "select_display") === acceptingDisplay
-      );
-      if (sequence > 1 || duplicateSlotKind) {
-        throw new CollaborationStateError(
-          "INVALID_STATE_TRANSITION",
-          "Main control turn permits one display selection and one orchestration decision in either order"
-        );
-      }
       let workflowProposal: AcceptedMainRouteAction["workflowProposal"];
       if (input.action.tool === "apply_workflow") {
         const proposal = accepted.workflowProposal;
@@ -11799,10 +11753,11 @@ export class CollaborationStateDatabase {
       }
       const source = this.requiredNode(String(outbox.source_node_run_id), input.projectId);
       if (source.node_kind === "gate") {
-        const downstream = outbox.target_node_id === "finish" ? undefined : this.database.prepare(
-          "SELECT * FROM node_runs WHERE project_id=? AND activation_request_id=?").get(input.projectId,input.activationRequestId) as Row | undefined;
-        if (outbox.target_node_id !== "finish" && (!downstream || downstream.node_id !== outbox.target_node_id))
-          throw new Error("Gate delivery requires the actual selected downstream activation");
+        const downstream = outbox.target_node_id === "finish" ? undefined : this.database.prepare(`
+          SELECT node_run_id FROM node_runs WHERE project_id = ? AND activation_request_id = ?
+          AND node_id = ? AND source_node_run_id = ?
+        `).get(input.projectId, input.activationRequestId, outbox.target_node_id, source.node_run_id);
+        if (outbox.target_node_id !== "finish" && !downstream) throw new Error("Gate delivery requires the actual selected downstream activation");
         this.recordGateDelivery(head, String(source.gate_run_id), downstream ? { nodeRunId: String(downstream.node_run_id) } : { terminal: true });
       }
       const timestamp = this.isoNow();
@@ -13806,7 +13761,7 @@ export class CollaborationStateDatabase {
     groupRunId: string;
     coordinatorEpoch: number;
     evidence?: Readonly<Record<string, unknown>>;
-    reason: "cancellation" | "main_recovery" | "service_restart";
+    reason: "cancellation" | "main_recovery" | "service_restart" | "group_completion";
     expectedRevision?: number;
     requestId?: string;
   }): { revision: number; event: CollaborationEvent; replay: boolean } {
@@ -14096,9 +14051,8 @@ export class CollaborationStateDatabase {
     });
   }
 
-  /** An already accepted decision stays authoritative while its original
-   * Agent supplies a missing finish_task. Do not silently accept a replacement
-   * decision in a new tool channel for that same management input. */
+  /** Return the latest pending decision for this management input. Earlier
+   * requests retain their immutable identities and audit records. */
   acceptedGroupControlForInput(input: {
     projectId: string; groupRunId: string; actorAgentId: AgentId;
     coordinatorEpoch: number; inputId: string;
@@ -14206,12 +14160,6 @@ export class CollaborationStateDatabase {
         fact.authorityStateHash === authorityStateHash
       );
       if (candidates.length === 0) return { changed: false, value: undefined };
-      if (candidates.length !== 1) {
-        throw new CollaborationStateError(
-          "IDEMPOTENCY_CONFLICT",
-          "Recovered coordinator has multiple accepted actions for one unchanged state"
-        );
-      }
       const source = candidates[0]!.fact;
       const action = source.action.tool === "assign_group_tasks"
         ? { ...source.action, coordinatorEpoch: input.targetCoordinatorEpoch }
@@ -14333,14 +14281,7 @@ export class CollaborationStateDatabase {
       }
       if (!selected) return [];
       selected.sort((left, right) => left.sequence - right.sequence);
-      if (
-        selected.some((fact, index) => fact.sequence !== index) ||
-        selected.length > 2 ||
-        selected.length === 2 && (
-          (selected[0]!.action.tool === "select_display") ===
-          (selected[1]!.action.tool === "select_display")
-        )
-      ) {
+      if (selected.some((fact, index) => fact.sequence !== index)) {
         throw new CollaborationStateError(
           "DATABASE_INTEGRITY_FAILED",
           "Accepted Main control sequence is non-contiguous or malformed"
@@ -15581,10 +15522,6 @@ export class CollaborationStateDatabase {
     replay: boolean;
   } {
     const result = this.mutateProject(input.projectId, input.expectedRevision, (head) => {
-      if ((this.terminalPushObservationTurns(input.projectId).some(turn => turn.status !== "stopped") ||
-        this.terminalPushCoordinatorTurns(input.projectId).some(turn => turn.status !== "stopped"))) {
-        throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "A terminal receipt observation still owns the native boundary");
-      }
       const scopedLeader = this.database.prepare(`
         SELECT 1 FROM scoped_leader_turns
         WHERE project_id = ? AND agent_id = ? AND status = 'active' LIMIT 1
@@ -17343,12 +17280,12 @@ export class CollaborationStateDatabase {
     const attempt = positiveInteger(input.attempt, "attempt");
     const milestone = input.milestone;
     if (![
-      "retryAcceptedAt",
-      "gitReadyPersistedAt",
-      "priorRunSettledAt",
-      "scheduleEnqueuedAt",
-      "mainResidentOpenedAt"
-    ].includes(milestone)) {
+        "retryAcceptedAt",
+        "gitReadyPersistedAt",
+        "priorRunSettledAt",
+        "scheduleEnqueuedAt",
+        "mainResidentOpenedAt"
+      ].includes(milestone)) {
       throw new CollaborationStateError(
         "INVALID_STATE_TRANSITION",
         "Git retry scheduling milestone is invalid"
@@ -17368,12 +17305,12 @@ export class CollaborationStateDatabase {
     }
     const waitingKind = input.waitingFor.kind;
     if (![
-      "none",
-      "git-initialization",
-      "prior-project-run",
-      "scheduler",
-      "main-resident"
-    ].includes(waitingKind)) {
+        "none",
+        "git-initialization",
+        "prior-project-run",
+        "scheduler",
+        "main-resident"
+      ].includes(waitingKind)) {
       throw new CollaborationStateError(
         "INVALID_STATE_TRANSITION",
         "Git retry scheduling wait kind is invalid"
@@ -17951,11 +17888,65 @@ export class CollaborationStateDatabase {
       invocationCommit: projectStateCommitProjection(this.projectStateDocument(projectId, "invocation.commit")!) };
   }
 
+  prepareProjectStateAgentStop(principal: ProjectStatePrincipal,
+    input: Extract<import("../project-state.js").ProjectStateRequest, { operation: "stop_agent" }>): {
+      requestId: string; target: RuntimeActivity; result?: { status: "stopped" | "failed"; error?: string }
+    } {
+    return this.mutateProject(principal.projectId, undefined, head => {
+      const projection = this.projectState(principal.projectId);
+      this.projectStateAuthority(principal, projection);
+      if (principal.kind !== "agent" || principal.agentId !== "main")
+        projectStateError("STATE_SCOPE_DENIED", "Only the project's live Main invocation can request an Agent stop");
+      if (input.agentId === principal.agentId && input.invocationId === principal.invocationId)
+        projectStateError("INVALID_STATE_TRANSITION", "Main cannot stop its own calling invocation with this tool");
+      const requestId = `agent-stop:${payloadHash({ principal, callId: input.callId })}`;
+      const requestHash = payloadHash(input), existing = this.eventByRequestId(principal.projectId, requestId);
+      if (existing) {
+        if (existing.payload.requestHash !== requestHash)
+          projectStateError("INVALID_STATE_TRANSITION", "Stop callId already belongs to a different request");
+        const outcome = this.eventByRequestId(principal.projectId, `${requestId}:result`);
+        return { changed: false, value: { requestId, target: existing.payload.target as unknown as RuntimeActivity,
+          ...(outcome ? { result: outcome.payload.result as { status: "stopped" | "failed"; error?: string } } : {}) } };
+      }
+      const target = projection.runtimeActivities.find(activity => activity.agentId === input.agentId &&
+        activity.invocationId === input.invocationId && activity.leaseState === "current" && activity.writerLeaseEpoch === this.lease.epoch);
+      if (!target) projectStateError("INVALID_STATE_TRANSITION", "The specified Agent invocation is not currently active", {
+        agentId: input.agentId, invocationId: input.invocationId
+      });
+      this.insertEvent(head, { projectId: principal.projectId, eventId: `evt_${randomUUID()}`, requestId,
+        agentId: principal.agentId, invocationId: principal.invocationId, ts: this.isoNow(), type: "project.agent.stop.requested",
+        payload: { requestHash, target, reason: input.reason, callId: input.callId } });
+      return { changed: true, value: { requestId, target } };
+    }).value;
+  }
+
+  recordProjectStateAgentStop(projectId: string, requestId: string, result: { status: "stopped" | "failed"; error?: string }): void {
+    this.mutateProject(projectId, undefined, head => {
+      const request = this.eventByRequestId(projectId, requestId);
+      if (request?.type !== "project.agent.stop.requested")
+        projectStateError("INVALID_STATE_TRANSITION", "Agent stop result requires its original explicit Main request");
+      const existing = this.eventByRequestId(projectId, `${requestId}:result`);
+      if (existing) {
+        if (!isDeepStrictEqual(existing.payload.result, result))
+          projectStateError("INVALID_STATE_TRANSITION", "Agent stop result cannot replace its recorded outcome");
+        return { changed: false, value: undefined };
+      }
+      this.insertEvent(head, { projectId, eventId: `evt_${randomUUID()}`, requestId: `${requestId}:result`,
+        agentId: request.agentId, invocationId: request.invocationId, ts: this.isoNow(),
+        type: result.status === "stopped" ? "project.agent.stop.confirmed" : "project.agent.stop.failed",
+        payload: { requestId, target: request.payload.target, result } });
+      return { changed: true, value: undefined };
+    });
+  }
+
   projectStateRequest(principal: ProjectStatePrincipal, untrustedRequest: unknown): unknown {
     const request = validateProjectStateRequest(untrustedRequest);
     assertCredentialFree(request);
+    if (request.operation === "stop_agent")
+      projectStateError("INVALID_STATE_TRANSITION", "Agent stop requires the bound native execution service");
     if (request.operation === "reconcile_pull")
       projectStateError("INVALID_STATE_TRANSITION", "PR reconciliation requires the bound provider-query service");
+    if (request.operation === "request_leader") return this.requestProjectStateLeader(principal, request);
     if (request.operation === "request_main") return this.requestProjectStateMainCoordination(principal, request);
     if (request.operation === "patch") return this.patchProjectBusinessState(principal, request);
     return this.readTransaction(() => {
@@ -18073,7 +18064,7 @@ export class CollaborationStateDatabase {
       : object && ["task", "execution"].includes(object.kind) ? ` OR (event_type IN ('project.state.document.changed','project.state.domain.initialized') AND
       EXISTS (SELECT 1 FROM json_each(project_events.payload_json,'$.executionIds') WHERE value=?))` : "";
     return (object ? this.database.prepare(`SELECT seq,occurred_at AS ts,payload_json FROM project_events
-      WHERE project_id = ? AND ((event_type IN ('project.state.extensions.changed','project.state.pull.queried','project.state.pull.reconciled','project.state.main.requested','project.state.document.changed','project.state.domain.initialized')
+      WHERE project_id = ? AND ((event_type IN ('project.state.extensions.changed','project.state.pull.queried','project.state.pull.reconciled','project.state.main.requested','project.state.leader.requested','project.state.leader.received','project.state.leader.failed','project.state.document.changed','project.state.domain.initialized')
         AND json_extract(payload_json, '$.object.kind') = ? AND json_extract(payload_json, '$.object.id') = ?)${related}) ORDER BY seq DESC`)
       .all(projectId, object.kind, object.id, ...(related ? [object.id] : [])) : this.database.prepare(`SELECT seq,occurred_at AS ts,payload_json FROM project_events
       WHERE project_id = ? AND event_type = 'project.state.extensions.changed' ORDER BY seq DESC`).all(projectId)) as Row[];
@@ -18105,17 +18096,64 @@ export class CollaborationStateDatabase {
         core: { receipt, recordedAt: event.ts, received: received ? { recordedAt: received.ts, ...received.payload } : null } });
     }
     const corrections = this.database.prepare(`SELECT * FROM project_events WHERE project_id = ?
-      AND event_type IN ('project.state.pull.reconciled','project.state.main.requested') ORDER BY seq`).all(p.id) as Row[];
+      AND event_type IN ('project.state.pull.reconciled','project.state.main.requested','project.state.leader.requested','project.state.leader.received','project.state.leader.failed') ORDER BY seq`).all(p.id) as Row[];
     for (const row of corrections) {
       const event = rowToEvent(row), ref = event.payload.object as unknown as ProjectStateRef;
       const object = objects.find(o => projectStateKey(o.object) === projectStateKey(ref));
       if (!object || !object.core || typeof object.core !== "object") continue;
       const core = object.core as Record<string, unknown>;
-      const key = event.type === "project.state.main.requested" ? "mainCoordinationRequests" : "stateReconciliations";
+      const key = event.type.startsWith("project.state.leader.") ? "leaderRequests"
+        : event.type === "project.state.main.requested" ? "mainCoordinationRequests" : "stateReconciliations";
       object.core = { ...core, [key]: [...(core[key] as unknown[] ?? []),
         { sequence: event.seq, recordedAt: event.ts, ...event.payload }] };
     }
     return objects.sort((a, b) => projectStateKey(a.object).localeCompare(projectStateKey(b.object)));
+  }
+
+  agentCoordinationResults(projectId: string, agentId: string): CollaborationEvent[] {
+    return (this.database.prepare(`SELECT result.* FROM project_events result
+      WHERE result.project_id=? AND ((result.event_type='scoped.dispatch.failed' AND result.agent_id=?) OR
+        (result.event_type IN ('project.state.leader.received','project.state.leader.failed') AND EXISTS
+          (SELECT 1 FROM project_events request WHERE request.project_id=result.project_id AND request.agent_id=?
+            AND request.request_id=json_extract(result.payload_json,'$.requestId')))) ORDER BY result.seq`)
+      .all(projectId, agentId, agentId) as Row[]).map(rowToEvent);
+  }
+
+  pendingLeaderRequests(projectId: string, groupRunId: string): CollaborationEvent[] {
+    return (this.database.prepare(`SELECT * FROM project_events requested WHERE project_id=?
+      AND event_type='project.state.leader.requested' AND json_extract(payload_json,'$.groupRunId')=?
+      AND NOT EXISTS (SELECT 1 FROM project_events result WHERE result.project_id=requested.project_id
+        AND result.event_type IN ('project.state.leader.received','project.state.leader.failed')
+        AND json_extract(result.payload_json,'$.requestId')=requested.request_id) ORDER BY seq`)
+      .all(projectId, groupRunId) as Row[]).map(rowToEvent);
+  }
+
+  private requestProjectStateLeader(principal: ProjectStatePrincipal,
+    input: Extract<ProjectStateRequest, { operation: "request_leader" }>): unknown {
+    return this.mutateProject(principal.projectId, undefined, head => {
+      this.assertNotFrozen(head);
+      const projection = this.projectState(principal.projectId), authority = this.projectStateAuthority(principal, projection);
+      const group = authority.groupRunId && this.scopedGroupRun(principal.projectId, authority.groupRunId);
+      if (principal.kind !== "agent" || !group)
+        projectStateError("STATE_SCOPE_DENIED", "This live invocation has no configured direct scoped Leader");
+      const target = group.leaderAgentId === principal.agentId && group.parentGroupRunId
+        ? this.scopedGroupRun(principal.projectId, group.parentGroupRunId)! : group;
+      if (target.leaderAgentId === principal.agentId)
+        projectStateError("STATE_SCOPE_DENIED", "The current Agent already is its direct Leader; no other recipient is configured");
+      const requestId = `project-state-leader:${projectStateDigest({ principal, callId: input.callId })}`;
+      const prior = this.eventByRequestId(principal.projectId, requestId);
+      if (prior) {
+        if (prior.payload.requestHash !== projectStateDigest(input))
+          throw new CollaborationStateError("IDEMPOTENCY_CONFLICT", "Leader request callId belongs to another message");
+        return { changed: false, value: prior.payload.result };
+      }
+      const result = { status: "queued", requestId, targetAgentId: target.leaderAgentId, groupRunId: target.id };
+      this.insertEvent(head, { projectId: principal.projectId, eventId: `evt_${randomUUID()}`, requestId,
+        agentId: principal.agentId, invocationId: principal.invocationId, ts: this.isoNow(), type: "project.state.leader.requested",
+        payload: { groupRunId: target.id, targetAgentId: target.leaderAgentId, message: input.message,
+          object: authority.executionId ? { kind: "execution", id: authority.executionId } : { kind: "group", id: group.id }, requestHash: projectStateDigest(input), result } });
+      return { changed: true, value: result };
+    }).value;
   }
 
   projectStateMainCoordinationRequests(projectId: string, invocationId: string): CollaborationEvent[] {
@@ -19347,7 +19385,9 @@ export class CollaborationStateDatabase {
       const turn = parseJson<{ turn: TerminalPushCoordinatorTurn }>(row.payload_json, {} as never).turn;
       const prefix = `terminal-push-coordinator:${turn.invocationId}`;
       const event = (suffix: string) => this.eventByRequestId(projectId, `${prefix}:${suffix}`);
-      const completion = event("finish_task"); const staged = event("decision"); const accepted = event("accepted");
+      const completion = event("finish_task");
+      const stagedRow = this.database.prepare("SELECT * FROM project_events WHERE project_id = ? AND invocation_id = ? AND event_type = 'agent.terminal_push_coordinator.decision.staged' ORDER BY seq DESC LIMIT 1").get(projectId, turn.invocationId) as Row | undefined;
+      const staged = stagedRow ? rowToEvent(stagedRow) : undefined; const accepted = event("accepted");
       const result = event("result"); const failure = event("failed");
       return { ...turn, status: event("stopped") ? "stopped" : event("opened") ? "opened" : "reserved",
         ...(completion ? { completion: completion.payload.envelope as ControlActionEnvelope } : {}),
@@ -19587,7 +19627,7 @@ export class CollaborationStateDatabase {
             bounded(action.message) && bounded(action.rationale) && (action.context === undefined || bounded(action.context))))
         throw new OperationStoreViolationError("Receipt manager action is outside its exact native capability and level");
       const suffix = action.tool === "finish_task" ? "finish_task" : "decision";
-      const requestId = `terminal-push-coordinator:${input.invocationId}:${suffix}`;
+      const requestId = `terminal-push-coordinator:${input.invocationId}:${suffix === "finish_task" ? suffix : `${suffix}:${envelope.callId}`}`;
       const prior = this.eventByRequestId(input.projectId, requestId);
       if (prior) {
         if (!isDeepStrictEqual((prior.payload.envelope as ControlActionEnvelope).action, action))
@@ -19735,7 +19775,7 @@ export class CollaborationStateDatabase {
       try { owner = this.terminalPushOwnerRow(projectId, operation.ownerExecutionId); }
       catch (error) { if (error instanceof OperationStoreViolationError) return []; throw error; }
       const nodeRunId = owner.node_run_id ? String(owner.node_run_id) : projection.activeNodeRunId;
-      if (!nodeRunId || !owner.invocation_id || owner.agent_id === "main" ||
+      if (!nodeRunId || !owner.invocation_id ||
         !Number.isSafeInteger(operation.ownershipEpoch) || (operation.ownershipEpoch ?? 0) < 1 ||
         operation.ownershipEpoch! > Number(owner.ownership_epoch) || operation.expectedBase !== owner.execution_branch ||
         !/^[a-f0-9]{40}$/i.test(operation.expectedHead ?? "")) return [];
@@ -19847,7 +19887,7 @@ export class CollaborationStateDatabase {
         incident.executionId === input.executionId && incident.operationId === input.operationId && incident.status !== "retry-consumed");
       if (historical && (!input.coordination || input.coordination.incidentId !== historical.id))
         throw new OperationStoreViolationError("Historical receipt continuation requires its explicit manager decision");
-      if (consumed >= 2 && !input.coordination) return { changed: false, value: undefined };
+      if (consumed >= MAX_TASK_REPAIR_WAKEUPS && !input.coordination) return { changed: false, value: undefined };
       if (prior.length ? prior.at(-1)!.runtimePath !== input.previousRuntimePath || prior.at(-1)!.invocationId !== input.previousInvocationId
         : input.previousInvocationId !== input.originalInvocationId) {
         throw new OperationStoreViolationError("Terminal observation must continue from its last exact stopped native turn");
@@ -20429,8 +20469,8 @@ export class CollaborationStateDatabase {
 
   private currentScopedGitOwner(input: ExecutionOwnershipAssertion): Row {
     if (this.database.prepare(`
-      SELECT 1 FROM scoped_final_integrations WHERE project_id = ? AND execution_id = ?
-    `).get(input.projectId, input.executionId)) return this.currentScopedFinalGitOwner(input);
+        SELECT 1 FROM scoped_final_integrations WHERE project_id = ? AND execution_id = ?
+      `).get(input.projectId, input.executionId)) return this.currentScopedFinalGitOwner(input);
     const head = this.head(input.projectId);
     const execution = this.database.prepare(`
       SELECT * FROM scoped_executions WHERE project_id = ? AND execution_id = ?
@@ -20448,9 +20488,7 @@ export class CollaborationStateDatabase {
       return execution;
     }
     if (input.operation === "retained.observe") return execution;
-    if (this.scopedWorktreeClosingBlocksAgent(input.projectId, String(execution.agent_id), input.executionId)) {
-      throw new GitOwnershipStaleError(input.executionId, input.ownershipEpoch);
-    }
+
     const turn = this.scopedAgentTurn(input.projectId, input.executionId, input.ownershipEpoch);
     if (turn && turn.writerLeaseEpoch !== this.lease.epoch &&
       !this.scopedAgentRecoveredForCurrentWriter(input.projectId, input.executionId, input.ownershipEpoch, turn.invocationId)) {
@@ -20947,8 +20985,8 @@ export class CollaborationStateDatabase {
       throw new GitOwnershipStaleError(executionId, ownershipEpoch);
     }
     if (ACTIVE_EXECUTION_STATUSES.includes(
-      execution.status as typeof ACTIVE_EXECUTION_STATUSES[number]
-    )) {
+        execution.status as typeof ACTIVE_EXECUTION_STATUSES[number]
+      )) {
       return this.assertCurrentExecutionOwner(projectId, executionId, ownershipEpoch);
     }
     const task = this.requiredTask(String(execution.task_id));

@@ -2774,11 +2774,6 @@ export class Orchestrator {
     >
   ): Promise<ProjectView> {
     const runtime = await this.requireRuntime(projectId);
-    if (runtime.state.configurationLocked) {
-      throw new ProjectConfigurationLockedError(
-        "Project configuration is locked after startup"
-      );
-    }
     type RuntimeConfigUpdate = Partial<
       Pick<
         AgentConfig,
@@ -2977,6 +2972,8 @@ export class Orchestrator {
             state.mcpDefinitions ?? {}
           );
 
+          const previousConfiguration = credentialFreeAgentConfiguration({ agents: state.agents,
+            skillDefinitions: state.skillDefinitions ?? {}, mcpDefinitions: state.mcpDefinitions ?? {} });
           for (const change of changes) {
             state.agents[change.agent].model = change.model;
             state.agents[change.agent].harness = change.harness ?? state.agents[change.agent].harness ?? DEFAULT_HARNESS_ID;
@@ -2998,6 +2995,7 @@ export class Orchestrator {
               : change.decisionBy;
           }
           try {
+            await this.collaborationRuntime?.updateRuntimeConfiguration?.(state, previousConfiguration);
             await this.storage.appendEvent(state, {
               type: "project.config.updated",
               message: `${changes.length} agent runtime configuration${changes.length === 1 ? "" : "s"} updated`,
@@ -6414,7 +6412,7 @@ export class Orchestrator {
   private async applyDisplaySelection(
     runtime: RuntimeProject,
     display: DisplaySelection,
-    requireRegistered = false
+    verifyPublished = false
   ): Promise<DisplaySelection | null> {
     const { state } = runtime;
     const entries = [display.primary, ...display.items];
@@ -6426,18 +6424,13 @@ export class Orchestrator {
             item.agent,
             item.path
           );
-          if (requireRegistered) {
+          if (verifyPublished) {
             const registered = state.artifacts?.find(
               (artifact) =>
                 artifact.agent === item.agent &&
                 artifact.path === source.relativePath
             );
-            if (!registered) {
-              throw new ControlProtocolError(
-                `Display selection must reference a published artifact: ${item.agent}/${source.relativePath}`
-              );
-            }
-            await this.storage.resolvePublishedArtifactRecord(
+            if (registered) await this.storage.resolvePublishedArtifactRecord(
               state.id,
               registered
             );
@@ -6463,7 +6456,7 @@ export class Orchestrator {
         message: `Main display selection was not applied because a file is unavailable: ${safeError}`,
         data: { display, preservedPreviousDisplay: Boolean(state.display) }
       });
-      if (requireRegistered) throw error;
+      if (verifyPublished) throw error;
       return null;
     }
   }
@@ -7422,12 +7415,12 @@ function handoffExcerpt(value: string): string {
 function terminalControlAction(
   actions: ControlActionEnvelope[]
 ): ControlActionEnvelope | undefined {
-  return actions.find((envelope) =>
+  return actions.filter((envelope) =>
     envelope.action.tool === "route_to_agent" ||
     envelope.action.tool === "request_user" ||
     envelope.action.tool === "apply_workflow" ||
     envelope.action.tool === "complete_project"
-  ) ?? actions.find((envelope) => envelope.action.tool === "finish_task");
+  ).at(-1) ?? actions.find((envelope) => envelope.action.tool === "finish_task");
 }
 
 function mergeControlActions(
@@ -7454,7 +7447,6 @@ function validateControlActionEnvelopes(
   expectedStateVersion?: number
 ): void {
   const callIds = new Set<string>();
-  let decisionSeen = false;
   for (const envelope of actions) {
     if (
       envelope.projectId !== state.id ||
@@ -7486,11 +7478,7 @@ function validateControlActionEnvelopes(
       throw new ControlProtocolError("control action callId must be unique within an invocation");
     }
     callIds.add(envelope.callId);
-    const isDecision = envelope.action.tool === "route_to_agent" || envelope.action.tool === "request_user" || envelope.action.tool === "apply_workflow" || envelope.action.tool === "complete_project";
-    if (decisionSeen && isDecision) {
-      throw new ControlProtocolError("an invocation may record only one orchestration decision");
-    }
-    if (isDecision) decisionSeen = true;
+
   }
 }
 

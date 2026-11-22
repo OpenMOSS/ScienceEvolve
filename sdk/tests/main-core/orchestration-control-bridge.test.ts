@@ -103,38 +103,27 @@ describe("orchestration control bridge", () => {
     authorized = false;
     await expect(service.stageWithResult("secret", "merge-original", { tool: "github_merge_pr", providerNumber: 10 })).rejects.toThrow("authority ended");
   });
-  it("stages independent failed-arrival decisions in one turn without unlocking conflicting or global decisions", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scoped-independent-decisions-")); roots.push(root);
+  it("accepts successive explicit decisions while retaining exact call identity and live authority", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "successive-decisions-")); roots.push(root);
     const stagingPath = path.join(root, "actions.json");
     let active = true;
-    const accepted: string[] = [];
-    const service = new ControlActionService({ projectId: "prj_group", agent: "main", invocationId: "inv_recovery",
-      stateVersion: 7, capability: "secret", stagingPath, revalidate: async (envelope) => {
-        if (!active) throw new Error("original management authority ended");
-        accepted.push(envelope.callId);
-      } });
-    const choice = (arrivalRequestId: string): ControlAction => ({ tool: "coordinate_group_task", groupRunId: "run-G",
-      coordinatorEpoch: 7, arrivalRequestId, operation: "retry", rationale: `Original Agent repairs ${arrivalRequestId}` });
-    const [first, second] = await Promise.all([service.stage("secret", "a", choice("failed-a")), service.stage("secret", "b", choice("failed-b"))]);
-    expect(await service.stage("secret", "repeat-a", choice("failed-a"))).toEqual(first);
-    expect(await service.stage("secret", "repeat-b", choice("failed-b"))).toEqual(second);
-    await expect(service.stage("secret", "conflict-a", { ...choice("failed-a"), operation: "escalate" } as ControlAction)).rejects.toThrow("decision is already locked");
-    await expect(service.stage("secret", "replace-b", { ...choice("failed-b"), rationale: "Replace the retained choice" } as ControlAction)).rejects.toThrow("decision is already locked");
-    await expect(service.stage("secret", "new-global", { tool: "request_user", message: "Alternative global transition", rationale: "Conflicts with staged recovery" })).rejects.toThrow("decision is already locked");
-    await expect(service.stage("secret", "reused-call", choice("failed-c"))).resolves.toMatchObject({ callId: "reused-call" });
-    await expect(service.stage("secret", "a", choice("failed-d"))).rejects.toThrow("callId was already used");
-    expect(accepted).toEqual(["a", "b", "repeat-a", "repeat-b", "reused-call"]);
+    const revalidate = vi.fn(async () => { if (!active) throw new Error("Original authority ended"); });
+    const service = new ControlActionService({ projectId: "p", agent: "main", invocationId: "inv", stateVersion: 7,
+      capability: "secret", stagingPath, revalidate });
+    const choice: ControlAction = { tool: "coordinate_group_task", groupRunId: "G", coordinatorEpoch: 7,
+      arrivalRequestId: "failed", operation: "retry", rationale: "Retry the retained task" };
+    const first = await service.stage("secret", "first", choice);
+    expect(await service.stage("secret", "first", choice)).toEqual(first);
+    await expect(service.stage("secret", "change", { ...choice, operation: "escalate" })).resolves.toMatchObject({ callId: "change", action: { operation: "escalate" } });
+    await expect(service.stage("secret", "global", { tool: "request_user", message: "Please advise", rationale: "An explicit follow-up" })).resolves.toMatchObject({ callId: "global" });
+    await expect(service.stage("secret", "first", { ...choice, operation: "escalate" })).rejects.toThrow("callId was already used");
+    expect(JSON.parse(await fs.readFile(stagingPath, "utf8")).map((item: ControlActionEnvelope) => item.callId)).toEqual(["first", "change", "global"]);
     active = false;
-    await expect(service.stage("secret", "repeat-after-stop", choice("failed-a"))).rejects.toThrow("authority ended");
-    active = true; service.revoke();
-    await expect(service.stage("secret", "new-after-revoke", choice("failed-d"))).rejects.toThrow("revoked");
-    expect(JSON.parse(await fs.readFile(stagingPath, "utf8")).map((entry: { callId: string }) => entry.callId)).toEqual(["a", "b", "reused-call"]);
-
-    const alternative = new ControlActionService({ projectId: "prj_group", agent: "main", invocationId: "inv_alternative",
-      stateVersion: 8, capability: "other", stagingPath: path.join(root, "alternative.json"), revalidate: async () => {} });
-    await alternative.stage("other", "global-first", { tool: "request_user", message: "Please advise", rationale: "Agent cannot resolve this round" });
-    await expect(alternative.stage("other", "late-recovery", choice("failed-a"))).rejects.toThrow("decision is already locked");
+    await expect(service.stage("secret", "after-stop", choice)).rejects.toThrow("authority ended");
+    service.revoke();
+    await expect(service.stage("secret", "after-revoke", choice)).rejects.toThrow("revoked");
   });
+
 
   it("keeps an unleased capability active until the invocation revokes it", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-control-lifecycle-"));
@@ -277,52 +266,19 @@ describe("orchestration control bridge", () => {
     })).rejects.toThrow("task completion is already staged");
   });
 
-  it("keeps one idempotent decision slot while allowing later preparatory actions", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-control-idempotent-"));
-    roots.push(root);
+  it("retains a changed pending route and later evidence in request order", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "changed-pending-route-")); roots.push(root);
     const stagingPath = path.join(root, "actions.json");
-    const onRejected = vi.fn(async () => {});
-    const service = new ControlActionService({
-      projectId: "prj_test",
-      agent: "main",
-      invocationId: "inv_test",
-      stateVersion: 3,
-      capability: "secret",
-      stagingPath,
-      revalidate: async () => {},
-      onRejected
-    });
-
-    const first = await service.stage("secret", "route-1", {
-      tool: "route_to_agent",
-      target: "writer",
-      assignment: "Draft the report."
-    });
-    const repeated = await service.stage("secret", "route-2", {
-      tool: "route_to_agent",
-      target: "writer",
-      assignment: "Draft and verify the report.",
-      rationale: "The same worker remains next."
-    });
-
-    expect(repeated).toEqual(first);
-    expect(onRejected).not.toHaveBeenCalled();
-    expect(JSON.parse(await fs.readFile(stagingPath, "utf8"))).toHaveLength(1);
-    await expect(service.stage("secret", "route-3", {
-      tool: "route_to_agent",
-      target: "reviewer",
-      assignment: "Review instead."
-    })).rejects.toThrow("decision is already locked");
-    expect(onRejected).toHaveBeenCalledOnce();
-    await expect(service.stage("secret", "publish-1", {
-      tool: "publish_artifact",
-      path: "report.md",
-      title: "Report",
-      kind: "document",
-      description: "Verified output"
-    })).resolves.toMatchObject({ action: { tool: "publish_artifact" } });
-    expect(JSON.parse(await fs.readFile(stagingPath, "utf8"))).toHaveLength(2);
+    const service = new ControlActionService({ projectId: "p", agent: "main", invocationId: "inv", stateVersion: 1,
+      capability: "secret", stagingPath, revalidate: async () => {} });
+    const first = await service.stage("secret", "route-a", { tool: "route_to_agent", target: "writer", assignment: "Draft" });
+    const second = await service.stage("secret", "route-b", { tool: "route_to_agent", target: "review", assignment: "Review instead" });
+    const publication = await service.stage("secret", "publication", { tool: "publish_artifact", path: "report.md", title: "Report", kind: "document", description: "Evidence" });
+    expect(JSON.parse(await fs.readFile(stagingPath, "utf8"))).toEqual([first, second, publication]);
+    expect(await service.stage("secret", "route-b", second.action)).toEqual(second);
+    await expect(service.stage("secret", "route-b", first.action)).rejects.toThrow("callId was already used");
   });
+
 
   it("stages only through the server-owned service and revokes the bearer", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-control-bridge-"));
@@ -397,38 +353,20 @@ describe("orchestration control bridge", () => {
     }
   });
 
-  it("accepts one idempotent group-management decision and locks conflicting decisions", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-group-control-"));
-    roots.push(root);
+  it("accepts multiple group-management instructions with distinct call IDs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "multiple-group-decisions-")); roots.push(root);
     const stagingPath = path.join(root, "actions.json");
-    const service = new ControlActionService({
-      projectId: "prj_group",
-      agent: "caller",
-      invocationId: "inv_leader",
-      stateVersion: 9,
-      capability: "secret",
-      stagingPath,
-      revalidate: async () => {}
-    });
-    const action = {
-      tool: "assign_group_tasks" as const,
-      groupRunId: "grun_1",
-      coordinatorEpoch: 3,
-      tasks: [{ taskId: "task_scoped", assignment: "Implement the scoped change.", assigneeAgentId: "worker_a" }]
-    };
-
+    const service = new ControlActionService({ projectId: "p", agent: "main", invocationId: "inv", stateVersion: 3,
+      capability: "secret", stagingPath, revalidate: async () => {} });
+    const action: ControlAction = { tool: "assign_group_tasks", groupRunId: "G", coordinatorEpoch: 3,
+      tasks: [{ taskId: "first", assignment: "Implement" }] };
     const first = await service.stage("secret", "assign-1", action);
-    const repeated = await service.stage("secret", "assign-2", action);
-    expect(repeated).toEqual(first);
-    expect(JSON.parse(await fs.readFile(stagingPath, "utf8"))).toHaveLength(1);
-
-    await expect(service.stage("secret", "complete-1", {
-      tool: "complete_group",
-      groupRunId: "grun_1",
-      coordinatorEpoch: 3,
-      output: "Final PR merged."
-    })).rejects.toThrow("decision is already locked");
+    const second = await service.stage("secret", "assign-2", { ...action, tasks: [{ taskId: "second", assignment: "Verify" }] });
+    const completion = await service.stage("secret", "complete", { tool: "complete_group", groupRunId: "G", coordinatorEpoch: 3, output: "Actual result" });
+    expect(JSON.parse(await fs.readFile(stagingPath, "utf8"))).toEqual([first, second, completion]);
+    expect(await service.stage("secret", "assign-1", action)).toEqual(first);
   });
+
 
   it("returns a structured semantic rejection without staging or locking the retry", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-group-preflight-"));

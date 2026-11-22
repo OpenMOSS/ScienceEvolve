@@ -77,7 +77,7 @@ for (const resource of ["SKILL.md", "references/workflow.md", "references/usage.
   assert.ok(metadata.files.some(({ path: file }) => file === `skills/scienceevolve-sdk/${resource}`), `Missing SDK authoring skill resource: ${resource}`);
 }
 npm(["install", "--ignore-scripts", "--no-audit", "--no-fund", path.join(target, metadata.filename)], target);
-for (const name of ["mcp-client.mjs", "project-mcp-source.mjs", "main-runtime-consumer.mjs", "main-sdk-consumer.mjs", "main-cli-consumer.mjs", "main-examples-consumer.mjs"]) await copyFile(path.join(sdkRoot, "tests/fixtures", name), path.join(target, name));
+for (const name of ["mcp-client.mjs", "project-mcp-source.mjs", "main-runtime-consumer.mjs", "sqlite-writer-consumer.mjs", "main-sdk-consumer.mjs", "main-cli-consumer.mjs", "main-examples-consumer.mjs"]) await copyFile(path.join(sdkRoot, "tests/fixtures", name), path.join(target, name));
 for (const name of ["01-ahe-evolve", "02-software-development", "dynamic-research-workflow"]) {
   const directory = path.join(target, "main-example-configs", name);
   await mkdir(directory, { recursive: true });
@@ -85,6 +85,7 @@ for (const name of ["01-ahe-evolve", "02-software-development", "dynamic-researc
 }
 const mainOutput = execFileSync(process.execPath, [path.join(target, "main-runtime-consumer.mjs")], { cwd: target, encoding: "utf8", timeout: 60_000 });
 console.log(mainOutput.trim());
+console.log(execFileSync(process.execPath, [path.join(target, "sqlite-writer-consumer.mjs")], { cwd: target, encoding: "utf8", timeout: 90_000 }).trim());
 const mainSdkOutput = execFileSync(process.execPath, [path.join(target, "main-sdk-consumer.mjs")], { cwd: target, encoding: "utf8", timeout: 60_000 });
 console.log(mainSdkOutput.trim());
 const mainCliOutput = execFileSync(process.execPath, [path.join(target, "main-cli-consumer.mjs")], { cwd: target, encoding: "utf8", timeout: 120_000 });

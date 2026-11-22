@@ -21,6 +21,7 @@ import { toolsFor, visibleToolNamesForPrompt, type CapabilityContext } from "../
 import { compileInvocationPolicy, compileWorkflowPrompt } from "../../src/core/harness-runtime/invocation-policy.js";
 import { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";
 import type { ProjectStateEntry } from "../../src/core/project-state.js";
+import { MAX_TASK_REPAIR_WAKEUPS } from "../../src/core/task-supervision.js";
 
 const PROJECT = `prj_${"c".repeat(32)}`;
 const HEAD = "7".repeat(40);
@@ -86,7 +87,7 @@ async function fixture(scope: "outer" | "legacy" | "closed" = "closed", leaders 
   if(replaceLeaders)raw.prepare("UPDATE scoped_group_runs SET leader_agent_id='replacement'").run();
   raw.prepare(`INSERT INTO ${scope === "closed" ? "scoped_operations" : "operations"}(operation_id,project_id,kind,payload_hash,status,owner_execution_id,
     ownership_epoch,expected_head,expected_base,created_at,updated_at) VALUES ('original-push',?,'git.push',?,'uncertain','old-execution',1,?,'executions/old-execution',?,?)`).run(PROJECT,"a".repeat(64),HEAD,ts,ts);
-  for (const attempt of [1,2]) {
+  for (let attempt = 1; attempt <= MAX_TASK_REPAIR_WAKEUPS; attempt++) {
     raw.prepare(`INSERT INTO project_events(project_id,seq,event_id,request_id,occurred_at,event_type,agent_id,execution_id,ownership_epoch,payload_json)
       SELECT ?,next_event_seq,?,?,?,?,'worker',?,?,? FROM project_heads WHERE project_id=?`).run(PROJECT,`evt_repair_${attempt}`,`old-repair-${attempt}`,ts,
       scope === "closed" ? "scoped.agent.mechanism_repair.requested" : "execution.mechanism_repair.requested",
@@ -228,7 +229,7 @@ describe("running-workflow receipt coordinator MCP transport", () => {
     expect(business(f.database)).toEqual(before);
   });
 
-  it.each(["leader", "main", "main-as-leader"] as const)("allocates only the %s role's tools and saves that Agent's own finish/memory", async role => {
+  it.each(["leader", "main", "main-as-leader"] as const)("keeps the %s Agent's ordinary tools alongside receipt coordination and saves its own finish/memory", async role => {
     const m = await managerControl(role, role === "main");
     const before = business(m.f.database);
     try {
@@ -236,7 +237,8 @@ describe("running-workflow receipt coordinator MCP transport", () => {
         : m.call("coordinate_agent_receipt", { callId: "escalate", incidentId: m.turn.incidentId, operation: "escalate", rationale: "My direct parent should inspect this evidence" });
       const replies = await m.run([{ method: "tools/list" }, m.call("finish_task", { callId: "finish", summary: "I inspected the evidence", memory: "My actual coordination memory" }), decision]);
       const names = replies[0].result?.tools?.map(tool => tool.name);
-      expect(names).toEqual(role === "main" ? ["finish_task", "coordinate_agent_receipt", "request_user"] : ["finish_task", "coordinate_agent_receipt"]);
+      expect(names).toEqual(["finish_task", "coordinate_agent_receipt", "publish_artifact",
+        ...(role === "leader" ? [] : ["select_display"]), ...(role === "main" ? ["request_user"] : [])]);
       expect(visibleToolNamesForPrompt(m.authority.control, m.request.kind)).toEqual(names);
       expect(replies.slice(1).every(reply => !reply.error && !reply.result?.isError)).toBe(true);
       expect(business(m.f.database)).toEqual(before);
@@ -264,7 +266,7 @@ describe("running-workflow receipt coordinator MCP transport", () => {
     } finally { await m.bridge.close(); }
   });
 
-  it("rejects foreign incidents, business tools, user calls from a Leader and extra fields before recording anything", async () => {
+  it("rejects foreign incidents, missing authority and extra fields before recording anything", async () => {
     const m = await managerControl("main-as-leader");
     try {
       const replies = await m.run([
@@ -294,7 +296,7 @@ describe("running-workflow receipt coordinator MCP transport", () => {
     } finally { await m.bridge.close(); }
   });
 
-  it("equivalent repeats retain the first receipt and a changed decision cannot replace it", async () => {
+  it("retains the first completion receipt and records each pending decision, using the latest choice", async () => {
     const m = await managerControl();
     try {
       const finish = { summary: "I inspected the issue", memory: "My first memory" };
@@ -304,10 +306,11 @@ describe("running-workflow receipt coordinator MCP transport", () => {
         m.call("coordinate_agent_receipt", { callId: "retry-first", ...retry }), m.call("coordinate_agent_receipt", { callId: "retry-repeat", ...retry }),
         m.call("coordinate_agent_receipt", { callId: "changed", ...retry, operation: "escalate" })
       ]);
-      expect(replies.slice(0, 4).every(reply => !reply.error && !reply.result?.isError)).toBe(true);
-      expect(replies[4].result?.isError).toBe(true);
+      expect(replies.every(reply => !reply.error && !reply.result?.isError)).toBe(true);
       const current = m.f.database.terminalPushCoordinatorTurns(PROJECT)[0];
-      expect(current.completion?.callId).toBe("finish-first"); expect(current.stagedDecision?.callId).toBe("retry-first");
+      expect(current.completion?.callId).toBe("finish-first"); expect(current.stagedDecision?.callId).toBe("changed");
+      expect(m.f.database.eventsAfter(PROJECT).filter(event => event.type === "agent.terminal_push_coordinator.decision.staged"))
+        .toHaveLength(3);
       expect(await fs.readFile(m.oldMemory, "utf8")).toBe("Original persistent role memory\n");
     } finally { await m.bridge.close(); }
   });
@@ -332,15 +335,17 @@ describe("running-workflow receipt coordinator MCP transport", () => {
     } finally { await m.bridge.close(); }
   });
 
-  it("restricts Main user help to its explicit grant and rejects mixed scope authority", async () => {
+  it("retains configured tools and checks actual caller identity and the explicit user-intervention grant", async () => {
     const m = await managerControl("main");
     try {
       const context = { ...m.context, secret: "catalog-only" };
-      expect(toolsFor(context).map(tool => tool.name)).toEqual(["finish_task", "coordinate_agent_receipt"]);
-      for (const extra of [{ allowAgentGitActions: true }, { terminalPushObservation: { operationId: "original-push" } },
-        { candidates: ["worker"] }, { mainCapabilities: {} }, { stateVersion: m.turn.coordinatorEpoch + 1 },
-        { agent: "other-agent" }, { terminalPushCoordination: { ...m.scope, unexpected: true } }]) {
-        expect(() => toolsFor({ ...context, ...extra } as CapabilityContext)).toThrow(/exact manager-only/);
+      expect(toolsFor(context).map(tool => tool.name)).toEqual(["finish_task", "coordinate_agent_receipt", "publish_artifact", "select_display"]);
+      expect(toolsFor({ ...context, allowAgentGitActions: true }).map(tool => tool.name)).toContain("git_log");
+      expect(toolsFor({ ...context, candidates: ["worker"] }).map(tool => tool.name)).toContain("route_to_agent");
+      await expect(m.run([{ method: "tools/list" }], { terminalPushCoordination: { ...m.scope, unexpected: true } })).rejects.toThrow(/scope/);
+      for (const overrides of [{ agent: "other-agent" }, { stateVersion: m.turn.coordinatorEpoch + 1 }]) {
+        const wrongCaller = await m.run([m.call("finish_task", { callId: "wrong-caller" })], overrides);
+        expect(wrongCaller[0].result?.isError).toBe(true);
       }
       const replies = await m.run([m.call("request_user", { callId: "not-granted", message: "Help", rationale: "Missing user grant" })]);
       expect(replies[0].result?.isError).toBe(true);
@@ -366,7 +371,7 @@ describe("running-workflow receipt coordinator MCP transport", () => {
         inboxPath: "/test/inbox", memoryPath: "/test/memory", schemaPath: "/test/schema" };
       const policy = compileInvocationPolicy(config, request);
       const prompt = compileWorkflowPrompt(request, inputs, policy);
-      expect(policy).toMatchObject({ permission: "workspace", webSearch: false, skillPaths: [], autoSkillPaths: [], mcpServers: [] });
+      expect(policy).toMatchObject({ permission: "workspace", webSearch: config.webSearch, skillPaths: [], autoSkillPaths: [], mcpServers: [] });
       expect(prompt).toContain("coordinate_agent_receipt"); expect(prompt).toContain("direct parent coordinator");
       expect(prompt).not.toContain(config.instructions);
       const worker = { ...request, terminalPushCoordination: undefined, control: undefined, permission: "yolo" as const,
@@ -380,6 +385,16 @@ describe("running-workflow receipt coordinator MCP transport", () => {
 });
 
 describe("historical terminal receipt coordination state", () => {
+  it("keeps Main eligible as the original delivery owner of a historical push", async () => {
+    const f = await fixture("closed");
+    const sql = new DatabaseSync(f.databasePath);
+    try { sql.prepare("UPDATE scoped_executions SET agent_id = 'main' WHERE execution_id = 'old-execution'").run(); }
+    finally { sql.close(); }
+    expect(f.database.terminalPushObservationCandidates(PROJECT)).toMatchObject([
+      { executionId: "old-execution", agentId: "main", originalInvocationId: "inv_original_worker" }
+    ]);
+  });
+
   it("restores a historical scoped coordinator from its original root node when nested Agent arrivals have no node row", async () => {
     const f = await fixture("closed", undefined, false, true);
     const raw = new DatabaseSync(f.databasePath);
@@ -440,7 +455,7 @@ describe("historical terminal receipt coordination state", () => {
     expect(f.incident.coordinators.map(entry=>entry.agentId)).toEqual(expected);
     expect(f.incident.coordinators.at(-1)).toEqual({agentId:"main",role:"main"});
     expect(f.database.recordTerminalPushCoordinationIncident(f.input)).toEqual(f.incident);
-    expect(f.database.terminalPushObservationRepairCount(PROJECT,"old-execution")).toBe(2);
+    expect(f.database.terminalPushObservationRepairCount(PROJECT,"old-execution")).toBe(MAX_TASK_REPAIR_WAKEUPS);
     expect(f.database.authoritativeWorkflowFiles(PROJECT).currentState.terminalPushCoordinationIncidents).toEqual([f.incident]);
     expect(f.database.authoritativeWorkflowFiles(PROJECT).currentState.terminalPushObservationOperations?.[0].id).toBe("original-push");
     expect(business(f.database)).toEqual(before);
@@ -479,8 +494,8 @@ describe("historical terminal receipt coordination state", () => {
       originalInvocationId:"inv_original_worker",previousInvocationId:"inv_original_worker",previousRuntimePath:originalRuntime,runtimePath:path.join(f.root,"runtime","inv_receipt_retry"),
       residentStopConfirmed:true as const,evidence:{fixtureTrustedOriginalNativeAbsence:true},coordination};
     const observation=f.database.beginTerminalPushObservation(input)!;
-    expect(observation).toMatchObject({attempt:3,worktreePath:f.worktree,nodeRunId:"old-node",coordination});
-    expect(f.database.terminalPushObservationRepairCount(PROJECT,"old-execution")).toBe(2);
+    expect(observation).toMatchObject({attempt:MAX_TASK_REPAIR_WAKEUPS + 1,worktreePath:f.worktree,nodeRunId:"old-node",coordination});
+    expect(f.database.terminalPushObservationRepairCount(PROJECT,"old-execution")).toBe(MAX_TASK_REPAIR_WAKEUPS);
     expect(f.database.terminalPushCoordinationIncidents(PROJECT)[0].status).toBe("retry-consumed");
     expect(f.database.terminalPushObservationContinuation(PROJECT,"old-execution","original-push")).toBeUndefined();
     expect(f.database.beginTerminalPushObservation(input)).toBeUndefined();
@@ -520,7 +535,7 @@ describe("historical terminal receipt coordination state", () => {
     expect(()=>f.database.beginTerminalPushCoordinator(f.reserveInput(0))).toThrow(/exact current level/);
     const parent=f.begin(); expect(parent.agentId).toBe("parent"); f.closeChoice(parent,"escalate");
     expect(f.database.terminalPushCoordinationIncidents(PROJECT)[0].level).toBe(2);
-    expect(f.database.terminalPushObservationRepairCount(PROJECT,"old-execution")).toBe(2);
+    expect(f.database.terminalPushObservationRepairCount(PROJECT,"old-execution")).toBe(MAX_TASK_REPAIR_WAKEUPS);
     expect(business(f.database)).toEqual(before);
   });
 
@@ -627,7 +642,7 @@ describe("historical terminal receipt coordination state", () => {
     const second = f.begin(0, true); f.result(second); f.stop(second);
     f.database.recordTerminalPushCoordinatorFailure({ ...second, reason: "Actual second reply session channel failed" });
     expect(f.database.terminalPushCoordinationIncidents(PROJECT)[0]).toMatchObject({ status: "manager-failed", userResponse: response });
-    expect(f.database.terminalPushObservationRepairCount(PROJECT, "old-execution")).toBe(2);
+    expect(f.database.terminalPushObservationRepairCount(PROJECT, "old-execution")).toBe(MAX_TASK_REPAIR_WAKEUPS);
     expect(business(f.database)).toEqual(before);
   });
 
@@ -651,11 +666,11 @@ describe("historical terminal receipt coordination state", () => {
     expect(f.database.terminalPushObservationContinuation(PROJECT, "old-execution", "original-push")).toBeUndefined();
   });
 
-  it("blocks normal native activity and another receipt while a historical manager owns the boundary",async()=>{
+  it("rejects an unbound native activity and duplicate receipt while retaining the manager's actual reservation",async()=>{
     const f=await fixture("legacy");const input=f.reserveInput();const turn=f.database.beginTerminalPushCoordinator(input)!;
     expect(f.database.beginTerminalPushCoordinator(input)).toBeUndefined();
     expect(()=>f.database.stageTerminalPushCoordinatorAction({...turn,controlCapabilityHash:turn.capabilityHash,envelope:f.envelope(turn,{tool:"finish_task"})})).toThrow(/exact live native authority/);
-    expect(()=>f.database.startRuntimeActivity({projectId:PROJECT,kind:"resident",phase:"test",invocationId:"inv_other",nodeRunId:"old-node",agentId:"worker"})).toThrow(/terminal receipt observation/);
+    expect(()=>f.database.startRuntimeActivity({projectId:PROJECT,kind:"resident",phase:"test",invocationId:"inv_other",nodeRunId:"old-node",agentId:"worker"})).toThrow(/exact route epoch/);
     expect(f.database.beginTerminalPushObservation({projectId:PROJECT,executionId:"old-execution",ownershipEpoch:2,agentId:"worker",invocationId:"inv_unapproved_receipt",operationId:"original-push",
       originalInvocationId:"inv_original_worker",previousInvocationId:"inv_original_worker",previousRuntimePath:path.join(f.root,"runtime","inv_original_worker"),runtimePath:path.join(f.root,"runtime","inv_unapproved_receipt"),
       residentStopConfirmed:true,evidence:{fixtureOriginalNativeAbsence:true}})).toBeUndefined();

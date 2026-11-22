@@ -50,7 +50,7 @@ describe("invocation policy", () => {
     expect(prompt).not.toContain("Current role and execution stage");
     expect(policy.constraintPrompt).toContain("Shell");
   });
-  it.each(["workspace", "compute", "yolo"] as const)("worktree closing removes %s business capabilities and names only the exact closing scope", permission => {
+  it.each(["workspace", "compute", "yolo"] as const)("worktree closing preserves configured %s capabilities and states its authorized assignment", permission => {
     const config = { instructions: "Implement my whole business mandate", experimentMcp: true,
       mcpServers: [{ name: "business", url: "https://example.invalid/mcp" }], webSearch: true, reasoningEffort: "high" } as AgentRunRequest["project"]["agents"][string];
     const original = structuredClone(config);
@@ -62,7 +62,7 @@ describe("invocation policy", () => {
       control: { stagingPath: "/runtime/actions.json", capability: "server", stateVersion: 2, candidates: [], decisionBy: "agent",
         allowUserIntervention: false, canComplete: false, allowAgentGitActions: true, requireBridge: true, worktreeClosing } } as unknown as AgentRunRequest;
     const policy = compileInvocationPolicy(config, request);
-    expect(policy).toMatchObject({ permission: "workspace", skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false });
+    expect(policy).toMatchObject({ permission, skillPaths: request.skillPaths, autoSkillPaths: request.autoSkillPaths, mcpServers: [...config.mcpServers, { name: "scienceevolve-sii", url: request.siiMcp!.url }], webSearch: config.webSearch });
     const prompt = compileWorkflowPrompt(request, { projectPath: "/project", workspacePath: "/worktree", inboxPath: "/runtime/inbox",
       memoryPath: "/worktree/agent-memory/worker/Memory.md", runtimePath: "/runtime", inboxSha256: "fixture" }, policy);
     expect(prompt).toContain("- wake reason: worktree-closing");
@@ -84,7 +84,7 @@ describe("invocation policy", () => {
     expect(compileInvocationPolicy(config, { ...request, siiMcp: { url: "http://127.0.0.1:12345/sii/task" } }).mcpServers)
       .toEqual([{ name: "business", url: "https://example.invalid/mcp" }, { name: "scienceevolve-sii", url: "http://127.0.0.1:12345/sii/task" }]);
   });
-  it.each(["workspace", "compute", "yolo"] as const)("terminal push receipt overrides %s business capabilities without changing the Agent configuration", (permission) => {
+  it.each(["workspace", "compute", "yolo"] as const)("terminal push receipt preserves configured %s capabilities and the Agent configuration", (permission) => {
     const config = { instructions: "Implement the whole business product and publish it", sessionPersistence: false,
       mcpServers: [{ name: "business", url: "https://example.invalid/mcp" }], webSearch: true, reasoningEffort: "high" } as AgentRunRequest["project"]["agents"][string];
     const original = structuredClone(config);
@@ -97,8 +97,8 @@ describe("invocation policy", () => {
         decisionBy: "agent", allowUserIntervention: false, canComplete: false, allowAgentGitActions: true,
         terminalPushObservation: observation, requireBridge: true } } as unknown as AgentRunRequest;
     const policy = compileInvocationPolicy(config, request);
-    expect(policy).toMatchObject({ permission: "workspace", skillPaths: [], autoSkillPaths: [], mcpServers: [],
-      webSearch: false, reasoningEffort: "high" });
+    expect(policy).toMatchObject({ permission, skillPaths: request.skillPaths, autoSkillPaths: request.autoSkillPaths, mcpServers: config.mcpServers,
+      webSearch: true, reasoningEffort: "high" });
     const prompt = compileWorkflowPrompt(request, { projectPath: "/fixture/project", workspacePath: "/fixture/workspace",
       inboxPath: "/runtime/inbox.md", memoryPath: "/fixture/workspace/agent-memory/worker/Memory.md", runtimePath: "/runtime", inboxSha256: "fixture" }, policy);
     expect(prompt).toContain("- wake reason: terminal-push-observation");
@@ -107,7 +107,7 @@ describe("invocation policy", () => {
     expect(prompt).toContain("provider returns its actual result directly to you");
     expect(prompt).toContain("finish_task for this supplement");
     expect(prompt).toContain("项目入口：/fixture/project");
-    expect(policy.mcpServers).toEqual([]);
+    expect(policy.mcpServers).toEqual(config.mcpServers);
     expect(prompt).not.toContain("Implement the whole business product");
     expect(prompt).not.toContain("call git_push");
     expect(prompt).not.toContain("github_create_pr");

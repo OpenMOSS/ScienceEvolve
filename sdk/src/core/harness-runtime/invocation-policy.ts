@@ -17,30 +17,6 @@ export function compileInvocationPolicy(
   request: Pick<AgentRunRequest,
     "permission" | "skillPaths" | "autoSkillPaths" | "control" | "executionContext" | "terminalPushObservation" | "terminalPushCoordination" | "worktreeClosing" | "siiMcp">
 ): InvocationPolicy {
-  if (request.worktreeClosing) {
-    return {
-      permission: "workspace",
-      constraintPrompt: "ScienceEvolve permission mode: workspace. This finite turn closes only the exact files in your original Leader's grant. Read evidence and edit the authorized files with native Harness tools. Use the invocation-bound Git tools for necessary checkpoint/publication. Keep this turn within the closing assignment; Git state changes use platform tools. No new research or experiment is authorized.",
-      skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false,
-      reasoningEffort: config.reasoningEffort
-    };
-  }
-  if (request.terminalPushCoordination) {
-    return {
-      permission: "workspace",
-      constraintPrompt: "ScienceEvolve permission mode: workspace. This invocation coordinates one assigned Agent receipt issue in the running workflow. Read its actual evidence, Inbox and persistent memory with native file tools. Submit only your own coordination decision, finish_task and memory through the assigned control tools. The system transports your decision; it must not perform another Agent's work or choose retry/escalation/user help for you.",
-      skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false,
-      reasoningEffort: config.reasoningEffort
-    };
-  }
-  if (request.terminalPushObservation) {
-    return {
-      permission: "workspace",
-      constraintPrompt: "ScienceEvolve permission mode: workspace. This is a completed-task historical push receipt turn. Read the original Inbox, persistent memory and workspace evidence with native file tools. Business files are read-only. Only the injected invocation-bound control tools may record this supplement's receipt and Agent-authored memory.",
-      skillPaths: [], autoSkillPaths: [], mcpServers: [], webSearch: false,
-      reasoningEffort: config.reasoningEffort
-    };
-  }
   return {
     permission: request.permission,
     constraintPrompt: PERMISSION_PROMPTS[request.permission],

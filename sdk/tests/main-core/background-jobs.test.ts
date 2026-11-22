@@ -23,6 +23,18 @@ async function fixture() {
   return { root, scope, child, call, current };
 }
 describe.runIf(process.platform === "linux")("native background handoff", () => {
+  it("stops only the exact invocation selected by Main while preserving another running job", async () => {
+    const f = await fixture(); await f.call("register");
+    const siblingScope = { ...f.scope, invocationId: "sibling-invocation" };
+    const sibling = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: f.scope.workspacePath, detached: true, stdio: "ignore",
+      env: { PATH: process.env.PATH, SCIENCEEVOLVE_PROJECT_ID: f.scope.projectId, SCIENCEEVOLVE_AGENT_NAME: f.scope.agentId } });
+    children.push(sibling); await new Promise<void>((resolve, reject) => { sibling.once("spawn", resolve); sibling.once("error", reject); });
+    await requestNativeBackgroundJob(siblingScope, { operation: "register", jobId: "sibling", pid: sibling.pid }, f.current);
+    await nativeBackgroundJobLifecycle(f.scope.projectPath, "stop", () => {}, { agentId: f.scope.agentId, invocationId: f.scope.invocationId });
+    expect(await f.call("status")).toMatchObject({ state: "exited" });
+    expect(await requestNativeBackgroundJob(siblingScope, { operation: "status", jobId: "sibling" }, f.current)).toMatchObject({ state: "running", pid: sibling.pid });
+  });
+
   it("retains the actual isolated job across turns and applies real project pause/resume/stop", async () => {
     const { scope, child, call, current } = await fixture();
     expect(await call("register")).toMatchObject({ state: "running", pid: child.pid, invocationId: "original", executionId: "retained-task" });

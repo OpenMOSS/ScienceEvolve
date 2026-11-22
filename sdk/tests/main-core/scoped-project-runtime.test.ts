@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -51,7 +52,7 @@ afterEach(async () => { vi.unstubAllEnvs(); stores.splice(0).forEach((store) => 
 
 async function fixture(mainRouting = false, scenario: { nested?: boolean; allowUserIntervention?: boolean; businessAgentCount?: number; failIdeaOnce?: boolean; recovery?: "retry" | "skip" | "user";
   failLeaderGroup?: string; failLeaderTimes?: number; failGlobalMainTimes?: number; failPlanGroup?: string; rootLeader?: string;
-  transientLeaderFailures?: number;
+  transientLeaderFailures?: number; allowMainReconfiguration?: boolean;
   agentWeakRouting?: boolean; completionReadsPublishedFacts?: boolean; userWorkflowAdjustment?: boolean;
   directMainStateCoordination?: boolean; singleNecessaryArrival?: boolean;
   uncertainPushAfterMerge?: boolean;
@@ -60,6 +61,7 @@ async function fixture(mainRouting = false, scenario: { nested?: boolean; allowU
   const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
   let workflow = cloneAgentOrchestrationTemplate(); workflow.schemaVersion = 3;
   workflow.allowUserIntervention = scenario.allowUserIntervention !== false;
+  if (scenario.allowMainReconfiguration !== undefined) workflow.allowMainReconfiguration = scenario.allowMainReconfiguration;
   workflow.collaborations = [{ id: "G", displayName: "G", memberAgentIds: [], renamePolicy: "editable" }];
   workflow.scopedWorkflow = { schemaVersion: 1, rootAgentIds: workflow.agents.map((agent) => agent.name), groups: [{ id: "G",
     leaderAgentId: "main", allowLeaderReconfiguration: false, workflow: {
@@ -104,7 +106,7 @@ async function fixture(mainRouting = false, scenario: { nested?: boolean; allowU
     delete direct.routes.G_execution;
   }
   if (scenario.workflowAdjustment || scenario.userWorkflowAdjustment) {
-    if (scenario.workflowAdjustment) workflow.scopedWorkflow.groups[0].allowLeaderReconfiguration = true;
+    if (scenario.workflowAdjustment) workflow.allowMainReconfiguration = true;
     workflow.termination.agent = "G";
     for (const [source, edges] of Object.entries(workflow.routes)) if (source !== "G") workflow.routes[source] = edges.filter(edge => edge.target !== "finish");
     workflow = normalizeAgentOrchestrationTemplate(workflow);
@@ -270,8 +272,13 @@ async function fixture(mainRouting = false, scenario: { nested?: boolean; allowU
         else if (scope.role === "scoped-agent" && scope.candidates.length) action = { tool: "route_to_agent", target: scope.candidates[0], rationale: "Local Agent-owned route" };
         if (scenario.workflowAdjustment && !adjustmentProposed && scope.role === "scoped-leader" && input.request.workflowContext?.purpose === "plan") {
           adjustmentProposed = true;
+          expect(input.request.agent).toBe("main");
+          expect(input.request.workflowContext?.scope).toBe("global");
+          expect(input.request.project.orchestration.scopedWorkflow!.groups[0].allowLeaderReconfiguration).toBe(false);
+          expect(authority.control.collaboration?.allowReconfiguration).toBe(true);
           const file = authority.control.workflowAuthoringPath!;
           const document = JSON.parse(await readFile(file, "utf8")); document.agents.idea.instructions = "Exact live scoped proposal";
+          document.agents.writing.instructions = "Main changes configuration outside the group";
           if (scenario.workflowAdjustment === "late-session") document.agents.idea.harness = "dsh";
           if (scenario.workflowAdjustment === "missing-version") delete document.baseVersion;
           if (scenario.workflowAdjustment === "stale-version") cycleConfiguration();
@@ -455,6 +462,67 @@ describe("scoped project native production composition", () => {
     expect(f.database.scopedAgentReport(id, execution.id, execution.ownershipEpoch)?.output).toBe(`Finished ${turn.invocationId}`);
     expect(f.database.executionSupervisionRepairCount(id, execution.id)).toBe(0);
     expect(f.database.scopedGroupIssues(id)).toEqual([]);
+  });
+
+  it.each([false, true])("settles the accepted scoped completion only after its original Leader stops, without another turn (historical release=%s)", async historicalRelease => {
+    const f = await fixture(), open = f.launcher.open.getMockImplementation()!;
+    let pending: CollaborationResidentOpenInput | undefined, closeOriginal: (() => Promise<void>) | undefined, allowStop = false;
+    f.launcher.open.mockImplementation(async input => {
+      const handle = await open(input), scope = input.controlScope;
+      if (scope?.role === "scoped-leader" && f.database.scopedGroupFinalMergeFact(id, scope.groupRunId)) {
+        expect(pending).toBeUndefined(); pending = input; closeOriginal = handle.close.getMockImplementation()!;
+        handle.close.mockRejectedValue(new Error("original management process still alive"));
+      }
+      return handle;
+    });
+    const observe = f.launcher.stopScopedForRecovery.getMockImplementation()!;
+    f.launcher.stopScopedForRecovery.mockImplementation(async input => {
+      const result = await observe(input);
+      if (pending && input.executionRuntimePath === pending.executionRuntimePath) {
+        if (!allowStop) return { ...result, stopped: false };
+        await closeOriginal!();
+      }
+      return result;
+    });
+    await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
+      outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
+    await expect(advanceUntilTerminal(f)).rejects.toThrow(/unconfirmed/);
+    const decisions = f.database.scopedAcceptedLeaderActions(id, "run-G").filter(entry => entry.envelope.action.tool === "complete_group");
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].envelope.invocationId).toBe(pending!.request.invocationId);
+    expect(f.database.scopedLeaderTurns(id).find(turn => turn.invocationId === pending!.request.invocationId)?.status).toBe("active");
+    expect(f.database.scopedGroupRun(id, "run-G")?.status).toBe("integrating");
+    const submitted = [...f.submitted], pulls = [...f.git.pulls];
+    const turn = f.database.scopedLeaderTurns(id).find(entry => entry.invocationId === pending!.request.invocationId)!;
+    const releaseRequest = `scoped-leader-release:${turn.invocationId}`;
+    if (historicalRelease) {
+      // Reconstruct the old release transaction on this disposable database. Its false receipt is immutable.
+      const raw = new DatabaseSync(f.options.databasePath);
+      try {
+        raw.exec("BEGIN IMMEDIATE");
+        raw.prepare("DELETE FROM lane_leases WHERE project_id=? AND lane='management' AND owner_id=?").run(id, `scoped-leader:${turn.invocationId}`);
+        raw.prepare("UPDATE scoped_leader_turns SET status='released', released_at=? WHERE project_id=? AND invocation_id=?").run(turn.createdAt, id, turn.invocationId);
+        raw.exec("COMMIT");
+      } finally { if (raw.isTransaction) raw.exec("ROLLBACK"); raw.close(); }
+      f.database.appendEvent({ projectId: id, requestId: releaseRequest, agentId: turn.agentId, invocationId: turn.invocationId,
+        type: "scoped.leader.released", payload: { groupRunId: turn.groupRunId, managementSlot: 1, originalWriterLeaseEpoch: turn.writerLeaseEpoch, nativeStopConfirmed: false } });
+    }
+    const recovered = await ScopedProjectRuntime.create(f.dependencies);
+    await expect(recovered.advance("run-G")).rejects.toThrow(/unconfirmed native process/);
+    allowStop = true;
+    expect((await recovered.advance("run-G")).status).toBe("completed");
+    expect(f.database.scopedAcceptedLeaderActions(id, "run-G").filter(entry => entry.envelope.action.tool === "complete_group")).toEqual(decisions);
+    expect(f.database.eventsAfter(id, 0, 10000).filter(e => e.type === "scoped.group.completed")).toHaveLength(1);
+    expect(f.submitted).toEqual(submitted); expect([...f.git.pulls]).toEqual(pulls);
+    if (historicalRelease) {
+      expect(f.database.eventByRequestId(id, releaseRequest)?.payload.nativeStopConfirmed).toBe(false);
+      const proof = f.database.eventsAfter(id, 0, 10000).filter(event => event.type === "scoped.leader.stop_reconciled");
+      expect(proof).toMatchObject([{ invocationId: turn.invocationId, coordinatorEpoch: turn.coordinatorEpoch,
+        payload: { evidence: { runtimePath: turn.runtimePath, nativeProcessScanCleared: true } } }]);
+      const scans = f.launcher.stopScopedForRecovery.mock.calls.length;
+      await recovered.reconcileResidents();
+      expect(f.launcher.stopScopedForRecovery).toHaveBeenCalledTimes(scans);
+    }
   });
 
   it("lets the Leader complete a returned final task with an unfinished PR after the shared allowance", async () => {
@@ -1064,6 +1132,8 @@ describe("scoped project native production composition", () => {
         expect(records[0]).toMatchObject({ status: workflowAdjustment === "withdraw" ? "withdrawn" : "applied",
           proposal: { agents: { idea: { instructions: "Exact live scoped proposal" } } } });
         expect(f.state.agents.idea.instructions).toBe(workflowAdjustment === "withdraw" ? before : "Exact live scoped proposal");
+        expect(records[0].source).toMatchObject({ kind: "main", scope: { kind: "scoped", groupRunId: "run-G" } });
+        if (workflowAdjustment !== "withdraw") expect(f.state.agents.writing.instructions).toBe("Main changes configuration outside the group");
         expect(events.find(event => event.type === "scoped.management.round.completed" && Array.isArray(event.payload.workflowAdjustments))?.payload.workflowAdjustments)
           .toEqual([expect.objectContaining({ status: workflowAdjustment === "withdraw" ? "withdrawn" : "applied" })]);
         expect(events.filter(event => event.type === "scoped.workflow.proposal.staged")).toHaveLength(1);
@@ -1074,6 +1144,24 @@ describe("scoped project native production composition", () => {
       expect(f.database.projectState(f.state.id).scopedExecutions!.filter(execution => execution.agentId === "idea")).toHaveLength(2);
     }
   );
+
+  it("lets authorized Main keep the workflow unchanged without a forced adjustment or extra management wake", async () => {
+    const f = await fixture(false, { allowMainReconfiguration: true });
+    const initial = structuredClone(f.state.orchestration);
+    await f.runtime.activate(rootActivation);
+    expect((await advanceUntilTerminal(f)).status).toBe("completed");
+    const management = f.opened.filter(entry => entry.controlScope?.role === "scoped-leader");
+    expect(management.length).toBeGreaterThan(0);
+    for (const entry of management) {
+      expect(entry.request.agent).toBe("main");
+      expect(entry.request.workflowContext?.scope).toBe("global");
+      expect(entry.controlScope).toMatchObject({ allowReconfiguration: true });
+    }
+    expect(f.database.workflowAdjustments(id)).toEqual([]);
+    expect(f.state.workflowRevision).toBe(1);
+    expect(f.state.orchestration).toEqual(initial);
+    expect(f.database.eventsAfter(id, 0, 10_000).filter(event => event.type === "scoped.management.mechanism_repair.requested")).toEqual([]);
+  });
 
   it("awaits closing discovery before publishing retained workflow changes and entering business admission", async () => {
     const f = await fixture(), calls: string[] = [];
@@ -2103,9 +2191,10 @@ describe("scoped project native production composition", () => {
           expect(turn.inputId).toContain(":supervision:1");
           expect(turn.prompt).toContain("Remaining facts: finish_task");
           for (const arrivalRequestId of scope.failedArrivalRequestIds) expect(turn.prompt).toContain(arrivalRequestId);
-          await expect(service.stage(authority.control.capability, "replace-during-finish", { tool: "coordinate_group_task", groupRunId: scope.groupRunId,
-            coordinatorEpoch: scope.coordinatorEpoch, arrivalRequestId: scope.failedArrivalRequestIds[0], operation: "escalate", rationale: "Replace a staged choice" }))
-            .rejects.toThrow("staged decision cannot be replaced");
+          await service.stage(authority.control.capability, "escalate-during-finish", { tool: "coordinate_group_task", groupRunId: scope.groupRunId,
+            coordinatorEpoch: scope.coordinatorEpoch, arrivalRequestId: scope.failedArrivalRequestIds[0], operation: "escalate", rationale: "Ask the parent to inspect" });
+          await service.stage(authority.control.capability, "revise-pending-choice", { tool: "coordinate_group_task", groupRunId: scope.groupRunId,
+            coordinatorEpoch: scope.coordinatorEpoch, arrivalRequestId: scope.failedArrivalRequestIds[0], operation: "retry", rationale: "Continue after inspecting the retained evidence" });
         }
         submissions += 1;
         for (const original of originals) expect(f.database.scopedExecution(id, original.execution.id)).toMatchObject({ status: "failed", ownershipEpoch: 1 });
@@ -2123,7 +2212,7 @@ describe("scoped project native production composition", () => {
     const result = await advanceUntilTerminal(f);
     expect(result.status, JSON.stringify({ issues: result.issues, failures: f.database.scopedManagementFailures(id) })).toBe("completed"); expect(recoveryInvocation).toBeDefined();
     const decisions = f.database.scopedAcceptedLeaderActions(id, "run-G").filter((entry) => entry.envelope.invocationId === recoveryInvocation);
-    expect(decisions).toHaveLength(2);
+    expect(decisions).toHaveLength(missingFinish ? 4 : 2);
     expect(decisions.map((entry) => entry.envelope.action)).toEqual(expect.arrayContaining(originals.map(({ arrival }) => ({ tool: "coordinate_group_task", groupRunId: "run-G",
       coordinatorEpoch: f.database.scopedLeaderTurns(id).find((turn) => turn.invocationId === recoveryInvocation)!.coordinatorEpoch, arrivalRequestId: arrival.requestId,
       operation: "retry", rationale: "Continue this original Agent's retained work" }))));
@@ -2972,7 +3061,7 @@ describe("scoped project native production composition", () => {
   });
 
   it.each(["missing_finish", "receipt_failure", "missing_decision"] as const)(
-    "repairs scoped management %s while preserving its original plan and completion receipt", async (mode) => {
+    "repairs scoped management %s and executes the Agent's latest pending plan", async (mode) => {
       const f = await fixture(); f.state.agents.main.sessionPersistence = false;
       const open = f.launcher.open.getMockImplementation()!;
       const saveCompletion = f.storage.requestTaskCompletion.bind(f.storage);
@@ -3031,8 +3120,7 @@ describe("scoped project native production composition", () => {
               expect(turn.prompt).toContain("formal plan control action"); await call(plan);
             } else {
               expect(turn.prompt).toContain("finish_task");
-              await expect(call({ ...plan, tasks: [{ taskId: scope.memberNodeIds[0], assignment: "Replacement plan" }] }))
-                .rejects.toThrow("staged decision cannot be replaced");
+              await call({ ...plan, tasks: plan.tasks.map((task, index) => index === 0 ? { ...task, assignment: "Revised pending instruction" } : task) });
               await call(finish); await call(finish);
             }
           }
@@ -3045,11 +3133,11 @@ describe("scoped project native production composition", () => {
       expect((await advanceUntilTerminal(f)).status).toBe("completed");
       expect(turns, JSON.stringify(f.database.eventsAfter(id, 0, 10000).filter(e => e.type.includes("supervision")).map(e => ({ type: e.type, outcome: e.payload.outcome, missing: e.payload.missing, reason: e.payload.reason })))).toBe(2); expect(new Set(stagingPaths).size).toBe(2);
       expect(f.opened.filter((entry) => entry.request.invocationId === invocationId)).toHaveLength(1);
-      expect(f.database.scopedGroupPlan(id, "run-G")?.tasks[0].assignment).toContain("Original instruction");
+      expect(f.database.scopedGroupPlan(id, "run-G")?.tasks[0].assignment).toContain(mode === "missing_decision" ? "Original instruction" : "Revised pending instruction");
       const events = f.database.eventsAfter(id, 0, 10_000).filter((event) => event.invocationId === invocationId);
       expect(events.filter((event) => event.type === "scoped.leader.task.completed")).toHaveLength(1);
       expect(events.filter((event) => event.type === "scoped.management.mechanism_repair.requested")).toHaveLength(1);
-      expect(events.filter((event) => event.type === "scoped.leader.action.accepted")).toHaveLength(1);
+      expect(events.filter((event) => event.type === "scoped.leader.action.accepted")).toHaveLength(mode === "missing_decision" ? 1 : 2);
       expect(saveMemory).not.toHaveBeenCalled();
       const receipt = f.state.taskCompletions![`management:run-G:${invocationId}`];
       expect(receipt.memory).toBe("Own manager memory");
@@ -3597,7 +3685,8 @@ describe("scoped project native production composition", () => {
     const f = await fixture(false, { nested: true, recovery: "retry" }); f.git.conflictedFinalGroup = "J";
     await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
       outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
-    expect((await advanceUntilTerminal(f)).status).toBe("completed");
+    const result = await advanceUntilTerminal(f);
+    expect(result.status, JSON.stringify(result.issues)).toBe("completed");
     const group = f.database.projectState(id).scopedGroupRuns!.find((entry) => entry.groupId === "J")!;
     const repairManager = f.opened.find(entry => entry.controlScope?.role === "scoped-leader" &&
       entry.controlScope.recoveryOptions?.some(option => option.repairNodeIds.length));
@@ -3617,7 +3706,7 @@ describe("scoped project native production composition", () => {
     expect(f.database.scopedGroupIssues(id)).toEqual([]);
   });
 
-  it.each([false, true])("isolates real canonical final MCP receipts and returns a dirty-target blocker without unchanged supplements (blocked=%s)", async blocked => {
+  it.each([false, true])("isolates real canonical final MCP receipts and returns actual Git errors with at most three automatic reminders (blocked=%s)", async blocked => {
     const f = await fixture(false, blocked ? { recovery: "user" } : {});
     const open = f.launcher.open.getMockImplementation()!;
     const paths: string[] = []; const archived: string[] = []; const invocations: string[] = [];
@@ -3664,8 +3753,13 @@ describe("scoped project native production composition", () => {
       // A Leader may explicitly assign a new recovery. The failed Agent
       // turn itself must not receive unchanged automatic supplements.
       expect(paths.length).toBeGreaterThan(0);
-      expect(new Set(invocations).size).toBe(paths.length);
-      expect(f.database.scopedGroupIssues(id).map(issue => issue.reason).join("\n"), JSON.stringify(outcome)).toContain("final-manifest.json");
+      expect(paths).toHaveLength(4);
+      expect(new Set(invocations).size).toBe(1);
+      expect(f.database.executionSupervisionResult(id, "group-final-run-G", 1)).toMatchObject({ outcome: "exhausted" });
+      const finalResult = f.database.executionSupervisionResult(id, "group-final-run-G", 1)!;
+      expect(finalResult.missing).toContain("github_merge_pr");
+      expect(archived.join("\n")).toContain("canonical-merge");
+      expect(f.database.scopedGroupFinalMergeFact(id, "run-G")).toBeUndefined();
       expect(f.database.scopedGroupIssues(id).some(issue => issue.reason.includes("invalid orchestration control envelope"))).toBe(false);
     } else {
       expect(outcome.status).toBe("completed");
@@ -3675,6 +3769,122 @@ describe("scoped project native production composition", () => {
     }
     expect(f.git.closePullRequest).not.toHaveBeenCalled();
   });
+  it("starts an explicit final dispatch while its Leader's native turn is still active", async () => {
+    const f = await fixture();
+    const open = f.launcher.open.getMockImplementation()!;
+    let observed = false;
+    f.launcher.open.mockImplementation(async input => {
+      const handle = await open(input);
+      if (input.request.workflowContext?.purpose === "complete" && !f.database.scopedFinalIntegration(id, "run-G")) {
+        const submit = handle.submit.getMockImplementation()!;
+        handle.submit.mockImplementation(async turn => {
+          const result = await submit(turn);
+          await vi.waitFor(() => expect(f.opened.some(entry => entry.request.executionContext?.role === "delivery" &&
+            entry.request.executionContext.executionId === "group-final-run-G")).toBe(true));
+          expect(f.database.scopedLeaderTurns(id).find(entry => entry.invocationId === input.request.invocationId)?.status).toBe("active");
+          observed = true;
+          return result;
+        });
+      }
+      return handle;
+    });
+    await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
+      outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
+    expect((await f.runtime.advance("run-G")).status).toBe("completed");
+    expect(observed).toBe(true);
+  });
+
+  it.each(["idea", "execution", "main"])("executes a new explicit integration by %s after exhaustion without resetting automatic reminders", async owner => {
+    const f = await fixture();
+    const open = f.launcher.open.getMockImplementation()!;
+    let allowDelivery = false;
+    f.launcher.open.mockImplementation(async input => {
+      const handle = await open(input);
+      const final = input.controlScope?.role === "scoped-agent" && input.controlScope.executionId.startsWith("group-final-");
+      const holdLeader = input.request.workflowContext?.purpose === "complete" && f.database.scopedFinalIntegration(id, "run-G");
+      if (!allowDelivery && (final || holdLeader)) handle.submit.mockImplementation(async turn => {
+        const authority = await input.controlAuthorityFactory!({ request: input.request, turn });
+        const envelope: ControlActionEnvelope = { projectId: id, agent: input.request.agent, invocationId: turn.invocationId,
+          callId: "return-available-work", stateVersion: authority.control.stateVersion, capabilityHash: authority.control.capabilityHash,
+          receivedAt: repository.observedAt, action: { tool: "finish_task" } };
+        await authority.revalidate(envelope, []);
+        return { handoff: "Return available results; no Git success is claimed", controlActions: [envelope] };
+      });
+      return handle;
+    });
+    await f.runtime.activate({ projectId: id, groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G", workflowRevision: 1,
+      outer: { nodeRunId: "node-G", inputSnapshotRef: "project:requirement", activatedByAgentId: "main" } });
+    expect((await f.runtime.advance("run-G")).status).toBe("waiting");
+    const original = f.database.scopedFinalIntegration(id, "run-G")!;
+    expect(f.database.executionSupervisionResult(id, original.id, 1)).toMatchObject({ outcome: "exhausted" });
+    const repairs = f.database.eventsAfter(id, 0, 10000).filter(event => event.type === "execution.mechanism_repair.requested");
+    const claimInput = { projectId: id, groupRunId: "run-G", agentId: "main", invocationId: "inv_new_explicit_assignment",
+      runtimePath: path.join(f.storage.projectDir(id), "runtime", "inv_new_explicit_assignment") };
+    const claim = f.database.claimScopedLeaderTurn(claimInput)!;
+    const identity = { ...claimInput, coordinatorEpoch: claim.coordinatorEpoch };
+    f.database.markScopedLeaderOpened(identity);
+    const envelope: ControlActionEnvelope = { projectId: id, agent: "main", invocationId: identity.invocationId,
+      stateVersion: claim.coordinatorEpoch, callId: "new-independent-delivery", capabilityHash: "a".repeat(64), receivedAt: repository.observedAt,
+      action: { tool: "request_group_integration", groupRunId: "run-G", coordinatorEpoch: claim.coordinatorEpoch,
+        integrationOwnerAgentId: owner, rationale: "Explicit new delivery with retained facts" } };
+    f.database.acceptScopedLeaderAction({ ...identity, coordinatorEpoch: claim.coordinatorEpoch, envelope, residentStopConfirmed: false });
+    expect(f.database.scopedFinalTaskReturned(id, "run-G")).toBe(false);
+    f.database.releaseScopedLeaderTurn({ ...identity, coordinatorEpoch: claim.coordinatorEpoch, residentStopConfirmed: true });
+    allowDelivery = true;
+    const nextResult = await f.runtime.advance("run-G");
+    expect(nextResult.status, JSON.stringify(nextResult.issues)).toBe("completed");
+    expect(f.database.scopedFinalIntegration(id, "run-G")?.ownershipEpoch).toBe(2);
+    const next = f.opened.find(entry => entry.request.executionContext?.role === "delivery" &&
+      entry.request.executionContext.executionId === original.id && entry.request.executionContext.ownershipEpoch === 2)!;
+    expect(next.request.agent).toBe(owner);
+    expect(f.database.executionSupervisionResult(id, original.id, 1)).toMatchObject({ outcome: "exhausted" });
+    expect(f.database.executionSupervisionResult(id, original.id, 2)).toMatchObject({ outcome: "resolved" });
+    expect(f.database.eventsAfter(id, 0, 10000).filter(event => event.type === "execution.mechanism_repair.requested")).toEqual(repairs);
+    expect(f.database.scopedGroupFinalMergeFact(id, "run-G")).toBeDefined();
+  });
+
+  it.each([false, true])("transports only explicit member help to the actual direct Leader (failure=%s)", async fail => {
+    const f = await fixture();
+    const execution = await reserveInterrupted(f, false);
+    const principal = { kind: "agent" as const, projectId: id, agentId: "idea", invocationId: "inv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+    const object = { kind: "execution", id: execution.id };
+    const current = f.database.projectStateRequest(principal, { operation: "get", object }) as { version: string };
+    f.database.projectStateRequest(principal, { operation: "patch", object, expectedVersion: current.version,
+      set: { requiredLeaderAction: "Main should inspect this" }, reason: "Retain actual error", callId: "note-only" });
+    expect(f.database.pendingLeaderRequests(id, "run-G")).toEqual([]);
+    const request = { operation: "request_leader", message: "Actual Git error: target Memory is pending", callId: "help-main" } as const;
+    const result = f.database.projectStateRequest(principal, request) as { requestId: string };
+    expect(result).toMatchObject({ status: "queued", targetAgentId: "main", groupRunId: "run-G" });
+    expect(f.database.projectStateRequest(principal, request)).toEqual(result);
+    expect(f.database.pendingLeaderRequests(id, "run-G")).toHaveLength(1);
+    const open = f.launcher.open.getMockImplementation()!;
+    f.launcher.open.mockImplementation(async input => {
+      if (input.request.workflowContext?.purpose !== "assist") return open(input);
+      if (fail) throw new Error("Original Leader native launch failed");
+      const handle = await open(input);
+      handle.submit.mockImplementation(async turn => {
+        const session = { schemaVersion: 1 as const, harnessId: f.state.agents.main.harness!, adapterVersion: "test",
+          nativeId: "session-main", generation: 1, durable: true, createdAt: repository.observedAt };
+        f.database.recordAgentNativeSessionBinding({ projectId: id, agentId: "main", invocationId: turn.invocationId,
+          runtimePath: input.executionRuntimePath, worktreePath: input.request.workspacePath,
+          executionContext: input.request.executionContext!, session });
+        await input.request.onNativeUserInput!({ kind: "user.message", invocationId: turn.invocationId, harnessId: session.harnessId,
+          eventId: "native-leader-help", message: turn.prompt }, session);
+        return { handoff: "I received the member's error and will decide what to do", controlActions: [] };
+      });
+      return handle;
+    });
+    const queued = f.database.pendingLeaderRequests(id, "run-G")[0];
+    const assist = (f.runtime.runtime as any).management.assistMember(f.database.scopedGroupRun(id, "run-G"), queued);
+    if (fail) await expect(assist).rejects.toThrow("Original Leader native launch failed"); else await assist;
+    expect(f.database.pendingLeaderRequests(id, "run-G")).toEqual([]);
+    const notification = f.database.agentCoordinationResults(id, "idea");
+    expect(notification).toEqual([expect.objectContaining({ type: fail ? "project.state.leader.failed" : "project.state.leader.received",
+      payload: expect.objectContaining({ requestId: result.requestId }) })]);
+    if (fail) expect(notification[0].payload.reason).toBe("Original Leader native launch failed");
+    expect(f.database.scopedAgentTurn(id, execution.id, 1)?.status).toBe("opened");
+  });
+
   it("builds actual immutable inputs, accepts formal Leader planning and preserves cwd/session for FIFO arrivals", async () => {
     const { runtime, database, opened, submitted, state, handles, closed } = await fixture();
     const inherited = 'Continue Main recovery; use project completion authority if available.\nKeep review result {"sum":5}.';

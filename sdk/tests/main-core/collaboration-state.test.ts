@@ -2278,7 +2278,7 @@ describe("Collaboration group activation and scheduling", () => {
     expectStateError(() => database.revalidateGroupControl(input), "INVALID_STATE_TRANSITION");
   });
 
-  it("atomically accepts one exact group control action with its authority check", async () => {
+  it("retains distinct pending group decisions and recovers the latest choice with its authority check", async () => {
     const { database } = await stateFixture();
     seedGroup(database);
     const group = database.projectState("project-1").groupRuns[0]!;
@@ -2336,6 +2336,16 @@ describe("Collaboration group activation and scheduling", () => {
       }),
       "IDEMPOTENCY_CONFLICT"
     );
+    const revised = { ...input, accepted: { ...input.accepted,
+      requestId: "accepted-group-semantic-revised", callId: "call-group-semantic-revised" },
+      action: { ...action, tasks: [{ ...action.tasks[0]!, assignment: "Revised pending assignment" }] } };
+    database.revalidateGroupControl(revised);
+    expect(database.acceptedGroupControlForInput({ projectId: "project-1", groupRunId: group.id,
+      actorAgentId: group.leaderAgentId, coordinatorEpoch: 1, inputId: input.accepted.inputId }))
+      .toMatchObject({ requestId: revised.accepted.requestId, action: revised.action });
+    expect(database.acceptedGroupControlAction({ projectId: "project-1", requestId: input.accepted.requestId,
+      nodeRunId: group.nodeRunId, groupRunId: group.id, coordinatorEpoch: 1, actorAgentId: group.leaderAgentId,
+      inputId: input.accepted.inputId, semanticInputHash: input.accepted.semanticInputHash })).toMatchObject({ action });
     database.confirmCoordinatorStopped({
       projectId: "project-1",
       groupRunId: group.id,
@@ -2366,7 +2376,7 @@ describe("Collaboration group activation and scheduling", () => {
       groupRunId: group.id,
       coordinatorEpoch: 2,
       invocationId: reboundInput.invocationId,
-      callId: input.accepted.callId,
+      callId: revised.accepted.callId,
       action: {
         tool: "assign_group_tasks",
         groupRunId: group.id,
@@ -2375,7 +2385,7 @@ describe("Collaboration group activation and scheduling", () => {
     });
     expect(database.rebindAcceptedGroupControlAction(reboundInput)).toMatchObject({
       coordinatorEpoch: 2,
-      callId: input.accepted.callId
+      callId: revised.accepted.callId
     });
     database.assignTasks({
       projectId: "project-1",
@@ -2384,7 +2394,7 @@ describe("Collaboration group activation and scheduling", () => {
       coordinatorEpoch: 2,
       tasks: [{
         id: "task-accepted",
-        assignment: "Durable assignment",
+        assignment: "Revised pending assignment",
         assigneeAgentId: "alice"
       }],
       requestId: "apply-rebound-accepted-task"
@@ -2499,7 +2509,7 @@ describe("Collaboration group activation and scheduling", () => {
     );
   });
 
-  it("accepts one Main decision followed by select_display and conflicts a changed slot", async () => {
+  it("retains multiple Main decisions and display selections while rejecting changed arguments on an existing request", async () => {
     const { database } = await stateFixture();
     const snapshot = {
       ...workflowSnapshot({ agents: ["main", "review"] }),
@@ -2571,6 +2581,17 @@ describe("Collaboration group activation and scheduling", () => {
       { sequence: 0, action: complete },
       { sequence: 1, action: display }
     ]);
+    const additional = [{ tool: "request_user" as const, message: "Main changed the pending choice", rationale: "Inspect a necessary decision" },
+      { ...display, primary: { ...display.primary, title: "Revised selection" } }];
+    for (const [index, action] of additional.entries()) {
+      const sequence = index + 2;
+      expect(database.revalidateMainRouteControl({ ...base, accepted: {
+        requestId: `accepted-main-control-${semanticInputHash}-${sequence}`, inputId: "stable-input",
+        invocationId: "invocation-main-multi", callId: `further-${sequence}`, semanticInputHash, sequence
+      }, action })).toMatchObject({ sequence, action });
+    }
+    expect(database.acceptedMainRouteActions({ projectId: "project-1", nodeRunId: "main-multi-action-node" }))
+      .toMatchObject([{ action: complete }, { action: display }, ...additional.map(action => ({ action }))]);
     expectStateError(
       () => database.revalidateMainRouteControl({
         ...base,
@@ -2594,19 +2615,19 @@ describe("Collaboration group activation and scheduling", () => {
       () => database.revalidateMainRouteControl({
         ...base,
         accepted: {
-          requestId: `accepted-main-control-${semanticInputHash}-2`,
+          requestId: `accepted-main-control-${semanticInputHash}-4`,
           inputId: "publish-input",
           invocationId: "publish-invocation",
           callId: "publish-call",
           semanticInputHash,
-          sequence: 2
+          sequence: 4
         },
         action: {
           tool: "publish_artifact",
           path: "main.md",
-          title: "Forbidden",
+          title: "Unbound publication",
           kind: "document",
-          description: "Main cannot publish"
+          description: "The invocation has no bound member delivery source"
         }
       }),
       "INVALID_STATE_TRANSITION"
@@ -6357,6 +6378,7 @@ describe("Collaboration event log and credential-free projection", () => {
     const fixture = await stateFixture();
     createProject(fixture.database);
     const leakedToken = "ghp_1234567890supersecret";
+    const operationId = "git-init-project-1";
     const failedInput = {
       attemptId: "git-initialization:project-1:1",
       projectId: "project-1",
@@ -6370,6 +6392,7 @@ describe("Collaboration event log and credential-free projection", () => {
       startedAt: "2026-09-22T00:01:00.000Z",
       finishedAt: "2026-09-22T00:01:01.000Z",
       metadata: {
+        operationId, attempt: 1,
         authorization: "Bearer abcdefghijklmnop",
         nested: { detail: `provider returned ${leakedToken}` },
         causeChain: [{ causeClass: "Error", message: `failed with ${leakedToken}` }]
@@ -6411,7 +6434,7 @@ describe("Collaboration event log and credential-free projection", () => {
       causeClass: "None",
       startedAt: "2026-09-22T00:01:02.000Z",
       finishedAt: "2026-09-22T00:01:03.000Z",
-      metadata: { attempt: 2 }
+      metadata: { operationId, attempt: 2 }
     });
     expect(succeeded.replay).toBe(false);
     const projection = fixture.database.projectState("project-1");
@@ -6444,8 +6467,10 @@ describe("Collaboration event log and credential-free projection", () => {
       clock: fixture.clock,
       instanceId: "instance-a"
     })).database;
+    expect(reopened.writerLease().epoch).toBe(lease.epoch + 1);
     expect(reopened.projectState("project-1").failureAttempts)
       .toEqual(projection.failureAttempts);
+    expect(reopened.projectState("project-1").failureSummary).toEqual(projection.failureSummary);
     expect(JSON.stringify(reopened.projectState("project-1")))
       .not.toMatch(/ghp_|Bearer\s|authorization/i);
   });

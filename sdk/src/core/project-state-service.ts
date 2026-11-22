@@ -10,8 +10,39 @@ const inFlight = new WeakMap<CollaborationStateDatabase, Map<string, { requestHa
 /** Provider access is an exact read selected by the current Main. It never
  * retries a business operation or manufactures an observation from a report. */
 export async function executeProjectStateRequest(database: CollaborationStateDatabase, principal: ProjectStatePrincipal,
-  value: unknown, services: { observePullRequest: (preparation: ProjectStatePullPreparation) => Promise<GitHubPullRequestFact | undefined> }): Promise<unknown> {
+  value: unknown, services: { observePullRequest: (preparation: ProjectStatePullPreparation) => Promise<GitHubPullRequestFact | undefined>;
+    stopAgent?: (target: import("./collaboration-state/contracts.js").RuntimeActivity) => Promise<void> }): Promise<unknown> {
   const input = validateProjectStateRequest(value);
+  if (input.operation === "stop_agent") {
+    const key = `agent-stop:${projectStateDigest({ principal, callId: input.callId })}`;
+    const requests = inFlight.get(database) ?? new Map<string, { requestHash: string; result: Promise<unknown> }>();
+    inFlight.set(database, requests);
+    const requestHash = projectStateDigest(input), pending = requests.get(key);
+    if (pending) {
+      if (pending.requestHash !== requestHash) throw new CollaborationStateError("IDEMPOTENCY_CONFLICT", "Stop callId already belongs to another request");
+      return pending.result;
+    }
+    const result = Promise.resolve().then(async () => {
+      const prepared = await database.prepareProjectStateAgentStop(principal, input);
+      if (prepared.result) {
+        if (prepared.result.status === "failed") throw new Error(prepared.result.error);
+        return { requestId: prepared.requestId, agentId: input.agentId, invocationId: input.invocationId, status: "stopped" };
+      }
+      try {
+        if (!services.stopAgent) throw new Error("Native Agent stop service is unavailable");
+        await services.stopAgent(prepared.target);
+      } catch (error) {
+        await database.recordProjectStateAgentStop(principal.projectId, prepared.requestId, {
+          status: "failed", error: redactTrace(error instanceof Error ? error.message : String(error))
+        });
+        throw error;
+      }
+      await database.recordProjectStateAgentStop(principal.projectId, prepared.requestId, { status: "stopped" });
+      return { requestId: prepared.requestId, agentId: input.agentId, invocationId: input.invocationId, status: "stopped" };
+    });
+    requests.set(key, { requestHash, result });
+    try { return await result; } finally { if (requests.get(key)?.result === result) requests.delete(key); }
+  }
   if (input.operation !== "reconcile_pull") return database.projectStateRequest(principal, input);
   const checked = await database.prepareProjectStatePullReconciliation(principal, input);
   if (checked.replay !== undefined) return checked.replay;

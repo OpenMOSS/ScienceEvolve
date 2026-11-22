@@ -11,6 +11,7 @@ sdk/assets/
 *.tgz
 /.npm-cache/
 /temp/
+/.scratch/
 /tmp-diag-*/
 /shared-core/.sync.lock
 

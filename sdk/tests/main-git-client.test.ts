@@ -17,7 +17,7 @@ import type { CollaborationResidentLauncher } from "../src/core/collaboration-ru
 import { createProductionCollaborationResidentLauncher } from "../src/core/collaboration-resident-launcher.js";
 import type { HarnessRuntimeResidentAdapter } from "../src/core/harness-runtime/resident-runtime-adapter.js";
 import type { HarnessRuntimeFacade } from "../src/core/harness-runtime/runtime.js";
-import { trackResidentOpens } from "../src/main-resident-tracker.js";
+import { CollaborationStateDatabase } from "../src/core/collaboration-state/store.js";
 import { containsCredentialMaterial } from "../src/core/utils.js";
 import { compileInvocationPolicy, compileWorkflowPrompt } from "../src/core/harness-runtime/invocation-policy.js";
 
@@ -113,7 +113,10 @@ describe("main Git-on SDK integration: actual kernel/SQLite/local Git, simulated
     expect(residentLauncher.open).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("initializes real Git, completes via resident controls, delivers without polling and does not rerun (workspace %s)", async (inPlaceDelivery) => {
+  it.each(["export", "in-place", "unconfirmed Stop"] as const)("initializes real Git and drains the original Main route without replay (%s)", async mode => {
+    const inPlaceDelivery = mode === "in-place";
+    let stopConfirmed = mode !== "unconfirmed Stop";
+    const close = vi.fn(async () => { if (!stopConfirmed) throw new Error("fixture Main process still live"); });
     const root = await directory();
     const remoteRoot = await directory();
     const remote = path.join(remoteRoot, "remote.git");
@@ -193,7 +196,7 @@ describe("main Git-on SDK integration: actual kernel/SQLite/local Git, simulated
       const session = { schemaVersion: 1, harnessId: "codex", adapterVersion: "fixture",
         nativeId: "fixture-main-session", generation: 1, durable: true, createdAt: new Date().toISOString() };
       return { initialLease: { session, acknowledgedControlSeq: 0 }, probe: async () => ({ session, acknowledgedControlSeq: 0 }),
-        pause: async () => {}, resume: async () => {}, close: vi.fn(async () => {}), submit: async (turn) => {
+        pause: async () => {}, resume: async () => {}, close, submit: async (turn) => {
         const fresh = await input.turnRequestFactory({ baseRequest: input.request, turn });
         await fresh.request.onDurableSessionStarted?.({ schemaVersion: 1, harnessId: "codex", adapterVersion: "fixture",
           nativeId: "fixture-main-session", generation: 1, durable: true, createdAt: new Date().toISOString() }, "fixture-main-session");
@@ -211,10 +214,9 @@ describe("main Git-on SDK integration: actual kernel/SQLite/local Git, simulated
         return { handoff: "fixture Main finished formally", controlActions };
       } };
     }) };
-    const trackedAdapter = trackResidentOpens(adapter);
     const launcher = createProductionCollaborationResidentLauncher({
       reconcileResidentStartup: async () => ({ outcome: "none" }), residentRecoveryStrategy: () => "resume-session"
-    } as unknown as HarnessRuntimeFacade, trackedAdapter.launcher as unknown as HarnessRuntimeResidentAdapter);
+    } as unknown as HarnessRuntimeFacade, adapter as unknown as HarnessRuntimeResidentAdapter);
     const factory = (binding) => new CollaborationGitFacade({ operationStore: binding.operationStore,
       localGit: new LocalCollaborationGitService({ ...binding, runner: commandRunner }),
       provider: new GitHubUserProvider({ operationStore: binding.operationStore, fetch,
@@ -243,6 +245,23 @@ describe("main Git-on SDK integration: actual kernel/SQLite/local Git, simulated
     }
     authorized = true;
     await run.retryGitInitialization();
+    if (mode === "unconfirmed Stop") {
+      const database = runtime.collaborationRuntime.database(), original = await database.writerLease();
+      const dbPath = path.join(root, "collaboration-state.sqlite"), lock = path.join(root, ".scienceevolve-runtime.lock");
+      const peer = () => CollaborationStateDatabase.open({ databasePath: dbPath, topology: "single-host", hostId: original.hostId, serviceId: "peer" });
+      try {
+        await vi.waitFor(() => expect(close).toHaveBeenCalled(), { timeout: 10_000 });
+        await expect(sdk.close()).rejects.toThrow(/writer ownership is retained/);
+        expect(await fs.stat(lock)).toBeDefined();
+        await expect(createMainApplicationRuntime({ dataDir: root })).rejects.toThrow(/directory is in use/i);
+        expect(() => peer()).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+      } finally { stopConfirmed = true; await sdk.close(); }
+      await expect(fs.stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+      const next = peer(); try { expect(next.writerLease().epoch).toBe(original.epoch + 1); } finally { next.close(); }
+      expect(actions).toEqual(["finish_task", "complete_project"]);
+      expect(adapter.open).toHaveBeenCalledOnce(); expect(native.run).not.toHaveBeenCalled();
+      return;
+    }
     if (inPlaceDelivery) {
       // Observe only the host receipt: no SDK wait/snapshot/events call can
       // accidentally hide a missing Git-on completion event subscription.
@@ -285,7 +304,7 @@ describe("main Git-on SDK integration: actual kernel/SQLite/local Git, simulated
     // not the legacy Git-off project.completed event.
     expect(events.some((event) => event.data?.sourceType === "node.completed")).toBe(true);
     await sdk.close();
-    await trackedAdapter.stopRemaining();
+    expect(close).toHaveBeenCalledOnce();
     const reopened = await createMainApplicationRuntime({ dataDir: root, skillRoots: [], internal: { runner: native, residentLauncher: launcher, gitFactory: factory } });
     runtimes.push(reopened);
     const reopenedSdk = await createMainSdkClient(reopened); sdks.push(reopenedSdk);

@@ -1,13 +1,14 @@
+import { createInterface } from "node:readline";
 import { CollaborationStateDatabase } from "../../../src/core/collaboration-state/store.js";
 
 const database = CollaborationStateDatabase.open(JSON.parse(process.argv[2]));
-database.createProject({ projectId: "p", workflowRevision: 1, workflowSnapshot: { agents: [] },
-  git: { enabled: false, status: "disabled" }, workerCapacity: 1, managementCapacity: 1 });
-process.send!({ epoch: database.writerLease().epoch });
-process.on("message", message => {
-  if (message === "write") {
+try {
+  database.createProject({ projectId: "p", workflowRevision: 1, workflowSnapshot: { agents: [] },
+    git: { enabled: false, status: "disabled" }, workerCapacity: 1, managementCapacity: 1 });
+  console.log(JSON.stringify({ epoch: database.writerLease().epoch, pid: process.pid }));
+  for await (const message of createInterface({ input: process.stdin })) {
+    if (message !== "write") throw new Error("Unexpected writer fixture request");
     database.appendEvent({ projectId: "p", type: "resumed", payload: {}, requestId: "resumed-once" });
-    process.send!({ committed: true, epoch: database.writerLease().epoch });
+    console.log(JSON.stringify({ committed: true, epoch: database.writerLease().epoch }));
   }
-});
-process.on("disconnect", () => { database.close(); process.exit(0); });
+} finally { database.close(); }

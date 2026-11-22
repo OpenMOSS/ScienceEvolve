@@ -218,6 +218,7 @@ describe("explicit main SDK facade (no real model/GitHub)", () => {
     await expect(iterator.next()).rejects.toThrow();
     expect((await run.snapshot()).status).not.toBe("cancelled");
     expect((await run.cancel()).status).toMatch(/cancel/);
+    await runtime.orchestrator.waitForIdle(run.id);
     const state = await runtime.storage.loadState(run.id);
     const view = await runtime.orchestrator.getProject(run.id);
     vi.spyOn(runtime.orchestrator, "getProject").mockImplementation(async () => ({ ...view!, eventSeq: state.eventSeq }));

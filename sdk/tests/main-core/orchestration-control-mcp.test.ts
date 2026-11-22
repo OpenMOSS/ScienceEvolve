@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import { vi } from "vitest";
 import { ControlActionService, startControlActionBridge } from "../../src/core/orchestration-control-bridge.js";
 import { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";
+import { vi } from "vitest";
+import { GitInputError } from "../../src/core/collaboration-git/errors.js";
 import { CollaborationStateError } from "../../src/core/collaboration-state/errors.js";
 import type { AgentRunRequest, ControlAction, ControlActionEnvelope } from "../../src/core/types.js";
 
@@ -162,6 +164,29 @@ describe("orchestration control MCP", () => {
     } finally { await bridge.close(); }
   });
 
+  it("returns an actual Git isError response and executes the Agent's explicit Leader request and finish afterward", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "advisory-git-mcp-")); roots.push(root);
+    const settings = context(root, { candidates: [], allowAgentGitActions: true, allowFinishRoute: true, projectState: true });
+    const execute = vi.fn(async () => { throw new GitInputError("Actual Git merge conflicts with retained Memory.md"); });
+    const help = vi.fn(async input => ({ status: "queued", requestId: "actual-help", targetAgentId: "main", message: input.message }));
+    const service = new ControlActionService({ projectId: settings.projectId as string, agent: settings.agent as string,
+      invocationId: settings.invocationId as string, stateVersion: 4, capability: "capability-test-secret",
+      stagingPath: settings.stagingPath as string, revalidate: async () => undefined, execute, projectState: help });
+    const bridge = await startControlActionBridge(service, root);
+    try {
+      const responses = await runMcp({ ...settings, bridgePath: bridge.endpoint.path, bridgeHost: bridge.endpoint.host, bridgePort: bridge.endpoint.port }, [
+        { id: 1, method: "tools/call", params: { name: "github_merge_pr", arguments: { callId: "merge", providerNumber: 7, reason: "Explicit merge" } } },
+        { id: 2, method: "tools/call", params: { name: "state_request_leader", arguments: { callId: "help", message: "Actual Git merge conflicts with retained Memory.md" } } },
+        { id: 3, method: "tools/call", params: { name: "finish_task", arguments: { callId: "finish", summary: "Returned available work with unresolved Git" } } }
+      ]);
+      expectRecoverableToolError(responses[0], "Actual Git merge conflicts with retained Memory.md");
+      expect(responses[1].result).not.toMatchObject({ isError: true });
+      expect(responses[2].result).not.toMatchObject({ isError: true });
+      expect(execute).toHaveBeenCalledOnce();
+      expect(help).toHaveBeenCalledWith({ operation: "request_leader", callId: "help", message: "Actual Git merge conflicts with retained Memory.md" });
+    } finally { await bridge.close(); }
+  });
+
   it.each([true, false])("reports actual finish persistence through real MCP (saved facts: %s)", async saved => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "finish-facts-mcp-")); roots.push(root);
     const settings = context(root);
@@ -263,50 +288,54 @@ describe("orchestration control MCP", () => {
         { id: 4, method: "tools/call", params: { name: "finish_task", arguments: { callId: "closing-finish", summary: "My separate closing result", memory: "My supplemental memory" } } }
       ]);
       const tools = (responses[0].result as { tools: Array<{ name: string; inputSchema: Record<string, unknown> }> }).tools;
-      expect(tools.map(tool => tool.name)).toEqual(["finish_task", "git_get_operation", "git_reconcile_push", "git_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr"]);
-      expect(tools.find(tool => tool.name === "git_push")?.inputSchema).toMatchObject({ required: ["callId", "reason"] });
-      expect(tools.find(tool => tool.name === "git_reconcile_push")?.inputSchema).toMatchObject({ properties: { historical: { const: false } } });
+      expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["finish_task", "git_log", "git_diff", "git_revert", "git_prepare_conflict", "git_push", "publish_artifact"]));
+      expect(tools.find(tool => tool.name === "git_push")?.inputSchema).toMatchObject({ required: ["callId"] });
+      expect(tools.find(tool => tool.name === "git_reconcile_push")?.inputSchema).toMatchObject({ properties: { historical: { type: "boolean" } } });
       for (const response of responses.slice(1)) expect(response.result).not.toMatchObject({ isError: true });
       expect(JSON.stringify(responses[1].result)).toContain("b".repeat(40));
       expect(actions.map(envelope => envelope.action.tool)).toEqual(["git_push", "git_reconcile_push", "finish_task"]);
       const request = { project: { id: settings.projectId, agents: { branch: { harness: "codex" } } }, agent: settings.agent,
         invocationId: settings.invocationId, worktreeClosing, control: { ...settings, capability: "capability-test-secret" } } as unknown as AgentRunRequest;
       expect(new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "My closing handoff", controlActions: actions }, request).controlActions).toEqual(actions);
-      for (const action of [{ tool: "git_push" }, { tool: "git_push", reason: " " }, { tool: "git_prepare_conflict" },
+      for (const action of [{ tool: "git_push" }, { tool: "git_prepare_conflict" },
         { tool: "git_reconcile_push", operationId: "old", historical: true }]) {
-        expect(() => new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "Forged scope", controlActions: [{ ...actions[0], action }] } as never, request))
-          .toThrow(/invalid orchestration control envelope/);
+        expect(() => new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "Explicit follow-up", controlActions: [{ ...actions[0], action }] } as never, request)).not.toThrow();
       }
+      expect(() => new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "Invalid field", controlActions: [{ ...actions[0], action: { tool: "git_push", reason: 42 } }] } as never, request)).toThrow(/invalid orchestration control envelope/);
       expect(() => new HarnessRuntimeFacade().validateResidentTurnResult({ controlActions: actions },
         { ...request, worktreeClosing: { ...request.worktreeClosing!, paths: ["new-business.txt"] } })).toThrow(/exact assigned manifest/);
     } finally { await bridge.close(); }
   });
 
-  it("denies hidden business/management calls, historical pushes and missing closing reasons before staging", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "worktree-closing-mcp-deny-")); roots.push(root);
+  it("allows explicit Git follow-ups in a closing context and still validates required fields", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "closing-follow-up-")); roots.push(root);
     const settings = context(root, { worktreeClosing: { kind: "completed-leftovers", reportHeadSha: "a".repeat(40), paths: ["leftover.txt"],
-      executionId: "old", ownershipEpoch: 2, grantInvocationId: "leader", grantCallId: "close" },
-      allowAgentGitActions: true, candidates: [], allowUserIntervention: false, requireBridge: true });
-    const forbidden = [{ tool: "git_prepare_conflict" }, { tool: "publish_artifact", path: "new.txt" }, { tool: "route_to_agent", target: "worker" },
-      { tool: "apply_workflow", path: "workflow.json" }, { tool: "complete_project" }, { tool: "complete_group" }, { tool: "request_user" },
-      { tool: "git_push" }, { tool: "git_push", reason: " " }, { tool: "git_push", reason: "x".repeat(8193) },
-      { tool: "git_reconcile_push", operationId: "old-business", historical: true }];
-    const responses = await runMcp(settings, forbidden.map(({ tool, ...args }, index) => ({ id: index + 1, method: "tools/call",
-      params: { name: tool, arguments: { callId: `forbidden-${index}`, ...args } } })));
-    for (const response of responses) expectRecoverableToolError(response, "This closing turn permits only");
-    await expect(fs.readFile(String(settings.stagingPath))).rejects.toMatchObject({ code: "ENOENT" });
+      executionId: "old", ownershipEpoch: 2, grantInvocationId: "leader", grantCallId: "close" }, allowAgentGitActions: true, candidates: [] });
+    const responses = await runMcp(settings, [
+      { id: 1, method: "tools/call", params: { name: "git_prepare_conflict", arguments: { callId: "prepare" } } },
+      { id: 2, method: "tools/call", params: { name: "git_push", arguments: { callId: "push" } } },
+      { id: 3, method: "tools/call", params: { name: "git_reconcile_push", arguments: { callId: "historical", operationId: "old", retry: true } } },
+      { id: 4, method: "tools/call", params: { name: "git_reconcile_push", arguments: { callId: "missing-operation" } } }
+    ]);
+    for (const response of responses.slice(0, 3)) expect(response.result).not.toMatchObject({ isError: true });
+    expectRecoverableToolError(responses[3], "operationId");
+    expect(JSON.parse(await fs.readFile(String(settings.stagingPath), "utf8")).map((item: ControlActionEnvelope) => item.callId)).toEqual(["prepare", "push", "historical"]);
+    expect(JSON.stringify(responses[0])).toContain("Reminder:");
   });
 
   it.each([{ candidates: ["next"] }, { kind: "main", agent: "main" }, { canComplete: true }, { requireBridge: false },
-    { terminalPushObservation: { operationId: "old-push" } }, { allowAgentGitActions: false }, { allowWorkflowReconfiguration: true },
-    { worktreeClosing: { kind: "completed-leftovers", reportHeadSha: "a".repeat(40), paths: ["../outside"], executionId: "old",
-      ownershipEpoch: 2, grantInvocationId: "leader", grantCallId: "close" } }
-  ])("rejects contradictory closing capability %j at actual MCP startup", async override => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "worktree-closing-mcp-invalid-")); roots.push(root);
-    const settings = context(root, { worktreeClosing: { kind: "completed-leftovers", reportHeadSha: "a".repeat(40), paths: ["leftover.txt"],
-      executionId: "old", ownershipEpoch: 2, grantInvocationId: "leader", grantCallId: "close" },
-      allowAgentGitActions: true, candidates: [], allowUserIntervention: false, requireBridge: true, ...override });
-    await expect(runMcp(settings, [{ id: 1, method: "tools/list" }])).rejects.toThrow(/closing requires|receipt-only Worker control scope/);
+    { terminalPushObservation: { operationId: "old-push" } }, { allowAgentGitActions: false }, { allowWorkflowReconfiguration: true }
+  ])("keeps ordinary configured capabilities in closing context %j", async override => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "closing-configured-capabilities-")); roots.push(root);
+    const responses = await runMcp(context(root, { worktreeClosing: { kind: "completed-leftovers", reportHeadSha: "a".repeat(40), paths: ["leftover.txt"],
+      executionId: "old", ownershipEpoch: 2, grantInvocationId: "leader", grantCallId: "close" }, allowAgentGitActions: true, ...override }), [{ id: 1, method: "tools/list" }]);
+    expect((responses[0].result as { tools: Array<{ name: string }> }).tools.map(tool => tool.name)).toContain("publish_artifact");
+  });
+
+  it("rejects an invalid retained file grant without treating it as a tool restriction", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "closing-invalid-file-grant-")); roots.push(root);
+    await expect(runMcp(context(root, { worktreeClosing: { kind: "completed-leftovers", reportHeadSha: "a".repeat(40), paths: ["../outside"],
+      executionId: "old", ownershipEpoch: 2, grantInvocationId: "leader", grantCallId: "close" } }), [{ id: 1, method: "tools/list" }])).rejects.toThrow("Invalid retained worktreeClosing scope");
   });
   it("retains a pinned proposal across repair invocations while staging under the fresh authority", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "retained-proposal-mcp-")); roots.push(root);
@@ -378,7 +407,7 @@ describe("orchestration control MCP", () => {
       const rejected = await runMcp(context(root, { ...overrides, stagingPath: path.join(root, "unavailable.json") }), [
         { id: 7, method: "tools/call", params: { name: "publish_artifact", arguments: { callId: "unavailable", ...publish, replacesPath: "old.md" } } }
       ]);
-      expectRecoverableToolError(rejected[0], "only available");
+      expectRecoverableToolError(rejected[0], "unexpected argument: replacesPath");
     }
   });
 
@@ -409,10 +438,10 @@ describe("orchestration control MCP", () => {
         { id: 3, method: "tools/call", params: { name: "finish_task", arguments: { callId: "receipt-finish", summary: `Observed ${mode}`, memory: `My retained observation was ${mode}` } } }
       ]);
       const tools = (responses[0].result as { tools: Array<{ name: string; inputSchema: Record<string, unknown> }> }).tools;
-      expect(tools.map((tool) => tool.name)).toEqual(["finish_task", "git_reconcile_push"]);
+      expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["finish_task", "git_reconcile_push", "git_push", "git_log", "publish_artifact"]));
       expect(tools[0]).toMatchObject({ annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false } });
-      expect(tools[1].inputSchema).toMatchObject({ required: ["callId", "operationId", "historical"], properties: {
-        operationId: { enum: [observation.operationId] }, historical: { const: true }, retry: { const: false } } });
+      expect(tools.find(tool => tool.name === "git_reconcile_push")?.inputSchema).toMatchObject({ required: ["callId", "operationId"], properties: {
+        historical: { type: "boolean" }, retry: { type: "boolean" } } });
       if (mode === "error") expectRecoverableToolError(responses[1], "Actual provider could not observe this ref");
       else expect(JSON.stringify(responses[1].result)).toContain(JSON.stringify(outcome).replaceAll('"', '\\"'));
       expect(responses[2].result).not.toMatchObject({ isError: true });
@@ -425,47 +454,47 @@ describe("orchestration control MCP", () => {
       expect(new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: `Observed ${mode}`, controlActions: accepted }, request).controlActions).toEqual(accepted);
       for (const action of [{ tool: "git_push" }, { tool: "publish_artifact", path: "x", title: "x", kind: "code", description: "x" },
         { tool: "git_reconcile_push", operationId: "other-operation", historical: true },
-        { tool: "git_reconcile_push", operationId: observation.operationId, historical: true, retry: true }]) {
+        { tool: "git_reconcile_push", operationId: observation.operationId, retry: true }]) {
         const forged = { ...actions[0], action };
         expect(() => new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "forged", controlActions: [forged] }, request))
-          .toThrow(/invalid orchestration control envelope/);
+          .not.toThrow();
       }
     } finally { await bridge.close(); }
   });
 
-  it("terminal push receipt rejects all business/management tools and wrong historical requests before contacting a provider or staging", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "terminal-push-receipt-deny-")); roots.push(root);
-    const settings = context(root, { terminalPushObservation: { operationId: "original-push" }, allowAgentGitActions: true,
-      candidates: [], allowUserIntervention: false, requireBridge: true });
-    const forbidden = ["git_push", "github_create_pr", "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr", "git_prepare_conflict",
-      "route_to_agent", "publish_artifact", "select_display", "request_user", "apply_workflow", "coordinate_group_task",
-      "assign_group_tasks", "claim_group_task", "request_group_integration", "complete_group", "complete_project"];
-    const attempts = [
-      ...forbidden.map((name) => ({ name, arguments: { callId: name } })),
-      ...[{ operationId: "other-push", historical: true }, { operationId: "original-push" },
-        { operationId: "original-push", historical: false }, { operationId: "original-push", historical: true, retry: true },
-        { operationId: "original-push", historical: true, retry: "false" }]
-        .map((args, index) => ({ name: "git_reconcile_push", arguments: { callId: `invalid-${index}`, ...args } }))
-    ];
-    const responses = await runMcp(settings, attempts.map((params, index) => ({ id: index, method: "tools/call", params })));
-    expect(responses).toHaveLength(attempts.length);
-    for (const response of responses) expectRecoverableToolError(response, "receipt turn permits only");
-    await expect(fs.access(String(settings.stagingPath))).rejects.toThrow();
+  it("executes an explicit receipt retry and further Git read through the actual bridge", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "receipt-explicit-follow-up-")); roots.push(root);
+    const settings = context(root, { terminalPushObservation: { operationId: "old-push" }, allowAgentGitActions: true });
+    const execute = vi.fn(async envelope => ({ operation: envelope.action.tool, actual: true }));
+    const service = new ControlActionService({ projectId: String(settings.projectId), agent: String(settings.agent), invocationId: String(settings.invocationId),
+      stateVersion: Number(settings.stateVersion), capability: "capability-test-secret", stagingPath: String(settings.stagingPath), revalidate: async () => {}, execute });
+    const bridge = await startControlActionBridge(service, root);
+    try {
+      const responses = await runMcp({ ...settings, bridgePath: bridge.endpoint.path, bridgeHost: bridge.endpoint.host, bridgePort: bridge.endpoint.port }, [
+        { id: 1, method: "tools/call", params: { name: "git_reconcile_push", arguments: { callId: "retry", operationId: "old-push", retry: true } } },
+        { id: 2, method: "tools/call", params: { name: "git_log", arguments: { callId: "read-history" } } }
+      ]);
+      for (const response of responses) expect(response.result).not.toMatchObject({ isError: true });
+      expect(execute.mock.calls.map(([envelope]) => envelope.action)).toEqual([
+        { tool: "git_reconcile_push", operationId: "old-push", retry: true }, { tool: "git_log" }
+      ]);
+    } finally { await bridge.close(); }
   });
 
-  it.each([
-    { terminalPushObservation: { operationId: "" } }, { terminalPushObservation: { operationId: "original-push", extra: true } },
-    { kind: "main" }, { candidates: ["next"] }, { allowUserIntervention: true }, { canComplete: true },
-    { allowAgentGitActions: false }, { requireBridge: false }, { canonicalFinalIntegration: true },
-    { allowWorkflowReconfiguration: true }, { scopedAgentRouting: true }, { allowFinishRoute: true },
-    { workflowAuthoringPath: "/proposal/workflow.json" }
-  ])("terminal push receipt rejects contradictory or malformed capability %j at actual MCP startup", async (override) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "terminal-push-receipt-context-")); roots.push(root);
-    const settings = context(root, { terminalPushObservation: { operationId: "original-push" }, allowAgentGitActions: true,
-      candidates: [], allowUserIntervention: false, requireBridge: true, ...override });
-    await expect(runMcp(settings, [{ id: 1, method: "tools/list" }])).rejects.toThrow(/receipt-only Worker control scope/);
-    await expect(fs.access(String(settings.stagingPath))).rejects.toThrow();
-  });
+  it.each([{ terminalPushObservation: { operationId: "" } }, { terminalPushObservation: { operationId: "original-push", extra: true } }])
+    ("rejects malformed receipt evidence %j", async override => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "invalid-receipt-evidence-")); roots.push(root);
+      await expect(runMcp(context(root, override), [{ id: 1, method: "tools/list" }])).rejects.toThrow("Invalid retained terminalPushObservation scope");
+    });
+
+  it.each([{ kind: "main" }, { candidates: ["next"] }, { allowUserIntervention: true }, { canComplete: true },
+    { allowAgentGitActions: false }, { requireBridge: false }, { canonicalFinalIntegration: true }, { allowWorkflowReconfiguration: true },
+    { scopedAgentRouting: true }, { allowFinishRoute: true }, { workflowAuthoringPath: "/proposal/workflow.json" }])
+    ("keeps ordinary configured capabilities alongside receipt evidence %j", async override => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "receipt-configured-capabilities-")); roots.push(root);
+      const responses = await runMcp(context(root, { terminalPushObservation: { operationId: "original-push" }, ...override }), [{ id: 1, method: "tools/list" }]);
+      expect((responses[0].result as { tools: Array<{ name: string }> }).tools.map(tool => tool.name)).toContain("publish_artifact");
+    });
 
   it.each(["scoped-leader", "scoped-main"] as const)
     ("stages independent failed-arrival decisions for %s through the actual standalone MCP", async (role) => {
@@ -479,11 +508,10 @@ describe("orchestration control MCP", () => {
       const results = await runMcp(runContext, [call(1, "a", "failed-a"), call(2, "b", "failed-b"), call(3, "repeat-a", "failed-a"),
         call(4, "conflict-b", "failed-b", role === "scoped-main" ? "skip" : "escalate"), call(5, "outside", "outside"),
         { id: 6, method: "tools/call", params: { name: "finish_task", arguments: { callId: "own-finish", summary: "Both independent choices are retained" } } }]);
-      for (const result of results.filter((entry) => [1, 2, 3, 6].includes(Number(entry.id)))) expect(result.result).not.toMatchObject({ isError: true });
-      expectRecoverableToolError(results.find((entry) => entry.id === 4), "decision is already locked");
+      for (const result of results.filter((entry) => [1, 2, 3, 4, 6].includes(Number(entry.id)))) expect(result.result).not.toMatchObject({ isError: true });
       expectRecoverableToolError(results.find((entry) => entry.id === 5));
       const actions = JSON.parse(await fs.readFile(String(runContext.stagingPath), "utf8")) as ControlActionEnvelope[];
-      expect(actions.map((entry) => entry.callId)).toEqual(["own-finish", "a", "b"]);
+      expect(actions.map((entry) => entry.callId)).toEqual(["a", "b", "repeat-a", "conflict-b", "own-finish"]);
       const returned = { handoff: "Original manager owns both choices", controlActions: actions };
       expect(new HarnessRuntimeFacade().validateResidentTurnResult(returned, { project: { id: runContext.projectId,
         agents: { main: { harness: "codex" } } }, agent: "main", invocationId: runContext.invocationId,
@@ -689,11 +717,35 @@ describe("orchestration control MCP", () => {
         callId: "retry", groupRunId: "run-G", coordinatorEpoch: 7, arrivalRequestId: "failed", operation: "retry", rationale: "Stop proven" } } }
     ]);
     expect((leader[0]!.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name))
-      .toEqual(["finish_task", "assign_group_tasks", "route_to_agent", "apply_workflow", "coordinate_group_task", "request_group_integration", "complete_group"]);
+      .toEqual(["finish_task", "assign_group_tasks", "route_to_agent", "coordinate_group_task", "request_group_integration", "complete_group"]);
     expectRecoverableToolError(leader.find((item) => item.id === 2));
     expect(JSON.parse(await fs.readFile(path.join(leaderRoot, "actions.json"), "utf8")))
       .toMatchObject([{ action: { tool: "coordinate_group_task", operation: "retry" } }]);
   });
+  it.each([
+    { agent: "main", kind: "main", allowed: true, canEdit: true },
+    { agent: "main", kind: "main", allowed: false, canEdit: false },
+    { agent: "review", kind: "worker", allowed: true, canEdit: false }
+  ])("checks global workflow MCP calls against actual identity and permission ($agent/$allowed)", async ({ agent, kind, allowed, canEdit }) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scoped-main-global-mcp-")); roots.push(root);
+    const settings = context(root, { agent, kind, collaboration: { role: "scoped-leader", nodeRunId: "node-G", groupRunId: "run-G",
+      coordinatorEpoch: 7, memberNodeIds: ["G_one"], routeCandidates: [], failedArrivalRequestIds: [], allowReconfiguration: allowed } });
+    const responses = await runMcp(settings, [
+      { id: 1, method: "tools/list" },
+      { id: 2, method: "tools/call", params: { name: "apply_workflow", arguments: { callId: "edit", path: "workflow.json", rationale: "Main chooses a global edit" } } }
+    ]);
+    const tools = (responses[0]!.result as { tools: Array<{ name: string; description: string }> }).tools;
+    expect(tools.some(tool => tool.name === "apply_workflow")).toBe(canEdit);
+    if (canEdit) {
+      expect(tools.find(tool => tool.name === "apply_workflow")?.description).toContain("global workflow.json");
+      expect(responses[1]!.result).not.toMatchObject({ isError: true });
+      expect(JSON.parse(await fs.readFile(String(settings.stagingPath), "utf8"))).toMatchObject([{ agent: "main", action: { tool: "apply_workflow" } }]);
+    } else {
+      expectRecoverableToolError(responses[1]);
+      await expect(fs.stat(String(settings.stagingPath))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
   it("stages explicit closing only for identified direct-group arrivals without granting Worker Git authority", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scoped-closing-mcp-")); roots.push(root);
     const settings = context(root, { kind: "main", agent: "main", candidates: [], allowUserIntervention: false,
@@ -716,7 +768,7 @@ describe("orchestration control MCP", () => {
     expectRecoverableToolError(result[1]); expectRecoverableToolError(result[2], "cannot carry closing"); expectRecoverableToolError(result[5]);
     expect(result[3]!.result).not.toMatchObject({ isError: true }); expect(result[4]!.result).not.toMatchObject({ isError: true });
     const actions = JSON.parse(await fs.readFile(String(settings.stagingPath), "utf8")) as ControlActionEnvelope[];
-    expect(actions).toHaveLength(1); expect(actions[0]!.action).toMatchObject(action);
+    expect(actions.map(item => item.callId)).toEqual(["close", "repeat"]); expect(actions[0]!.action).toMatchObject(action);
     const request = { project: { id: settings.projectId, agents: { main: { harness: "codex" } } }, agent: "main",
       invocationId: settings.invocationId, control: { ...settings, capability: "capability-test-secret" } } as unknown as AgentRunRequest;
     expect(new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "Original Agent closing authorized", controlActions: actions }, request)).toBeTruthy();
@@ -725,13 +777,13 @@ describe("orchestration control MCP", () => {
     expect(() => new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "Forged closing", controlActions: actions }, ordinary)).toThrow();
   });
 
-  it("exposes only closing coordination and own finish for a completed group's retained Leader", async () => {
+  it("keeps a Leader's configured tools while coordinating retained pending files", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "completed-group-closing-mcp-")); roots.push(root);
     const settings = context(root, { kind: "main", agent: "main", candidates: [], allowUserIntervention: false,
       capabilityHash: createHash("sha256").update("capability-test-secret").digest("hex"),
       collaboration: { role: "scoped-leader", nodeRunId: "node-G", groupRunId: "run-G", coordinatorEpoch: 7,
-        memberNodeIds: [], routeCandidates: [], failedArrivalRequestIds: ["closing"], closingArrivalRequestIds: ["closing"],
-        worktreeClosingOnly: true, allowReconfiguration: false } });
+        memberNodeIds: ["business"], routeCandidates: [], failedArrivalRequestIds: ["closing"], closingArrivalRequestIds: ["closing"],
+        allowReconfiguration: false } });
     const coordination = { groupRunId: "run-G", coordinatorEpoch: 7, arrivalRequestId: "closing", rationale: "Exact retained original owner" };
     const result = await runMcp(settings, [{ id: 1, method: "tools/list" },
       { id: 2, method: "tools/call", params: { name: "coordinate_group_task", arguments: { callId: "retry", ...coordination, operation: "retry" } } },
@@ -741,20 +793,19 @@ describe("orchestration control MCP", () => {
         closing: { executionId: "original", ownershipEpoch: 1, paths: ["agent-memory/worker/Memory.md"] } } } },
       { id: 6, method: "tools/call", params: { name: "finish_task", arguments: { callId: "finish", summary: "Only my closing coordination" } } }]);
     const tools = (result[0]!.result as { tools: Array<{ name: string; inputSchema: { properties: Record<string, { enum?: string[] }> } }> }).tools;
-    expect(tools.map(tool => tool.name)).toEqual(["finish_task", "coordinate_group_task"]);
-    expect(tools[1]!.inputSchema.properties.operation!.enum).toEqual(["escalate", "close_worktree"]);
-    expect(tools[1]!.inputSchema.properties.repairNodeId).toBeUndefined();
-    for (const index of [1, 2, 3]) expectRecoverableToolError(result[index]);
-    for (const index of [4, 5]) expect(result[index]!.result).not.toMatchObject({ isError: true });
+    expect(tools.map(tool => tool.name)).toEqual(["finish_task", "assign_group_tasks", "coordinate_group_task", "request_group_integration", "complete_group"]);
+    expect(tools.find(tool => tool.name === "coordinate_group_task")!.inputSchema.properties.operation!.enum).toEqual(["retry", "escalate", "close_worktree"]);
+    expect(tools.find(tool => tool.name === "coordinate_group_task")!.inputSchema.properties.repairNodeId).toBeDefined();
+    for (const response of result.slice(1)) expect(response.result).not.toMatchObject({ isError: true });
     const actions = JSON.parse(await fs.readFile(String(settings.stagingPath), "utf8")) as ControlActionEnvelope[];
     const request = { project: { id: settings.projectId, agents: { main: { harness: "codex" } } }, agent: "main",
       invocationId: settings.invocationId, control: { ...settings, capability: "capability-test-secret" } } as unknown as AgentRunRequest;
     expect(new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "Original closing coordination", controlActions: actions }, request)).toBeTruthy();
-    const forbidden: ControlAction[] = [{ tool: "coordinate_group_task", ...coordination, operation: "retry" },
+    const followUps: ControlAction[] = [{ tool: "coordinate_group_task", ...coordination, operation: "retry" },
       { tool: "request_group_integration", groupRunId: "run-G", coordinatorEpoch: 7, integrationOwnerAgentId: "worker" },
       { tool: "complete_group", groupRunId: "run-G", coordinatorEpoch: 7, output: "Repeat completed group" }];
-    for (const action of forbidden) expect(() => new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "Unauthorized business",
-      controlActions: [{ ...actions[0]!, action }] }, request)).toThrow();
+    for (const action of followUps) expect(() => new HarnessRuntimeFacade().validateResidentTurnResult({ handoff: "Explicit follow-up",
+      controlActions: [{ ...actions[0]!, action }] }, request)).not.toThrow();
   });
 
   it.each(["scoped-leader", "scoped-main"])("does not offer implicit closing to an ordinary %s recovery scope", async role => {
@@ -800,7 +851,7 @@ describe("orchestration control MCP", () => {
     await expect(fs.stat(path.join(root, "actions.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("assigns canonical final delivery its PR tools and operation query and rejects business pushes", async () => {
+  it("keeps configured Git tools available during canonical final delivery", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "canonical-final-tools-")); roots.push(root);
     const result = await runMcp(context(root, { allowAgentGitActions: true, canonicalFinalIntegration: true, candidates: [] }), [
       { id: 1, method: "tools/list" },
@@ -808,9 +859,9 @@ describe("orchestration control MCP", () => {
       { id: 3, method: "tools/call", params: { name: "git_reconcile_push", arguments: { callId: "forged-reconcile", operationId: "old-member-push", retry: true } } }
     ]);
     expect((result[0]!.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name))
-      .toEqual(["finish_task", "git_get_operation", "github_create_pr", "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr"]);
-    expectRecoverableToolError(result.find((item) => item.id === 2));
-    expectRecoverableToolError(result.find((item) => item.id === 3));
+      .toEqual(expect.arrayContaining(["finish_task", "git_push", "git_reconcile_push", "git_log", "git_revert", "github_merge_pr", "publish_artifact"]));
+    expect(result.find(item => item.id === 2)?.result).not.toMatchObject({ isError: true });
+    expect(result.find(item => item.id === 3)?.result).not.toMatchObject({ isError: true });
   });
 
   it.each(["observe", "retry", "error", "historical"] as const)("transports the owning Agent's retained push %s request and outcome through actual MCP", async (mode) => {
@@ -947,7 +998,7 @@ describe("orchestration control MCP", () => {
 
   it.each(["main", "worker"] as const)("does not give a %s invocation without business Git authority a PR close action", async (kind) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-close-forbidden-")); roots.push(root);
-    const responses = await runMcp(context(root, { kind, allowAgentGitActions: kind === "main", candidates: [] }), [
+    const responses = await runMcp(context(root, { kind, allowAgentGitActions: false, candidates: [] }), [
       { id: 1, method: "tools/list" }, { id: 2, method: "tools/call", params: { name: "github_close_pr", arguments: {
         callId: "forged-close", providerNumber: 71
       } } }, { id: 3, method: "tools/call", params: { name: "git_reconcile_push", arguments: {
@@ -1138,7 +1189,7 @@ describe("orchestration control MCP", () => {
       const actions = JSON.parse(await fs.readFile(String(settings.stagingPath), "utf8")) as ControlActionEnvelope[];
       expect(actions).toHaveLength(1);
       expect(actions[0]!.action).toEqual({ tool: "apply_workflow", path: "workflow.json", rationale: "Apply the current Main proposal." });
-      const request = { project: { id: settings.projectId, agents: { main: { harness: "codex" } } }, agent: "main",
+      const request = { project: { id: settings.projectId, agents: { main: { harness: "codex" } } }, agent: "main", kind: "main",
         invocationId: settings.invocationId, control: { ...settings, capability: "capability-test-secret" } } as unknown as AgentRunRequest;
       const facade = new HarnessRuntimeFacade();
       const returned = { handoff: "Main submitted the current workflow proposal.", controlActions: actions };
@@ -1195,7 +1246,7 @@ describe("orchestration control MCP", () => {
     }
   });
 
-  it("exposes only the role-appropriate tools and stages an idempotent Worker route", async () => {
+  it("keeps exact request deduplication while accepting a later explicit Worker route", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-orch-mcp-work-"));
     roots.push(root);
     const listed = await runMcp(context(root), [
@@ -1221,9 +1272,9 @@ describe("orchestration control MCP", () => {
     expect(byId.get(2)?.error).toBeUndefined();
     expect(byId.get(3)?.error).toBeUndefined();
     expect(byId.get(4)?.error).toBeUndefined();
-    expectRecoverableToolError(byId.get(5), "decision is already locked");
+    expect(byId.get(5)?.result).not.toMatchObject({ isError: true });
     expectRecoverableToolError(byId.get(6), "request_user is not allowed");
-    expect(JSON.parse(await fs.readFile(path.join(root, "actions.json"), "utf8"))).toHaveLength(1);
+    expect(JSON.parse(await fs.readFile(path.join(root, "actions.json"), "utf8")).map((item: ControlActionEnvelope) => item.callId)).toEqual(["call-1", "call-2", "call-3"]);
   });
 
   it("executes every Main tool success path and rejects invalid arguments for each tool", async () => {
@@ -1340,9 +1391,9 @@ describe("orchestration control MCP", () => {
     expect(byId.get(3)?.error).toBeUndefined();
     expect(byId.get(4)?.error).toBeUndefined();
     expect(JSON.parse(await fs.readFile(path.join(root, "actions.json"), "utf8"))).toMatchObject([
+      { action: { tool: "complete_project" } },
       { action: { tool: "publish_artifact", path: "report.md" } },
-      { action: { tool: "select_display", primary: { agent: "main", path: "report.md" } } },
-      { action: { tool: "complete_project" } }
+      { action: { tool: "select_display", primary: { agent: "main", path: "report.md" } } }
     ]);
   });
 

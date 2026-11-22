@@ -13,11 +13,20 @@ import { projectMcpSource } from "./project-mcp-source.mjs";
 const root = path.resolve("standalone-main-runtime-data");
 await mkdir(root, { recursive: true });
 const runtime = await createMainApplicationRuntime({ dataDir: root });
+const databasePath = path.join(root, "collaboration-state.sqlite");
+const coreWriter = new URL("./core/collaboration-state/store.js", import.meta.resolve("@scienceevolve/sdk/application/main-runtime")).href;
+const originalOwner = await runtime.collaborationRuntime.database().writerLease();
 try {
   assert.equal(runtime.sourceCommit, MAIN_RUNTIME_SOURCE_COMMIT);
   assert.equal(runtime.runtimeRevision, MAIN_RUNTIME_REVISION);
   assert.deepEqual(await runtime.orchestrator.listProjects(), []);
-  const db = new DatabaseSync(path.join(root, "collaboration-state.sqlite"));
+  // An independent compiled Store bypasses the SDK directory guard.
+  execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    const { CollaborationStateDatabase } = await import(${JSON.stringify(coreWriter)});
+    assert.throws(() => CollaborationStateDatabase.open(${JSON.stringify({ databasePath, topology: "single-host", hostId: originalOwner.hostId, serviceId: "package-peer" })}), { code: "WRITER_LEASE_HELD" });
+  `], { timeout: 30_000 });
+  const db = new DatabaseSync(databasePath, { readOnly: true });
   try {
     assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "delete");
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().length > 10);
@@ -114,8 +123,11 @@ const importedDelivery = await exportMainWorkspace({ dataDir: sourceData, projec
 assert.equal(await readFile(path.join(importedDelivery.destination, "source.txt"), "utf8"), "compiled source seed\r\n");
 assert.deepEqual(await readFile(path.join(importedDelivery.destination, "binary.bin")), Buffer.from([0, 255, 128]));
 await assert.rejects(access(path.join(root, ".scienceevolve-runtime.lock")), { code: "ENOENT" });
+const closedBinding = await readFile(databasePath + ".writer.lock");
 const reopened = await createMainApplicationRuntime({ dataDir: root });
-await reopened.close();
+try { assert.equal((await reopened.collaborationRuntime.database().writerLease()).epoch, originalOwner.epoch + 1); }
+finally { await reopened.close(); }
+assert.deepEqual(await readFile(databasePath + ".writer.lock"), closedBinding);
 // Check the exported compiled module can initialize from another Node process.
 const childEntry = import.meta.resolve("@scienceevolve/sdk/application/main-runtime");
 execFileSync(process.execPath, ["--input-type=module", "--eval", `
@@ -125,5 +137,5 @@ execFileSync(process.execPath, ["--input-type=module", "--eval", `
 `], { cwd: process.cwd(), encoding: "utf8", timeout: 30_000 });
 console.log(JSON.stringify({ entry: "application/main-runtime", sourceCommit: MAIN_RUNTIME_SOURCE_COMMIT,
   runtimeRevision: MAIN_RUNTIME_REVISION, compiledMainMcpRoundTrip: true, compiledLocalGitExport: true, compiledSourceSnapshot: true,
-  actualSqlite: true, standalonePackage: true, nativeResources: true, actualSchemaLookup: true,
+  actualSqlite: true, compiledPeerRefused: true, nextWriterEpochVerified: true, standalonePackage: true, nativeResources: true, actualSchemaLookup: true,
   realModel: false, realGitHub: false }));

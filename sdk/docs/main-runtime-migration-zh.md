@@ -71,12 +71,12 @@ Windows 使用绝对路径，例如 `D:/runs/main-core-test`。要求 Node >=24�
 ## 数据、停机与恢复
 
 - 新宿主要求空的独立 dataDir，写入引擎/固定提交/runtimeRevision 标记。不会接管已有项目、Git 仓库或旧 SDK/Web 数据。
-- 同一 `.scienceevolve-runtime.lock` 防止两个 SDK 宿主同时打开目录；旧引擎也拒绝打开新引擎标记的数据。
+- `.scienceevolve-runtime.lock` 防止两个 SDK 宿主同时打开目录。科研库另有独立的生命周期锁 `collaboration-state.sqlite.writer.lock`；即使不经 SDK 宿主，其他核心 writer 也不能同时写同一库。正常重启保留此文件并推进数据库 writer epoch，不能删除或替换它强制接管。
 - 重新打开遵循 main 的 initialize/recover 行为，可能恢复可运行项目；它不是只读查看操作。
 - close 等待 Orchestrator 停机、数据库关闭，并额外确认所有已打开 resident 的 close 成功。
-  未确认原生 Stop 时保留目录锁；可重试 close。崩溃残留锁只能在确认原进程已停止后人工恢复。
+  未确认原生 Stop 时保留 SDK 目录锁；进程退出不证明原生会话或外部操作已停。单独恢复目录准入不等于数据库重绑，也不授权新的原生调用。
 - 不同 runtimeRevision 的数据暂不自动升级；包括之前只写 sourceCommit 的预览数据。
-  需要显式迁移及恢复验收，不能为了打开旧数据手工改写标记。
+  需要显式迁移及恢复验收，不能为了打开旧数据手工改写标记。离线升级 SQLite 或恢复快照不会迁移 SDK 宿主的 revision 标记或其余科研文件。安装包 `@scienceevolve/sdk` 内的 Node 入口分别为 `dist/core/collaboration-state/upgrade-writer.js`、`dist/core/collaboration-state/restore-writer.js`。两者均要求 `--confirm-stopped`；恢复还要求独立最终快照的 SHA-256、原锁 UUID、epoch、主机及新的目标路径。Linux 安装包已实测这两个入口，不代表其他系统已验收。
 - 注入的 Git resolver 同时供 HTTPS Git transport 与 GitHub API 使用。
   没有注入时沿用 main 的 Git credential helper，不提供网页 OAuth 登录。
   workflow 中的 Web accountId 不会变成 SDK 的凭据选择器；多账户绑定尚待公开 API 适配。
@@ -159,7 +159,7 @@ try {
   Git-on F13 Stop 保留现场，返回 `paused` / `collaboration:user-cancelled`，可显式 resume；
   Git-off 取消通常为不可恢复的 `cancelled`。`pause()` 是安全点暂停，不等同 Stop。
 - `retryGitInitialization()` 委托 main 幂等重试，不在 SDK 重建仓库或重跑已完成任务。
-  `close()` 唤醒等待者；关闭失败仍保留锁，后续可重试 close。普通和路由内部 native open 均受 Stop guard 覆盖。
+  `close()` 唤醒等待者。原生 Stop 未确认时，宿主目录锁和数据库物理写锁都保留；显式重试 close 只重新核对清理，不重启业务。普通任务、分组和 Main 路由的原生启动由同一个协调器排空。
 
 完整的 v3 配置样例见 `examples/main-runtime/workflow.json`（执行→审计组）。
 它使用当前默认 `scievolve start`（或 --engine main），不可套用 --engine legacy。

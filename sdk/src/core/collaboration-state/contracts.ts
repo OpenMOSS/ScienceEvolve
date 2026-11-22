@@ -652,8 +652,11 @@ export interface ScopedGroupIssue {
 }
 
 export interface ReleaseScopedLeaderTurnInput extends ClaimScopedLeaderTurnInput {
-  /** Retire scheduling authority while preserving the actual cleanup result. */
-  residentStopConfirmed: boolean;
+  coordinatorEpoch?: number;
+  /** Observation of the exact original launch scope when reconciling after retirement. */
+  evidence?: Readonly<Record<string, unknown>>;
+  /** A returned management decision is not proof that its native turn stopped. */
+  residentStopConfirmed: true;
 }
 
 export interface ReleasedScopedLeaderTurn {
@@ -1146,6 +1149,7 @@ export interface AppendEventInput extends Omit<CollaborationEvent, "eventId" | "
 }
 
 export interface AcceptedGroupControlAction {
+  requestId: string;
   projectId: string;
   nodeRunId: NodeRunId;
   groupRunId: GroupRunId;

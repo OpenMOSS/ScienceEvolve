@@ -101,6 +101,7 @@ describe("management Workflow context", () => {
       group.workflow.routes[nodeId] = [{ kind: "strong", target: "finish" }];
     }
     const candidates = scope === "global" ? ["G", "review"] : ["finish"];
+    if (scope === "group") { f.request.kind = "worker"; f.request.agent = "review"; group.leaderAgentId = "review"; }
     f.request.workflowContext = scope === "global" ? { scope, candidates, purpose: "outer-routing" }
       : { scope, groupId: "G", groupRunId: "run-G", candidates, purpose: "route" };
     const inputs = await prepareWorkflowContext(f.request, f.inputs);
@@ -141,6 +142,7 @@ describe("management Workflow context", () => {
   it("shows the last node and connection when a group has more than 50 graph entries", async () => {
     const f = await fixture();
     const workflow = f.state.orchestration.scopedWorkflow!.groups.find(group => group.id === "G")!.workflow;
+    f.request.agent = "review"; f.request.kind = "worker";
     for (let index = 0; index < 65; index++) {
       const nodeId = `extra_node_${index}`;
       workflow.nodes.push({ kind: "agent", nodeId, agentId: "execution" });
@@ -212,7 +214,7 @@ describe("management Workflow context", () => {
     expect(prompt).not.toContain("FULL_INSTRUCTIONS_execution");
   });
 
-  it.each(["main", "review"])("limits a group Leader named %s to its group, keeping child groups as interfaces", async leader => {
+  it.each(["review"])("limits a non-Main Leader named %s to its group, keeping child groups as interfaces", async leader => {
     const f = await fixture();
     f.state.orchestration.scopedWorkflow!.groups[0].leaderAgentId = leader;
     f.request.agent = leader; f.request.kind = leader === "main" ? "main" : "worker";
@@ -239,6 +241,27 @@ describe("management Workflow context", () => {
     for (const excluded of ["Sibling", "sibling_private_node", "child_private_node", "child-private-skill", "child-private-mcp", "unrelated-skill", "arrival-H", "foreign_route_target", "foreign_source_node", "foreign_global_wake_reason"]) {
       expect(received).not.toContain(excluded);
     }
+  });
+
+  it.each([false, true])("gives Main the full global workflow during group management without changing routing authority (editing=%s)", async editing => {
+    const f = await fixture(); f.state.orchestration.allowMainReconfiguration = editing;
+    f.request.executionContext = { role: "leader", nodeRunId: "root-G", groupRunId: "run-G", coordinatorEpoch: 1 };
+    f.request.workflowContext = { scope: "group", groupId: "G", groupRunId: "run-G", candidates: ["finish"], purpose: "route" };
+    f.state.mainCapabilities = { routeCandidates: ["stale-global-target"] } as ProjectState["mainCapabilities"];
+    const original = structuredClone(f.request);
+    const prepared = await prepareWorkflowContext(f.request, f.inputs);
+    expect(prepared.workflowContext!.scope).toBe("global");
+    const definition = await json(prepared.workflowContext!.definitionPath);
+    expect(definition.workflow).toEqual(f.state.orchestration);
+    expect(Object.keys((await json(prepared.workflowContext!.agentsPath)).agents).sort()).toEqual(Object.keys(f.state.agents).sort());
+    expect((await json(prepared.workflowContext!.currentStatePath)).scopedRuntime.arrivals).toEqual(f.state.scopedArrivals);
+    expect(prepared.workflowContext!.preview).toContain('Legal route candidates for this turn (exact node IDs): ["finish"]');
+    expect(prepared.workflowContext!.preview).not.toContain("stale-global-target");
+    expect(prepared.workflowContext!.preview).toContain("Current Agent: main; role: group Leader; Workflow visibility: global");
+    expect(prepared.workflowContext!.preview).toContain("do not grant global routing, skip or completion authority");
+    expect(f.request).toEqual(original);
+    delete f.request.workflowContext;
+    expect((await prepareWorkflowContext(f.request, f.inputs)).workflowContext!.scope).toBe("global");
   });
 
   it("gives a nested group's Leader its own scope and keeps the original session across global/local turns and config updates", async () => {
@@ -272,6 +295,7 @@ describe("management Workflow context", () => {
           finalIntegrations: [], agentMerges: [{ groupRunId: "run-G", providerProof: "actual experiment merge" }, { groupRunId: "run-H", providerProof: "child proof" }],
           groupFinalMerges: [], managementTurns: [], activities: [], issues: [] } } } as unknown as AuthoritativeWorkflowFiles;
     await publishAuthoritativeWorkflowFiles(f.inputs.projectPath, files);
+    f.request.agent = "review"; f.request.kind = "worker";
     f.request.workflowContext = { scope: "group", groupId: "G", groupRunId: "run-G", purpose: "complete" };
     const prepared = await prepareWorkflowContext(f.request, f.inputs);
     const facts = await json(prepared.workflowContext!.currentStatePath);
@@ -299,6 +323,7 @@ describe("management Workflow context", () => {
         tasks: [{ agentId: "execution", marker: "unscoped-task" }],
         scopedRuntime: { activities: [{ agentId: "execution", marker: "unscoped-activity" }] } }
     } as unknown as AuthoritativeWorkflowFiles;
+    f.request.agent = "review"; f.request.kind = "worker";
     f.request.workflowContext = { scope: "group", groupId: "G" };
     const prepared = await prepareWorkflowContext(f.request, f.inputs, files);
     const facts = await json(prepared.workflowContext!.currentStatePath);
@@ -323,7 +348,7 @@ describe("management Workflow context", () => {
   });
 
   it.runIf(process.platform === "linux")("reads scope-filtered details with the actual filesystem MCP rootId/path and refuses writes and the legacy symlink", async () => {
-    const f = await fixture();
+    const f = await fixture(); f.request.agent = "review"; f.request.kind = "worker";
     f.request.workflowContext = { scope: "group", groupId: "G", groupRunId: "run-G" };
     const prepared = await prepareWorkflowContext(f.request, f.inputs);
     const serviceUserRoot = path.join(f.root, "separate-service-home"); await fs.mkdir(serviceUserRoot);
@@ -343,7 +368,7 @@ describe("management Workflow context", () => {
       expect(result.isError).not.toBe(true);
       const payload = JSON.parse((result.content as Array<{ text: string }>)[0].text);
       const details = JSON.parse(payload.content);
-      expect(Object.keys(details.agents).sort()).toEqual(["execution", "main"]);
+      expect(Object.keys(details.agents).sort()).toEqual(["execution", "review"]);
       expect(details.agents.execution.mcpServers).toEqual([{ name: "experiment-service", project: "experiments" }]);
       const skill = details.installedSkills["builtin:installed-experiment"].path;
       const skillResult = await client.callTool({ name: "read_file", arguments: { rootId: root.id, path: path.join(path.dirname(relative), skill) } });

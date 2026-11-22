@@ -20,7 +20,8 @@ export interface ScopedCollaboration {
   /** Who selects weak edges after this group completes in its parent graph.
    * Older contracts omitted this field and retain the historical Main route. */
   decisionBy?: "main" | "agent";
-  allowLeaderReconfiguration: boolean;
+  /** Preserved snapshot metadata only; adjustment authority belongs to Main. */
+  allowLeaderReconfiguration?: boolean;
   workflow: ScopedWorkflow;
 }
 
@@ -75,7 +76,7 @@ const group = z.object({
   // Omitted legacy groups are interpreted as Main-owned at every runtime
   // boundary; keeping the field optional preserves lossless old snapshots.
   decisionBy: z.enum(["main", "agent"]).optional(),
-  allowLeaderReconfiguration: z.boolean(),
+  allowLeaderReconfiguration: z.boolean().optional(),
   workflow
 }).strict();
 export const scopedWorkflowContractSchema = z.object({

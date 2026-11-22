@@ -18,7 +18,7 @@ import { AgentApiError } from "../../src/core/agent-errors.js";
 import { ProtocolToolArgumentsError, SessionResumeError } from "../../src/core/harness-runtime/errors.js";
 import { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";
 import type { ProtocolProxyOptions } from "../../src/core/protocol-router.js";
-import { SiiExperimentService, assertSiiControlAction } from "../../src/core/sii-experiments.js";
+import { SiiExperimentService, siiControlReminders } from "../../src/core/sii-experiments.js";
 import { readCodexNativeNotification } from "../../src/core/harness-runtime/adapters/codex-native-input-history.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -776,7 +776,7 @@ function runtime(
 }
 
 describe("HarnessRuntimeFacade", () => {
-  it.each([true, false, "history", "history-no-hook", "full", "periodic"] as const)("yields an unfinished SII turn and requires actual notification receipt before returning its final task result (receipt: %s)", async nativeReceipt => {
+  it.each([true, false, "history", "history-no-hook", "full", "periodic"] as const)("honors an explicit SII wait and records actual notification receipt without blocking task return (receipt: %s)", async nativeReceipt => {
     const nativeHistory = nativeReceipt === "history" || nativeReceipt === "history-no-hook";
     const hasReceipt = nativeReceipt !== false && nativeReceipt !== "history-no-hook";
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-sii-facade-")); roots.push(root);
@@ -853,8 +853,8 @@ describe("HarnessRuntimeFacade", () => {
           { timestamp: "2026-10-09T19:03:37.899Z", type: "session_meta", payload: { id: nativeId, cwd: runRequest.workspacePath, source: "exec", cli_version: "0.153.4" } },
           { timestamp: "2026-10-09T19:03:38.899Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: context.spec.prompt }] } }
         ].map(row => JSON.stringify(row) + "\n").join(""));
-        if (hasReceipt) await expect(assertSiiControlAction(id, "experimenter", runRequest.invocationId, { tool: "finish_task" })).resolves.toBeUndefined();
-        else await expect(assertSiiControlAction(id, "experimenter", runRequest.invocationId, { tool: "finish_task" })).rejects.toThrow("still needs experiment results");
+        expect(await siiControlReminders(id, "experimenter", runRequest.invocationId, { tool: "finish_task" }))
+          .toHaveLength(hasReceipt ? 0 : 1);
       }
       if (nativeReceipt === true || nativeReceipt === "periodic") await context.onEvent({ schemaVersion: 1, eventId: "native-user:1", seq: 1, timestamp: new Date().toISOString(),
         invocationId: context.spec.invocationId, harnessId: context.spec.harnessId, kind: "user.message", phase: "completed", message: context.spec.prompt });
@@ -865,7 +865,7 @@ describe("HarnessRuntimeFacade", () => {
         await context.onEvent({ ...event, message: context.spec.prompt.slice(0, 40000) });
       }
       if (periodicReview) {
-        await expect(assertSiiControlAction(id, "experimenter", runRequest.invocationId, { tool: "finish_task" })).rejects.toThrow("still needs experiment results");
+        expect(await siiControlReminders(id, "experimenter", runRequest.invocationId, { tool: "finish_task" })).toHaveLength(1);
         const client = new Client({ name: "native-agent", version: "1" });
         await client.connect(new StreamableHTTPClientTransport(new URL(context.request.siiMcp!.url)));
         try {
@@ -902,20 +902,19 @@ describe("HarnessRuntimeFacade", () => {
       }
       status = "job_succeeded";
       await service.mutate(projectPath, doc => { doc.experiments[0]!.nextCheckAt = 0; }); await service.refreshNow();
-      if (hasReceipt) expect((await running).handoff).toBe("Measured results validated; task complete.");
-      else await expect(running).rejects.toThrow("still needs experiment results");
+      expect((await running).handoff).toBe("Measured results validated; task complete.");
       expect(invocations).toHaveLength(nativeReceipt === "periodic" ? 3 : 2); expect(adapter.createdGenerations).toEqual([0]);
       expect(officialIds).toHaveLength(nativeReceipt === "periodic" ? 5 : nativeReceipt === true || nativeReceipt === "full" ? 3 : 2); expect(new Set(officialIds).size).toBe(officialIds.length);
       expect(onExperimentWait.mock.calls.map(args => args[0])).toEqual(nativeReceipt === "periodic" ? [true, false, true, false] : [true, false]);
       const doc = await service.document(projectPath);
-      if (hasReceipt) expect(doc.waits).toEqual([]);
-      else { expect(doc.waits[0]!.status).toBe("ready"); expect(doc.experiments[0]!.acknowledged).not.toBe(true); }
+      expect(doc.waits).toEqual([]);
+      expect(doc.experiments[0]!.acknowledged === true).toBe(hasReceipt);
       if (nativeReceipt === "history") expect(doc.experiments[0]!.notificationReceipt).toMatchObject({
         source: "native_session_history", session: { nativeId }, history: { byteOffset: expect.any(Number), sha256: expect.any(String), nativeTimestamp: "2026-10-09T19:03:38.899Z" } });
     } finally { await service.stop(); }
   });
   it.each(["scoped-leader", "scoped-main"] as const)
-    ("accepts independent failed-arrival decisions from %s without accepting duplicate or global transitions", async (role) => {
+    ("accepts independent and revised pending decisions from %s while validating their actual scope", async (role) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "scoped-independent-results-")); roots.push(root);
       const base = await request(root);
       const control = { stagingPath: path.join(base.runtimePath, "actions.json"), capability: "original-capability",
@@ -932,15 +931,39 @@ describe("HarnessRuntimeFacade", () => {
       const returned = { handoff: "Two independent original Agents may continue after this manager stops", controlActions: actions };
       const facade = new HarnessRuntimeFacade({ adapters: [new FixtureAdapter()] });
       expect(facade.validateResidentTurnResult(returned, { ...base, control })).toEqual(returned);
-      for (const rejected of [choice("duplicate", "failed-a"), choice("outside", "outside"),
+      const further = [choice("revised", "failed-a"),
         envelope("plan", { tool: "assign_group_tasks", groupRunId: "run-G", coordinatorEpoch: 7, tasks: [{ taskId: "business", assignment: "Alternative plan" }] }),
-        envelope("request-user", { tool: "request_user", message: "Alternative global transition", rationale: "Another choice" })]) {
+        ...(role === "scoped-main" ? [envelope("request-user", { tool: "request_user", message: "Ask for a necessary decision", rationale: "Agent chose user help" })] : [])];
+      for (const action of further) {
+        const updated = { ...returned, controlActions: [...actions, action] };
+        expect(facade.validateResidentTurnResult(updated, { ...base, control })).toEqual(updated);
+      }
+      const invalid = [choice("outside", "outside"), choice("a", "failed-b"),
+        ...(role === "scoped-leader" ? [envelope("request-user", { tool: "request_user", message: "Ask without the user grant", rationale: "No user authority" })] : [])];
+      for (const rejected of invalid) {
         expect(() => facade.validateResidentTurnResult({ ...returned, controlActions: [...actions, rejected] }, { ...base, control })).toThrow(/invalid orchestration control envelope/);
         expect(() => facade.validateResidentTurnResult({ ...returned, controlActions: [rejected, ...actions] }, { ...base, control })).toThrow(/invalid orchestration control envelope/);
       }
       const stale = structuredClone(actions); (stale[2]!.action as { coordinatorEpoch: number }).coordinatorEpoch = 6;
       expect(() => facade.validateResidentTurnResult({ ...returned, controlActions: stale }, { ...base, control })).toThrow(/invalid orchestration control envelope/);
     });
+
+  it.each(["main", "review"])("validates global workflow receipts against the actual Agent identity (%s)", async agent => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "main-global-result-")); roots.push(root);
+    const base = await request(root); base.agent = agent; base.kind = agent === "main" ? "main" : "worker";
+    base.project.agents[agent] = structuredClone(base.project.agents.main);
+    const control: NonNullable<AgentRunRequest["control"]> = { stagingPath: path.join(base.runtimePath, "actions.json"),
+      capability: "capability", capabilityHash: "f".repeat(64), stateVersion: 1, candidates: [], decisionBy: "main",
+      allowUserIntervention: false, allowWorkflowReconfiguration: true, canComplete: false,
+      collaboration: { role: "scoped-leader", nodeRunId: "node-G", groupRunId: "run-G", coordinatorEpoch: 1,
+        memberNodeIds: [], routeCandidates: [], failedArrivalRequestIds: [], allowReconfiguration: true } };
+    const result: AgentRunResult = { handoff: "Explicit global change", controlActions: [{ projectId: base.project.id, agent,
+      invocationId: base.invocationId, callId: "apply", stateVersion: 1, capabilityHash: control.capabilityHash,
+      receivedAt: "2026-11-12T00:00:00.000Z", action: { tool: "apply_workflow", path: "workflow.json", rationale: "Chosen by Main" } }] };
+    const facade = new HarnessRuntimeFacade({ adapters: [new FixtureAdapter()] });
+    if (agent === "main") expect(facade.validateResidentTurnResult(result, { ...base, control })).toEqual(result);
+    else expect(() => facade.validateResidentTurnResult(result, { ...base, control })).toThrow(/invalid orchestration control envelope/);
+  });
 
   it.each(["leader", "delivery", "scoped-leader", "scoped-main"] as const)
     ("accepts an Agent's own finish_task in the %s collaboration scope", async (role) => {

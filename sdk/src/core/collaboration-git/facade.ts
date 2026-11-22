@@ -861,7 +861,6 @@ export class CollaborationGitFacade {
   private async createAuthorizedPullRequest(
     request: CreatePullRequestRequest | CreateGroupFinalPullRequestRequest
   ): Promise<GitHubPullRequestFact> {
-    await this.assertClosingPublication(request.execution, request.ownershipEpoch, request.expectedHead, request.signal);
     await this.assertRemoteAuthority(
       request.execution,
       request.ownershipEpoch,
@@ -936,7 +935,6 @@ export class CollaborationGitFacade {
   private async reconcileAuthorizedMergedPullRequest(
     request: AuthorizedMergeRequest
   ): Promise<SynchronizedPullRequestFact> {
-    await this.assertClosingPublication(request.execution, request.ownershipEpoch, request.expectedHead, request.signal);
     if (!request.expectedMergeCommitSha) {
       throw new GitInputError("Merged pull reconciliation requires the exact merge commit");
     }
@@ -1012,7 +1010,6 @@ export class CollaborationGitFacade {
   private async mergePullRequestAuthorized(
     request: AuthorizedMergeRequest
   ): Promise<SynchronizedPullRequestFact> {
-    await this.assertClosingPublication(request.execution, request.ownershipEpoch, request.expectedHead, request.signal);
     this.options.localGit.reconciliationRef(request.operationId);
     await this.options.localGit.assertRemoteMergeTargetAvailable(
       request.expectedBase,
@@ -1090,7 +1087,6 @@ export class CollaborationGitFacade {
     if (request.execution.ownershipEpoch !== request.ownershipEpoch) {
       throw new GitInputError("Remote mutation ownership epoch is stale");
     }
-    await this.assertClosingPublication(request.execution, request.ownershipEpoch, request.expectedHead, request.signal);
     await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, gitDeliveryRef(request.execution.executionBranch), "provider.mutate");
     return this.options.provider.updatePullRequest({
       owner: request.repository.owner,
@@ -1122,7 +1118,6 @@ export class CollaborationGitFacade {
     if (request.execution.ownershipEpoch !== request.ownershipEpoch) {
       throw new GitInputError("Remote mutation ownership epoch is stale");
     }
-    await this.assertClosingPublication(request.execution, request.ownershipEpoch, request.expectedHead, request.signal);
     await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, gitDeliveryRef(request.execution.executionBranch), "provider.close_terminal");
     return this.options.provider.closePullRequest({
       owner: request.repository.owner,
@@ -1246,15 +1241,6 @@ export class CollaborationGitFacade {
 
   readonlyProjection(input: ReadonlyProjectionInput): ReadonlyGitProjection {
     return readonlyGitProjection(input);
-  }
-
-  private async assertClosingPublication(execution: PullRequestAuthority, epoch: number, head: string, signal?: AbortSignal): Promise<void> {
-    if (!("restrictedClosing" in execution) || !execution.restrictedClosing) return;
-    const fact = await this.options.localGit.observeRestrictedWorktreeClosing(execution as GitExecutionAuthority, epoch,
-      execution.restrictedClosing.scope, signal);
-    if (fact.head !== head || fact.pendingPaths.length || !fact.deliveryRequired) {
-      throw new GitInputError("Closing PR must use its own exact clean B, separate from report A");
-    }
   }
 
   private async assertRemoteAuthority(

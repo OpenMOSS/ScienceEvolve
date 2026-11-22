@@ -18,14 +18,15 @@ export function workflowAdjustmentRuntimeImpact(request: WorkflowAdjustmentSubmi
   const groupOwnershipChanged = (id: string) => {
     const previous = oldGroups.get(id), next = newGroups.get(id);
     const identity = (group: typeof previous) => group && { parentGroupId: group.parentGroupId,
-      leaderAgentId: group.leaderAgentId, decisionBy: group.decisionBy ?? "main", allowLeaderReconfiguration: group.allowLeaderReconfiguration };
+      leaderAgentId: group.leaderAgentId, decisionBy: group.decisionBy ?? "main" };
     return !isDeepStrictEqual(identity(previous), identity(next));
   };
   const groupChanged = (id: string) => {
     const semantic = (group: ReturnType<typeof oldGroups.get>) => {
       if (!group) return group;
       const { canvas: _canvas, ...workflow } = group.workflow;
-      return { ...group, workflow };
+      const { allowLeaderReconfiguration: _metadata, ...definition } = group;
+      return { ...definition, workflow };
     };
     return !isDeepStrictEqual(semantic(oldGroups.get(id)), semantic(newGroups.get(id))) ||
       !isDeepStrictEqual(oldGraph.collaborations?.find(group => group.id === id), newGraph.collaborations?.find(group => group.id === id)) ||

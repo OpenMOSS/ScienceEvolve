@@ -1,5 +1,4 @@
-import { isDeepStrictEqual } from "node:util";
-import type { AgentConfigMap, AgentOrchestrationTemplate } from "./types.js";
+import type { AgentConfigMap } from "./types.js";
 import type { AgentOrchestrationProposal } from "./agent-orchestration-reconfiguration.js";
 import { DEFAULT_HARNESS_ID } from "./agent-runtime.js";
 
@@ -44,29 +43,4 @@ export function restoreAgentConfiguration(configuration: ScopedAgentConfiguratio
       snapshot.id === config.gatewayId && snapshot.models.includes(config.model));
     return [id, { ...structuredClone(activeConfig), ...(matchingSnapshot ? { gatewaySnapshot: structuredClone(snapshot) } : {}) }];
   }));
-}
-
-/** Shared Agent edits propagate by identity, but a Leader cannot edit other
- * identities or global resources selected by unrelated Agents. */
-export function assertScopedAgentConfigurationRange(workflow: AgentOrchestrationTemplate, groupId: string,
-  current: ScopedAgentConfiguration, proposed: ScopedAgentConfiguration): void {
-  const group = workflow.scopedWorkflow?.groups.find((entry) => entry.id === groupId);
-  if (!group) throw new Error("Leader configuration scope does not exist");
-  const allowed = new Set([group.leaderAgentId, ...group.workflow.nodes.flatMap((node) => node.kind === "agent" ? [node.agentId] : [])]);
-  const before = credentialFreeAgentConfiguration(current); const after = credentialFreeAgentConfiguration(proposed);
-  if (!isDeepStrictEqual(Object.keys(before.agents).sort(), Object.keys(after.agents).sort())) throw new Error("Leader cannot add or delete shared Agent identities");
-  for (const [id, config] of Object.entries(after.agents)) {
-    if (!allowed.has(id) && !isDeepStrictEqual(config, before.agents[id])) throw new Error("Leader cannot edit an Agent outside its group");
-  }
-  for (const field of ["skillDefinitions", "mcpDefinitions"] as const) {
-    for (const name of new Set([...Object.keys(before[field]), ...Object.keys(after[field])])) {
-      if (isDeepStrictEqual(before[field][name], after[field][name])) continue;
-      const selects = (agent: AgentConfigMap[string]) => field === "skillDefinitions"
-        ? [...agent.skills, ...agent.autoSkills].includes(`project:${name}`)
-        : agent.mcpServers.some((server) => server.project === name);
-      const localUse = Object.entries(after.agents).some(([id, agent]) => allowed.has(id) && selects(agent));
-      const outsideUse = Object.entries(before.agents).some(([id, agent]) => !allowed.has(id) && selects(agent));
-      if ((!localUse && after[field][name] !== undefined) || outsideUse) throw new Error("Leader resource changes must stay within its group's Agent configuration");
-    }
-  }
 }

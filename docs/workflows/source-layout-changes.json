@@ -2814,6 +2814,9 @@
     }
   ],
   "removals": [
+    { "path": "sdk/src/core/orchestration-control-decisions.ts", "reason": "Control actions are validated by their invocation and recorded per call rather than limited to one decision per turn." },
+    { "path": "sdk/src/core/scoped-workflow-reconfiguration.ts", "reason": "Workflow reconfiguration uses the authorized Main proposal and its project-wide field and version checks." },
+    { "path": "sdk/src/main-resident-tracker.ts", "reason": "Resident launch admission and drain are owned by the shared coordinator and src/core/resident-lifetime.ts." },
     {
       "path": "sdk/docs/hermes-zh.md",
       "reason": "Hermes host support was removed from the SDK."

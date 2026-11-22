@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SiiExperimentService, assertSiiControlAction, type SiiMcpBinding } from "../../src/core/sii-experiments.js";
+import { SiiExperimentService, siiControlReminders, type SiiMcpBinding } from "../../src/core/sii-experiments.js";
 import { ControlActionService } from "../../src/core/orchestration-control-bridge.js";
 import { ProjectInspireWorkloadRegistry } from "../../src/core/inspire-workload-registry.js";
 import type { AgentRunRequest } from "../../src/core/types.js";
@@ -199,7 +199,7 @@ describe("SII asynchronous experiments", () => {
     const reviewed = await f.service.document(f.request.projectPath);
     expect(reviewed.waits[0].nativeReceipt?.eventId).toBe(reviewed.waits[0].eventId);
     expect(reviewed.experiments[0].acknowledged).not.toBe(true);
-    await expect(assertSiiControlAction(PROJECT, "execution", "inv_first", { tool: "finish_task" })).rejects.toThrow("still needs experiment results");
+    await expect(siiControlReminders(PROJECT, "execution", "inv_first", { tool: "finish_task" })).resolves.toEqual([expect.any(String)]);
     const oldEvent = reviewed.waits[0].eventId;
     await f.binding.call("sii_defer_task", { experiment_ids: [experiment.id], context: "Metrics justify another fifteen minutes.", check_interval_minutes: 15 });
     const next = await f.service.document(f.request.projectPath);
@@ -253,7 +253,7 @@ describe("SII asynchronous experiments", () => {
     expect(notice).not.toContain("Periodic experiment review");
     expect(notice).toContain(status === "job_succeeded" ? '"status":"succeeded"' : '"status":"failed"');
     await receiveNotification(f.binding, notice);
-    await expect(assertSiiControlAction(PROJECT, "execution", "inv_first", { tool: "finish_task" })).resolves.toBeUndefined();
+    await expect(siiControlReminders(PROJECT, "execution", "inv_first", { tool: "finish_task" })).resolves.toEqual([]);
   });
 
   it("rejects an invalid deferred override without changing the saved experiment or wait", async () => {
@@ -348,7 +348,7 @@ describe("SII asynchronous experiments", () => {
     } finally { await client.close(); }
   });
 
-  it.each(["workspace", "compute", "yolo"] as const)("requires explicit selection under %s and exposes actual tools only to a selected Worker", async permission => {
+  it.each(["workspace", "compute", "yolo"] as const)("requires explicit selection under %s and exposes actual tools only to an explicitly selected Agent", async permission => {
     const f = await fixture();
     const request = { ...f.request, permission, invocationId: `inv_${permission}` };
     for (const selected of [undefined, false]) {
@@ -369,23 +369,27 @@ describe("SII asynchronous experiments", () => {
     } finally { await client.close(); binding.close(); }
   });
 
-  it("rejects management/receipt turns and revokes a retained binding on task or role changes", async () => {
+  it("keeps selected experiment tools across roles and receipt contexts while enforcing task identity", async () => {
     const f = await fixture();
-    for (const patch of [{ kind: "main" }, { purpose: "explainer" }, { purpose: "probe" },
-      { executionContext: { role: "leader" } }, { terminalPushObservation: {} }, { terminalPushCoordination: {} }, { worktreeClosing: {} }]) {
-      await expect(f.service.bind({ ...f.request, ...patch } as AgentRunRequest, new AbortController().signal)).rejects.toThrow("business Worker");
+    f.request.project.agents.main = { ...f.request.project.agents.execution! };
+    for (const patch of [{ agent: "main", kind: "main" }, { executionContext: { role: "leader" } },
+      { terminalPushObservation: {} }, { terminalPushCoordination: {} }, { worktreeClosing: {} }]) {
+      const binding = await f.service.bind({ ...f.request, ...patch } as AgentRunRequest, new AbortController().signal);
+      binding.activate();
+      expect(binding.availableTools().map(tool => tool.name)).toContain("sii_submit_experiment");
+      expect(await binding.call("sii_command", { args: ["job", "list"] })).toBeDefined();
+      binding.close();
     }
-    expect(() => f.binding.activate({ ...f.request, taskSessionId: "another-task" })).toThrow("current Worker task");
-    expect(f.binding.availableTools()).toEqual([]);
-    expect((await fetch(f.binding.url, { method: "POST", body: "{}" })).status).toBe(404);
-    const next = await f.service.bind({ ...f.request, invocationId: "inv_next" }, new AbortController().signal); next.activate();
-    expect(() => next.activate({ ...f.request, executionContext: { role: "leader" } } as AgentRunRequest)).toThrow("current Worker task");
+    const next = await f.service.bind(f.request, new AbortController().signal); next.activate();
+    next.activate({ ...f.request, executionContext: { role: "leader" } } as AgentRunRequest);
+    expect(next.availableTools().map(tool => tool.name)).toContain("sii_submit_experiment");
+    expect(() => next.activate({ ...f.request, taskSessionId: "another-task" })).toThrow("current Agent task");
     expect(next.availableTools()).toEqual([]);
     const changedPermission = await f.service.bind({ ...f.request, invocationId: "inv_scope" }, new AbortController().signal);
     changedPermission.activate();
-    expect(() => changedPermission.activate({ ...f.request, permission: "workspace" })).toThrow("current Worker task");
+    expect(() => changedPermission.activate({ ...f.request, permission: "workspace" })).toThrow("current Agent task");
     expect(changedPermission.availableTools()).toEqual([]);
-    expect(() => changedPermission.activate()).toThrow("current Worker task");
+    expect(() => changedPermission.activate()).toThrow("current Agent task");
   });
 
   it("uses trusted file roots for transfers and refuses another task directory and aliased files before the CLI runs", async () => {
@@ -614,16 +618,19 @@ describe("SII asynchronous experiments", () => {
     expect(submission.experiment.status).toBe("submission_unknown");
   });
 
-  it("disables notebook CLI defaults that wait and refuses synchronous post-start actions before creating a resource", async () => {
+  it("defaults notebook startup to async while honoring explicit post-start actions", async () => {
     const f = await fixture();
     await f.submit("notebook", { required_for_task: false });
     expect(f.runJson.mock.calls.find(([args]) => args.includes("create"))?.[0].slice(-3)).toEqual(["--no-wait", "--post-start", "none"]);
-    for (const flags of [["--post-start", "python train.py"], ["--post-start-script=/tmp/setup.sh"]]) {
-      await expect(f.binding.call("sii_submit_experiment", { request_id: "post-start", required_for_task: false,
-        args: ["notebook", "create", "--name", "post-start", "--workspace", "compute-space", "--project", "具有能动性的科学大模型", ...flags] })).rejects.toThrow("force CLI waiting");
+    const setup = path.join(f.request.workspacePath, "setup.sh");
+    await fs.writeFile(setup, "echo setup");
+    for (const flags of [["--post-start", "python train.py"], [`--post-start-script=${setup}`]]) {
+      await f.binding.call("sii_submit_experiment", { request_id: flags[0], required_for_task: false,
+        args: ["notebook", "create", "--name", flags[0], "--workspace", "compute-space", "--project", "具有能动性的科学大模型", ...flags] });
+      expect(f.runJson.mock.calls.at(-1)?.[0]).toEqual(expect.arrayContaining(flags));
     }
-    expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
-    expect((await f.service.document(f.request.projectPath)).experiments).toHaveLength(1);
+    expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(3);
+    expect((await f.service.document(f.request.projectPath)).experiments).toHaveLength(3);
   });
 
   it.each([ ["job", "job_succeeded"], ["hpc", "hpc_failed"] ])("keeps %s task unfinished without repair/polling turns and notifies its original session on %s", async (kind, state) => {
@@ -631,15 +638,14 @@ describe("SII asynchronous experiments", () => {
     const { experiment } = await f.submit(kind);
     const revalidate = vi.fn(async () => undefined);
     const controls = new ControlActionService({ projectId: PROJECT, agent: "execution", invocationId: "inv_first", stateVersion: 1, capability: "test-capability", stagingPath: path.join(f.request.runtimePath, "actions.json"), revalidate });
-    await expect(controls.stage("test-capability", "premature-finish", { tool: "finish_task" })).rejects.toThrow("still needs experiment results");
-    expect(revalidate).not.toHaveBeenCalled();
-    await expect(fs.access(path.join(f.request.runtimePath, "actions.json"))).rejects.toThrow();
+    const completion = await controls.stageWithResult("test-capability", "explicit-finish", { tool: "finish_task" });
+    expect(completion.reminders).toEqual([expect.any(String)]);
+    expect(revalidate).toHaveBeenCalledOnce();
     await f.binding.call("sii_defer_task", { experiment_ids: [experiment.id], context: "Inspect measured metrics and compare baseline." });
     let resolved = false;
     const waiting = f.binding.wait("Experiment pending, task unfinished.", vi.fn()).then(value => { resolved = true; return value; });
     await vi.waitFor(() => expect(f.onExperimentWait).toHaveBeenCalledWith(true));
-    await expect(controls.stage("test-capability", "finish-while-system-waits", { tool: "finish_task" })).rejects.toThrow("still needs experiment results");
-    expect(revalidate).not.toHaveBeenCalled();
+    await expect(siiControlReminders(PROJECT, "execution", "inv_first", { tool: "finish_task" })).resolves.toEqual([expect.any(String)]);
     await expect(f.binding.call("sii_get_experiment", { experiment_id: experiment.id })).rejects.toThrow("active Agent turn");
     await f.service.refreshNow();
     expect(resolved).toBe(false);
@@ -650,7 +656,7 @@ describe("SII asynchronous experiments", () => {
     expect(f.onExperimentWait.mock.calls.map(args => args[0])).toEqual([true, false]);
     await receiveNotification(f.binding, notification!);
     await controls.stage("test-capability", "processed-finish", { tool: "finish_task" });
-    expect(revalidate).toHaveBeenCalledOnce();
+    expect(revalidate).toHaveBeenCalledTimes(2);
     expect(await f.binding.wait("Results processed.", vi.fn())).toBeUndefined();
     await f.binding.clearWait();
     const callCount = f.runJson.mock.calls.length;
@@ -696,7 +702,7 @@ describe("SII asynchronous experiments", () => {
     expect((await f.service.document(f.request.projectPath)).experiments[0]!.monitorAcknowledged).not.toBe(true);
     await receiveNotification(f.binding, notification!);
     expect((await f.service.document(f.request.projectPath)).experiments[0]!.monitorAcknowledged).toBe(true);
-    await expect(assertSiiControlAction(PROJECT, "execution", "inv_first", { tool: "finish_task" })).rejects.toThrow();
+    await expect(siiControlReminders(PROJECT, "execution", "inv_first", { tool: "finish_task" })).resolves.toEqual([expect.any(String)]);
     await f.binding.call("sii_defer_task", { experiment_ids: [experiment.id], context: "Continue system monitoring." });
     let resolved = false;
     const wait = f.binding.wait("Pending.", vi.fn()).then(() => { resolved = true; }).catch(() => undefined);
@@ -746,7 +752,7 @@ describe("SII asynchronous experiments", () => {
     await f.binding.call("sii_defer_task", { experiment_ids: [experiment.id], context: "Inspect my measured result." });
     f.state("job_succeeded"); await f.service.refreshNow();
     const notification = (await f.binding.wait("Task still pending.", vi.fn()))!;
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     await f.binding.beginResume(); f.binding.activate();
     const event = { kind: "user.message", phase: "completed", eventId: "native-original-user", invocationId: f.request.invocationId,
       harnessId: session.harnessId, message: `Existing prompt\n${notification}\nAssignment tail` };
@@ -759,14 +765,14 @@ describe("SII asynchronous experiments", () => {
       await f.binding.observeNativeNotification(event, other);
     }
     expect((await f.service.document(f.request.projectPath)).experiments[0]!.acknowledged).not.toBe(true);
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     await f.binding.observeNativeNotification(event, { ...session, resumedAt: "2026-10-09T00:00:00.000Z" });
     const received = await f.service.document(f.request.projectPath);
     expect(received.experiments[0]!.acknowledged).toBe(true);
     expect(received.waits[0]!.nativeReceipt).toMatchObject({ eventId: received.waits[0]!.eventId,
       invocationId: f.request.invocationId, nativeEventId: event.eventId, session });
     expect(received.experiments[0]!.notificationReceipt).toEqual(received.waits[0]!.nativeReceipt);
-    await f.binding.assertTaskComplete();
+    await f.binding.taskCompletionReminders();
     await f.binding.observeNativeNotification({ ...event, eventId: "replayed-native-event" }, session);
     expect((await f.service.document(f.request.projectPath)).waits[0]!.nativeReceipt).toEqual(received.waits[0]!.nativeReceipt);
     expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
@@ -784,10 +790,10 @@ describe("SII asynchronous experiments", () => {
       expect(input).toEqual({ text, session: original }); return { session: original, history };
     });
     f.binding.readNativeNotification = read;
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     expect(read).not.toHaveBeenCalled();
     await f.binding.beginResume(); f.binding.activate();
-    await f.binding.assertTaskComplete(); await f.binding.assertTaskComplete();
+    await f.binding.taskCompletionReminders(); await f.binding.taskCompletionReminders();
     expect(read).toHaveBeenCalledOnce();
     const receipt = (await f.service.document(f.request.projectPath)).experiments[0]!.notificationReceipt;
     expect(receipt).toMatchObject({ source: "native_session_history", session: original, history });
@@ -808,7 +814,7 @@ describe("SII asynchronous experiments", () => {
       return { session: mode === "session" ? { ...session, generation: 99 } : session,
         history: { relativePath: "sessions/exact.jsonl", byteOffset: 12, sha256: "a".repeat(64), nativeTimestamp: "2026-10-09T19:03:38.899Z" } };
     };
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     const doc = await f.service.document(f.request.projectPath);
     expect(doc.experiments[0]!.acknowledged).not.toBe(true);
     expect(doc.waits[0]!.nativeReceipt).toBeUndefined();
@@ -822,9 +828,9 @@ describe("SII asynchronous experiments", () => {
     // The MCP handler has only prepared its response. A disconnected caller
     // must not release the task before a real native result is observed.
     expect((await f.service.document(f.request.projectPath)).experiments[0]!.acknowledged).not.toBe(true);
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     await receiveResult(f.binding, result);
-    await f.binding.assertTaskComplete();
+    await f.binding.taskCompletionReminders();
     const received = (await f.service.document(f.request.projectPath)).experiments[0]!;
     expect(received.notificationReceipt).toMatchObject({ source: "native_tool_result",
       invocationId: f.request.invocationId, nativeEventId: "native-sii-result", session });
@@ -836,12 +842,12 @@ describe("SII asynchronous experiments", () => {
     const f = await fixture(); const { experiment } = await f.submit();
     f.state("job_succeeded"); await f.service.refreshNow();
     await f.service.mutate(f.request.projectPath, doc => { doc.experiments[0]!.acknowledged = true; });
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     const result = await f.binding.call("sii_get_experiment", { experiment_id: experiment.id });
     expect(result).toMatchObject({ result_receipt: expect.any(String), experiment: { acknowledged: false } });
     expect((await f.service.document(f.request.projectPath)).experiments[0]!.notificationReceipt).toBeUndefined();
     await receiveResult(f.binding, result);
-    await f.binding.assertTaskComplete();
+    await f.binding.taskCompletionReminders();
   });
 
   it("recovers a legacy unproved acknowledgement through the original Session without repeating submission", async () => {
@@ -852,11 +858,13 @@ describe("SII asynchronous experiments", () => {
     const next = new SiiExperimentService(f.options); services.push(next); await next.start();
     const recovered = await next.bind({ ...f.request, invocationId: "inv_legacy_result_recovery" }, new AbortController().signal);
     recovered.session = session;
+    recovered.activate();
+    await recovered.call("sii_defer_task", { experiment_ids: [experiment.id], context: "Explicitly inspect the retained result" });
     const notification = await recovered.wait(undefined, vi.fn());
     expect(notification).toContain(experiment.id);
-    await expect(recovered.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(recovered.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     await receiveNotification(recovered, notification!);
-    await recovered.assertTaskComplete();
+    await recovered.taskCompletionReminders();
     expect((await next.document(f.request.projectPath)).experiments[0]!.notificationReceipt)
       .toMatchObject({ source: "native_event", invocationId: "inv_legacy_result_recovery", session });
     expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
@@ -871,7 +879,7 @@ describe("SII asynchronous experiments", () => {
     const other = await f.service.bind({ ...f.request, taskSessionId: "another-unfinished-task" }, new AbortController().signal);
     other.session = session;
     expect(await other.wait(undefined, vi.fn())).toBeUndefined();
-    await other.assertTaskComplete();
+    await other.taskCompletionReminders();
     expect(await fs.readFile(ledger, "utf8")).toBe(historical);
     other.close();
   });
@@ -942,7 +950,7 @@ describe("SII asynchronous experiments", () => {
       expect(saved.notificationReceipt).toBeUndefined();
     });
 
-  it("recovers an unreceived synchronous terminal result in the same Session after service restart", async () => {
+  it("retains an unreceived result after restart without forcing an implicit wait", async () => {
     const f = await fixture(); const { experiment } = await f.submit();
     f.state("job_succeeded"); await f.service.refreshNow();
     await f.binding.call("sii_get_experiment", { experiment_id: experiment.id });
@@ -952,16 +960,12 @@ describe("SII asynchronous experiments", () => {
     const next = new SiiExperimentService(f.options); services.push(next); await next.start();
     const recovered = await next.bind({ ...f.request, invocationId: "inv_sync_result_recovery" }, new AbortController().signal);
     recovered.session = session;
-    const notification = await recovered.wait(undefined, vi.fn());
-    expect(notification).toContain("SII system notification (");
-    expect(notification).toContain(experiment.id);
-    await expect(recovered.assertTaskComplete()).rejects.toThrow("still needs experiment results");
-    await receiveNotification(recovered, notification!);
-    await recovered.assertTaskComplete();
+    expect(await recovered.wait(undefined, vi.fn())).toBeUndefined();
+    expect(await recovered.taskCompletionReminders()).toEqual([expect.any(String)]);
     const saved = (await next.document(f.request.projectPath)).experiments[0]!;
     expect(saved.resultDelivery).toEqual(prepared);
-    expect(saved.notificationReceipt).toMatchObject({ source: "native_event",
-      invocationId: "inv_sync_result_recovery", session });
+    expect(saved.acknowledged).not.toBe(true);
+    expect(saved.notificationReceipt).toBeUndefined();
     expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
   });
 
@@ -973,14 +977,14 @@ describe("SII asynchronous experiments", () => {
       const prepared = (await f.service.document(f.request.projectPath)).experiments[0]!.resultDelivery;
       if (mode === "session") {
         f.binding.session = { ...session, nativeId: "replacement-session" };
-        await expect(f.binding.wait(undefined, vi.fn())).rejects.toThrow("cannot be replaced");
+        expect(await f.binding.wait(undefined, vi.fn())).toBeUndefined();
       } else if (mode === "cancelled") {
         f.binding.close();
         await expect(f.binding.wait(undefined, vi.fn())).rejects.toThrow();
       } else {
         await f.service.mutate(f.request.projectPath, doc => { doc.experiments[0]!.evidence = { newer: true }; });
         expect(await f.binding.wait(undefined, vi.fn())).toBeUndefined();
-        await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+        await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
       }
       const saved = await f.service.document(f.request.projectPath);
       expect(saved.experiments[0]!.acknowledged).not.toBe(true);
@@ -997,9 +1001,9 @@ describe("SII asynchronous experiments", () => {
     expect(notification).toContain("Results omitted"); expect(notification).toContain(experiment.id);
     await receiveNotification(f.binding, notification);
     expect((await f.service.document(f.request.projectPath)).experiments[0]!.acknowledged).not.toBe(true);
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     await receiveResult(f.binding, await f.binding.call("sii_get_experiment", { experiment_id: experiment.id }));
-    await f.binding.assertTaskComplete();
+    await f.binding.taskCompletionReminders();
   });
 
   it("replays an unreceived prepared result after restart without another create or a replacement session", async () => {
@@ -1008,16 +1012,16 @@ describe("SII asynchronous experiments", () => {
     f.state("job_succeeded"); await f.service.refreshNow();
     const prepared = (await f.binding.wait("Original pending handoff.", vi.fn()))!;
     await f.binding.beginResume(); f.binding.activate();
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     f.binding.close(); await f.service.stop();
     const next = new SiiExperimentService(f.options); services.push(next); await next.start();
     const recovered = await next.bind({ ...f.request, invocationId: "inv_unreceived_recovery" }, new AbortController().signal);
     recovered.session = session;
     expect(await recovered.wait(undefined, vi.fn())).toBe(prepared);
-    await expect(recovered.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(recovered.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     expect((await next.document(f.request.projectPath)).waits[0]!.nativeReceipt).toBeUndefined();
     await receiveNotification(recovered, prepared);
-    await recovered.assertTaskComplete();
+    await recovered.taskCompletionReminders();
     expect((await next.document(f.request.projectPath)).waits[0]!.nativeReceipt).toMatchObject({ invocationId: "inv_unreceived_recovery", session });
     expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
   });
@@ -1030,7 +1034,7 @@ describe("SII asynchronous experiments", () => {
     await f.service.mutate(f.request.projectPath, doc => { doc.experiments[0]!.evidence = { newer: true }; });
     await receiveNotification(f.binding, notification);
     expect((await f.service.document(f.request.projectPath)).experiments[0]!.acknowledged).not.toBe(true);
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
   });
 
   it("handles completion-before-deferral immediately and isolates task ownership", async () => {
@@ -1094,59 +1098,29 @@ describe("SII asynchronous experiments", () => {
     }
     if (middle === "rejected") expect(observed.experiments.find(experiment => experiment.name === "partial-b")?.status).toBe("failed");
     expect(observed.experiments.map(experiment => experiment.id)).toEqual(before.experiments.map(experiment => experiment.id));
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
   });
 
-  it("keeps completion and successor actions unrecorded until every required result reaches the original task Session", async () => {
-    const f = await fixture();
-    let secondDone = false;
-    f.runJson.mockImplementation(async args => ({ success: true, data: args.includes("create")
-      ? { name: args[args.indexOf("--name") + 1], sub_code: 0 }
-      : { job: { status: args.includes("required-a") || secondDone ? "job_succeeded" : "job_running" } } }));
-    const ids: string[] = [];
-    for (const name of ["required-a", "required-b"]) {
-      const result = await f.submit("job", { request_id: name, args: ["job", "create", "--name", name,
-        "--workspace", "compute-space", "--project", "具有能动性的科学大模型"] });
-      ids.push(result.experiment.id);
-    }
+  it.each(["running", "finished-unread", "receipt-missing"])("executes completion and routing with truthful reminders for %s experiments", async mode => {
+    const f = await fixture(); const { experiment } = await f.submit();
+    if (mode !== "running") { f.state("job_succeeded"); await f.service.refreshNow(); }
+    if (mode === "receipt-missing") await f.binding.call("sii_get_experiment", { experiment_id: experiment.id });
     const stagingPath = path.join(f.request.runtimePath, "actions.json");
     const revalidate = vi.fn(async () => undefined);
     const controls = new ControlActionService({ projectId: PROJECT, agent: "execution", invocationId: "inv_first",
-      stateVersion: 1, capability: "multi-result-capability", stagingPath, revalidate });
-    const blocked = async (label: string) => {
-      await expect(controls.stage("multi-result-capability", `${label}-finish`, { tool: "finish_task" })).rejects.toThrow("still needs experiment results");
-      await expect(controls.stage("multi-result-capability", `${label}-successor`, { tool: "route_to_agent", target: "next", rationale: "Needs every result" })).rejects.toThrow("still needs experiment results");
-      expect(revalidate).not.toHaveBeenCalled();
-      await expect(fs.access(stagingPath)).rejects.toThrow();
-    };
-    await f.binding.call("sii_defer_task", { experiment_ids: ids, context: "Validate both required measurements" });
-    const waiting = f.binding.wait("Both experiments are part of this unfinished task", vi.fn());
-    await vi.waitFor(() => expect(f.onExperimentWait).toHaveBeenCalledWith(true));
-    await blocked("waiting");
-    await f.service.refreshNow();
-    const first = (await waiting)!;
-    expect(first).toContain('"name":"required-a","status":"succeeded"');
-    // A terminal item can wake its owner before the serial monitor has
-    // queried the second. Either pending snapshot must retain the gate.
-    expect(first).toMatch(/"name":"required-b","status":"(?:queued|running)"/);
-    expect((await f.service.document(f.request.projectPath)).experiments[1]!.status).toBe("running");
-    await receiveNotification(f.binding, first);
-    await blocked("first-result-received");
-    await f.binding.clearWait();
-    await f.binding.call("sii_defer_task", { experiment_ids: [ids[1]], context: "Keep waiting for my second measurement" });
-    const second = f.binding.wait("First measurement received, same task still unfinished", vi.fn());
-    await vi.waitFor(() => expect(f.onExperimentWait).toHaveBeenCalledTimes(3));
-    secondDone = true; await f.due(); await f.service.refreshNow();
-    const notice = (await second)!;
-    await blocked("all-terminal-but-not-received");
-    await receiveNotification(f.binding, notice);
-    await controls.stage("multi-result-capability", "all-required-received-finish", { tool: "finish_task" });
-    expect(revalidate).toHaveBeenCalledOnce();
-    const doc = await f.service.document(f.request.projectPath);
-    expect(doc.experiments.map(experiment => experiment.id)).toEqual(ids);
-    expect(doc.experiments.every(experiment => experiment.acknowledged === true && experiment.notificationReceipt?.session.nativeId === session.nativeId)).toBe(true);
-    expect(doc.experiments[0]!.notificationReceipt?.eventId).not.toBe(doc.experiments[1]!.notificationReceipt?.eventId);
-    expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(2);
+      stateVersion: 1, capability: "advisory-capability", stagingPath, revalidate });
+    for (const [tool, action] of [["finish", { tool: "finish_task" }], ["route", { tool: "route_to_agent", target: "next", rationale: "Continue with available work" }]] as const) {
+      const response = await controls.stageWithResult("advisory-capability", tool, action);
+      expect(response.envelope.action).toEqual(action);
+      expect(response.reminders).toEqual([expect.stringContaining("does not prevent")]);
+    }
+    expect(revalidate).toHaveBeenCalledTimes(2);
+    expect(await f.binding.wait(undefined, vi.fn())).toBeUndefined();
+    const saved = (await f.service.document(f.request.projectPath)).experiments[0]!;
+    expect(saved.status).toBe(mode === "running" ? "queued" : "succeeded");
+    expect(saved.acknowledged).not.toBe(true);
+    expect(saved.notificationReceipt).toBeUndefined();
+    expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
   });
 
   it("aborts an actual system wait without acknowledging, deleting, or resubmitting its remote experiment", async () => {
@@ -1194,7 +1168,7 @@ describe("SII asynchronous experiments", () => {
     await fs.writeFile(marker, JSON.stringify({ run_id: "program-two", exit_code: 5 }));
     await f.due(); await f.service.refreshNow();
     await receiveResult(f.binding, await f.binding.call("sii_get_experiment", { experiment_id: second.experiment.id }));
-    await f.binding.assertTaskComplete();
+    await f.binding.taskCompletionReminders();
     expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(0);
     const other = await f.service.bind({ ...f.request, taskSessionId: "another-task" }, new AbortController().signal); other.session = session; other.activate();
     await expect(other.call("sii_register_experiment", { ...input, request_id: "program-two" })).rejects.toThrow("fresh request_id");
@@ -1212,14 +1186,14 @@ describe("SII asynchronous experiments", () => {
     const notification = await wait;
     expect(notification).toContain('"status":"resource_ready"');
     expect(notification).toContain('"completion_scope":"resource_startup"');
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     await receiveNotification(f.binding, notification!);
     await f.binding.call("sii_register_experiment", { kind: "notebook", name: "training-a", workspace: "compute-space", request_id: "actual-program", completion_file: "actual-program.json" });
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
   });
 
-  it("keeps GPU accounting compatible and rejects completion without explicit deferral", async () => {
+  it("keeps GPU accounting and provides completion reminders without implicit deferral", async () => {
     const f = await fixture();
     const args = ["job", "create", "--name", "accounted-run", "--workspace", "compute-space", "--project", "具有能动性的科学大模型", "--quota", "2,16,128", "--nodes", "3", "--group", "H100-group", "--command", "echo inspire job create --name fake --quota 99,16,128"];
     await f.binding.call("sii_submit_experiment", { args, request_id: "accounted-run" });
@@ -1227,18 +1201,20 @@ describe("SII asynchronous experiments", () => {
     expect(await registry.list(PROJECT)).toEqual([expect.objectContaining({ name: "accounted-run", requestedGpuCount: 6, requestedAcceleratorType: "H100", invocationId: "inv_first" })]);
     await f.binding.call("sii_submit_experiment", { args, request_id: "accounted-run" });
     expect(await registry.list(PROJECT)).toHaveLength(1);
-    await expect(f.binding.assertTaskComplete()).rejects.toThrow("still needs experiment results");
+    await expect(f.binding.taskCompletionReminders()).resolves.toEqual([expect.any(String)]);
     await expect(f.submit("job", { args: [...args, "--account", "wrong-account"] })).rejects.toThrow("must match");
     expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
   });
 
-  it("does not permit required submission or deferral after a completion receipt", async () => {
+  it("allows an explicit submission after completion without overriding the receipt", async () => {
     const f = await fixture();
     const stagingPath = path.join(f.request.runtimePath, "actions.json");
     await fs.mkdir(path.dirname(stagingPath), { recursive: true });
     await fs.writeFile(stagingPath, JSON.stringify([{ action: { tool: "finish_task" } }]));
     f.binding.activate({ ...f.request, control: { stagingPath } as AgentRunRequest["control"] });
-    await expect(f.submit()).rejects.toThrow("already recorded task completion");
-    expect(f.runJson).not.toHaveBeenCalled();
+    const result = await f.submit();
+    expect(result.experiment.status).toBe("queued");
+    expect(f.runJson.mock.calls.filter(([args]) => args.includes("create"))).toHaveLength(1);
+    expect(JSON.parse(await fs.readFile(stagingPath, "utf8"))[0].action.tool).toBe("finish_task");
   });
 });

@@ -69,10 +69,12 @@ it.each(["unconfirmed-stop", "wrong-host", "stale-epoch", "wrong-lock", "live-so
 
 it("reports lost restore COMMIT acknowledgement without replay or overwriting the rebound database", async () => {
   const f = await fixture(), exec = DatabaseSync.prototype.exec;
+  const target = path.join(await fs.realpath(path.dirname(f.input.databasePath)), path.basename(f.input.databasePath));
   let commits = 0;
   const spy = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function(this: DatabaseSync, sql: string) {
     exec.call(this, sql);
-    if (this.location() === f.input.databasePath && sql === "COMMIT") { commits++; throw new Error("restore acknowledgement lost"); }
+    const location = this.location();
+    if (sql === "COMMIT" && location && path.resolve(location) === target) { commits++; throw new Error("restore acknowledgement lost"); }
   });
   try { await expect(restoreCollaborationWriter(f.input)).rejects.toMatchObject({ code: "WRITER_COMMIT_UNCONFIRMED", cause: { message: "restore acknowledgement lost" } }); }
   finally { spy.mockRestore(); }

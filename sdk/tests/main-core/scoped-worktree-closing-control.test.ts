@@ -76,7 +76,7 @@ describe("original-Agent closing control factory", () => {
       expect(f.rawGit(["diff", "--name-only", f.A, B])).toBe("agent-memory/worker/Memory.md");
       expect(f.snapshot()).toEqual(before); expect(await fs.readFile(f.memory, "utf8")).toBe(memory);
       expect(f.db.scopedWorktreeClosingOperations(P, f.closing.invocationId)).toMatchObject([{ kind: "git.push", expectedHead: B, status: "finalized" }, { kind: "pull.create", expectedHead: B, status: "finalized" }]);
-      expect(agentGitOperationJournal(f.db, P).recordedRequest(operationId)).toMatchObject({ invocationId: f.closing.invocationId,
+      expect(await agentGitOperationJournal(f.db, P).recordedRequest(operationId)).toMatchObject({ invocationId: f.closing.invocationId,
         action: { tool: "git_push", reason: actions[0].arguments.reason }, nativeBinding: { invocationId: f.closing.invocationId, session: f.session } });
       expect(f.db.scopedWorktreeClosingTurns(P)[0]?.completion).toMatchObject({ summary: "My independent closing output", memory: "My optional closing supplement" });
       expect(f.db.pendingControlResultEvents(P, "worker")).toHaveLength(4);
@@ -84,10 +84,10 @@ describe("original-Agent closing control factory", () => {
       const output = responses[1].result.content[0].text;
       const native = { invocationId: f.closing.invocationId, harnessId: "pi", sourceType: "fixture-visible-event", eventId: "native-start",
         kind: "tool.started", tool: { callId: "native-call", name: "git_push", server: "openfars-resident-control", toolType: "mcp", input: actions[0].arguments } };
-      receipts.observeNative(native);
-      receipts.observeNative({ ...native, invocationId: "another-turn", kind: "tool.completed", eventId: "wrong", tool: { ...native.tool, outputPreview: output } });
+      await receipts.observeNative(native);
+      await receipts.observeNative({ ...native, invocationId: "another-turn", kind: "tool.completed", eventId: "wrong", tool: { ...native.tool, outputPreview: output } });
       expect(f.db.pendingControlResultEvents(P, "worker")).toHaveLength(4);
-      receipts.observeNative({ ...native, kind: "tool.completed", eventId: "native-complete", tool: { ...native.tool, outputPreview: output } });
+      await receipts.observeNative({ ...native, kind: "tool.completed", eventId: "native-complete", tool: { ...native.tool, outputPreview: output } });
       expect(f.db.pendingControlResultEvents(P, "worker")).toHaveLength(3);
       expect(f.db.scopedWorktreeClosingCandidates(P)).toHaveLength(1);
     } finally { service.revoke(); await bridge.close(); }
@@ -111,14 +111,15 @@ describe("original-Agent closing control factory", () => {
     expect(f.provider.observeRef).not.toHaveBeenCalled(); expect(f.provider.openPullRequest).not.toHaveBeenCalled();
   });
 
-  it.each(["git_get_operation", "git_reconcile_push"] as const)("refuses another operation through %s without provider access", async tool => {
-    const f = await fixture(); await expect(f.run({ tool, operationId: "original-business-operation" })).rejects.toThrow("only this invocation");
+  it.each(["git_get_operation", "git_reconcile_push"] as const)("rejects an unrecorded operation through %s without provider access", async tool => {
+    const f = await fixture(); await expect(f.run({ tool, operationId: "original-business-operation" })).rejects.toThrow(
+      tool === "git_get_operation" ? "not recorded for this task" : "differs from this Agent's exact execution and branch");
     expect(f.provider.observeRef).not.toHaveBeenCalled();
   });
 
-  it("requires its own explicit confirmed B, freshens the clean checkpoint after Agent reading time and keeps the exact request on replay", async () => {
+  it("reports an absent remote branch, records an actual clean checkpoint and keeps the exact request on replay", async () => {
     const f = await fixture(), pull: ControlAction = { tool: "github_create_pr", title: "Own B", body: "Actual necessary Memory", base: "groups/run-G" };
-    await expect(f.run(pull, "pull")).rejects.toThrow("confirmed, exact clean B");
+    await expect(f.run(pull, "pull")).rejects.toThrow('Remote branch "executions/original" has no confirmed head');
     await f.run({ tool: "git_push", reason: "Deliver my necessary Memory" }, "publish");
     f.advance(65_000); await f.run(pull, "pull"); await f.run(pull, "pull");
     expect(f.db.scopedWorktreeClosingCheckpoint(P, f.closing.invocationId)?.observedAt).toBe(f.time());
@@ -137,7 +138,7 @@ describe("original-Agent closing control factory", () => {
     expect(operations.map(operation => operation.kind)).toEqual(["git.push", "pull.create", "pull.merge"]);
     expect(operations.every(operation => /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(operation.id))).toBe(true);
     for (const operation of operations) {
-      expect(agentGitOperationJournal(f.db, P).recordedRequest(operation.id)).toMatchObject({
+      expect(await agentGitOperationJournal(f.db, P).recordedRequest(operation.id)).toMatchObject({
         invocationId: f.closing.invocationId, executionId: "original", ownershipEpoch: 1,
         nativeBinding: { session: f.session, invocationId: f.closing.invocationId } });
     }
@@ -163,13 +164,26 @@ describe("original-Agent closing control factory", () => {
     expect(f.provider.observeRef).not.toHaveBeenCalled(); expect(f.rawGit(["rev-parse", "HEAD"])).toBe(f.A); expect(f.snapshot()).toEqual(before);
   });
 
-  it.each(["wrong-base", "extra-file", "late-memory"])("rejects %s after publishing B without recording another delivery", async fault => {
+  it.each(["wrong-base", "extra-file"])("rejects %s after publishing B without recording another delivery", async fault => {
     const f = await fixture(); await f.run({ tool: "git_push", reason: "My necessary Memory" }, "publish");
     if (fault === "extra-file") await fs.writeFile(path.join(f.worktree, "unrelated.txt"), "Outside grant\n");
-    if (fault === "late-memory") await fs.appendFile(f.memory, "Agent's later unpublished change\n");
     await expect(f.run({ tool: "github_create_pr", title: "Own B", body: "Own Memory", base: fault === "wrong-base" ? "main" : "groups/run-G" }, "pull")).rejects.toThrow();
     expect(f.provider.openPullRequest).not.toHaveBeenCalled();
     expect(f.db.scopedWorktreeClosingOperations(P, f.closing.invocationId)).toHaveLength(1);
+  });
+
+  it("opens the explicitly requested PR while preserving later unpublished Memory", async () => {
+    const f = await fixture(); await f.run({ tool: "git_push", reason: "My necessary Memory" }, "publish");
+    const B = f.rawGit(["rev-parse", "HEAD"]);
+    await fs.appendFile(f.memory, "Agent's later unpublished change\n");
+    const memory = await fs.readFile(f.memory, "utf8");
+    await expect(f.run({ tool: "github_create_pr", title: "Own B", body: "Own Memory", base: "groups/run-G" }, "pull"))
+      .resolves.toMatchObject({ headSha: B, status: "open" });
+    expect(await fs.readFile(f.memory, "utf8")).toBe(memory);
+    expect(f.rawGit(["rev-parse", "HEAD"])).toBe(B);
+    expect(f.rawGit(["status", "--porcelain"])).toContain("agent-memory/worker/Memory.md");
+    expect(f.db.scopedAgentReport(P, "original", 1)?.headSha).toBe(f.A);
+    expect(f.db.scopedWorktreeClosingOperations(P, f.closing.invocationId).map(operation => operation.kind)).toEqual(["git.push", "pull.create"]);
   });
 
   it.each(["github_merge_pr", "github_close_pr"] as const)("cannot borrow A's historical merged PR through %s", async tool => {

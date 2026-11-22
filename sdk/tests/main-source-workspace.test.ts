@@ -52,6 +52,20 @@ describe("read-only main source snapshots with actual local Git (no provider/mod
     await expect(fs.access(path.join(exported.destination, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(path.join(exported.destination, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
   }, 30_000);
+  it("imports actual conflicted working files while preserving the original unresolved index", async () => {
+    const { data, source, store } = await fixture();
+    git(source, ["init", "--initial-branch=main"]);
+    await fs.writeFile(path.join(source, "conflict.txt"), "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n");
+    const oid = execFileSync("git", ["-C", source, "hash-object", "-w", "--stdin"], { input: "base", encoding: "utf8" }).trim();
+    execFileSync("git", ["-C", source, "update-index", "--index-info"], { input: `100644 ${oid} 1\tconflict.txt\n100644 ${oid} 2\tconflict.txt\n100644 ${oid} 3\tconflict.txt\n` });
+    const before = await fs.readFile(path.join(source, ".git/index"));
+    const snapshot = await store.prepare({ path: source }); await store.bind(id, snapshot);
+    const local = await service(data, store);
+    await local.initializeMain({ title: "Unresolved source", operationId: "unresolved-source" });
+    expect(git(local.repositoryPath, ["show", "main:conflict.txt"]).toString()).toBe(await fs.readFile(path.join(source, "conflict.txt"), "utf8"));
+    expect(await fs.readFile(path.join(source, ".git/index"))).toEqual(before);
+    expect(git(source, ["ls-files", "--unmerged"]).toString().split("\n").filter(Boolean)).toHaveLength(3);
+  });
   it("reopens an immutable binding after source removal and repeats initialization without another commit", async () => {
     const { root, data, source, store } = await fixture();
     await fs.writeFile(path.join(source, "source.txt"), "original snapshot");

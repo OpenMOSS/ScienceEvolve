@@ -10,11 +10,11 @@ import type { ControlActionEnvelope, ControlMcpRequest, ProjectState, WorktreeCl
 import type { CollaborationGitFacade } from "./collaboration-git/facade.js";
 import { agentGitOperationId, executeAgentGitTool, type AgentGitFacts } from "./agent-git-tools.js";
 import { agentGitOperationJournal } from "./agent-git-operation-journal.js";
-import { assertWorktreeClosingRequest, worktreeClosingActionAllowed } from "./internal/worktree-closing.js";
+import { assertWorktreeClosingRequest } from "./internal/worktree-closing.js";
 import { sameDurableSession } from "./control-result-receipts.js";
 
 /** Invocation-bound execution of the original Agent's explicit closing tools.
- * Scheduling, output/Stop and final issue settlement are separate gates. */
+ * Scheduling, output/Stop and final issue settlement retain their own facts. */
 export function scopedWorktreeClosingControlAuthorityFactory(options: {
   state: ProjectState;
   database: CollaborationStateDatabase;
@@ -52,12 +52,11 @@ export function scopedWorktreeClosingControlAuthorityFactory(options: {
   const journal = agentGitOperationJournal(options.database, closing.projectId);
   const recordedRequest = async (id: string) => {
     const request = await journal.recordedRequest(id);
-    if (request && (request.invocationId !== closing.invocationId || request.agentId !== closing.agentId ||
-      request.executionId !== closing.executionId || request.ownershipEpoch !== closing.ownershipEpoch ||
-      request.executionBranch !== closing.executionBranch || !request.nativeBinding ||
-      request.nativeBinding.invocationId !== closing.invocationId || request.nativeBinding.runtimePath !== closing.runtimePath ||
-      request.nativeBinding.worktreePath !== closing.worktreePath || !sameDurableSession(request.nativeBinding.session, closing.originalSession))) {
-      throw new Error("Closing journal cannot adopt another invocation's original request");
+    if (request && (request.agentId !== closing.agentId || request.executionId !== closing.executionId ||
+      request.ownershipEpoch > closing.ownershipEpoch || request.executionBranch !== closing.executionBranch || !request.nativeBinding ||
+      request.nativeBinding.invocationId !== request.invocationId || request.nativeBinding.worktreePath !== closing.worktreePath ||
+      !sameDurableSession(request.nativeBinding.session, closing.originalSession))) {
+      throw new Error("Git journal request differs from this Agent, execution, branch or original Session");
     }
     return request;
   };
@@ -90,12 +89,20 @@ export function scopedWorktreeClosingControlAuthorityFactory(options: {
     const assertEnvelope = (envelope: ControlActionEnvelope) => {
       if (envelope.projectId !== closing.projectId || envelope.agent !== closing.agentId || envelope.invocationId !== closing.invocationId ||
         activeCapabilityHash !== capabilityHash || envelope.stateVersion !== closing.ownershipEpoch || envelope.capabilityHash !== capabilityHash ||
-        envelope.expiresAt !== control.expiresAt || !worktreeClosingActionAllowed(envelope.action)) {
+        envelope.expiresAt !== control.expiresAt) {
         throw new Error("Closing action lost its exact live native invocation authority");
       }
     };
     return { control, revalidate: async envelope => {
       assertEnvelope(envelope); await assertInputCurrent();
+      if (envelope.action.tool === "publish_artifact") {
+        await options.storage.resolveExecutionArtifactCandidate(closing.projectId, execution, envelope.action.path);
+        await options.database.appendEvent({ projectId: closing.projectId, agentId: closing.agentId,
+          invocationId: closing.invocationId, requestId: `artifact-intent:${closing.invocationId}:${envelope.callId}`,
+          type: "scoped.artifact.staged", payload: { executionId: closing.executionId, ownershipEpoch: closing.ownershipEpoch,
+            groupRunId: closing.groupRunId, envelope } });
+        return { status: "staged", committed: false };
+      }
       if (envelope.action.tool === "finish_task") {
         const completion = await options.database.completeScopedWorktreeClosing({ ...closing, controlCapabilityHash: capabilityHash, envelope });
         const saved = await options.storage.saveScopedWorktreeClosingCompletion(completion);
@@ -107,30 +114,27 @@ export function scopedWorktreeClosingControlAuthorityFactory(options: {
       assertEnvelope(envelope); await assertInputCurrent(); signal?.throwIfAborted();
       const action = envelope.action;
       if (action.tool === "finish_task") throw new Error("Closing finish belongs to its separate completion callback");
-      if ((action.tool === "git_get_operation" || action.tool === "git_reconcile_push") && !(await ownOperation(action.operationId))) {
-        throw new Error("Closing can inspect or reconcile only this invocation's separate Git operations");
-      }
       if (["github_create_pr", "github_merge_pr", "github_close_pr", "github_update_pr"].includes(action.tool)) {
         const observed = await options.git.observeRestrictedWorktreeClosing(execution, closing.ownershipEpoch, scope, signal);
         await assertInputCurrent();
-        if (!facts.pushedHeadSha || observed.head !== facts.pushedHeadSha || observed.pendingPaths.length || !observed.deliveryRequired) {
-          throw new Error("Closing PR requires this Agent's confirmed, exact clean B rather than original report A");
+        if (facts.pushedHeadSha && observed.head === facts.pushedHeadSha && !observed.pendingPaths.length && observed.deliveryRequired) {
+          await options.database.recordScopedWorktreeClosingCheckpoint({ projectId: closing.projectId, executionId: closing.executionId,
+            ownershipEpoch: closing.ownershipEpoch, restrictedClosing, observation: observed });
         }
-        await options.database.recordScopedWorktreeClosingCheckpoint({ projectId: closing.projectId, executionId: closing.executionId,
-          ownershipEpoch: closing.ownershipEpoch, restrictedClosing, observation: observed });
       }
       const result = await executeAgentGitTool({ git: options.git, repository: options.repository, execution, base: gitDeliveryRef(base), facts, envelope, signal,
         controlCapabilityHash: capabilityHash,
-        recordedOperation: ownOperation, recordedRequest,
+        recordedOperation: async id => await options.database.recordedGitOperation(closing.projectId, id), recordedRequest,
         recordRequest: async input => {
           await options.database.assertScopedWorktreeClosingControl(closing);
-          if (input.action.tool === "git_revert") throw new Error("Closing cannot revert business history");
-          const suffix = ({ git_push: "push", github_create_pr: "create", github_merge_pr: "merge", github_close_pr: "close", github_update_pr: "update" } as const)[input.action.tool];
+          const expectedOperationId = input.action.tool === "git_revert"
+            ? `git-revert-${createHash("sha256").update(JSON.stringify([closing.projectId, closing.executionId, closing.ownershipEpoch, input.callId])).digest("hex")}`
+            : await agentGitOperationId({ execution, envelope: { projectId: closing.projectId, invocationId: closing.invocationId,
+              callId: input.callId }, recordedOperation: ownOperation, recordedRequest },
+              ({ git_push: "push", github_create_pr: "create", github_merge_pr: "merge", github_close_pr: "close", github_update_pr: "update" } as const)[input.action.tool]);
           if (input.invocationId !== closing.invocationId || input.executionId !== closing.executionId || input.agentId !== closing.agentId ||
             input.ownershipEpoch !== closing.ownershipEpoch || input.integrationTarget !== base || input.executionBranch !== closing.executionBranch ||
-            input.operationId !== (await agentGitOperationId({ execution, envelope: {
-              projectId: closing.projectId, invocationId: closing.invocationId, callId: input.callId },
-              recordedOperation: ownOperation, recordedRequest }, suffix)) ||
+            input.operationId !== expectedOperationId ||
             (await options.database.recordedGitOperation(closing.projectId, input.operationId)) && !(await ownOperation(input.operationId))) {
             throw new Error("Closing request cannot replace an original business operation or another closing invocation");
           }

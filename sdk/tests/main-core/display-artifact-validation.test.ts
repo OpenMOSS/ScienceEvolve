@@ -12,22 +12,20 @@ function fixture(registered = false) {
   return { state, storage };
 }
 describe("display publication validation", () => {
-  it("rejects an existing unpublished file immediately with an actionable field and code", async () => {
+  it("selects an existing unpublished file without fabricating publication", async () => {
     const { state, storage } = fixture();
-    await expect(validateDisplayArtifacts(storage, state, display)).rejects.toMatchObject({ rejection: {
-      code: "DISPLAY_ARTIFACT_NOT_PUBLISHED", invalidField: "primary.path",
-      stateDetails: { requiredAction: "publish_artifact", path: "report.md", agent: "writing" }
-    } });
+    await expect(validateDisplayArtifacts(storage, state, display)).resolves.toBeUndefined();
+    expect(storage.resolveWorkspaceArtifact).toHaveBeenCalled();
     expect(storage.resolvePublishedArtifactRecord).not.toHaveBeenCalled();
+    expect(state.artifacts).toEqual([]);
   });
-  it("accepts earlier staged publication with an absolute/canonical alias, without publishing anything", async () => {
+  it("accepts staged publication aliases without requiring or publishing them", async () => {
     const { state, storage } = fixture();
     const pending = { agent: "writing", action: { tool: "publish_artifact", path: "/project/workspaces/report.md" } } as ControlActionEnvelope;
     await expect(validateDisplayArtifacts(storage, state, display, [pending])).resolves.toBeUndefined();
+    await expect(validateDisplayArtifacts(storage, state, display)).resolves.toBeUndefined();
     expect(storage.resolvePublishedArtifactRecord).not.toHaveBeenCalled();
     expect(state.artifacts).toEqual([]);
-    // Atomic commit revalidates registered facts; a staged receipt alone is insufficient.
-    await expect(validateDisplayArtifacts(storage, state, display)).rejects.toMatchObject({ rejection: { code: "DISPLAY_ARTIFACT_NOT_PUBLISHED" } });
   });
   it.each(["ENOENT: report.md does not exist", "Published artifact hash differs from registered version"])("preserves the real availability/version cause: %s", async message => {
     const { state, storage } = fixture(true);

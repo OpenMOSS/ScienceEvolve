@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { mcpRevision, startProjectMcps, type ProjectMcpLease } from "./project-mcp.js";
+import { rejectResidentOpen } from "./resident-lifetime.js";
 import type {
   CollaborationResidentHandle,
   CollaborationResidentLauncher,
@@ -60,12 +61,7 @@ export function createProductionCollaborationResidentLauncher(
     const context = input.request.executionContext!;
     const scope = residentScopeId(context);
     const scopeEpoch = context.role === "leader" ? context.coordinatorEpoch : context.ownershipEpoch;
-    // This is a retained receipt turn, not a new delivery. Keep the user's
-    // configured business capabilities intact and allocate only its mechanism.
-    const mechanismOnly = input.request.terminalPushObservation !== undefined || input.request.terminalPushCoordination !== undefined || input.request.worktreeClosing !== undefined;
-    const baseRequest = mechanismOnly
-      ? { ...input.request, permission: "workspace" as const }
-      : input.request;
+    const baseRequest = input.request;
     let activeSubmitInvocationId: string | undefined;
     let experimentWaitInvocationId: string | undefined;
     const trackExperimentWait = (request: typeof baseRequest): typeof baseRequest => {
@@ -87,10 +83,11 @@ export function createProductionCollaborationResidentLauncher(
       };
       return { ...request, onExperimentWait: trackWait(previous), onHarnessRecoveryWait: trackWait(previousRecovery) };
     };
-    const selected = (mechanismOnly ? [] : baseRequest.project.agents[baseRequest.agent]?.mcpServers ?? [])
+    const selected = (baseRequest.project.agents[baseRequest.agent]?.mcpServers ?? [])
       .filter((server) => server.project !== undefined);
     const mcpController = new AbortController();
-    const signal = AbortSignal.any([input.signal, mcpController.signal]);
+    const stopController = new AbortController();
+    const signal = AbortSignal.any([input.signal, mcpController.signal, stopController.signal]);
     let projectMcps: ProjectMcpLease | undefined;
     if (selected.length) {
       projectMcps = await startProjectMcps({
@@ -198,8 +195,7 @@ export function createProductionCollaborationResidentLauncher(
         } : {})
       });
     } catch (error) {
-      await projectMcps?.close().catch(() => undefined);
-      throw error;
+      return rejectResidentOpen(error, async () => { await projectMcps?.close(); });
     } finally {
       grantActive = false;
     }
@@ -207,9 +203,7 @@ export function createProductionCollaborationResidentLauncher(
       await input.request.onResidentNativeOpened?.({ runtimePath: input.executionRuntimePath, session: opened.initialLease.session });
       await input.onOpened?.();
     } catch (error) {
-      await opened.close().catch(() => undefined);
-      await projectMcps?.close().catch(() => undefined);
-      throw error;
+      return rejectResidentOpen(error, () => opened.close(), async () => { await projectMcps?.close(); });
     }
     // A successfully opened process is new live authority. Any close proof
     // retained for an older handle/scope is no longer admissible.
@@ -222,6 +216,11 @@ export function createProductionCollaborationResidentLauncher(
     let closeRequested = false;
     const handle: CollaborationResidentHandle = {
       get closed() { return closed; },
+      get activeInvocationId() { return activeSubmitInvocationId; },
+      stop: async () => {
+        stopController.abort(new Error(`Main explicitly stopped Agent ${baseRequest.agent} invocation ${activeSubmitInvocationId ?? baseRequest.invocationId}`));
+        await handle.close();
+      },
       supervisionActions: () => opened.supervisionActions?.() ?? Promise.resolve([]),
       submit: async (turn) => {
         activeSubmitInvocationId = turn.invocationId;
@@ -526,7 +525,7 @@ export function createProductionCollaborationResidentLauncher(
           throw new Error("Main route resident lacks prior process stop proof");
         }
       }
-      const handle = await trackedOpen(input.open);
+      const handle = await input.openResident(input.open);
       try {
         input.register?.(handle);
         const submit = input.submit ?? ((resident, turn) => resident.submit(turn));

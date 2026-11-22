@@ -32,6 +32,31 @@ function fixture(status: GitHubPullRequestFact["status"], owner: GitExecutionAut
 }
 
 describe("Agent-owned retained PR tools", () => {
+  it("keeps a still-open provider response as the current PR after a merge request", async () => {
+    const { git, call, facts, pull } = fixture("open");
+    git.mergePullRequest.mockResolvedValue(pull);
+    expect(await call({ tool: "github_merge_pr", providerNumber: pull.providerNumber })).toEqual(pull);
+    expect(facts.pullRequest).toEqual(pull);
+    expect(facts.merged).toBeUndefined();
+    expect(git.reconcileMergedPullRequest).not.toHaveBeenCalled();
+  });
+
+  it.each(["present", "missing", "failure"])("uses the actual remote instead of a cached push receipt (%s)", async mode => {
+    const f = fixture("open");
+    const observe = vi.fn(async () => {
+      if (mode === "failure") throw new Error("Actual provider connection refused");
+      return { owner: repository.owner, repository: repository.name, ref: execution.executionBranch,
+        status: mode, ...(mode === "present" ? { sha: f.pull.headSha } : {}) };
+    });
+    Object.assign(f.git, { observeRemoteRef: observe });
+    const request = f.call({ tool: "github_create_pr", base: targetBase, title: "Explicit PR", body: "Inspect the real remote" });
+    if (mode === "present") {
+      await expect(request).resolves.toMatchObject({ headSha: f.pull.headSha });
+      expect(f.facts.pushedHeadSha).toBe(f.pull.headSha);
+    } else await expect(request).rejects.toThrow(mode === "missing" ? "has no confirmed head" : "Actual provider connection refused");
+    expect(observe).toHaveBeenCalledOnce();
+  });
+
   it.each(["push", "create", "merge", "close"] as const)("bounds a new ordinary scoped %s marker without losing its request identity", async suffix => {
     const owner: GitExecutionAuthority = { ...execution, id: `scoped-exec-${"f".repeat(64)}` };
     const envelope = { projectId: "project", invocationId: "native-turn", callId: `create-pr-${"f".repeat(64)}-epoch3-2` };
@@ -163,7 +188,7 @@ describe("Agent-owned retained PR tools", () => {
         git.createPullRequest.mockResolvedValue(pull);
         expect(await call({ tool: "github_create_pr", base: targetBase, title: "Retained result", body: "Original Agent result" })).toBe(pull);
       } else {
-        await expect(call({ tool: "github_create_pr", base: targetBase, title: "Unverified", body: "No proof" })).rejects.toThrow("confirmed pushed head");
+        await expect(call({ tool: "github_create_pr", base: targetBase, title: "Unverified", body: "No proof" })).rejects.toThrow("Remote branch observation is unavailable");
         expect(git.createPullRequest).not.toHaveBeenCalled();
       }
       expect(git.checkpointAndPush).not.toHaveBeenCalled();
@@ -197,7 +222,7 @@ describe("Agent-owned retained PR tools", () => {
         expect(await call({ tool: "github_create_pr", base: "main", title: "Existing group delivery", body: "No extra business commit" })).toBe(pull);
       } else {
         expect(facts.pushedHeadSha).toBeUndefined();
-        await expect(call({ tool: "github_create_pr", base: "main", title: "Unverified", body: "Unverified" })).rejects.toThrow("confirmed pushed head");
+        await expect(call({ tool: "github_create_pr", base: "main", title: "Unverified", body: "Unverified" })).rejects.toThrow("Remote branch observation is unavailable");
         expect(git.createPullRequest).not.toHaveBeenCalled();
       }
     });
@@ -295,7 +320,7 @@ describe("Agent-owned retained PR tools", () => {
       expect(git.mergePullRequest).not.toHaveBeenCalled();
       if (status !== "pushed") {
         await expect(call({ tool: "github_create_pr", base: targetBase, title: "Unverified", body: "Unverified" }))
-          .rejects.toThrow("confirmed pushed head");
+          .rejects.toThrow("Remote branch observation is unavailable");
         expect(git.createPullRequest).not.toHaveBeenCalled();
       }
     });
@@ -319,7 +344,7 @@ describe("Agent-owned retained PR tools", () => {
     expect(await call({ tool: "github_get_pr", providerNumber: pull.providerNumber })).toBe(pull);
     expect(facts.pushedHeadSha).toBeUndefined();
     await expect(call({ tool: "github_create_pr", base: targetBase, title: "Must push first", body: "No inferred head" }))
-      .rejects.toThrow("confirmed pushed head");
+      .rejects.toThrow("Remote branch observation is unavailable");
   });
 
   it("lets an Agent inspect its older PR after the branch head advances without replacing current facts", async () => {

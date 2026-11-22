@@ -7,9 +7,8 @@ import { CollaborationStateDatabase } from "../../src/core/collaboration-state/s
 import { cloneAgentOrchestrationTemplate } from "../../src/core/agent-orchestration.js";
 import { normalizeAgentOrchestrationTemplate, mergeAgentConfigs } from "../../src/core/validation.js";
 import { mainWorkflowDocument, parseWorkflowProposal, workflowBaseHash } from "../../src/core/workflow-reconfiguration.js";
-import { parseScopedWorkflowProposal } from "../../src/core/scoped-workflow-reconfiguration.js";
-import { mainAgentOrchestrationDocument } from "../../src/core/agent-orchestration-reconfiguration.js";
-import { assertScopedAgentConfigurationRange, credentialFreeAgentConfiguration, restoreAgentConfiguration } from "../../src/core/scoped-agent-configuration.js";
+import { mainAgentOrchestrationDocument, parseAgentOrchestrationProposal } from "../../src/core/agent-orchestration-reconfiguration.js";
+import { credentialFreeAgentConfiguration, restoreAgentConfiguration } from "../../src/core/scoped-agent-configuration.js";
 import { toolsFor, type CapabilityContext } from "../../src/core/orchestration-control-mcp.js";
 import { DatabaseSync } from "node:sqlite";
 import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
@@ -48,7 +47,8 @@ function workflow(): AgentOrchestrationTemplate {
   ] };
   return normalizeAgentOrchestrationTemplate(draft);
 }
-async function fixture(finished = true, current = workflow()) {
+async function fixture(finished = true, current = workflow(), leader = "review") {
+  current.scopedWorkflow!.groups[0].leaderAgentId = leader;
   const root = await mkdtemp(join(tmpdir(), "openfars-scoped-manager-")); roots.push(root);
   const options = { databasePath: join(root, "state.sqlite"), serviceId: "test", hostId: "test", topology: "single-host" as const,
     instanceId: "one", now: () => 1_000_000 };
@@ -61,11 +61,11 @@ async function fixture(finished = true, current = workflow()) {
   const childArrival = group.arrivals.find((arrival) => arrival.targetKind === "collaboration")!;
   database.activateScopedGroup({ projectId: "p", groupRunId: "run-H", groupId: "H", activationRequestId: childArrival.requestId,
     workflowRevision: 1, baseCommit: "a".repeat(40), parentGroupRunId: "run-G", parentArrivalRequestId: childArrival.requestId });
-  const claim = database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "leader-one",
+  const claim = database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: leader, invocationId: "leader-one",
     runtimePath: join(root, "runtime", "invocations", "leader-one") })!;
-  const authority = { projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "leader-one", coordinatorEpoch: claim.coordinatorEpoch };
+  const authority = { projectId: "p", groupRunId: "run-G", agentId: leader, invocationId: "leader-one", coordinatorEpoch: claim.coordinatorEpoch };
   database.markScopedLeaderOpened(authority);
-  const receipt = (action: ControlAction, callId = "decision"): ControlActionEnvelope => ({ projectId: "p", agent: "review",
+  const receipt = (action: ControlAction, callId = "decision"): ControlActionEnvelope => ({ projectId: "p", agent: leader,
     invocationId: "leader-one", callId, stateVersion: 1, capabilityHash: "b".repeat(64), receivedAt: "2026-09-30T00:00:00.000Z", action });
   if (finished) database.recordScopedLeaderTaskCompletion({ ...authority,
     envelope: receipt({ tool: "finish_task", summary: "Leader explicitly finished this round" }, "own-finish") });
@@ -100,7 +100,7 @@ describe("formally scoped Leader management", () => {
     expect(database.eventsAfter("p", 0, 1000).filter((event) => event.type === "scoped.leader.task.completed")).toHaveLength(1);
   });
 
-  it("requires the new management round's own finish before accepting a valid graph plan", async () => {
+  it("accepts an explicit plan independently of the new management task's finish receipt", async () => {
     const { database, authority, receipt } = await fixture();
     database.releaseScopedLeaderTurn({ ...authority, residentStopConfirmed: true });
     expect(() => database.recordScopedLeaderTaskCompletion({ ...authority,
@@ -114,8 +114,9 @@ describe("formally scoped Leader management", () => {
     const plan = { ...finish, callId: "new-plan", action: { tool: "assign_group_tasks" as const, groupRunId: "run-G",
       coordinatorEpoch: next.coordinatorEpoch, tasks: [{ taskId: "G_idea", assignment: "The actual new plan" }] } };
     database.revalidateScopedLeaderAction({ ...next, envelope: plan });
-    expect(() => database.acceptScopedLeaderAction({ ...next, envelope: plan, residentStopConfirmed: true })).toThrow(/current turn/);
-    expect(database.scopedGroupPlan("p", "run-G")).toBeUndefined();
+    database.acceptScopedLeaderAction({ ...next, envelope: plan, residentStopConfirmed: true });
+    expect(database.scopedLeaderTaskCompleted("p", "run-G", "review", next.invocationId, next.coordinatorEpoch)).toBe(false);
+    expect(database.scopedGroupPlan("p", "run-G")?.tasks[0]?.assignment).toBe("The actual new plan");
     database.recordScopedLeaderTaskCompletion({ ...next, envelope: finish });
     database.acceptScopedLeaderAction({ ...next, envelope: plan, residentStopConfirmed: true });
     expect(database.scopedGroupPlan("p", "run-G")?.tasks[0]?.assignment).toBe("The actual new plan");
@@ -216,17 +217,25 @@ describe("formally scoped Leader management", () => {
       envelope: { ...receipt({ tool: "complete_project", rationale: "no" }), invocationId: "leader-two" } })).toThrow(/process-open/);
   });
 
-  it("commits only its own graph through the existing workflow file hash/field locks and projects revisions atomically", async () => {
-    const { database, current, authority, receipt } = await fixture();
+  it("lets Main in a group commit global topology through the existing hash/field locks and atomic journal", async () => {
+    const graph = workflow(); graph.allowMainReconfiguration = true; graph.scopedWorkflow!.groups[0].allowLeaderReconfiguration = false;
+    const { database, current, authority, receipt } = await fixture(true, graph, "main");
     const document = mainWorkflowDocument("p", current);
     document.orchestration.scopedWorkflow!.groups[0]!.workflow.routes.G_idea = [edge("G_H")];
     const agents = mergeAgentConfigs(undefined, current);
-    const proposal = parseScopedWorkflowProposal(JSON.stringify(document), "p", current, agents, "G");
+    document.orchestration.decisionPlans.main = "Main's explicit global decision plan";
+    document.orchestration.scopedWorkflow!.groups[1].workflow.nodes.push({ kind: "agent", nodeId: "H_execution", agentId: "execution" });
+    document.orchestration.scopedWorkflow!.groups[1].workflow.routes.H_writing = [edge("H_execution")];
+    document.orchestration.scopedWorkflow!.groups[1].workflow.routes.H_execution = [edge("finish")];
+    const proposal = parseWorkflowProposal(JSON.stringify(document), "p", current, agents);
     const input = { ...authority, envelope: receipt({ tool: "apply_workflow", path: "workflow.json", rationale: "Local topology" }),
       proposal: proposal.orchestration, baseWorkflowHash: document.baseHash, residentStopConfirmed: true as const };
     expect(database.acceptScopedLeaderAction(input).replay).toBe(false);
     const state = database.projectState("p");
     expect(state.workflowRevision).toBe(2);
+    expect(state.workflowSnapshot).toMatchObject({ decisionPlans: { main: "Main's explicit global decision plan" } });
+    expect(database.scopedGroupWorkflow("p", "run-H").routes.H_writing).toEqual([edge("H_execution")]);
+    expect(database.workflowAdjustments("p")[0].source).toMatchObject({ kind: "main", scope: { kind: "scoped", groupRunId: "run-G" } });
     expect(state.scopedGroupRuns!.every((run) => run.workflowRevision === 2)).toBe(true);
     expect(state.nodeRuns[0]!.workflowRevision).toBe(2);
     expect(database.scopedGroupWorkflow("p", "run-G").routes.G_idea).toEqual([edge("G_H")]);
@@ -235,7 +244,36 @@ describe("formally scoped Leader management", () => {
     expect(database.acceptScopedLeaderAction(input).replay).toBe(true);
   });
 
-  it("permits creating a child with existing identities without removing parent Agent references or changing session configs", async () => {
+  it("lets a nested-group Main publish a global proposal after its child returns without reopening that group", async () => {
+    const graph = workflow(); graph.allowMainReconfiguration = true;
+    const f = await fixture(true, graph);
+    f.database.releaseScopedLeaderTurn({ ...f.authority, residentStopConfirmed: true });
+    const claim = f.database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-H", agentId: "main", invocationId: "nested-main",
+      runtimePath: join(f.root, "runtime", "nested-main") })!;
+    const authority = { projectId: "p", groupRunId: "run-H", agentId: "main", invocationId: "nested-main", coordinatorEpoch: claim.coordinatorEpoch };
+    f.database.markScopedLeaderOpened(authority);
+    const before = f.database.workflowAdjustmentCurrent("p"), proposal = structuredClone(before.snapshot.orchestration);
+    proposal.decisionPlans.main = "Global plan chosen from the child group";
+    const envelope = { ...f.receipt({ tool: "apply_workflow", path: "workflow.json", rationale: "Main's global decision" }),
+      agent: "main", invocationId: authority.invocationId, stateVersion: authority.coordinatorEpoch };
+    f.database.revalidateScopedLeaderAction({ ...authority, envelope, proposal, baseWorkflowHash: workflowBaseHash(graph) });
+    f.database.releaseScopedLeaderTurn({ ...authority, residentStopConfirmed: true });
+    // Isolated stopped-publication fixture: the child's original arrival has
+    // returned to its still-active parent; publication cannot reopen it.
+    const sql = new DatabaseSync(f.options.databasePath);
+    try {
+      sql.prepare("UPDATE scoped_group_runs SET status = 'completed' WHERE group_run_id = ?").run("run-H");
+      sql.prepare("UPDATE scoped_arrivals SET status = 'completed' WHERE request_id = ?").run(f.childArrival.requestId);
+    } finally { sql.close(); }
+    const child = f.database.scopedGroupRun("p", "run-H"), arrivals = f.database.scopedArrivals("run-G");
+    expect(f.database.publishStoppedScopedWorkflowAdjustment("p", "scoped-workflow-proposal:nested-main:decision"))
+      .toMatchObject({ status: "applied", workflowRevision: 2 });
+    expect(f.database.workflowAdjustmentCurrent("p").snapshot.orchestration.decisionPlans.main).toBe(proposal.decisionPlans.main);
+    expect(f.database.scopedGroupRun("p", "run-H")).toEqual(child);
+    expect(f.database.scopedArrivals("run-G")).toEqual(arrivals);
+  });
+
+  it("allows Main to create a child with existing identities without removing parent Agent references or changing session configs", async () => {
     const { current } = await fixture();
     const document = mainWorkflowDocument("p", current);
     const parent = document.orchestration.scopedWorkflow!.groups[0]!;
@@ -245,36 +283,53 @@ describe("formally scoped Leader management", () => {
     document.orchestration.scopedWorkflow!.groups.push({ id: "J", parentGroupId: "G", leaderAgentId: "idea", allowLeaderReconfiguration: false,
       workflow: { nodes: [{ kind: "agent", nodeId: "J_execution", agentId: "execution" }], input: { source: "input", edges: [{ kind: "parallel", target: "J_execution" }] }, routes: { J_execution: [edge("finish")] } } });
     const agents = mergeAgentConfigs(undefined, current);
-    const proposal = parseScopedWorkflowProposal(JSON.stringify(document), "p", current, agents, "G");
+    const proposal = parseWorkflowProposal(JSON.stringify(document), "p", current, agents);
     expect(proposal.orchestration.scopedWorkflow!.groups[0]!.workflow.nodes).toContainEqual({ kind: "agent", nodeId: "G_idea", agentId: "idea" });
     expect(proposal.agents).toEqual(agents);
   });
 
-  it("rejects outside graph edits, child internal edits, authority flag changes and runtime config injection", async () => {
-    const { current } = await fixture(); const agents = mergeAgentConfigs(undefined, current);
-    for (const mutate of [
-      (doc: ReturnType<typeof mainWorkflowDocument>) => { doc.orchestration.resultFormat.custom = "outside"; },
-      (doc: ReturnType<typeof mainWorkflowDocument>) => { doc.orchestration.scopedWorkflow!.groups[1]!.allowLeaderReconfiguration = true; },
-      (doc: ReturnType<typeof mainWorkflowDocument>) => { doc.orchestration.scopedWorkflow!.groups[0]!.allowLeaderReconfiguration = false; },
-      (doc: ReturnType<typeof mainWorkflowDocument>) => { (doc as unknown as Record<string, unknown>).agents = {}; }
-    ]) {
-      const doc = mainWorkflowDocument("p", current); mutate(doc);
-      expect(() => parseScopedWorkflowProposal(JSON.stringify(doc), "p", current, agents, "G")).toThrow();
-    }
+  it.each([false, true])("denies non-Main Leaders even with the stored group switch=%s", async flag => {
+    const graph = workflow(); graph.allowMainReconfiguration = true; graph.scopedWorkflow!.groups[0].allowLeaderReconfiguration = flag;
+    const f = await fixture(true, graph);
+    const before = f.database.projectState("p");
+    const input = { ...f.authority, proposal: structuredClone(graph), baseWorkflowHash: workflowBaseHash(graph),
+      envelope: f.receipt({ tool: "apply_workflow", path: "workflow.json", rationale: "Attempted group edit" }) };
+    expect(() => f.database.revalidateScopedLeaderAction(input)).toThrow(/Only authorized Main/);
+    expect(() => f.database.acceptScopedLeaderAction({ ...input, residentStopConfirmed: true })).toThrow(/Only authorized Main/);
+    expect(f.database.workflowAdjustments("p")).toEqual([]);
+    expect(f.database.projectState("p")).toEqual(before);
   });
 
-  it("defers overlapping management until an active business arrival has stopped", async () => {
+  it("denies Main when the project switch is disabled and preserves runtime and authority locks", async () => {
+    const f = await fixture(true, workflow(), "main"), agents = mergeAgentConfigs(undefined, f.current);
+    const input = { ...f.authority, proposal: f.current, baseWorkflowHash: workflowBaseHash(f.current),
+      envelope: f.receipt({ tool: "apply_workflow", path: "workflow.json", rationale: "Disabled edit" }) };
+    expect(() => f.database.revalidateScopedLeaderAction(input)).toThrow(/Only authorized Main/);
+    for (const mutate of [
+      (doc: ReturnType<typeof mainWorkflowDocument>) => { doc.orchestration.allowMainReconfiguration = true; },
+      (doc: ReturnType<typeof mainWorkflowDocument>) => { doc.baseHash = "0".repeat(64); },
+      (doc: ReturnType<typeof mainWorkflowDocument>) => { (doc as unknown as Record<string, unknown>).agents = {}; }
+    ]) {
+      const doc = mainWorkflowDocument("p", f.current); mutate(doc);
+      expect(() => parseWorkflowProposal(JSON.stringify(doc), "p", f.current, agents)).toThrow();
+    }
+    expect(f.database.workflowAdjustments("p")).toEqual([]);
+  });
+
+  it("allows management alongside an active business arrival without changing its execution", async () => {
     const { database, authority, root } = await fixture();
     const arrival = database.scopedArrivals("run-G").find((item) => item.agentId === "idea")!;
     database.releaseScopedLeaderTurn({ ...authority, residentStopConfirmed: true });
     database.claimScopedAgentArrival({ projectId: "p", arrivalRequestId: arrival.requestId, agentId: "idea", executionId: "one",
       worktreePath: join(root, "git-worktrees", "agents", "idea") });
+    const execution = database.scopedExecution("p", "one");
     expect(database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "leader-two",
-      runtimePath: join(root, "runtime", "leader-two") })).toBeUndefined();
+      runtimePath: join(root, "runtime", "leader-two") })).toMatchObject({ coordinatorEpoch: 2 });
+    expect(database.scopedExecution("p", "one")).toEqual(execution);
   });
 
   it.each(["claimed", "reserved", "opened", "stopped"] as const)(
-    "defers a nested Leader while its ancestor business owner is %s and has not settled", async (phase) => {
+    "allows a nested Leader while its ancestor business owner is %s and preserves that owner's facts", async (phase) => {
       const { database, authority, root } = await fixture();
       database.releaseScopedLeaderTurn({ ...authority, residentStopConfirmed: true });
       const arrival = database.scopedArrivals("run-G").find((item) => item.agentId === "idea")!;
@@ -287,18 +342,15 @@ describe("formally scoped Leader management", () => {
       if (phase === "stopped") database.stopScopedAgentTurn({ ...native, residentStopConfirmed: true });
       const child = { projectId: "p", groupRunId: "run-H", agentId: "main", invocationId: "nested-manager",
         runtimePath: join(root, "runtime", "nested-manager") };
-      const before = database.projectState("p");
-      expect(database.claimScopedLeaderTurn(child)).toBeUndefined();
-      expect(database.projectState("p")).toEqual(before);
-      expect(database.scopedLeaderTurns("p").some((turn) => turn.invocationId === child.invocationId)).toBe(false);
-      // The test's controlled fault releases the original business owner only
-      // after its exact native Stop. A stopped process alone leaves delivery
-      // pending and must not let a child Leader seize the ancestor's scope.
+      const execution = database.scopedExecution("p", native.executionId), turn = database.scopedAgentTurn("p", native.executionId, 1);
+      expect(database.claimScopedLeaderTurn(child)).toMatchObject({ coordinatorEpoch: 1, replay: false });
+      expect(database.scopedExecution("p", native.executionId)).toEqual(execution);
+      expect(database.scopedAgentTurn("p", native.executionId, 1)).toEqual(turn);
       if (phase === "reserved" || phase === "opened") database.stopScopedAgentTurn({ ...native, residentStopConfirmed: true });
       database.failScopedAgentArrival({ projectId: "p", arrivalRequestId: arrival.requestId,
         executionId: native.executionId, ownershipEpoch: 1, residentStopConfirmed: true,
         reason: "Controlled original business fault after exact Stop" });
-      expect(database.claimScopedLeaderTurn(child)).toMatchObject({ coordinatorEpoch: 1, replay: false });
+      expect(database.claimScopedLeaderTurn(child)).toMatchObject({ coordinatorEpoch: 1, replay: true });
       expect(database.scopedExecution("p", native.executionId)).toMatchObject({
         id: native.executionId, arrivalRequestId: arrival.requestId, agentId: "idea", ownershipEpoch: 1, status: "failed" });
       expect(database.scopedAgentReport("p", native.executionId, 1)).toBeUndefined();
@@ -332,14 +384,14 @@ describe("formally scoped Leader management", () => {
     const claim = database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-J", agentId: "execution",
       invocationId: "sibling-manager", runtimePath: join(root, "runtime", "sibling-manager") })!;
     expect(claim).toMatchObject({ coordinatorEpoch: 1 });
-    expect(database.scopedManagementBlocksBusiness("p", "run-H")).toBe(false);
     expect(database.scopedAgentTurn("p", native.executionId, 1)?.status).toBe("opened");
     database.releaseScopedLeaderTurn({ projectId: "p", groupRunId: "run-J", agentId: "execution",
       invocationId: claim.invocationId, coordinatorEpoch: claim.coordinatorEpoch, residentStopConfirmed: true });
-    expect(database.claimScopedLeaderTurn({ ...authority, invocationId: "parent-again" })).toBeUndefined();
+    expect(database.claimScopedLeaderTurn({ ...authority, invocationId: "parent-again" })).toMatchObject({ coordinatorEpoch: 2 });
+    expect(database.scopedAgentTurn("p", native.executionId, 1)?.status).toBe("opened");
   });
 
-  it("does not retry a failed arrival while its scope is under management, then resumes after release", async () => {
+  it("executes an explicit retry while management is active and keeps replay bound to the same new epoch", async () => {
     const { database, authority, root } = await fixture();
     database.releaseScopedLeaderTurn({ ...authority, residentStopConfirmed: true });
     const arrival = database.scopedArrivals("run-G").find((item) => item.agentId === "idea")!;
@@ -350,18 +402,22 @@ describe("formally scoped Leader management", () => {
     const claim = database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "leader-two",
       runtimePath: join(root, "runtime", "leader-two") })!;
     expect(database.retryScopedAgentArrival({ projectId: "p", executionId: "failed-one", arrivalRequestId: arrival.requestId,
-      failedOwnershipEpoch: 1 })).toBeUndefined();
+      failedOwnershipEpoch: 1 })?.execution).toMatchObject({ status: "running", ownershipEpoch: 2 });
+    expect(database.scopedLeaderTurns("p").find(turn => turn.invocationId === "leader-two")?.status).toBe("active");
     database.releaseScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "leader-two",
       coordinatorEpoch: claim.coordinatorEpoch, residentStopConfirmed: true });
     expect(database.retryScopedAgentArrival({ projectId: "p", executionId: "failed-one", arrivalRequestId: arrival.requestId,
       failedOwnershipEpoch: 1 })?.execution.status).toBe("running");
   });
 
-  it("exposes a scoped manager's tools even when the selected Agent is a Worker, without global finish/skip tools", () => {
-    const context = { kind: "worker", collaboration: { role: "scoped-leader", nodeRunId: "node-G", groupRunId: "run-G",
+  it("exposes group coordination to Leaders but reserves global workflow changes for Main", () => {
+    const context = { agent: "review", kind: "worker", collaboration: { role: "scoped-leader", nodeRunId: "node-G", groupRunId: "run-G",
       coordinatorEpoch: 1, memberNodeIds: ["G_idea"], routeCandidates: ["finish"], sourceArrivalRequestId: "arrival",
       failedArrivalRequestIds: ["failed"], allowReconfiguration: true } } as CapabilityContext;
-    expect(toolsFor(context).map((tool) => tool.name)).toEqual(["finish_task", "assign_group_tasks", "route_to_agent", "apply_workflow", "coordinate_group_task", "request_group_integration", "complete_group"]);
+    expect(toolsFor(context).map((tool) => tool.name)).toEqual(["finish_task", "assign_group_tasks", "route_to_agent", "coordinate_group_task", "request_group_integration", "complete_group"]);
+    const main = { ...context, agent: "main", kind: "main" as const };
+    expect(toolsFor(main).find(tool => tool.name === "apply_workflow")?.description).toContain("global workflow.json");
+    expect(toolsFor({ ...main, collaboration: { ...main.collaboration!, allowReconfiguration: false } } as CapabilityContext).some(tool => tool.name === "apply_workflow")).toBe(false);
     expect(toolsFor(context).some((tool) => ["complete_project", "request_user"].includes(tool.name))).toBe(false);
     for (const tool of toolsFor(context)) expect(tool.annotations).toEqual({
       readOnlyHint: false, destructiveHint: false, openWorldHint: false
@@ -414,13 +470,15 @@ describe("formally scoped Leader management", () => {
     expect(database.projectState("p").usage).toHaveLength(1);
   });
 
-  it("reuses Main's editable fields for local shared Agent identities and durably projects configuration without credentials", async () => {
-    const { database, current, authority, receipt } = await fixture();
+  it("lets Main edit Agent configuration outside its current group and durably projects it without credentials", async () => {
+    const graph = workflow(); graph.allowMainReconfiguration = true;
+    const { database, current, authority, receipt } = await fixture(true, graph, "main");
     const agents = mergeAgentConfigs(undefined, current);
     database.initializeScopedConfiguration("p", { agents, skillDefinitions: {}, mcpDefinitions: {} });
     const document = mainAgentOrchestrationDocument("p", current, agents);
     document.agents.idea.instructions = "New instructions used by every reference to this Agent.";
-    const parsed = parseScopedWorkflowProposal(JSON.stringify(document), "p", current, agents, "G", { skillDefinitions: {}, mcpDefinitions: {} });
+    document.agents.writing.instructions = "Main can change the child's Agent configuration.";
+    const parsed = parseAgentOrchestrationProposal(JSON.stringify(document), "p", current, agents, { skillDefinitions: {}, mcpDefinitions: {} });
     const configuration = credentialFreeAgentConfiguration({ agents: parsed.agents, skillDefinitions: parsed.skillDefinitions!, mcpDefinitions: parsed.mcpDefinitions! });
     database.acceptScopedLeaderAction({ ...authority, envelope: receipt({ tool: "apply_workflow", path: "workflow.json", rationale: "Shared local Agent configuration" }),
       proposal: parsed.orchestration, configuration, baseConfigurationHash: database.scopedConfigurationHash("p"),
@@ -428,10 +486,10 @@ describe("formally scoped Leader management", () => {
     expect(database.projectState("p").scopedConfiguration?.agents.idea.instructions).toBe(document.agents.idea.instructions);
     expect(database.projectState("p").workflowRevision).toBe(2);
     expect(database.projectState("p").scopedGroupRuns![0].workflowRevision).toBe(2);
-    expect(database.scopedConfiguration("p")?.agents.writing).toEqual(agents.writing);
+    expect(database.scopedConfiguration("p")?.agents.writing.instructions).toBe(document.agents.writing.instructions);
   });
 
-  it("restores old shared configuration without its Agent proxy while preserving routes, credentials and scope locks", () => {
+  it("restores old shared configuration without its Agent proxy while preserving routes and server-only credentials", () => {
     const current = workflow(), agents = mergeAgentConfigs(undefined, current);
     agents.idea.gatewaySnapshot = { id: "gwy_" + "a".repeat(32), name: "Existing route", url: "https://gateway.invalid/v1",
       apiKey: "existing-server-only-secret", models: [agents.idea.model], defaultModel: agents.idea.model, protocol: "responses" };
@@ -443,15 +501,12 @@ describe("formally scoped Leader management", () => {
     expect(restored.idea.gatewaySnapshot).toEqual(agents.idea.gatewaySnapshot);
     expect(credentialFreeAgentConfiguration(legacy).agents.idea).not.toHaveProperty("gatewaySnapshot");
     for (const config of Object.values(restored)) expect(config).not.toHaveProperty("proxy");
-    const next = credentialFreeAgentConfiguration(legacy); next.agents.idea.instructions += " Local change.";
-    expect(() => assertScopedAgentConfigurationRange(current, "G", legacy, next)).not.toThrow();
-    next.agents.writing.instructions += " Forbidden outside change.";
-    expect(() => assertScopedAgentConfigurationRange(current, "G", legacy, next)).toThrow(/outside/);
     expect(legacy).toEqual(original); expect(agents.idea.gatewaySnapshot.apiKey).toBe("existing-server-only-secret");
   });
 
-  it("keeps an old S configuration hash immutable while accepting a current local edit and rejecting new Agent proxies", async () => {
-    const { database, current, authority, receipt } = await fixture();
+  it("keeps an old S configuration hash immutable while accepting a Main edit and rejecting new Agent proxies", async () => {
+    const graph = workflow(); graph.allowMainReconfiguration = true;
+    const { database, current, authority, receipt } = await fixture(true, graph, "main");
     const agents = mergeAgentConfigs(undefined, current), legacy = legacyConfiguration(agents);
     const old = database.appendEvent({ projectId: "p", requestId: "historical-configuration", type: "scoped.configuration.applied",
       payload: { configuration: legacy } }).event;
@@ -531,21 +586,26 @@ describe("formally scoped Leader management", () => {
     expect(database.verifyHealth().integrity).toBe("ok");
   });
 
-  it("forbids outside Agent edits and defers configuration management while business work is active", async () => {
-    const { database, current, authority, receipt, root } = await fixture(); const agents = mergeAgentConfigs(undefined, current);
+  it("preserves runtime and active-entry locks for Main while allowing management alongside business work", async () => {
+    const graph = workflow(); graph.allowMainReconfiguration = true;
+    const { database, current, authority, receipt, root } = await fixture(true, graph, "main"); const agents = mergeAgentConfigs(undefined, current);
     database.initializeScopedConfiguration("p", { agents, skillDefinitions: {}, mcpDefinitions: {} });
     const outside = mainAgentOrchestrationDocument("p", current, agents); outside.agents.writing.instructions += "outside";
-    expect(() => parseScopedWorkflowProposal(JSON.stringify(outside), "p", current, agents, "G")).toThrow(/outside/);
+    expect(parseAgentOrchestrationProposal(JSON.stringify(outside), "p", current, agents).agents.writing.instructions).toBe(outside.agents.writing.instructions);
     const locked = mainAgentOrchestrationDocument("p", current, agents); (locked.agents.idea as unknown as Record<string, unknown>).sessionPersistence = false;
-    expect(() => parseScopedWorkflowProposal(JSON.stringify(locked), "p", current, agents, "G")).toThrow(/locked/);
+    expect(() => parseAgentOrchestrationProposal(JSON.stringify(locked), "p", current, agents)).toThrow(/locked/);
     const input = structuredClone(current); input.scopedWorkflow!.groups[0].workflow.input.edges.push({ kind: "parallel", target: "G_execution" });
     expect(() => database.revalidateScopedLeaderAction({ ...authority, proposal: input, baseWorkflowHash: workflowBaseHash(current),
       envelope: receipt({ tool: "apply_workflow", path: "workflow.json", rationale: "Late parallel spawn" }) })).toThrow(/entry batch/);
+    const changedAuthority = structuredClone(current); changedAuthority.allowUserIntervention = !current.allowUserIntervention;
+    expect(() => database.revalidateScopedLeaderAction({ ...authority, proposal: changedAuthority, baseWorkflowHash: workflowBaseHash(current),
+      envelope: receipt({ tool: "apply_workflow", path: "workflow.json", rationale: "Change authorization" }) })).toThrow(/authority/);
     database.releaseScopedLeaderTurn({ ...authority, residentStopConfirmed: true });
     const arrival = database.scopedArrivals("run-G").find((item) => item.agentId === "idea")!;
     database.claimScopedAgentArrival({ projectId: "p", arrivalRequestId: arrival.requestId, agentId: "idea", executionId: "busy-idea", worktreePath: join(root, "git-worktrees", "agents", "idea") });
-    expect(database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "leader-two",
-      runtimePath: join(root, "runtime", "leader-two") })).toBeUndefined();
+    expect(database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "main", invocationId: "leader-two",
+      runtimePath: join(root, "runtime", "leader-two") })).toMatchObject({ coordinatorEpoch: 2 });
+    expect(database.scopedExecution("p", "busy-idea")?.status).toBe("running");
   });
 
   it("never grants skip to Main-as-Leader or before parent escalation; only a separately opened global turn can approve it", async () => {
@@ -609,7 +669,7 @@ describe("formally scoped Leader management", () => {
 describe("durable scoped workflow adjustment publication", () => {
   async function adjustmentFixture(finished = true, globalMain = false) {
     const current = workflow(); current.allowMainReconfiguration = true;
-    const f = await fixture(finished, current);
+    const f = await fixture(finished, current, globalMain ? "review" : "main");
     let authority: typeof f.authority & { globalMain?: boolean } = f.authority;
     let receipt = f.receipt;
     if (globalMain) {
@@ -660,11 +720,36 @@ describe("durable scoped workflow adjustment publication", () => {
     f.stage(); const record = f.database.workflowAdjustments("p")[0];
     expect(record).toMatchObject({ requestId: f.requestId, status: "pending", base: before.version, baseSnapshot: before.snapshot,
       proposal: { agents: { idea: { instructions: "Exact formal scoped proposal" } } }, explanation: "Exact manager public explanation",
-      source: { kind: globalMain ? "main" : "scoped_leader", invocationId: f.authority.invocationId, callId: "decision", nodeRunId: "node-G" } });
-    if (globalMain) expect(record.source).toMatchObject({ scope: { kind: "scoped", groupRunId: "run-G" } });
-    else expect(record.source).toMatchObject({ agentId: "review", groupRunId: "run-G" });
+      source: { kind: "main", invocationId: f.authority.invocationId, callId: "decision", nodeRunId: "node-G",
+        scope: { kind: "scoped", groupRunId: "run-G" } } });
     expect(f.database.workflowAdjustmentCurrent("p")).toEqual(before);
     expect(f.database.scopedWorkflowAdjustmentProposal("p", f.authority.invocationId, "decision")).toEqual(f.input);
+  });
+
+  it("records a historical non-Main pending proposal as failed without applying it or rewriting its original evidence", async () => {
+    const graph = workflow(); graph.allowMainReconfiguration = true;
+    const f = await fixture(true, graph), current = f.database.workflowAdjustmentCurrent("p");
+    const { orchestration, ...configuration } = structuredClone(current.snapshot);
+    configuration.agents.idea.instructions = "Historical Leader proposal";
+    const input = { ...f.authority, envelope: f.receipt({ tool: "apply_workflow", path: "workflow.json", rationale: "Historical group edit" }),
+      proposal: orchestration, configuration, baseWorkflowHash: workflowBaseHash(orchestration), baseConfigurationHash: f.database.scopedConfigurationHash("p") };
+    const requestId = "scoped-workflow-proposal:leader-one:decision";
+    const staged = f.database.appendEvent({ projectId: "p", requestId, type: "scoped.workflow.proposal.staged",
+      payload: { protocol: "scoped-workflow-proposal-v1", input, proofHash: hash(input) } }).event;
+    const submission = { projectId: "p", requestId, submittedAt: staged.ts,
+      source: { kind: "scoped_leader", agentId: "review", acceptedRequestId: requestId, acceptedEventId: staged.eventId,
+        invocationId: "leader-one", callId: "decision", nodeRunId: "node-G", groupRunId: "run-G", coordinatorEpoch: f.authority.coordinatorEpoch },
+      base: current.version, baseSnapshot: current.snapshot, proposal: { orchestration, ...configuration }, explanation: "Historical group edit", changes: [] };
+    f.database.appendEvent({ projectId: "p", requestId: `workflow-adjustment-submission:${hash(requestId)}`, type: "workflow.adjustment.submitted",
+      payload: { protocol: "workflow-adjustment-v1", submission, snapshotHash: hash(submission) } });
+    const original = f.database.workflowAdjustment("p", requestId)!;
+    f.database.releaseScopedLeaderTurn({ ...f.authority, residentStopConfirmed: true });
+    expect(f.database.publishStoppedScopedWorkflowAdjustment("p", requestId)).toMatchObject({ status: "failed", workflowRevision: 1,
+      reason: expect.stringContaining("Only authorized Main") });
+    expect(f.database.workflowAdjustmentCurrent("p")).toEqual(current);
+    expect(f.database.eventByRequestId("p", requestId)).toEqual(staged);
+    expect(f.database.workflowAdjustment("p", requestId)).toMatchObject({ source: original.source, proposal: original.proposal, status: "failed" });
+    expect(f.database.publishStoppedScopedWorkflowAdjustment("p", requestId)).toMatchObject({ status: "failed", replay: true });
   });
 
   it("atomically rolls back the staged receipt if the shared snapshot cannot persist", async () => {
@@ -742,12 +827,12 @@ describe("durable scoped workflow adjustment publication", () => {
     expect(record.history.at(-1)?.status).toBe("needs_resubmission"); expect(f.database.scopedConfiguration("p")).toEqual(configuration);
   });
 
-  it("does not use native stop as a substitute for the original management task's finish", async () => {
+  it("publishes the explicit proposal after native stop without fabricating a missing management finish", async () => {
     const f = await adjustmentFixture(false); f.stage();
     expect(f.recover()).toMatchObject({ status: "pending", reason: expect.stringContaining("原生停止") }); f.release();
-    expect(f.recover()).toMatchObject({ status: "pending", reason: expect.stringContaining("finish_task") });
-    expect(f.database.projectState("p").workflowRevision).toBe(1);
-    expect(f.database.eventByRequestId("p", `scoped-leader-action:${f.authority.invocationId}:decision`)).toBeUndefined();
+    expect(f.recover()).toMatchObject({ status: "applied", workflowRevision: 2 });
+    expect(f.database.scopedLeaderTaskCompleted("p", "run-G", f.authority.agentId, f.authority.invocationId, f.authority.coordinatorEpoch)).toBe(false);
+    expect(f.database.eventByRequestId("p", `scoped-leader-action:${f.authority.invocationId}:decision`)).toBeDefined();
   });
 
   it.each(["apply", "withdraw"] as const)("restores the durable original proposal across a real writer restart without reading a draft (%s)", async outcome => {
@@ -840,11 +925,12 @@ describe("durable scoped workflow adjustment publication", () => {
 
   it("preserves a stopped task's active Loop topology when another member's route changes", async () => {
     const current = workflow(), group = current.scopedWorkflow!.groups.find(group => group.id === "G")!;
+    current.allowMainReconfiguration = true;
     group.workflow.nodes.push({ kind: "agent", nodeId: "G_writing", agentId: "writing" });
     group.workflow.routes.G_execution = [edge("G_idea")]; group.workflow.routes.G_writing = [edge("finish")];
     group.workflow.routes.G_H = [{ kind: "weak", target: "G_idea" }, { kind: "weak", target: "finish" }];
     group.workflow.loops = [{ id: "original-loop", from: "G_execution", to: "G_idea", maxIterations: 2, exitTo: "G_writing" }];
-    const f = await fixture(true, normalizeAgentOrchestrationTemplate(current)); f.database.releaseScopedLeaderTurn({ ...f.authority, residentStopConfirmed: true });
+    const f = await fixture(true, normalizeAgentOrchestrationTemplate(current), "main"); f.database.releaseScopedLeaderTurn({ ...f.authority, residentStopConfirmed: true });
     const first = f.database.scopedArrivals("run-G").find(arrival => arrival.agentId === "idea")!;
     f.database.claimScopedAgentArrival({ projectId: "p", arrivalRequestId: first.requestId, agentId: "idea", executionId: "loop-entry",
       worktreePath: join(f.root, "git-worktrees", "agents", "idea") });
@@ -857,11 +943,11 @@ describe("durable scoped workflow adjustment publication", () => {
       synchronization: { projectId: "p", operationId: mergedPullSynchronizationOperationId("loop-entry", 1, "b".repeat(40), base, merge),
         targetBranch: base, temporaryRef: "refs/openfars/controlled-loop-entry", expectedSourceHead: "b".repeat(40), mergeCommitSha: merge,
         remoteHead: merge, localHeadBefore: "a".repeat(40), localHeadAfter: merge, status: "synchronized", observedAt: now } });
-    const claim = f.database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "loop-manager",
+    const claim = f.database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "main", invocationId: "loop-manager",
       runtimePath: join(f.root, "runtime", "loop-manager") })!;
-    const authority = { projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "loop-manager", coordinatorEpoch: claim.coordinatorEpoch };
+    const authority = { projectId: "p", groupRunId: "run-G", agentId: "main", invocationId: "loop-manager", coordinatorEpoch: claim.coordinatorEpoch };
     f.database.markScopedLeaderOpened(authority);
-    const envelope = (action: ControlAction, callId: string): ControlActionEnvelope => ({ projectId: "p", agent: "review", invocationId: "loop-manager", callId,
+    const envelope = (action: ControlAction, callId: string): ControlActionEnvelope => ({ projectId: "p", agent: "main", invocationId: "loop-manager", callId,
       stateVersion: claim.coordinatorEpoch, capabilityHash: "d".repeat(64), receivedAt: now, action });
     f.database.recordScopedLeaderTaskCompletion({ ...authority, envelope: envelope({ tool: "finish_task", summary: "My actual topology proposal is ready" }, "own-finish") });
     const before = f.database.workflowAdjustmentCurrent("p"), proposal = structuredClone(before.snapshot.orchestration);
@@ -917,7 +1003,7 @@ describe("durable scoped workflow adjustment publication", () => {
         ownershipEpoch: 1, coordinatorEpoch: 1 } };
     f.database.recordAgentNativeSessionBinding({ ...context, runtimePath: join(f.root, "runtime", identity.invocationId), worktreePath: join(f.root, "git-worktrees", "agents", "idea") });
     const receipts = controlResultReceipts(f.database, context);
-    const receiptId = pendingReceipt ? receipts.record({ requestedCallId: "own-finish", envelope: { projectId: "p", agent: "idea", invocationId: identity.invocationId,
+    const receiptId = pendingReceipt ? await receipts.record({ requestedCallId: "own-finish", envelope: { projectId: "p", agent: "idea", invocationId: identity.invocationId,
       callId: "own-finish", stateVersion: 1, capabilityHash: "d".repeat(64), receivedAt: session.createdAt, action: { tool: "finish_task", summary: "Original Agent's own finish" } } }) : undefined;
     f.database.recordScopedAgentTaskCompletion({ ...identity, agentId: "idea", callId: "own-finish", summary: "Original Agent's own finish",
       memory: "Original immutable memory", requestedAt: "1970-01-01T00:16:40.000Z" });
@@ -938,8 +1024,8 @@ describe("durable scoped workflow adjustment publication", () => {
       expect(f.recover()).toMatchObject({ status: "pending", reason: expect.stringContaining("原 Session 实际接收：delivered-owner") });
       const native = { invocationId: identity.invocationId, harnessId: session.harnessId, sourceType: "item.completed",
         tool: { callId: "native-finish", name: "finish_task", server: "openfars-resident-control", toolType: "mcp", input: JSON.stringify({ callId: "own-finish" }) } };
-      receipts.observeNative({ ...native, kind: "tool.started", eventId: "actual-start" });
-      receipts.observeNative({ ...native, kind: "tool.completed", eventId: "actual-return", tool: { ...native.tool, outputPreview: controlResultMarker(receiptId) } });
+      await receipts.observeNative({ ...native, kind: "tool.started", eventId: "actual-start" });
+      await receipts.observeNative({ ...native, kind: "tool.completed", eventId: "actual-return", tool: { ...native.tool, outputPreview: controlResultMarker(receiptId) } });
       expect(f.database.pendingControlResultEvents("p", "idea")).toEqual([]);
     }
     expect(f.recover()).toMatchObject({ status: "applied", workflowRevision: 2 });
@@ -966,8 +1052,8 @@ describe("durable scoped workflow adjustment publication", () => {
 
   it("permits the manager's explicit new proposal in its next legitimate task without permanently locking a withdrawn field", async () => {
     const f = await adjustmentFixture(); f.stage(); f.database.withdrawWorkflowAdjustment({ projectId: "p", requestId: f.requestId, operationId: "withdraw" }); f.release();
-    const claim = f.database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "leader-two", runtimePath: join(f.root, "runtime", "leader-two") })!;
-    const authority = { projectId: "p", groupRunId: "run-G", agentId: "review", invocationId: "leader-two", coordinatorEpoch: claim.coordinatorEpoch };
+    const claim = f.database.claimScopedLeaderTurn({ projectId: "p", groupRunId: "run-G", agentId: "main", invocationId: "leader-two", runtimePath: join(f.root, "runtime", "leader-two") })!;
+    const authority = { projectId: "p", groupRunId: "run-G", agentId: "main", invocationId: "leader-two", coordinatorEpoch: claim.coordinatorEpoch };
     f.database.markScopedLeaderOpened(authority);
     const envelope = { ...f.input.envelope, invocationId: "leader-two", stateVersion: claim.coordinatorEpoch };
     f.database.recordScopedLeaderTaskCompletion({ ...authority, envelope: { ...envelope, callId: "new-finish", action: { tool: "finish_task", summary: "New task's own completion" } } });

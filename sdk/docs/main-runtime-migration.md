@@ -47,10 +47,10 @@ Use absolute Windows paths such as D:/runs/main-core-test and Node.js 24+ with n
 ## Data, shutdown, and recovery
 
 - New hosts require an empty independent dataDir and record engine/pinned-source/runtimeRevision markers. They do not take over old projects, repositories, or SDK/Web data.
-- .scienceevolve-runtime.lock excludes concurrent hosts; old engines also reject new-engine data.
+- `.scienceevolve-runtime.lock` excludes concurrent SDK hosts from the directory. The research database has its **own** lifecycle lock, `collaboration-state.sqlite.writer.lock`. It excludes competing core writers even if they do not use the SDK host. A clean restart retains this file and advances the database writer epoch. Never remove or replace it to force ownership.
 - Reopening follows main initialization/recovery and may resume runnable projects. It is not read-only inspection.
-- close waits for orchestration/database shutdown and confirms all opened residents closed. Unconfirmed native Stop retains the directory lock; close can be retried. Remove crash locks only after confirming the original process stopped.
-- Other revisions, including previews marked only by sourceCommit, do not auto-upgrade. Explicit migration/recovery acceptance is required; never edit markers just to open them.
+- close waits for orchestration/database shutdown and confirms all opened residents closed. Unconfirmed native Stop retains the SDK directory lock; do not treat process exit as evidence that native sessions or external operations stopped. Operator recovery of the directory guard does not rebind the database or authorize another native turn.
+- Other revisions, including previews marked only by sourceCommit, do not auto-upgrade. Explicit migration/recovery acceptance is required; never edit markers just to open them. An offline SQLite upgrade or snapshot restore does not migrate the SDK host revision marker or the rest of the research directory. Installed Node entrypoints are `dist/core/collaboration-state/upgrade-writer.js` and `dist/core/collaboration-state/restore-writer.js` inside `@scienceevolve/sdk`. Both require `--confirm-stopped`; restore also requires the final detached snapshot’s SHA-256, original lock UUID, epoch and host, and a new destination. The Linux package smoke exercises both entrypoints; it does not certify another OS.
 - A Git resolver supplies both HTTPS transport and GitHub API. Without one, main's helper applies, without Web OAuth. Web accountId does not select SDK credentials; public multi-account adaptation remained outstanding in this phase.
 
 ## Compatibility and acceptance boundaries
@@ -107,7 +107,7 @@ try {
 - snapshot retains Git/runtime/collaboration/task/execution/PR/parallel/failure projections, without full Agent settings, gateway snapshots, or internal control context. Outputs/events/errors separately redact credentials.
 - events({afterSeq,follow:false}) fixes and pages the history boundary. Default subscription then replay avoids reconnect gaps. eventId, ownership/coordinator epoch, scope identity, and data.sourceType remain. Git-on completion does not require the old project.completed event; use wait()/snapshot().status.
 - wait returns on completion, terminal cancel, paused, or interrupted. AbortSignal stops consumers, not tasks. Git-on F13 cancel preserves state as paused / collaboration:user-cancelled for explicit resume; Git-off cancel is generally terminal. pause is safe-point pause, distinct from Stop.
-- retryGitInitialization delegates idempotent retry, without recreating repositories or rerunning completed work. close wakes waiters; failed close retains locks for retry. Stop guards cover ordinary and internal native opens.
+- retryGitInitialization delegates idempotent retry, without recreating repositories or rerunning completed work. close wakes waiters. An unconfirmed resident Stop retains both the runtime directory guard and the physical database lock. An explicit close retry rechecks cleanup without relaunching work. Ordinary, scoped and Main routing opens share the coordinator’s drain.
 
 See packaged examples/main-runtime/workflow.json for a v3 implementation/audit group. Use the default start / --engine main, not legacy.
 

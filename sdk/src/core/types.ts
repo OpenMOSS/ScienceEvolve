@@ -102,7 +102,7 @@ export type CollaborationControlScope =
       memberNodeIds: string[]; routeCandidates: string[]; sourceArrivalRequestId?: string;
       sourceOuterNodeRunId?: string;
       failedArrivalRequestIds: string[]; recoveryOptions?: ScopedRecoveryOption[];
-      closingArrivalRequestIds?: string[]; worktreeClosingOnly?: true; allowReconfiguration: boolean }
+      closingArrivalRequestIds?: string[]; allowReconfiguration: boolean }
   | { nodeRunId: NodeRunId; groupRunId: GroupRunId; role: "leader"; coordinatorEpoch: number }
   | { nodeRunId: NodeRunId; groupRunId: GroupRunId; taskId: TaskId; executionId: ExecutionId; role: "delivery" | "final-integration"; ownershipEpoch: number; coordinatorEpoch: number };
 

@@ -19,11 +19,11 @@ export function assertWorktreeClosingRequest(request: AgentRunRequest, sameEpoch
   const context = request.executionContext;
   if (!isWorktreeClosingScope(request.worktreeClosing, request.agent) || context?.role !== "delivery" ||
     request.worktreeClosing.executionId !== context.executionId || request.worktreeClosing.ownershipEpoch !== context.ownershipEpoch ||
-    request.kind !== "worker" || request.agent === "main" || request.project.git?.enabled !== true ||
+    request.project.git?.enabled !== true ||
     request.project.orchestration.schemaVersion !== 3 || !context.groupRunId || request.project.status === "completed" ||
     request.sessionContinuity !== "strict" || request.project.agentSessions?.[request.agent]?.durable !== true ||
     !sameEpochReopen || request.terminalPushObservation !== undefined || request.terminalPushCoordination !== undefined ||
-    request.terminalControlRepair !== undefined || request.siiMcp !== undefined || request.siiResumePrompt !== undefined) {
+    request.terminalControlRepair !== undefined) {
     throw new Error("Worktree closing requires its exact original durable scoped delivery session and retained grant");
   }
 }
@@ -37,19 +37,5 @@ export function assertWorktreeClosingControl(context: {
   workflowAuthoringPath?: string; tasklessRouteTargets?: readonly string[];
 }): void {
   if (context.worktreeClosing === undefined) return;
-  if (!isWorktreeClosingScope(context.worktreeClosing, context.agent) || context.agent === "main" ||
-    context.terminalPushObservation !== undefined || context.terminalPushCoordination !== undefined ||
-    context.kind !== "worker" || context.decisionBy !== "agent" || context.allowAgentGitActions !== true ||
-    context.requireBridge !== true || context.candidates.length || context.tasklessRouteTargets?.length ||
-    context.allowUserIntervention || context.canComplete || context.collaboration !== undefined || context.mainCapabilities !== undefined ||
-    context.canonicalFinalIntegration || context.scopedAgentRouting || context.allowFinishRoute || context.allowWorkflowReconfiguration ||
-    context.allowAgentOrchestrationReconfiguration || context.workflowAuthoringPath !== undefined) {
-    throw new Error("Worktree closing requires an exact manifest-only Worker control scope");
-  }
-}
-
-export function worktreeClosingActionAllowed(action: { tool: string; reason?: unknown; historical?: unknown }): boolean {
-  if (action.tool === "git_push") return typeof action.reason === "string" && Boolean(action.reason.trim()) && action.reason.length <= 8192;
-  if (action.tool === "git_reconcile_push") return action.historical === undefined || action.historical === false;
-  return ["finish_task", "git_get_operation", "github_create_pr", "github_get_pr", "github_merge_pr", "github_close_pr"].includes(action.tool);
+  if (!isWorktreeClosingScope(context.worktreeClosing, context.agent)) throw new Error("Invalid retained worktreeClosing scope");
 }

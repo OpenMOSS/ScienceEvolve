@@ -79,7 +79,7 @@ export function buildAgentToolCatalog(
       selection: { experimentMcp: true },
       conditions: [
         "Select experimentMcp, not a custom scienceevolve-sii MCP URL or project reference. Missing/false means no experiment tools.",
-        "Available only in selected business Worker turns with Harness MCP support and configured experiment service/CLI/account access; never in Main, Leader, explanation, probe or terminal receipt turns.",
+        "Available to every explicitly configured Agent with Harness MCP support and configured experiment service/CLI/account access, including Main and Leader.",
         "Local files follow the actual task/worktree authority. workspace Workers may use experiments without raising permissions to compute. Agents choose resources and handle actual results themselves."
       ]
     }

@@ -6,7 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createMainApplicationRuntime, MAIN_RUNTIME_MARKER, MAIN_RUNTIME_SOURCE_COMMIT, MAIN_RUNTIME_REVISION, type MainApplicationRuntime } from "../src/main-runtime.js";
-import { trackMainResidents, trackResidentOpens } from "../src/main-resident-tracker.js";
+import { trackResidentOpens } from "../src/core/resident-lifetime.js";
+import { CollaborationStateDatabase } from "../src/core/collaboration-state/store.js";
 import type { CollaborationResidentLauncher, CollaborationResidentOpenInput } from "../src/core/collaboration-runtime.js";
 import { ProductionCollaborationExecutionInputBuilder } from "../src/core/collaboration-runtime.js";
 import type { AgentRunner, AgentRunRequest, AgentRunResult } from "../src/core/types.js";
@@ -38,23 +39,34 @@ describe("standalone main runtime host (local, no model/GitHub acceptance)", () 
     expect(output).toContain(MAIN_RUNTIME_SOURCE_COMMIT);
   });
 
-  it("uses actual SQLite, releases its writer lease and can reopen", async () => {
+  it("uses actual SQLite, excludes a competing core writer and reopens the same binding at the next epoch", async () => {
     const root = await directory();
     const first = await host(root);
     expect(first.sourceCommit).toBe(MAIN_RUNTIME_SOURCE_COMMIT);
     expect(first.runtimeRevision).toBe(MAIN_RUNTIME_REVISION);
     expect(JSON.parse(await fs.readFile(path.join(root, MAIN_RUNTIME_MARKER), "utf8"))).toMatchObject({ engine: "main-runtime", schemaVersion: 1 });
     const dbPath = path.join(root, "collaboration-state.sqlite");
-    const db = new DatabaseSync(dbPath);
+    const original = await first.collaborationRuntime.database().writerLease();
+    expect(first.collaborationRuntime.writerLeaseHealth()).toMatchObject({ status: "ready", ownership: "lifecycle-lock", epoch: 1 });
+    const db = new DatabaseSync(dbPath, { readOnly: true });
     try {
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
       expect(tables.length).toBeGreaterThan(10);
       expect(db.prepare("PRAGMA journal_mode").get()?.journal_mode).toBe("delete");
     } finally { db.close(); }
+    // This opens the physical database directly; rejection is not the SDK directory guard.
+    expect(() => CollaborationStateDatabase.open({ databasePath: dbPath, topology: "single-host", hostId: original.hostId, serviceId: "competing-core" }))
+      .toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+    expect(await first.collaborationRuntime.database().writerLease()).toEqual(original);
     await Promise.all([first.close(), first.close()]);
     await expect(fs.access(path.join(root, ".scienceevolve-runtime.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    // Windows forbids reading this locked byte range through another handle.
+    const sidecar = await fs.readFile(dbPath + ".writer.lock");
     const second = await host(root);
+    expect((await second.collaborationRuntime.database().writerLease()).epoch).toBe(original.epoch + 1);
     expect(await second.orchestrator.listProjects()).toEqual([]);
+    await second.close();
+    expect(await fs.readFile(dbPath + ".writer.lock")).toEqual(sidecar);
   });
 
   it("does not open the same directory twice and releases its lock on close", async () => {
@@ -174,8 +186,8 @@ describe("standalone main runtime host (local, no model/GitHub acceptance)", () 
   });
 });
 
-describe("SDK resident Stop guard", () => {
-  it("tracks route residents opened through an internal launcher closure and preserves native handle extensions", async () => {
+describe("shared resident Stop guard", () => {
+  it("tracks a route's admitted opener and preserves native handle extensions", async () => {
     let permitStop = false;
     const adapter = { async open() { return {
       initialLease: { session: { nativeId: "route-only" } },
@@ -184,13 +196,13 @@ describe("SDK resident Stop guard", () => {
     }; } };
     const native = trackResidentOpens(adapter);
     const launcher = { open: async () => { throw new Error("ordinary open was not called"); },
-      async decideRoute() {
-        const route = await native.launcher.open();
+      async decideRoute(openResident: typeof native.launcher.open) {
+        const route = await openResident();
         expect((await route.probe()).session.nativeId).toBe("route-only");
         await route.close();
       }
     };
-    await expect(launcher.decideRoute()).rejects.toThrow(/route native still alive/);
+    await expect(launcher.decideRoute(native.launcher.open)).rejects.toThrow(/route native still alive/);
     await expect(native.stopRemaining()).rejects.toThrow(/Stop was not confirmed/);
     permitStop = true;
     await native.stopRemaining();
@@ -203,7 +215,7 @@ describe("SDK resident Stop guard", () => {
       async open() { return { close, submit: async () => ({ handoff: "fixture" }), pause: async () => {}, resume: async () => {} }; },
       stopForRecovery() { expect(this.proof).toBe("bound receiver"); return Promise.resolve({ stopped: true, evidence: {} }); }
     };
-    const tracking = trackMainResidents(target as CollaborationResidentLauncher);
+    const tracking = trackResidentOpens(target as CollaborationResidentLauncher);
     const handle = await tracking.launcher.open({} as CollaborationResidentOpenInput);
     await expect(handle.close()).rejects.toThrow(/native still alive/);
     await expect(tracking.stopRemaining()).rejects.toThrow(/Stop was not confirmed/);

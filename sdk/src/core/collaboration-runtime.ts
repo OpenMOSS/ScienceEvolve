@@ -5,6 +5,7 @@ import { bindMainAssistance } from "./main-assistance-binding.js";
 import { assistanceUpdate, conversationView, conversationWorkflowRequestId, isUserConversation, type MainInboxRecord, mainAssistanceRequestSchema, observeAssistanceInput, type MainAssistanceJournal, type MainAssistanceRecord } from "./main-assistance.js";
 import { bindWorkflowGates, workflowGateInput } from "./workflow-gate-binding.js";
 import { gateRunId, requireGateChoice, gateFeedback, prepareGateRun, type GateJournal, type GateRun, type GateOrigin } from "./workflow-gate.js";
+import type { ScopedAgentConfiguration } from "./scoped-agent-configuration.js";
 import { failureAttemptHistory } from "./internal/shared/failure-attempt-history.js";
 import { MAX_TASK_REPAIR_WAKEUPS, nextTaskRepair, superviseTask, supervisionError, supervisionHandoff } from "./task-supervision.js";
 import { nativeBackgroundJobLifecycle } from "./harness-runtime/background-jobs.js";
@@ -129,6 +130,7 @@ import {
 import { newId, nowIso, redactTrace, safeProjectRelativePath } from "./utils.js";
 import { SkillCatalog } from "./skill-catalog.js";
 import { ProjectTurnActivity } from "./project-turn-activity.js";
+import { trackResidentOpens } from "./resident-lifetime.js";
 import { prepareWorkflowContext } from "./workflow-context.js";
 import type { HarnessEvent, InvocationInputs, SessionRef } from "./harness-runtime/contracts.js";
 import { HarnessRuntimeError, harnessRecoveryDelayMs, transientHarnessFailure } from "./harness-runtime/errors.js";
@@ -346,6 +348,7 @@ export interface CollaborationRuntimeLifecycle {
   workflowGateRuns?(projectId: string): Promise<GateRun[]>;
   initialize(): Promise<void>;
   initializeNewProjectState?(state: ProjectState): void | Promise<void>;
+  updateRuntimeConfiguration?(state: ProjectState, previous: ScopedAgentConfiguration): Promise<void>;
   serialProjectStateEnabled?(state: ProjectState): boolean | Promise<boolean>;
   requestSerialProjectState?(state: ProjectState, identity: SerialProjectStateInvocation, request: unknown): Promise<unknown>;
   queueReadModel?(state: ProjectState): ProjectAgentQueueSource | undefined | Promise<ProjectAgentQueueSource | undefined>;
@@ -440,10 +443,13 @@ export type CollaborationGitFacadeFactory = (
 
 export interface CollaborationResidentHandle {
   readonly closed?: boolean;
+  readonly activeInvocationId?: string;
   submit(input: { inputId: string; invocationId: string; prompt: string }): Promise<AgentRunResult>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   close(): Promise<void>;
+  /** Explicitly interrupt current work and confirm native closure. */
+  stop?(): Promise<void>;
   supervisionActions?(): Promise<string[]>;
 }
 
@@ -555,6 +561,7 @@ export interface CollaborationResidentRecoveryResult {
  * acknowledging each submit. A model turn is never an execution terminal.
  */
 export interface CollaborationResidentLauncher {
+  /** On a partial open, propagate rejectResidentOpen with the exact cleanup obligation. */
   open(input: CollaborationResidentOpenInput): Promise<CollaborationResidentHandle>;
   stopMainAssistanceForRecovery?(input: { state: ProjectState; scopeId: string; ownershipEpoch: number; executionRuntimePath: string }): Promise<CollaborationResidentRecoveryResult>;
   stopScopedForRecovery?(input: {
@@ -588,6 +595,8 @@ export interface CollaborationResidentLauncher {
     candidates: readonly string[];
     signal: AbortSignal;
     open: CollaborationResidentOpenInput;
+    /** Open the route's physical handle through this coordinator's admission and drain. */
+    openResident: CollaborationResidentLauncher["open"];
     turn: { inputId: string; invocationId: string; prompt: string };
     /** Main uses the same runtime-owned Pause/Resume/Stop lifecycle as other
      * residents. These hooks transport handles/results, never Agent choices. */
@@ -700,14 +709,11 @@ implements CollaborationExecutionInputBuilder {
     }
     const config = input.state.agents[input.agentId];
     if (!config) throw new Error(`Unknown collaboration Agent ${input.agentId}`);
-    // Allocate the mechanism before any business resource preparation. A
-    // closed task must not rematerialize Skills or acquire their capabilities.
-    const mechanismOnly = input.terminalPushObservation !== undefined || input.terminalPushCoordination !== undefined || input.worktreeClosing !== undefined;
-    const catalog = mechanismOnly ? [] : input.agentId === "main" && input.state.orchestration.allowMainReconfiguration
+    const catalog = input.agentId === "main" && input.state.orchestration.allowMainReconfiguration
       ? await this.skills.list() : await this.skills.forSelections([...config.skills, ...config.autoSkills]);
-    const projectSkills = mechanismOnly ? {} : await materializeProjectSkills(input.projectPath, input.state.skillDefinitions);
-    const skillPaths = mechanismOnly ? [] : await this.skills.resolveConfigured(catalog, config.skills, projectSkills);
-    const autoSkillPaths = mechanismOnly ? [] : await this.skills.resolveConfigured(catalog, config.autoSkills, projectSkills);
+    const projectSkills = await materializeProjectSkills(input.projectPath, input.state.skillDefinitions);
+    const skillPaths = await this.skills.resolveConfigured(catalog, config.skills, projectSkills);
+    const autoSkillPaths = await this.skills.resolveConfigured(catalog, config.autoSkills, projectSkills);
     const leader = input.executionContext.role === "leader";
     const scoped = input.state.orchestration.schemaVersion === 3;
     if (scoped) assertScopedSessionIdentity(input.state, input.agentId);
@@ -720,7 +726,7 @@ implements CollaborationExecutionInputBuilder {
       kind: input.agentId === "main" ? "main" : "worker",
       // Management residents never inherit a user's delivery-level yolo
       // setting. Their filesystem/control scope is read-only and brokered.
-      permission: leader || mechanismOnly ? "workspace" : config.permission,
+      permission: config.permission,
       invocationId: input.invocationId,
       inboxPath: input.inboxPath,
       projectPath: input.projectPath,
@@ -729,7 +735,7 @@ implements CollaborationExecutionInputBuilder {
       skillPaths,
       autoSkillPaths,
       availableSkillPaths: catalog.map((skill) => skill.path),
-      ...(input.agentId === "main" && input.state.orchestration.allowMainReconfiguration && !mechanismOnly
+      ...(input.agentId === "main" && input.state.orchestration.allowMainReconfiguration
         ? { toolCatalog: buildAgentToolCatalog(catalog, input.state.skillDefinitions, input.state.mcpDefinitions) }
         : {}),
       availableSkills: catalog,
@@ -1090,6 +1096,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   readonly #gitFactory: CollaborationGitFacadeFactory;
   readonly #credentialResolverForAccount?: (accountId: string) => GitHubCredentialResolver;
   readonly #residentLauncher?: CollaborationResidentLauncher;
+  readonly #residentLifetime?: ReturnType<typeof trackResidentOpens<CollaborationResidentLauncher>>;
   readonly #executionInputBuilder?: CollaborationExecutionInputBuilder;
   readonly #validateWorkflowConfiguration?: CollaborationRuntimeOptions["validateWorkflowConfiguration"];
   readonly #invocationDispatcher?: CollaborationInvocationDispatcher;
@@ -1122,6 +1129,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   readonly #residents = new Map<string, {
     projectId: string;
     execution?: MemberExecution;
+    retiring?: boolean;
     activity?: RuntimeActivityAuthority & { invocationId: string };
     observation?: TerminalPushObservationTurn;
     coordination?: TerminalPushCoordinatorTurn;
@@ -1153,7 +1161,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     );
     this.#gitFactory = options.gitFactory ?? createCollaborationGitFacade;
     this.#credentialResolverForAccount = options.credentialResolverForAccount;
-    this.#residentLauncher = options.residentLauncher;
+    if (options.residentLauncher) {
+      this.#residentLifetime = trackResidentOpens(options.residentLauncher);
+      this.#residentLauncher = this.#residentLifetime.launcher;
+    }
     this.#executionInputBuilder = options.executionInputBuilder;
     this.#validateWorkflowConfiguration = options.validateWorkflowConfiguration;
     this.#harnessRecoveryDelayMs = options.harnessRecoveryDelayMs ?? harnessRecoveryDelayMs;
@@ -1199,6 +1210,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       } };
   }
 
+  async updateRuntimeConfiguration(state: ProjectState, previous: ScopedAgentConfiguration): Promise<void> {
+    this.assertWritable();
+    await this.database().updateScopedRuntimeConfiguration(state.id, previous, this.workflowAdjustmentSeed(state));
+  }
+
   async initializeNewProjectState(state: ProjectState): Promise<void> {
     this.assertWritable();
     await this.database().initializeProjectStateDomain({ projectId: state.id, scheduler: projectScheduler(state), checkpoint: state,
@@ -1214,9 +1230,29 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (identity.projectId !== state.id || !(await this.serialProjectStateEnabled(state)))
       throw new CollaborationStateError("STATE_SCOPE_DENIED", "Serial state request belongs to another project or scheduler");
     return executeProjectStateRequest(this.database(), { kind: "agent", projectId: state.id,
-      agentId: identity.agentId, invocationId: identity.invocationId }, request, { observePullRequest: async () => {
+      agentId: identity.agentId, invocationId: identity.invocationId }, request, { stopAgent: target => this.stopAgentInvocation(state, target), observePullRequest: async () => {
         throw new Error("Serial projects have no Git PR reconciliation authority");
       } });
+  }
+
+  private async stopAgentInvocation(state: ProjectState, target: import("./collaboration-state/contracts.js").RuntimeActivity): Promise<void> {
+    this.assertWritable();
+    const entry = [...this.#residents.entries()].find(([key, resident]) => resident.projectId === state.id &&
+      (resident.handle.activeInvocationId === target.invocationId || key === `scoped:${target.invocationId}` || resident.execution?.invocationId === target.invocationId ||
+        resident.activity?.invocationId === target.invocationId || resident.observation?.invocationId === target.invocationId ||
+        resident.coordination?.invocationId === target.invocationId));
+    if (!entry) throw new Error(`No live native handle owns Agent ${target.agentId} invocation ${target.invocationId}; stop is unconfirmed`);
+    if (!entry[1].handle.stop) throw new Error("The target native handle does not provide an interruptible stop operation");
+    await entry[1].handle.stop();
+    this.assertWritable();
+    if (this.#residents.get(entry[0]) === entry[1]) this.#residents.delete(entry[0]);
+    try {
+      await nativeBackgroundJobLifecycle(this.#storage.projectDir(state.id), "stop", () => this.assertWritable(), {
+        agentId: target.agentId, invocationId: target.invocationId
+      });
+    } catch (error) {
+      throw new Error(`Native invocation stopped, but registered background job cleanup failed: ${safeRuntimeError(error)}`, { cause: error });
+    }
   }
 
   /** Git checkpoints and workflow facts commit in SQLite. A reader can use
@@ -2302,7 +2338,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Pause superseded by pending Stop; native stop still requires confirmation");
     }
     const residents = [...this.#residents.values()].filter((item) => item.projectId === state.id);
-    await Promise.all(residents.map((item) => item.handle.pause()));
+    await Promise.all(residents.map(item => item.retiring ? item.handle.close() : item.handle.pause()));
     await nativeBackgroundJobLifecycle(this.#storage.projectDir(state.id), "pause", () => this.assertWritable());
     state.pauseRequest.settledAt ??= nowIso();
     state.status = "paused";
@@ -2526,7 +2562,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     if (renewScopedManagement && !resumingParkedRun) await this.authorizeScopedManagementResume(state, !explicitUserResume);
     const residents = [...this.#residents.values()].filter((item) => item.projectId === state.id);
-    await Promise.all(residents.filter(item => !item.handle.closed).map((item) => item.handle.resume()));
+    await Promise.all(residents.filter(item => !item.retiring && !item.handle.closed).map(item => item.handle.resume()));
     await this.forgetStoppedResidents(state);
     await this.assertDurableResumeAllowed(state.id);
     if (["cancelling", "cancelled"].includes(state.status) ||
@@ -3329,6 +3365,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
   shutdown(): Promise<void> {
     this.#shuttingDown = true;
+    this.#residentLifetime?.seal();
     return this.#shutdown ??= this.shutdownWriter();
   }
 
@@ -3341,20 +3378,22 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     for (const controller of this.#controllers.values()) controller.abort();
     for (const controller of this.#assistanceControllers.values()) controller.abort();
     const residentEntries = [...this.#residents.entries()];
-    const residentStops = await Promise.allSettled(residentEntries.map(async ([, { handle }]) => {
-      await handle.close();
-    }));
+    // Retired and still-opening handles have no scheduling entry. Their physical
+    // close obligations must drain too; never publish Stop from retirement alone.
+    const residentStops = await Promise.allSettled([
+      ...residentEntries.map(async ([, { handle }]) => handle.close()),
+      this.#residentLifetime?.stopRemaining()
+    ]);
     const failedStops = residentStops.filter((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failedStops.length) {
       const error = new AggregateError(failedStops.map(result => result.reason), "Resident shutdown was not confirmed; writer ownership is retained");
       this.loseWriterLease(error);
+      // Only an explicit shutdown may recheck the exact remaining handles. Admission stays sealed.
+      this.#shutdown = undefined;
       throw error;
     }
-    for (const [[key, entry], stopped] of residentEntries.map((item, index) =>
-      [item, residentStops[index]!] as const
-    )) {
-      if (stopped.status !== "fulfilled" || !this.#database) continue;
-      if (!entry.activity) continue;
+    for (const [key, entry] of residentEntries) {
+      if (!this.#database || !entry.activity) continue;
       try {
         await this.#database.closeRuntimeActivity({
           projectId: entry.projectId,
@@ -3379,8 +3418,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     await Promise.allSettled([...this.#runs.values(), ...this.#assistanceRuns.values()]);
     // Preserve any actual return that was already arriving when close began.
     // Only after active submits settle may Stop accounting seal this turn.
-    for (const [index, [, entry]] of residentEntries.entries()) {
-      if (residentStops[index]?.status === "fulfilled" && entry.observation && this.#database) {
+    for (const [, entry] of residentEntries) {
+      if (entry.observation && this.#database) {
         try { await this.recordTerminalNativeStopped(entry.observation, { residentClosed: true }); }
         catch { /* A fenced writer cannot publish another Stop fact. */ }
       }
@@ -4094,7 +4133,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
    * before forgetting the handle, keeping the original task/worktree/PR. */
   private async forgetStoppedResidents(state: ProjectState): Promise<void> {
     for (const [key, entry] of this.#residents) {
-      if (entry.projectId !== state.id || entry.handle.closed !== true) continue;
+      if (entry.projectId !== state.id || entry.retiring || entry.handle.closed !== true) continue;
       const execution = entry.execution;
       if (execution && !execution.groupRunId) {
         const current = (await this.database().projectState(state.id)).executions.find(item => item.id === execution.id);
@@ -4153,6 +4192,29 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     let projection = await this.database().projectState(state.id);
     if (projection.git.enabled && projection.git.status !== "ready") return;
+    // A returned turn is stop-only, even after process death. Never dispatch its
+    // native input again or advance its execution epoch to finish bookkeeping.
+    for (const execution of projection.executions) {
+      if (execution.nodeRunId !== projection.activeNodeRunId || !["working", "waiting_review", "waiting_authorization", "pr_open", "merged", "resolving"].includes(execution.status)) continue;
+      const receipt = await this.database().pendingExecutionRetirement(state.id, execution.id, execution.ownershipEpoch);
+      if (!receipt) continue;
+      let stopEvidence: Readonly<Record<string, unknown>>;
+      const entry = this.#residents.get(execution.id);
+      if (entry) {
+        if (entry.execution?.ownershipEpoch !== execution.ownershipEpoch || entry.execution.invocationId !== execution.invocationId)
+          throw new Error("Execution retirement no longer owns its original resident");
+        await this.closeResidentForTerminal(state, execution.id, entry.handle);
+        stopEvidence = { residentClosed: true };
+      } else {
+        if (!execution.invocationId) throw new Error(`Returned execution ${execution.id} has no original invocation`);
+        const observation = await this.#residentLauncher.stopForRecovery?.({ state: structuredClone(state), execution,
+          executionRuntimePath: await this.#storage.invocationRuntimePath(state.id, execution.invocationId),
+          residentLaunchProtocol: await this.executionStopProtocol(state.id, execution) });
+        if (observation?.stopped !== true) throw new ResidentRetainedWaitError(`Cannot confirm native Stop for returned execution ${execution.id}@${execution.ownershipEpoch}`);
+        stopEvidence = observation.evidence;
+      }
+      await this.settleRetiredExecution(state, execution, receipt.output, stopEvidence, signal);
+    }
     if (projection.git.enabled && state.orchestration.schemaVersion === 3) await this.worktreeClosingRuntime(state, signal).discover();
     try { if (projection.git.enabled) await this.advanceTerminalPushObservations(state, signal); }
     catch (error) {
@@ -5172,6 +5234,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const definition = (state.orchestration.collaborations ?? [])
       .find((item) => item.id === collaborationNode.groupId);
     if (!definition) throw new Error(`Recovered group ${collaborationNode.groupId} is not in the workflow`);
+    const leaderKey = `leader:${group.id}`;
+    let leader = this.#residents.get(leaderKey)?.handle;
+    if (group.leaderDecision === "complete") {
+      if (group.output === undefined) throw new Error("Accepted group completion has no retained output");
+      await this.finishDecidedGroup(state, group, collaborationNode, group.output, leader, signal);
+      return;
+    }
     // Activation and upstream ACK intentionally precede the remote branch
     // side effect. Reconcile that crash window before opening any resident;
     // beginGroup is journaled under the same stable operation id and must
@@ -5201,9 +5270,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       throw new Error("Recovered group branch has no confirmed remote head");
     }
     this.#branchHeads.set(`${state.id}:${group.groupBranch}`, currentGroupRef.sha);
-    const leaderKey = `leader:${group.id}`;
     let currentGroup = group;
-    let leader = this.#residents.get(leaderKey)?.handle;
     const leaderRecoveryStartedAt = nowIso();
     const leaderRecoveryOperation = `group-leader.recovery:${group.id}`;
     let leaderRecoveryObservation: Awaited<ReturnType<
@@ -6011,7 +6078,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       definition,
       refreshedGroup,
       leader,
-      leaderKey,
       signal
     );
   }
@@ -6693,7 +6759,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
     const {
       leader,
-      leaderKey,
       invocationId: leaderInvocationId
     } = await this.openGroupCoordinatorResident(
       state,
@@ -6722,7 +6787,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         groupDefinition,
         activated.groupRun,
         leader,
-        leaderKey,
         signal
       );
     } catch (error) {
@@ -6751,7 +6815,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     if (!group || group.actingCoordinatorId !== "main") {
       throw new Error("Failed collaboration leader was not fenced before Main substitution");
     }
-    const { leader, leaderKey, invocationId } = await this.openGroupCoordinatorResident(
+    const { leader, invocationId } = await this.openGroupCoordinatorResident(
       state,
       group,
       assignment,
@@ -6776,7 +6840,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       groupDefinition,
       group,
       leader,
-      leaderKey,
       signal
     );
   }
@@ -6787,7 +6850,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     assignment: string,
     signal: AbortSignal,
     recoverySeed?: ResidentRecoveryProofSeed
-  ): Promise<{ leader: CollaborationResidentHandle; leaderKey: string; invocationId: string }> {
+  ): Promise<{ leader: CollaborationResidentHandle; invocationId: string }> {
     // Recheck after every awaited Resume before claiming activity. Pause may
     // otherwise settle while preparation is waiting or the handle is opening.
     while (this.#turns.isPaused(state.id)) await this.#turns.waitWhilePaused(state.id, signal);
@@ -6810,7 +6873,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     assignment: string,
     signal: AbortSignal,
     recoverySeed?: ResidentRecoveryProofSeed
-  ): Promise<{ leader: CollaborationResidentHandle; leaderKey: string; invocationId: string }> {
+  ): Promise<{ leader: CollaborationResidentHandle; invocationId: string }> {
     await this.applyWaitingWorkflowAdjustments(state);
     const coordinator = group.actingCoordinatorId ?? group.leaderAgentId;
     const invocationId = groupLeaderInvocationId(
@@ -6950,7 +7013,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       activity: { ...residentAuthority, invocationId },
       handle: leader
     });
-    return { leader, leaderKey, invocationId };
+    return { leader, invocationId };
   }
 
   private async commitGroupAssignments(
@@ -6988,7 +7051,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     groupDefinition: NonNullable<ProjectState["orchestration"]["collaborations"]>[number],
     group: GroupRun,
     leader: CollaborationResidentHandle,
-    leaderKey: string,
     signal: AbortSignal
   ): Promise<void> {
     const database = this.database();
@@ -7252,13 +7314,29 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       });
     }
 
-    // The fenced complete_group decision is durable, but neither a weak Main
-    // router nor a downstream node may start while the coordinator process is
-    // still live. This is particularly important for a Main-led group: two
-    // simultaneous Main management residents would violate the single
-    // management lane and could issue conflicting decisions.
-    await this.closeResidentForTerminal(state, leaderKey, leader, false);
+    await this.finishDecidedGroup(state, currentGroup, node, completionOutput, leader, signal);
+  }
 
+  /** Consume the original complete_group decision; no replacement management turn is needed. */
+  private async finishDecidedGroup(state: ProjectState, group: GroupRun, node: Extract<NodeRef, { kind: "collaboration" }>,
+    completionOutput: string, leader: CollaborationResidentHandle | undefined, signal: AbortSignal): Promise<void> {
+    const database = this.database(), coordinator = group.actingCoordinatorId ?? group.leaderAgentId;
+    if (leader || !(await database.coordinatorStopProof(state.id, group.id, group.coordinatorEpoch))) {
+      let evidence: Readonly<Record<string, unknown>>;
+      if (leader) {
+        await this.closeResidentForTerminal(state, `leader:${group.id}`, leader);
+        evidence = { residentClosed: true };
+      } else {
+        const stop = await this.#residentLauncher?.stopLeaderForRecovery?.({ state: structuredClone(state), groupRun: group,
+          nodeRunId: group.nodeRunId, leaderInvocationId: groupLeaderInvocationId(state.id, group.id, group.coordinatorEpoch),
+          executionRuntimePath: this.leaderRuntimePath(state.id, group.id), residentLaunchProtocol: await this.leaderLaunchProtocol(state.id, group) });
+        if (stop?.stopped !== true) throw new ResidentRetainedWaitError(`Cannot confirm native Stop for decided group ${group.id}@${group.coordinatorEpoch}`);
+        evidence = stop.evidence;
+      }
+      await database.confirmCoordinatorStopped({ projectId: state.id, groupRunId: group.id, coordinatorEpoch: group.coordinatorEpoch,
+        reason: "group_completion", evidence, requestId: `group-completion-stop:${group.id}:${group.coordinatorEpoch}` });
+    }
+    const currentGroup = group;
     const edges = workflowRoutesForAgent(state.orchestration, node.nodeId);
     const strong = edges.filter((edge) => edge.kind === "strong");
     let target: string;
@@ -7276,7 +7354,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         signal
       );
       if (decision?.intervention) {
-        this.#residents.delete(leaderKey);
         await this.pauseForMainIntervention(
           state,
           currentGroup.nodeRunId,
@@ -7297,7 +7374,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       };
     }
     const routeEmissionId = `route-${currentGroup.nodeRunId}`;
-    this.#residents.delete(leaderKey);
     await database.completeGroup({
       projectId: state.id,
       groupRunId: group.id,
@@ -7463,7 +7539,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           (chosen.dependencyTaskIds?.length ?? 0) !== 0) {
           throw new Error("Leader did not authorize the retained PR's original Agent to continue");
         }
-        coordinationRequestId = acceptedGroupControlIdentity(state.id, group.nodeRunId, group, input).requestId;
+        const decision = await database.acceptedGroupControlForInput({ projectId: state.id, groupRunId: group.id,
+          actorAgentId: group.actingCoordinatorId ?? group.leaderAgentId,
+          coordinatorEpoch: group.coordinatorEpoch, inputId: input.inputId });
+        if (!decision) throw new Error("Leader continuation has no recorded control request");
+        coordinationRequestId = decision.requestId;
       }
       if (remotePull && remotePull.status !== "closed") {
         const invocationId = newId("inv");
@@ -7499,14 +7579,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             group,
             recovered,
             (await database.projectState(state.id)).tasks.find((item) => item.id === task.id)?.assignment ?? task.assignment,
-            `${coordinationRequestId ? "Leader-authorized original Agent continuation" : "Remote pull reconciliation"} at ownership epoch ${recovered.ownershipEpoch}`
+            `${coordinationRequestId ? "Leader-authorized original Agent continuation" : "Remote pull reconciliation"} at ownership epoch ${recovered.ownershipEpoch}. Existing PR #${pull.providerNumber} is ${pull.status}.`
           )),
           expectedBase,
           signal,
           undefined,
           recoverySeed,
           false,
-          pull
+          // A new Leader assignment is a distinct input to the stopped original owner.
+          // Automatic recovery only reconciles the retained PR.
+          coordinationRequestId ? undefined : pull
         );
         progressed = true;
         target = settled.status === "stopped" ? settled.id : undefined;
@@ -7585,13 +7667,17 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         await release.call(git, predecessor, predecessor.ownershipEpoch, signal);
       }
       if (candidate === predecessor.agentId) {
+        const decision = await database.acceptedGroupControlForInput({ projectId: state.id, groupRunId: group.id,
+          actorAgentId: group.actingCoordinatorId ?? group.leaderAgentId,
+          coordinatorEpoch: group.coordinatorEpoch, inputId: arrangementInput.inputId });
+        if (!decision) throw new Error("Leader continuation has no recorded control request");
         const recovered = (await database.recoverGroupExecution({
           projectId: state.id,
           groupRunId: group.id,
           executionId: predecessor.id,
           predecessorOwnershipEpoch: predecessor.ownershipEpoch,
           invocationId: stableRuntimeId("inv", `original-owner:${predecessor.id}:${predecessor.ownershipEpoch + 1}`),
-          coordinationRequestId: acceptedGroupControlIdentity(state.id, group.nodeRunId, group, arrangementInput).requestId,
+          coordinationRequestId: decision.requestId,
           residentLaunchProtocol: "trusted-supervisor-v1",
           requestId: `original-owner-${predecessor.id}-${predecessor.ownershipEpoch + 1}`
         })).execution;
@@ -8284,9 +8370,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const database = this.database(), coordinator = group.actingCoordinatorId ?? group.leaderAgentId;
     const identity = acceptedGroupControlIdentity(state.id, group.nodeRunId, group, input);
     const completionKey = groupTaskCompletionKey(group, input.inputId);
-    const accepted = async () => await database.acceptedGroupControlAction({ projectId: state.id, requestId: identity.requestId,
-      nodeRunId: group.nodeRunId, groupRunId: group.id, coordinatorEpoch: group.coordinatorEpoch,
-      actorAgentId: coordinator, inputId: input.inputId, semanticInputHash: identity.semanticInputHash });
+    const accepted = async () => {
+      const fact = await database.acceptedGroupControlForInput({ projectId: state.id,
+        groupRunId: group.id, coordinatorEpoch: group.coordinatorEpoch,
+        actorAgentId: coordinator, inputId: input.inputId });
+      if (fact && fact.semanticInputHash !== identity.semanticInputHash) {
+        throw new Error("Accepted group control input differs from the original task");
+      }
+      return fact;
+    };
     const completed = async () => Boolean((await database.eventByRequestId(state.id, groupTaskCompletionRequestId(completionKey))));
     const prior = await accepted();
     if (prior && (await database.eventByRequestId(state.id, `group-round-complete-${identity.semanticInputHash}`))) return acceptedGroupControlResult(prior);
@@ -8318,7 +8410,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       await database.appendEvent({ projectId: state.id, groupRunId: group.id, nodeRunId: group.nodeRunId,
         agentId: coordinator, coordinatorEpoch: group.coordinatorEpoch,
         requestId: `group-round-complete-${identity.semanticInputHash}`, type: "group.control.round.completed",
-        payload: { inputId: input.inputId, completionKey, acceptedRequestId: identity.requestId } });
+        payload: { inputId: input.inputId, completionKey, acceptedRequestId: decision.requestId } });
       return { ...acceptedGroupControlResult(decision), handoff: supervisionHandoff(supervised.value.handoff ?? "", supervised) };
     }
     const entry = [...this.#residents].find(([, value]) => value.projectId === state.id && value.handle === resident);
@@ -8343,17 +8435,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       group,
       input
     );
-    const accepted = async (): Promise<AcceptedGroupControlAction | undefined> =>
-      await this.database().acceptedGroupControlAction({
-        projectId: state.id,
-        requestId: identity.requestId,
-        nodeRunId: group.nodeRunId,
-        groupRunId: group.id,
-        coordinatorEpoch: group.coordinatorEpoch,
-        actorAgentId: coordinator,
-        inputId: input.inputId,
-        semanticInputHash: identity.semanticInputHash
-      });
+    const accepted = async (): Promise<AcceptedGroupControlAction | undefined> => {
+      const fact = await this.database().acceptedGroupControlForInput({ projectId: state.id,
+        groupRunId: group.id, coordinatorEpoch: group.coordinatorEpoch,
+        actorAgentId: coordinator, inputId: input.inputId });
+      if (fact && fact.semanticInputHash !== identity.semanticInputHash) {
+        throw new Error("Accepted group control input differs from the original task");
+      }
+      return fact;
+    };
     const prior = await accepted();
     const rebound = !prior && group.coordinatorEpoch > 1
       ? (await this.database().rebindAcceptedGroupControlAction({
@@ -8380,7 +8470,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       await this.database().appendEvent({ projectId: state.id, groupRunId: group.id, nodeRunId: group.nodeRunId,
         agentId: coordinator, coordinatorEpoch: group.coordinatorEpoch,
         requestId: `group-round-complete-${identity.semanticInputHash}`, type: "group.control.round.completed",
-        payload: { inputId: input.inputId, completionKey, acceptedRequestId: identity.requestId } });
+        payload: { inputId: input.inputId, completionKey, acceptedRequestId: fact.requestId } });
       return acceptedGroupControlResult(fact);
     };
     if ((prior || rebound) && (await completed())) return await consume((prior ?? rebound)!);
@@ -8393,7 +8483,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         signal,
         { ...input, inputId: reservedRepair === undefined ? input.inputId
           : `${input.inputId}-mechanism-repair-${input.invocationId}`, prompt: (prior || rebound) ? [input.prompt,
-          "Your formal group decision has already been accepted. Continue in the same session and role and call finish_task for this management round. The accepted decision stays in force; do not replace it.",
+          "Your formal group decision is recorded. Continue in the same session and role, inspect the recorded facts and supply any further explicit instructions and finish_task. You may change a pending decision; actions already performed remain recorded.",
           `Accepted decision: ${JSON.stringify((prior ?? rebound)!.action)}.`
         ].join("\n\n") : reservedRepair === undefined ? [input.prompt,
           "Call finish_task for your own management round; group/project completion is a separate authorized tool action and your tool channel remains open. Include any durable Agent-authored memory in finish_task."
@@ -8495,16 +8585,17 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     ))) {
       await this.publishProjection(state, (await this.database().projectState(state.id)));
     }
-    const decisionEnvelope = result.controlActions?.find((envelope) =>
+    const decisionEnvelopes = result.controlActions?.filter((envelope) =>
       envelope.action.tool === "assign_group_tasks" ||
       envelope.action.tool === "request_group_integration" ||
       envelope.action.tool === "complete_group"
-    );
-    if (!(await accepted()) && decisionEnvelope && (
+    ) ?? [];
+    for (const decisionEnvelope of decisionEnvelopes) {
+      if (!(
       decisionEnvelope.action.tool === "assign_group_tasks" ||
       decisionEnvelope.action.tool === "request_group_integration" ||
       decisionEnvelope.action.tool === "complete_group"
-    )) {
+      )) continue;
       await this.database().revalidateGroupControl({
         projectId: state.id,
         groupRunId: group.id,
@@ -8512,7 +8603,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         coordinatorEpoch: group.coordinatorEpoch,
         stateVersion: decisionEnvelope.stateVersion,
         accepted: {
-          requestId: identity.requestId,
+          requestId: `${identity.requestId}-${acceptedControlHash({ invocationId: input.invocationId, callId: decisionEnvelope.callId })}`,
           inputId: input.inputId,
           invocationId: input.invocationId,
           callId: decisionEnvelope.callId,
@@ -8657,11 +8748,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
                   payload: { taskId, inputId: taskInputId, nativeInputId: turn.inputId, callId: envelope.callId } });
               }
             } else {
-              const prior = await this.database().acceptedGroupControlForInput({ projectId: state.id, groupRunId,
-                actorAgentId: coordinator, coordinatorEpoch: group.coordinatorEpoch, inputId: taskInputId });
-              if (prior && acceptedControlHash(prior.action) !== acceptedControlHash(action)) {
-                throw new CollaborationStateError("IDEMPOTENCY_CONFLICT", "The management round's accepted decision cannot be replaced");
-              }
               await this.database().revalidateGroupControl({
                 projectId: state.id,
                 groupRunId,
@@ -8762,16 +8848,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     };
   }
 
-  /** Mirror the legacy Main completion gate for Git-owned management nodes. */
+  /** Completion authority comes from the configured termination role. */
   private async mainCanComplete(state: ProjectState): Promise<boolean> {
-    if (state.orchestration.termination.agent !== "main") return false;
-    const delegable = workflowRoutesForAgent(state.orchestration, "main")
-      .some((edge) => edge.target !== "main" && edge.target !== "finish");
-    if (!delegable) return true;
-    return (await this.database().projectState(state.id)).nodeRuns.some((nodeRun) =>
-      nodeRun.status === "completed" &&
-      (nodeRun.node.kind !== "agent" || nodeRun.node.agentId !== "main")
-    );
+    return state.orchestration.termination.agent === "main";
   }
 
   private workerRouteCandidates(state: ProjectState, agentId: string): string[] {
@@ -9643,7 +9722,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const result = resumeAfterAuthorization
       ? undefined
       : await this.submitResident(state, resident, signal, {
-          inputId: `input-${execution.id}-1`,
+          inputId: `input-${executionEpochIdentity(execution)}-1`,
           invocationId,
           prompt: businessAssignment
         }, (await this.executionActivityAuthority(state.id, execution)));
@@ -9723,21 +9802,21 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   private async closeResidentForTerminal(
     state: ProjectState,
     residentKey: string,
-    resident: CollaborationResidentHandle,
-    forget = true
-  ): Promise<boolean> {
+    resident: CollaborationResidentHandle
+  ): Promise<void> {
     const entry = this.#residents.get(residentKey);
+    if (entry?.handle !== resident) throw new Error(`Retirement lost the original resident for ${residentKey}`);
+    entry.retiring = true;
     try {
       await resident.close();
     } catch (error) {
-      if (forget) this.#residents.delete(residentKey);
       try {
         await this.database().appendEvent({ projectId: state.id, agentId: entry?.activity?.agentId,
           executionId: entry?.execution?.id, invocationId: entry?.activity?.invocationId,
           ...(entry?.execution ? { ownershipEpoch: entry.execution.ownershipEpoch } : {}),
           type: "execution.resource_cleanup.failed", payload: { residentKey, reason: supervisionError(error), nativeStopConfirmed: false } });
       } catch (recordError) { console.warn(`Resource cleanup record unavailable: ${supervisionError(recordError)}`); }
-      return false;
+      throw new ResidentRetainedWaitError(`Resident ${residentKey} Stop is unconfirmed: ${supervisionError(error)}`, { cause: error });
     }
     if (entry?.activity) {
       try { await this.closeRuntimeActivity(state, entry.activity, {
@@ -9747,8 +9826,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         requestId: `runtime-resident-close-${residentKey}-${entry.activity.ownershipEpoch ?? entry.activity.coordinatorEpoch ?? 1}`
       }); } catch (error) { console.warn(`Resident cleanup diagnostics were not saved (${residentKey}): ${supervisionError(error)}`); }
     }
-    if (forget) this.#residents.delete(residentKey);
-    return true;
+    if (this.#residents.get(residentKey) === entry) this.#residents.delete(residentKey);
   }
 
   /**
@@ -10228,6 +10306,19 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       state.lastError = hasFailure
         ? failureState.unresolvedMessages.join("\n").slice(0, 4_000)
         : undefined;
+      if (!hasFailure && !state.userIntervention && result.issues.length === 0) {
+        const stoppedManagement = [];
+        for (const group of (await this.database().projectState(state.id)).scopedGroupRuns ?? []) {
+          if (!["running", "integrating"].includes(group.status)) continue;
+          if (await this.database().scopedManagementSupervisionEnded(state.id, group.id, "complete") ||
+            await this.database().scopedManagementSupervisionEnded(state.id, group.id, "plan")) stoppedManagement.push(group.groupId);
+        }
+        if (stoppedManagement.length) {
+          state.status = "interrupted";
+          state.phase = "collaboration:agent-decision-required";
+          state.lastError = `Leader turn returned without a new formal decision: ${stoppedManagement.join(", ")}. Automatic reminders ended; explicit new input or dispatch remains available.`;
+        }
+      }
       await this.saveState(state);
       return;
     }
@@ -10406,7 +10497,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     request.onProjectStateRequest = async input => {
       this.assertWritable();
       return await executeProjectStateRequest(this.database(), { kind: "agent", projectId: state.id,
-        agentId: request.agent, invocationId: request.invocationId }, input, { observePullRequest: async preparation => {
+        agentId: request.agent, invocationId: request.invocationId }, input, { stopAgent: target => this.stopAgentInvocation(state, target), observePullRequest: async preparation => {
         const repository = this.repository(state);
         if (repository.owner !== preparation.repository.owner || repository.name !== preparation.repository.name)
           throw new Error("Project repository changed before its exact PR observation");
@@ -10569,12 +10660,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       const notifications = workflowNotifications(session);
       const text = await notifications.prepare(inputId);
       const sources = await notifications.details(inputId);
+      const coordination = await this.database().agentCoordinationResults(state.id, request.agent);
+      if (coordination.length) sources.push({ key: "coordination-results", label: "Explicit dispatch and Leader request results",
+        records: coordination.map(event => ({ type: event.type, recordedAt: event.ts, ...event.payload })) });
       const messages = request.agent === "main" ? (await this.database().unexpectedSystemMessages(state.id)) : [];
       if (messages.length) sources.push({ key: "unexpected-system-messages", label: "Unexpected late system messages",
         records: messages.map(event => ({ ...event.payload, recordedAt: event.ts })) });
-      if (!text && !messages.length) return "";
+      if (!text && !messages.length && !coordination.length) return "";
       const details = await publishContext?.(sources);
-      return [text, messages.length ? `Unexpected system messages from known other native Agents are available (${messages.length}). Read them during this normal task if useful; they do not assign a repair, confirm Git success or renew any original task allowance.` : "",
+      return [text, coordination.length ? `Explicit dispatch or Leader-request results are available in the attached coordination-results context. Read each recorded queued/received/failed fact; receipt is not successful business execution.` : "", messages.length ? `Unexpected system messages from known other native Agents are available (${messages.length}). Read them during this normal task if useful; they do not assign a repair, confirm Git success or renew any original task allowance.` : "",
         details ?? (messages.length ? JSON.stringify(sources.at(-1)!.records) : "")].filter(Boolean).join("\n\n");
     };
     const priorOfficial = request.onOfficialHarnessEvent;
@@ -11100,7 +11194,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         ...await executionWorktreeClosingActions((await this.git(state.id)), execution, signal),
         ...await resident.supervisionActions?.() ?? []].filter(Boolean) as string[];
         try {
-          if (facts.merged) await this.commitMergedExecutionArtifacts(state, execution, pullRequestRecord(facts.merged));
+          if (facts.merged?.status === "merged") await this.commitMergedExecutionArtifacts(state, execution, pullRequestRecord(facts.merged));
           else await this.commitUnchangedMergedArtifactIntents(state, execution, base);
         } catch (error) {
           if (!(error instanceof ExecutionArtifactPublicationError)) throw error;
@@ -11138,30 +11232,37 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       }
     });
     output = supervisionHandoff(supervision.value.handoff ?? output, supervision);
-    const nativeStopConfirmed = await this.closeResidentForTerminal(state, execution.id, resident);
+    if (!state.git?.enabled && (supervision.outcome !== "resolved" || !output.trim())) {
+      await this.closeResidentForTerminal(state, execution.id, resident);
+      throw new Error("Workspace task requires a handoff, finish_task and a confirmed native stop");
+    }
+    await this.database().prepareExecutionRetirement(state.id, execution.id, execution.ownershipEpoch, output);
+    await this.closeResidentForTerminal(state, execution.id, resident);
+    return { output: await this.settleRetiredExecution(state, execution, output, { residentClosed: true }, signal), routeDecision };
+  }
+
+  private async settleRetiredExecution(state: ProjectState, execution: MemberExecution, output: string,
+    stopEvidence: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<string> {
     if (!state.git?.enabled) {
-      if (!nativeStopConfirmed || supervision.outcome !== "resolved" || !output.trim())
-        throw new Error("Workspace task requires a handoff, finish_task and a confirmed native stop");
       await this.database().appendEvent({ projectId: state.id, executionId: execution.id, nodeRunId: execution.nodeRunId,
         ownershipEpoch: execution.ownershipEpoch, agentId: execution.agentId, requestId: `workspace-return:${executionEpochIdentity(execution)}`,
         type: "execution.workspace.returned", payload: { output } });
-      await this.database().completeExecution({ projectId: state.id, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, output });
-      return { output, routeDecision };
+    } else {
+      const postStop = await nextTaskRepair({ key: `${state.id}:${execution.id}:retirement`, signal,
+        inspect: async () => executionWorktreeClosingActions((await this.git(state.id)), execution, signal), reserve: () => undefined,
+        record: async (outcome, missing, reason) => {
+          if (outcome === "resolved") return;
+          await this.database().appendEvent({ projectId: state.id, executionId: execution.id, agentId: execution.agentId, ownershipEpoch: execution.ownershipEpoch,
+            type: "execution.supervision.finished", payload: { outcome: outcome === "exhausted" ? "unavailable" : outcome,
+              missing, nativeStopConfirmed: true, source: "session_retirement", ...(reason ? { reason } : {}) } });
+        }
+      });
+      if ("outcome" in postStop && postStop.outcome !== "resolved") output = supervisionHandoff(output,
+        { remaining: postStop.remaining, outcome: postStop.outcome === "exhausted" ? "unavailable" : postStop.outcome });
     }
-    const postStop = await nextTaskRepair({ key: `${state.id}:${execution.id}:retirement`, signal,
-      inspect: async () => executionWorktreeClosingActions((await this.git(state.id)), execution, signal), reserve: () => undefined,
-      record: async (outcome, missing, reason) => {
-        if (outcome === "resolved") return;
-        await this.database().appendEvent({ projectId: state.id, executionId: execution.id, agentId: execution.agentId, ownershipEpoch: execution.ownershipEpoch,
-          type: "execution.supervision.finished", payload: { outcome: outcome === "exhausted" ? "unavailable" : outcome,
-            missing, nativeStopConfirmed, source: "session_retirement", ...(reason ? { reason } : {}) } });
-      }
-    });
-    if ("outcome" in postStop && postStop.outcome !== "resolved") output = supervisionHandoff(output,
-      { remaining: postStop.remaining, outcome: postStop.outcome === "exhausted" ? "unavailable" : postStop.outcome });
     await this.database().completeExecution({ projectId: state.id, executionId: execution.id,
-      ownershipEpoch: execution.ownershipEpoch, output, requestId: `complete-${executionEpochIdentity(execution)}` });
-    return { output, routeDecision };
+      ownershipEpoch: execution.ownershipEpoch, output, stopEvidence, requestId: `complete-${executionEpochIdentity(execution)}` });
+    return output;
   }
 
   private async integrateAgentOwnedStandalone(
@@ -11928,10 +12029,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       runtimePath,
       "main",
       managementWorkspaceName,
-      sourceIsMain && state.orchestration.allowMainReconfiguration === true,
+      state.orchestration.allowMainReconfiguration === true,
       workflowAuthoringInvocationId
     );
-    if (sourceIsMain && state.orchestration.allowMainReconfiguration === true && !inputs.workflowAuthoringPath) {
+    if (state.orchestration.allowMainReconfiguration === true && !inputs.workflowAuthoringPath) {
       const current = await this.database().workflowAdjustmentCurrent(state.id, this.workflowAdjustmentSeed(state));
       await ensureMainWorkflowProposalFile(
         inputs.workflowAuthoringPath ?? path.join(inputs.workspacePath, MAIN_WORKFLOW_FILE),
@@ -11987,8 +12088,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       candidate !== "finish" &&
       workflowTargetAllowsTasklessActivation(state.orchestration, candidate));
     const allowUserIntervention = state.orchestration.allowUserIntervention;
-    const allowWorkflowReconfiguration = sourceIsMain &&
-      state.orchestration.allowMainReconfiguration === true;
+    const allowWorkflowReconfiguration = state.orchestration.allowMainReconfiguration === true;
     await this.attachRuntimeCallbacks(state, request);
     this.attachRootMainInputReception(state, request, pendingInputs);
     const routeTurnRequestFactory = this.turnRequestFactory(state, request, undefined, recoverySeed);
@@ -12073,8 +12173,10 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       signal.throwIfAborted();
       // Count the launch too: Pause requested during native initialization
       // must wait until its handle can be paused, before the first model turn.
+      signal.throwIfAborted();
       beginRouteOperation();
       await decideRoute({
+        openResident: this.#residentLauncher!.open,
         state: structuredClone(state),
         sourceNodeRunId,
         sourceAgentId,
@@ -12381,17 +12483,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     }
     let workflowAdjustment: WorkflowAdjustmentPublication | undefined;
     const acceptedActions = input.decision.acceptedActions ?? [];
-    const acceptedDecision = acceptedActions.find((fact) =>
+    const acceptedDecision = acceptedActions.filter((fact) =>
       fact.action.tool !== "select_display"
-    );
-    if (input.sourceIsMain) {
-      await this.commitMainPreparatoryActions(
-        input.state,
-        input.decision.controlActions,
-        acceptedActions
-      );
-    }
-    if (input.sourceIsMain && input.decision.decisionAction?.tool === "apply_workflow") {
+    ).at(-1);
+    await this.commitMainPreparatoryActions(input.state, input.decision.controlActions, acceptedActions);
+    if (input.decision.decisionAction?.tool === "apply_workflow") {
       await this.applyWaitingWorkflowAdjustments(input.state);
       if (acceptedDecision?.action.tool === "apply_workflow") {
         workflowAdjustment = (await this.database().rollForwardAcceptedMainWorkflow({
@@ -12552,24 +12648,20 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       ].includes(action.tool)) {
         throw new Error("Main route staging contains an action outside its authority");
       }
-      if (!input.sourceIsMain && action.tool !== "route_to_agent" &&
-        action.tool !== "request_user") {
-        throw new Error("Weak-route Main staging contains a management-only action");
-      }
-      const acceptedAction: ControlAction = input.sourceIsMain && action.tool === "select_display"
+      const acceptedAction: ControlAction = action.tool === "select_display"
         ? {
             tool: "select_display",
-            ...await this.validateRetainedMainDisplaySelection(input.state, input.nodeRunId, input.semanticInputHash, action)
+            ...await this.validateRetainedMainDisplaySelection(input.state, input.nodeRunId, input.semanticInputHash, action, envelope)
           }
         : action;
       const retained = await this.database().acceptedMainRouteActions({ projectId: input.state.id, nodeRunId: input.nodeRunId,
         semanticInputHash: input.semanticInputHash });
-      const priorSlot = retained.find((fact) => (fact.action.tool === "select_display") === (action.tool === "select_display"));
+      const priorSlot = retained.find((fact) => fact.callId === envelope.callId && fact.invocationId === envelope.invocationId);
       if (priorSlot && acceptedControlHash(priorSlot.action) !== acceptedControlHash(acceptedAction)) {
-        throw new Error("The Main management task's accepted formal action cannot be replaced");
+        throw new Error("Main control callId was reused with different arguments");
       }
       let workflowProposal: AcceptedMainRouteAction["workflowProposal"] = priorSlot?.workflowProposal;
-      if (!workflowProposal && input.sourceIsMain && action.tool === "apply_workflow") {
+      if (!workflowProposal && action.tool === "apply_workflow") {
         // Bind the authority before file/resource validation can yield. Legacy
         // graph-only paths seed this exact configuration after a valid read.
         const projection = await this.database().projectState(input.state.id);
@@ -12655,8 +12747,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           workflowTargetAllowsTasklessActivation(state.orchestration, candidate)),
         decisionBy: "main",
         allowUserIntervention,
-        allowWorkflowReconfiguration: sourceIsMain &&
-          state.orchestration.allowMainReconfiguration === true,
+        allowWorkflowReconfiguration: state.orchestration.allowMainReconfiguration === true,
         canComplete,
         allowFinishRoute,
         workspacePath: request.workspacePath,
@@ -12664,7 +12755,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         // editable proposal. Only native input/capability identity rotates;
         // inventing a new proposal path changes the resident's tool scope.
         // The Agent keeps its unfinished work and chooses the formal action.
-        ...(sourceIsMain && state.orchestration.schemaVersion === 3 && state.orchestration.allowMainReconfiguration && workflowAuthoringPath ? {
+        ...(state.orchestration.schemaVersion === 3 && state.orchestration.allowMainReconfiguration && workflowAuthoringPath ? {
           workflowAuthoringPath
         } : {}),
         requireBridge: true
@@ -12688,9 +12779,6 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
             envelope.capabilityHash !== capabilityHash) {
             throw new Error("Main route envelope does not match its fresh authority");
           }
-          if (!sourceIsMain && action.tool !== "route_to_agent" && action.tool !== "finish_task" && action.tool !== "request_user") {
-            throw new Error("Weak-route Main may only route or request user input");
-          }
           const tasklessRouteTargets = candidates.filter((candidate) =>
             candidate !== "finish" &&
             workflowTargetAllowsTasklessActivation(state.orchestration, candidate));
@@ -12700,24 +12788,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
               "Main route_to_agent requires a non-empty assignment for an ordinary target"
             );
           }
-          if (sourceIsMain && ![
-            "finish_task",
-            "route_to_agent",
-            "publish_artifact",
-            "select_display",
-            "request_user",
-            "apply_workflow",
-            "complete_project"
-          ].includes(action.tool)) {
-            throw new Error("System Main action is outside its management tool scope");
+          if (action.tool === "publish_artifact") {
+            throw new Error("Artifact publication has no member execution and merged-file source binding for this invocation");
           }
-          if (sourceIsMain && action.tool === "publish_artifact") {
-            throw new Error(
-              "Git-on Main management files are not merged business artifacts and cannot be published"
-            );
-          }
-          if (sourceIsMain && action.tool === "select_display") {
-            await this.validateRetainedMainDisplaySelection(state, nodeRunId, semanticInputHash, action);
+          if (action.tool === "select_display") {
+            await this.validateRetainedMainDisplaySelection(state, nodeRunId, semanticInputHash, action, envelope);
           }
           const authority = { projectId: state.id, nodeRunId, routeEpoch, stateVersion: routeEpoch, invocationId: turn.invocationId,
             candidateNodeIds: candidates, tasklessRouteNodeIds: tasklessRouteTargets, canComplete, allowFinishRoute, action };
@@ -12886,10 +12961,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     state: ProjectState,
     nodeRunId: string,
     semanticInputHash: string,
-    action: Extract<ControlAction, { tool: "select_display" }>
+    action: Extract<ControlAction, { tool: "select_display" }>,
+    identity: Pick<ControlActionEnvelope, "invocationId" | "callId">
   ): Promise<DisplaySelection> {
     const prior = (await this.database().acceptedMainRouteActions({ projectId: state.id, nodeRunId, semanticInputHash }))
-      .find((fact) => fact.action.tool === "select_display");
+      .find((fact) => fact.action.tool === "select_display" && fact.invocationId === identity.invocationId && fact.callId === identity.callId);
     if (prior?.action.tool !== "select_display") return this.validateMainDisplaySelection(state, action);
     const requested = [action.primary, ...(action.items ?? [])];
     const retained = [prior.action.primary, ...(prior.action.items ?? [])];
@@ -12900,7 +12976,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         item.artifactId !== undefined && item.artifactId !== old.artifactId ||
         item.commitSha !== undefined && item.commitSha !== old.commitSha;
     })) {
-      throw new Error("The Main management task's accepted formal action cannot be replaced");
+      throw new Error("select_display callId was reused with different arguments");
     }
     return this.validateMainDisplaySelection(state, prior.action, true);
   }
@@ -13375,7 +13451,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     for (const controller of this.#assistanceControllers.values()) controller.abort();
     // Stop exact resident handles, without further database mutations or an
     // automatic lease reacquisition that could defeat a replacement writer.
-    void Promise.allSettled([...this.#residents.values()].map(({ handle }) => handle.close()));
+    this.#residentLifetime?.seal();
+    if (!this.#shuttingDown) void Promise.allSettled([
+      ...[...this.#residents.values()].map(async ({ handle }) => handle.close()),
+      this.#residentLifetime?.stopRemaining()
+    ]);
   }
 }
 
@@ -13735,7 +13815,7 @@ function acceptedMainRouteDecision(
   controlActions?: ControlActionEnvelope[];
   acceptedActions: AcceptedMainRouteAction[];
 } {
-  const decision = facts.find((fact) => fact.action.tool !== "select_display");
+  const decision = facts.filter((fact) => fact.action.tool !== "select_display").at(-1);
   if (!decision || decision.action.tool === "select_display") {
     throw new Error("Accepted Main control sequence has no orchestration decision");
   }

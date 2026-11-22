@@ -171,9 +171,6 @@ export async function createMainSdkClient(runtime: MainApplicationRuntime, redac
         while (true) {
           signal.throwIfAborted();
           const state = await operation(() => read(id));
-          if (state.status === "completed" && state.workspaceDelivery && state.workspaceDelivery.status !== "synced") {
-            throw new Error(`Task completed but original workspace delivery is ${state.workspaceDelivery.status}: ${state.workspaceDelivery.message ?? "retry syncWorkspace after resolving conflicts"}`);
-          }
           if (settled(state)) return state;
           await delay(100, undefined, { signal });
         }
@@ -242,10 +239,6 @@ export async function createMainSdkClient(runtime: MainApplicationRuntime, redac
       }),
       addInput: (message, options = {}) => operation(async () => {
         if (options.mode === "chat") return snapshot(await runtime.orchestrator.addProjectUserInput(id, message, "chat", options.requestId));
-        const current = await read(id);
-        if (current.status === "completed" && current.workspaceDelivery && current.workspaceDelivery.status !== "synced") {
-          throw new Error("Resolve and synchronize the original workspace before opening a new completion generation");
-        }
         const next = await runtime.orchestrator.addProjectUserInput(id, message, options.mode, options.requestId);
         await runtime.gitWorkspaces.synchronize(next);
         return snapshot(next);

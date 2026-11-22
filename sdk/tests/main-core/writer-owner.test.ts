@@ -80,6 +80,88 @@ it("rejects an attached Worker's wrong database path and drains its rejected res
   expect(() => f.database.close()).not.toThrow();
 });
 
+it("rejects a stale Worker attachment without fencing the established owner or changing its epoch", async () => {
+  const f = await fixture();
+  f.database.close();
+  const database = CollaborationStateDatabase.open(f.options);
+  try {
+    const current = database.writerLease();
+    const before = database.eventsAfter("project");
+    const failed = vi.fn();
+    await expect(openCollaborationStateWorker({ ...f.options, writerOwner: database.writerOwnerAttachment(),
+      writerLease: { ...current, epoch: current.epoch - 1 } }, failed)).rejects.toMatchObject({ code: "WRITER_LEASE_STALE" });
+    database.assertWriterLeaseHeld();
+    expect(failed).not.toHaveBeenCalled();
+    expect(database.writerLease()).toEqual(current);
+    expect(database.eventsAfter("project")).toEqual(before);
+    const valid = await openCollaborationStateWorker({ ...f.options, writerOwner: database.writerOwnerAttachment(), writerLease: current });
+    try {
+      await valid.appendEvent({ projectId: "project", requestId: "valid-attachment", type: "attached", payload: {} });
+      expect(database.eventsAfter("project").filter(event => event.requestId === "valid-attachment")).toHaveLength(1);
+    } finally { await valid.close(); }
+  } finally { database.close(); }
+});
+
+it("fences the shared owner when an admitted attached Worker observes a replaced epoch", async () => {
+  const f = await fixture();
+  const lease = f.database.writerLease(), before = f.database.eventsAfter("project");
+  const failed = vi.fn();
+  const worker = await openCollaborationStateWorker({ ...f.options, writerLease: lease, writerOwner: f.database.writerOwnerAttachment() }, failed);
+  try {
+    const observer = new DatabaseSync(f.databasePath);
+    try { observer.exec("UPDATE writer_service_owner SET epoch = epoch + 1"); }
+    finally { observer.close(); }
+    await expect(worker.appendEvent({ projectId: "project", type: "late", payload: {} })).rejects.toMatchObject({ code: "WRITER_LEASE_STALE" });
+    expect(failed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: "WRITER_LEASE_STALE" }));
+    expect(() => f.database.assertWriterAvailable()).toThrow(expect.objectContaining({ code: "WRITER_LEASE_STALE" }));
+    expect(f.database.eventsAfter("project")).toEqual(before);
+    expect(() => CollaborationStateDatabase.open(f.options)).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+  } finally { await worker.close(); }
+});
+
+it("notifies the host immediately when an admitted Worker fences on invalid ownership metadata", async () => {
+  const f = await fixture(), before = f.database.eventsAfter("project"), failed = vi.fn();
+  const worker = await openCollaborationStateWorker({ ...f.options, writerLease: f.database.writerLease(), writerOwner: f.database.writerOwnerAttachment() }, failed);
+  try {
+    const raw = new DatabaseSync(f.databasePath);
+    try { raw.exec("UPDATE writer_service_owner SET identity_json='{}'"); } finally { raw.close(); }
+    await expect(worker.appendEvent({ projectId: "project", type: "late", payload: {} })).rejects.toMatchObject({ code: "UNSAFE_CONFIGURATION" });
+    // No health poll, next request or time-based check should be needed to stop the host.
+    expect(failed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: "UNSAFE_CONFIGURATION" }));
+    expect(await worker.eventsAfter("project")).toEqual(before);
+    expect(() => CollaborationStateDatabase.open(f.options)).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+  } finally { await worker.close(); }
+});
+
+it("rejects a busy read of the ownership table without revoking a live owner", async () => {
+  const f = await fixture(), peer = new DatabaseSync(f.databasePath), owner = f.database.writerLease();
+  const raw = Reflect.get(f.database, "database") as DatabaseSync;
+  raw.exec("PRAGMA busy_timeout=1");
+  try {
+    peer.exec("BEGIN EXCLUSIVE");
+    expect(() => f.database.assertWriterLeaseHeld()).toThrow(expect.objectContaining({ errcode: 5 }));
+    peer.exec("ROLLBACK");
+    f.database.assertWriterLeaseHeld();
+    expect(f.database.writerLease()).toEqual(owner);
+    const result = f.database.appendEvent({ projectId: "project", requestId: "after-reader-busy", type: "written.once", payload: {} });
+    expect(result.replay).toBe(false);
+  } finally { if (peer.isTransaction) peer.exec("ROLLBACK"); peer.close(); }
+});
+
+it("fences when SQLite cannot read the authority table, preserving the SQL error and the lock", async () => {
+  const f = await fixture(), failed = vi.fn();
+  const worker = await openCollaborationStateWorker({ ...f.options, writerLease: f.database.writerLease(), writerOwner: f.database.writerOwnerAttachment() }, failed);
+  try {
+    const raw = new DatabaseSync(f.databasePath);
+    try { raw.exec("DROP TABLE writer_service_owner"); } finally { raw.close(); }
+    const original = expect.objectContaining({ errcode: 1, message: expect.stringContaining("writer_service_owner") });
+    await expect(worker.appendEvent({ projectId: "project", type: "not-authorized", payload: {} })).rejects.toThrow(original);
+    expect(failed).toHaveBeenCalledExactlyOnceWith(original);
+    expect(await worker.eventsAfter("project")).not.toContainEqual(expect.objectContaining({ type: "not-authorized" }));
+    expect(() => CollaborationStateDatabase.open(f.options)).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+  } finally { await worker.close(); }
+});
+
 it("rejects hardlinked databases before creating another sidecar and rejects missing or replaced lock identity", async () => {
   const f = await fixture(), alias = path.join(f.root, "hardlink.sqlite");
   await fs.link(f.databasePath, alias);
@@ -96,6 +178,32 @@ it("rejects hardlinked databases before creating another sidecar and rejects mis
   expect(await fs.readFile(f.databasePath)).toEqual(before);
 });
 
+it("converges directory aliases and refuses live sidecar substitution without accepting a second writer", async () => {
+  const f = await fixture(), alias = path.join(f.root, "alias"), lock = f.databasePath + ".writer.lock";
+  await fs.symlink(f.root, alias, process.platform === "win32" ? "junction" : "dir");
+  expect(() => CollaborationStateDatabase.open({ ...f.options, databasePath: path.join(alias, path.basename(f.databasePath)) }))
+    .toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+  const before = f.database.eventsAfter("project"), binding = f.database.writerLease();
+  try { await fs.rename(lock, lock + ".retained"); }
+  catch (error) {
+    // Some Windows filesystems deny rename while the exclusive handle is open.
+    if (process.platform !== "win32" || !["EPERM", "EBUSY", "EACCES"].includes((error as NodeJS.ErrnoException).code!)) throw error;
+    f.database.assertWriterLeaseHeld();
+    expect(() => CollaborationStateDatabase.open(f.options)).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+    expect(f.database.writerLease()).toEqual(binding);
+    return;
+  }
+  // A new regular file at the old name must not establish a new owner, even
+  // though it has a different (and independently lockable) physical identity.
+  await fs.writeFile(lock, "replacement", { flag: "wx" });
+  expect(() => f.database.appendEvent({ projectId: "project", type: "late", payload: {} })).toThrow(/identity changed/);
+  expect(() => CollaborationStateDatabase.open(f.options)).toThrow();
+  expect(f.database.eventsAfter("project")).toEqual(before);
+  const reader = new DatabaseSync(f.databasePath, { readOnly: true });
+  try { expect(reader.prepare("SELECT epoch FROM writer_service_owner").get()?.epoch).toBe(binding.epoch); }
+  finally { reader.close(); }
+});
+
 it("preserves CAS and the original SQLite trigger error with no partial project mutation", async () => {
   const f = await fixture(), sql = new DatabaseSync(f.databasePath);
   try {
@@ -110,12 +218,27 @@ it("preserves CAS and the original SQLite trigger error with no partial project 
   } finally { sql.close(); }
 });
 
+it("retains the original SQLite FULL statement error and no partial event at a real page limit", async () => {
+  const f = await fixture(), raw = Reflect.get(f.database, "database") as DatabaseSync;
+  const before = f.database.projectState("project"), events = f.database.eventsAfter("project"), owner = f.database.writerLease();
+  const pages = raw.prepare("PRAGMA page_count").get()!.page_count;
+  expect(raw.prepare(`PRAGMA max_page_count=${pages}`).get()!.max_page_count).toBe(pages);
+  expect(() => f.database.appendEvent({ projectId: "project", type: "out-of-pages", payload: { detail: "x".repeat(128 * 1024) } }))
+    .toThrow(expect.objectContaining({ errcode: 13 }));
+  expect(raw.isTransaction).toBe(false);
+  expect(f.database.projectState("project").stateRevision).toBe(before.stateRevision);
+  expect(f.database.eventsAfter("project")).toEqual(events);
+  f.database.assertWriterLeaseHeld(); expect(f.database.writerLease()).toEqual(owner);
+});
+
 it("fences an unconfirmed COMMIT without replay or pretending a committed event rolled back", async () => {
   const f = await fixture(), raw = Reflect.get(f.database, "database") as DatabaseSync;
-  const original = raw.exec.bind(raw); let commits = 0;
+  const original = raw.exec.bind(raw); let commits = 0, elapsed = 0;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+  const diagnostic = vi.spyOn(console, "warn").mockImplementation(() => {});
   const spy = vi.spyOn(raw, "exec").mockImplementation(sql => {
     original(sql);
-    if (sql === "COMMIT") { commits++; throw new Error("Lost committed result"); }
+    if (sql === "COMMIT") { commits++; elapsed += 1500; throw new Error("Lost committed result"); }
   });
   try {
     expect(() => f.database.appendEvent({ projectId: "project", type: "unknown", payload: {} })).toThrow(expect.objectContaining({ code: "WRITER_COMMIT_UNCONFIRMED", cause: expect.objectContaining({ message: "Lost committed result" }) }));
@@ -123,7 +246,8 @@ it("fences an unconfirmed COMMIT without replay or pretending a committed event 
     expect(commits).toBe(1);
     expect(raw.prepare("SELECT count(*) AS n FROM project_events WHERE event_type='unknown'").get()).toMatchObject({ n: 1 });
     expect(raw.isTransaction).toBe(false);
-  } finally { spy.mockRestore(); }
+    expect(diagnostic).toHaveBeenCalledWith("Collaboration SQLite mutation exceeded 1000ms", expect.objectContaining({ committed: null, commitMs: 1500 }));
+  } finally { spy.mockRestore(); diagnostic.mockRestore(); clock.mockRestore(); }
 });
 
 it("rejects old schemas at ordinary startup and preserves research facts through explicit offline upgrade", async () => {

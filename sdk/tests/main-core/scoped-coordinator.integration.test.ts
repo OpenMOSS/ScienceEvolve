@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CollaborationRuntimeCoordinator, ProductionCollaborationExecutionInputBuilder,
   type CollaborationResidentLauncher, type CollaborationResidentOpenInput } from "../../src/core/collaboration-runtime.js";
 import { ProjectStorage } from "../../src/core/storage.js";
+import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
 import { EventHub } from "../../src/core/event-hub.js";
 import { SkillCatalog } from "../../src/core/skill-catalog.js";
 import { cloneAgentOrchestrationTemplate } from "../../src/core/agent-orchestration.js";
@@ -27,12 +28,12 @@ afterEach(async () => {
 const repository = { provider: "github" as const, providerId: 1, owner: "example", name: "openfars", private: true,
   defaultBranch: "main", htmlUrl: "https://github.com/example/openfars", cloneUrl: "https://github.com/example/openfars.git", observedAt: "2026-09-30T00:00:00Z" };
 
-async function fixture(options: { workspace?: boolean; nestedLoop?: boolean; mainCreatesGroups?: boolean; blockScopedAgent?: string; blockScopedOpen?: string; blockFinalOpen?: string; blockScopedTurns?: number; weakRootIntervention?: boolean; childHandoff?: boolean; omitFirstRootGit?: boolean; omitFirstFinish?: string; blockFinalAgent?: string; queueIdeaSibling?: boolean; legacyRoot?: boolean; now?: () => number } = {}) {
+async function fixture(options: { inputTarget?: "main" | "G"; workspace?: boolean; nestedLoop?: boolean; mainCreatesGroups?: boolean; blockScopedAgent?: string; blockScopedOpen?: string; blockFinalOpen?: string; blockScopedTurns?: number; weakRootIntervention?: boolean; childHandoff?: boolean; omitFirstRootGit?: boolean; omitFirstFinish?: string; blockFinalAgent?: string; queueIdeaSibling?: boolean; legacyRoot?: boolean; now?: () => number } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-scoped-coordinator-")); roots.push(root);
   const hub = new EventHub(); const storage = new ProjectStorage(root, hub); await storage.initialize();
   const id = "prj_12345678901234567890123456789012";
   const orchestration = cloneAgentOrchestrationTemplate(); orchestration.schemaVersion = 3;
-  orchestration.input.target = "main";
+  orchestration.input.target = options.inputTarget ?? "main";
   orchestration.collaborations = ["G", "H"].map((id) => ({ id, displayName: id, memberAgentIds: [], renamePolicy: "editable" as const }));
   orchestration.routes.main = [{ kind: "weak", target: "G" }, { kind: "weak", target: "finish" }];
   orchestration.routes.G = [{ kind: "strong", target: "execution" }];
@@ -395,6 +396,45 @@ describe("v3 project coordinator production entry", () => {
     expect(f.state.agentSessionIds).toEqual(nativeSessions);
     await expect(restarted.resumeProject(f.state)).rejects.toThrow("unarchive it first");
     expect(f.opened).toHaveLength(opensBeforeArchive);
+  }, 20_000);
+
+  it.each((["worker", "final", "leader"] as const).flatMap(role => (["main", "G"] as const).map(target => ({ role, target }))))(
+    "retains the writer for an unconfirmed retired scoped $role without resubmission (entry=$target)", async ({ role, target }) => {
+    const f = await fixture({ inputTarget: target });
+    const database = f.coordinator.database(), owner = await database.writerLease();
+    const peer = () => CollaborationStateDatabase.open({ databasePath: path.join(f.root, "collaboration-state.sqlite"),
+      topology: "single-host", hostId: owner.hostId, serviceId: "competing-service" });
+    const open = vi.mocked(f.launcher.open), normal = open.getMockImplementation()!;
+    let invocationId: string | undefined, confirmed = false;
+    const submit = vi.fn(), close = vi.fn();
+    open.mockImplementation(async input => {
+      const handle = await normal(input), scope = input.controlScope;
+      const selected = scope?.role === "scoped-agent" ? scope.executionId.startsWith("group-final-") ? "final" : "worker"
+        : scope?.role === "scoped-leader" ? "leader" : undefined;
+      if (invocationId || selected !== role) return handle;
+      invocationId = input.request.invocationId;
+      submit.mockImplementation(handle.submit.bind(handle));
+      close.mockImplementation(async () => { if (!confirmed) throw new Error(`Unconfirmed ${role} Stop`); await handle.close(); });
+      return { ...handle, submit, close };
+    });
+    try {
+      await f.coordinator.createProject(f.state, { enabled: true, provider: "github" });
+      await expect.poll(async () => (await database.eventsAfter(f.state.id, 0, 10000)).some(e =>
+        e.type === "execution.resource_cleanup.failed" && e.invocationId === invocationId && e.payload.nativeStopConfirmed === false)
+        || { phase: f.state.phase, lastError: f.state.lastError, invocationId, failures: f.state.lastError && !invocationId
+          ? (await database.failureAttempts(f.state.id)).slice(0, 2).map(failure => failure.redactedMessage) : undefined }, { timeout: 10_000 }).toBe(true);
+      const turns = submit.mock.calls.length;
+      expect(turns).toBeGreaterThan(0);
+      await expect(f.coordinator.shutdown()).rejects.toThrow(/writer ownership is retained/);
+      expect(() => peer()).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
+      const attempts = close.mock.calls.length;
+      expect(attempts).toBeGreaterThanOrEqual(2);
+      confirmed = true;
+      await f.coordinator.shutdown();
+      expect(close).toHaveBeenCalledTimes(attempts + 1);
+      expect(submit).toHaveBeenCalledTimes(turns);
+      const next = peer(); try { expect(next.writerLease().epoch).toBe(owner.epoch + 1); } finally { next.close(); }
+    } finally { confirmed = true; await f.coordinator.shutdown(); }
   }, 20_000);
 
   it("does not archive when the existing native stop fails", async () => {

@@ -16,7 +16,6 @@ import { AgentInterruptedError } from "../../src/core/codex-runner.js";
 import {
   affectedCollaborationGroupIds,
   Orchestrator,
-  ProjectConfigurationLockedError,
   WORKER_INVOCATION_FAILURE_LIMIT
 } from "../../src/core/orchestrator.js";
 import { SkillCatalog } from "../../src/core/skill-catalog.js";
@@ -461,6 +460,26 @@ describe("public Main orchestration state machine", () => {
     expect((await storage.readEvents(project.id)).some(isDelivery)).toBe(false);
     expect(await storage.loadState(project.id)).toMatchObject({ status: "cancelled", cancelledBy: cancellation.actor, cancelReason: cancellation.reason });
     expect(runner.calls.map(call => call.agent)).toEqual(["worker"]);
+  });
+
+  it("executes the latest pending Main instruction without starting the earlier choice", async () => {
+    const { orchestrator, runner } = await harness(async request => {
+      if (request.agent === "worker") {
+        expect(await fs.readFile(request.inboxPath, "utf8")).toContain("Use the revised instruction");
+        return { handoff: workerResult("worker").markdown };
+      }
+      if (request.control?.canComplete) return mainResult(request, decision("finish", "Reviewed the actual Worker result"));
+      const result = await mainResult(request, decision("worker", "Use the revised instruction"));
+      const last = result.controlActions!.at(-1)!;
+      return { ...result, controlActions: [{ ...last, callId: `${request.invocationId}-earlier-choice`,
+        action: { tool: "route_to_agent", target: "worker", assignment: "Earlier pending instruction" } }, ...result.controlActions!] };
+    });
+    const project = await orchestrator.createProject(projectInput(twoAgentOrchestration({
+      input: "main", termination: "worker", workerRoutes: [{ target: "finish", kind: "strong" }]
+    })));
+    await orchestrator.waitForIdle(project.id);
+    expect(await orchestrator.getProject(project.id)).toMatchObject({ status: "completed" });
+    expect(runner.calls.filter(call => call.agent === "worker")).toHaveLength(1);
   });
 
   it.each([false, true])("workflow continuity: restores the exact later Worker after failed commit rollback and retains a concurrent user Pause (%s)", async userPause => {
@@ -2004,7 +2023,7 @@ describe("public Main orchestration state machine", () => {
       orchestrator.updateAgentConfigs(project.id, {
         main: { permission: "workspace" }
       })
-    ).rejects.toBeInstanceOf(ProjectConfigurationLockedError);
+    ).resolves.toMatchObject({ agents: { main: { permission: "workspace" } } });
     await orchestrator.shutdown();
   });
 
@@ -2042,7 +2061,7 @@ describe("public Main orchestration state machine", () => {
     const internals = orchestrator as unknown as {
       runtimes: Map<string, { state: { configurationLocked?: boolean } }>;
     };
-    internals.runtimes.get(project.id)!.state.configurationLocked = false;
+    expect(internals.runtimes.get(project.id)!.state.configurationLocked).toBe(true);
     await expect(orchestrator.updateAgentConfigs(project.id, {
       main: {
         instructions: "Updated while retaining project-owned references.",
@@ -2086,13 +2105,11 @@ describe("public Main orchestration state machine", () => {
     await orchestrator.waitForIdle(project.id);
     const before = structuredClone((await orchestrator.getProject(project.id))!);
     const originalTurnCount = runner.calls.length;
-    // Only this synthetic fixture permits config editing. Production startup
-    // locks and all existing historical projects keep their current contract.
     const internals = orchestrator as unknown as {
       runtimes: Map<string, { state: { configurationLocked?: boolean } }>;
       storage: ProjectStorage;
     };
-    internals.runtimes.get(project.id)!.state.configurationLocked = false;
+    expect(internals.runtimes.get(project.id)!.state.configurationLocked).toBe(true);
     const changes = updateAgentConfigsSchema.parse({ agents: { worker: { experimentMcp: selected } } });
     try {
       const updated = await orchestrator.updateAgentConfigs(project.id, changes.agents);
@@ -2121,19 +2138,19 @@ describe("public Main orchestration state machine", () => {
         expect(restored.agents.main).toEqual(before.agents.main);
         expect(restored.agentSessions).toEqual(before.agentSessions);
         expect(restored.configurationLocked).toBe(true);
-        await expect(restarted.updateAgentConfigs(project.id, changes.agents)).rejects.toBeInstanceOf(ProjectConfigurationLockedError);
+        await expect(restarted.updateAgentConfigs(project.id, changes.agents)).resolves.toMatchObject({ agents: { worker: { experimentMcp: selected } } });
       } finally { await restarted.shutdown(); }
       expect(runner.calls).toHaveLength(originalTurnCount);
     } finally { await orchestrator.shutdown(); }
   });
 
-  it("repairs pre-lock persisted projects as locked during recovery", async () => {
+  it("recovers legacy definition locks while allowing explicit runtime configuration updates", async () => {
     const { orchestrator, root } = await harness(async (request) =>
       mainResult(request, decision("finish", "The legacy fixture is complete."))
     );
     const project = await orchestrator.createProject({
       title: "Legacy lock migration",
-      requirement: "A persisted started project must never regain editable Harness configuration.",
+      requirement: "Retain the Workflow definition lock while permitting explicit runtime configuration updates.",
       orchestration: mainOnlyOrchestration(),
       agents: { main: { skills: [], autoSkills: [] } }
     });
@@ -2160,8 +2177,8 @@ describe("public Main orchestration state machine", () => {
       lockedAt: project.createdAt
     });
     await expect(restarted.updateAgentConfigs(project.id, {
-      main: { model: "must-not-apply" }
-    })).rejects.toBeInstanceOf(ProjectConfigurationLockedError);
+      main: { model: "explicit-new-model" }
+    })).resolves.toMatchObject({ agents: { main: { model: "explicit-new-model" } } });
     await restarted.shutdown();
   });
 
@@ -2187,7 +2204,7 @@ describe("public Main orchestration state machine", () => {
       runtimes: Map<string, { state: { configurationLocked?: boolean } }>;
       storage: ProjectStorage;
     };
-    internals.runtimes.get(project.id)!.state.configurationLocked = false;
+    expect(internals.runtimes.get(project.id)!.state.configurationLocked).toBe(true);
     const before = structuredClone((await orchestrator.getProject(project.id))!.agents.worker);
     const appendEvent = vi.spyOn(internals.storage, "appendEvent")
       .mockRejectedValueOnce(new Error("simulated config event persistence failure"));
@@ -3131,6 +3148,43 @@ describe("public Main orchestration state machine", () => {
     await orchestrator.shutdown();
   });
 
+  it("allows authorized Main to apply a workflow in a weak-branch turn without expanding its route or completion authority", async () => {
+    const orchestration = twoAgentOrchestration({ input: "review", termination: "review",
+      workerRoutes: [{ target: "main", kind: "weak" }, { target: "finish", kind: "weak" }] });
+    orchestration.allowMainReconfiguration = true;
+    let applied = false;
+    const { orchestrator, runner } = await harness(async request => {
+      if (request.agent === "review") return { handoff: workerResult("review").markdown };
+      if (!applied && request.control?.mainCapabilities?.controlMode === "weak-branch") {
+        expect(request.control.mainCapabilities).toMatchObject({ canReconfigure: true, canComplete: false, canRequestUser: false,
+          routeCandidates: ["main", "finish"] });
+        expect(request.control.allowAgentOrchestrationReconfiguration).toBe(true);
+        const workflowPath = path.join(request.workspacePath, "workflow.json");
+        const document = JSON.parse(await fs.readFile(workflowPath, "utf8")) as MainAgentOrchestrationDocument;
+        document.orchestration.resultFormat.custom = "Main's chosen global result format";
+        await fs.writeFile(workflowPath, JSON.stringify(document));
+        applied = true;
+        return { handoff: "Main chose a global adjustment", controlActions: [{ projectId: request.project.id, agent: "main",
+          invocationId: request.invocationId, callId: "weak-main-edit", stateVersion: request.control.stateVersion,
+          capabilityHash: request.control.capabilityHash, receivedAt: new Date().toISOString(),
+          action: { tool: "apply_workflow", path: "workflow.json", rationale: "Main's explicit choice" } }] };
+      }
+      return mainResult(request, request.control?.mainCapabilities?.controlMode === "weak-branch" || request.control?.canComplete
+        ? decision("finish", "Verified result.") : decision("review", "Verify the result under Main's accepted format."));
+    });
+    const project = await orchestrator.createProject(projectInput(orchestration));
+    await vi.waitFor(async () => {
+      const state = await orchestrator.getProject(project.id);
+      expect({ status: state.status, error: state.lastError }).toEqual({ status: "completed", error: undefined });
+    }, { timeout: 2_000 });
+    await orchestrator.waitForIdle(project.id);
+    expect(applied).toBe(true);
+    expect(await orchestrator.getProject(project.id)).toMatchObject({ status: "completed", orchestration: {
+      allowMainReconfiguration: true, resultFormat: { custom: "Main's chosen global result format" } } });
+    expect(runner.calls.some(call => call.control?.mainCapabilities?.controlMode === "weak-branch")).toBe(true);
+    await orchestrator.shutdown();
+  });
+
   it("lets repeated termination reviews send rework to different configured Agents", async () => {
     const orchestration: AgentOrchestrationTemplate = {
       agents: [
@@ -3911,7 +3965,7 @@ describe("public Main orchestration state machine", () => {
       orchestrator.updateAgentConfigs(project.id, {
         main: { model: "different-model" }
       })
-    ).rejects.toBeInstanceOf(ProjectConfigurationLockedError);
+    ).resolves.toMatchObject({ agents: { main: { model: "different-model" } }, agentSessionIds: { main: "thread_recovery" } });
 
     expect(await orchestrator.getProject(project.id)).toMatchObject({
       status: "completed",

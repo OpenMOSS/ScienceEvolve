@@ -7,12 +7,41 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { projectMcpSource } from "./fixtures/project-mcp-source.js";
 import { compileInvocationPolicy } from "../../src/core/harness-runtime/invocation-policy.js";
 import { createProductionCollaborationResidentLauncher } from "../../src/core/collaboration-resident-launcher.js";
+import { trackResidentOpens } from "../../src/core/resident-lifetime.js";
 import type { CollaborationResidentOpenInput } from "../../src/core/collaboration-runtime.js";
 import { ResidentTurnPreparationError, type HarnessRuntimeResidentAdapter } from "../../src/core/harness-runtime/resident-runtime-adapter.js";
 import type { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";
 import type { GroupRun, MemberExecution, ProjectState } from "../../src/core/types.js";
 
 describe("production collaboration resident launcher", () => {
+  it("interrupts only the explicitly stopped native handle before waiting for close", async () => {
+    const state = { id: "prj_explicit_stop", orchestration: { schemaVersion: 3 },
+      agents: { main: { harness: "pi", mcpServers: [] } } } as unknown as ProjectState;
+    const lease = { session: fixtureSession("pi", "stop-session"), acknowledgedControlSeq: 2 };
+    const signals: AbortSignal[] = [], closes: Array<ReturnType<typeof vi.fn>> = [];
+    const launcher = createProductionCollaborationResidentLauncher({} as HarnessRuntimeFacade, {
+      open: async (input: { signal: AbortSignal }) => {
+        signals.push(input.signal);
+        const close = vi.fn(async () => undefined); closes.push(close);
+        return { initialLease: lease, probe: async () => lease, close,
+          submit: async () => new Promise((_resolve, reject) => input.signal.addEventListener("abort", () => reject(input.signal.reason), { once: true })) };
+      }
+    } as unknown as HarnessRuntimeResidentAdapter);
+    const target = await launcher.open(routeOpen(state));
+    const sibling = await launcher.open(routeOpen(state));
+    expect(target.activeInvocationId).toBeUndefined();
+    const pending = target.submit({ inputId: "active", invocationId: "stop-invocation", prompt: "Work" }).catch(error => error);
+    expect(target.activeInvocationId).toBe("stop-invocation");
+    await target.stop!();
+    expect((await pending).message).toContain("Main explicitly stopped");
+    expect(signals[0]!.aborted).toBe(true);
+    expect(signals[1]!.aborted).toBe(false);
+    expect(target.activeInvocationId).toBeUndefined();
+    expect(target.closed).toBe(true); expect(sibling.closed).toBe(false);
+    expect(closes[0]).toHaveBeenCalledOnce(); expect(closes[1]).not.toHaveBeenCalled();
+    await sibling.close();
+  });
+
   it.each(["pause", "resume"] as const)("retries an incomplete normal close before %s without reusing the closing handle", async action => {
     const state = { id: "prj_normal_close", orchestration: { schemaVersion: 3 },
       agents: { main: { harness: "pi", mcpServers: [] } } } as unknown as ProjectState;
@@ -107,6 +136,20 @@ describe("production collaboration resident launcher", () => {
       await handle.pause(); await handle.pause();
       expect(nativeClose).toHaveBeenCalledTimes(3); expect(nativePause).not.toHaveBeenCalled();
     } finally { rejectClose = false; await handle.close(); }
+  });
+
+  it("retains the exact unpublished handle when open acknowledgement and cleanup both fail", async () => {
+    const state = { id: "prj_failed_open", orchestration: { schemaVersion: 3 }, agents: { main: { harness: "pi", mcpServers: [] } } } as unknown as ProjectState;
+    const failure = new Error("publication failed"), input = routeOpen(state);
+    input.onOpened = async () => { throw failure; };
+    let stopped = false;
+    const close = vi.fn(async () => { if (!stopped) throw new Error("unpublished native still live"); });
+    const submit = vi.fn(), open = vi.fn(async () => ({ initialLease: { session: fixtureSession("pi", "unpublished") }, close, submit }));
+    const lifetime = trackResidentOpens(createProductionCollaborationResidentLauncher({} as HarnessRuntimeFacade, { open } as unknown as HarnessRuntimeResidentAdapter));
+    await expect(lifetime.launcher.open(input)).rejects.toMatchObject({ cause: failure });
+    await expect(lifetime.stopRemaining()).rejects.toThrow(/Stop was not confirmed/);
+    stopped = true; await lifetime.stopRemaining(); await lifetime.stopRemaining();
+    expect(close).toHaveBeenCalledTimes(3); expect(open).toHaveBeenCalledOnce(); expect(submit).not.toHaveBeenCalled();
   });
 
   it("retains the resident after a preparation refusal while Pause waits for that submit", async () => {
@@ -505,7 +548,7 @@ describe("production collaboration resident launcher", () => {
     } as unknown as ProjectState;
     const open = routeOpen(state);
     const decision = await launcher.decideRoute!({
-      state,
+      state, openResident: launcher.open,
       sourceNodeRunId: "node-1",
       sourceAgentId: "worker",
       output: "done",
@@ -640,7 +683,7 @@ describe("production collaboration resident launcher", () => {
     });
     const reconciliationCountAfterProof = reconciliations.length;
     await launcher.decideRoute!({
-      state,
+      state, openResident: launcher.open,
       sourceNodeRunId: "node-pre-launch-failure",
       sourceAgentId: "main",
       output: "retry after exact stop proof",
@@ -766,7 +809,7 @@ describe("production collaboration resident launcher", () => {
     } as unknown as ProjectState;
 
     await expect(launcher.decideRoute!({
-      state,
+      state, openResident: launcher.open,
       sourceNodeRunId: "node-no-decision",
       sourceAgentId: "worker",
       output: "work complete",

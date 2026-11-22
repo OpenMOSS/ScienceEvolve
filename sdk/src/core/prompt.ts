@@ -60,7 +60,7 @@ const TASK_RETURN_INSTRUCTION =
 export const BUILTIN_AGENT_PROMPTS: Record<AgentTemplate, string> = {
   general: "Carry out the bounded task assigned by main. Inspect project evidence, distinguish measured facts from proposals, and return an ordinary Worker handoff.",
   idea: "Generate a concrete, feasible, falsifiable research direction from the user's request. Define the question, hypotheses, baselines, contribution, data or experiment plan, and staged execution plan. Do not fabricate results or citations. Return an ordinary Worker handoff with the required evidence sections.",
-  main: "Act as the project's main agent. Inspect the complete project evidence and make one structured routing decision.",
+  main: "Act as the project's main agent. Inspect the complete project evidence and make explicit structured routing decisions.",
   execution: "Carry out the assigned research or implementation task. Distinguish measured evidence from proposals, record reproducible commands and methods, and never invent results or citations. When SII experiment tools are selected and available for this task, use the built-in SII MCP for platform operations and its on-demand Inspire knowledge. Business tool selection is independent of the workspace file-access scope. After submitting experiments, let the system monitor them; continue independent work or voluntarily defer the unfinished task until the same session receives the results. Process required results before completing this task or routing successors. Return an ordinary Worker handoff with the required evidence sections.",
   writing: "Write or revise the requested paper or report using the supplied evidence. Keep complete source and generated files in the persistent workspace. Compile or validate the requested output yourself when the task requires it, and report commands, files, and errors in the handoff. Return an ordinary Worker handoff with the required evidence sections.",
   review: "Perform the assigned independent review or audit as an ordinary Worker. Inspect the exact evidence named by Main, record strengths, weaknesses, unresolved questions, and concrete recommendations in natural language. Claim an independent computation or executed script only when the active tools actually ran it; if the task requires execution but this invocation lacks an execution tool, report that evidence gap instead of inventing a result. Do not emit a special score, rating, hash, or review protocol unless the task explicitly asks for prose details. Return an ordinary Worker handoff with the required evidence sections."
@@ -86,7 +86,7 @@ export const MAIN_SYSTEM_PROMPT = [
   "For display.primary and display.items, you may use a path relative to the project workspace, a project-relative workspaces/<path>, or an absolute path inside the project workspace; the server will safely resolve and canonicalize it. Never select files outside the project workspace.",
   USER_INPUT_FILES_INSTRUCTION,
   "A route assignment is model-authored task scope, not a replacement for the canonical User requirement. Do not restate datasets, dependencies, numeric facts, filenames, or output constraints when they already exist in the inbox; reference the exact User requirement and add only the bounded role-specific work. Never negate or alter a source fact in an assignment.",
-  "Use message as the only natural-language explanation, handoff, evidence, and completion rationale. Never encode routing, completion, user requests, or display selection in prose or JSON; record at most one orchestration decision with the injected control tools when it is ready. A decision does not end the native Harness turn.",
+  "Use message as the only natural-language explanation, handoff, evidence, and completion rationale. Never encode routing, completion, user requests, or display selection in prose or JSON; record your explicit orchestration decisions with the injected control tools when ready; a later route updates a pending choice, while already started work requires an explicit stop if you choose to interrupt it. A decision does not end the native Harness turn.",
   FILE_EDIT_INSTRUCTION
 ].join(" ");
 
@@ -240,18 +240,7 @@ export interface MainInvocationContext {
 
 export function buildMainCapabilitySnapshot(state: ProjectState): MainCapabilitySnapshot {
   const pending = state.pendingMainDecision;
-  const hasDelegableMainRoute = workflowRoutesForAgent(
-    state.orchestration,
-    SYSTEM_CONTROLLER_AGENT
-  ).some((edge) => edge.target !== "finish" && edge.target !== SYSTEM_CONTROLLER_AGENT);
-  const mainTerminationReady =
-    state.orchestration.termination.agent === SYSTEM_CONTROLLER_AGENT &&
-    (
-      !hasDelegableMainRoute ||
-      state.orchestration.agents.some(({ name }) =>
-        name !== SYSTEM_CONTROLLER_AGENT && (state.runCounts[name] ?? 0) > 0
-      )
-    );
+  const mainTerminationReady = state.orchestration.termination.agent === SYSTEM_CONTROLLER_AGENT;
   return deriveMainCapabilities({
     wakeReason: pending?.reason ?? (state.mainInvocationSeq <= 1 ? "initial" : "user"),
     configuredAgents: state.orchestration.agents.map(({ name }) => name),

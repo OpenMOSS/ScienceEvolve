@@ -130,7 +130,9 @@ it.each(["commit", "competing-document", "replacement-writer"] as const)("prepar
       expect(commit()).toMatchObject({ revision: 2, value: { turn: 2 } });
       expect(published).toBe(true);
     } else {
-      expect(commit).toThrow(scenario === "competing-document" ? "Authoritative project document changed" : "writer epoch/expiry fence");
+      expect(commit).toThrow(expect.objectContaining(scenario === "competing-document"
+        ? { code: "STALE_STATE_VERSION", message: "Authoritative project document changed" }
+        : { code: "WRITER_LEASE_STALE", message: "Collaboration mutation was rejected by the writer epoch fence" }));
       expect(published).toBe(false);
       expect(database.projectStateDocument(projectId, "project.checkpoint")!.value).toMatchObject({ turn: scenario === "competing-document" ? 3 : 1 });
     }

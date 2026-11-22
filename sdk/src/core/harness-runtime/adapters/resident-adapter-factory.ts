@@ -38,6 +38,7 @@ import { residentScopeId } from "../resident-lease.js";
 import { isMainAssistanceTurn, validateStagedInvocationInputs } from "../invocation-inputs.js";
 import { installWindowsCodexPatch } from "../windows-codex-patch.js";
 import { NATIVE_PROCESS_SUPPORT_ENV } from "../native-processes.js";
+import { rejectResidentOpen } from "../../resident-lifetime.js";
 
 export type { ResidentAdapterLaunchRequest, ResidentAdapterLaunchDefinition } from "../resident-lease.js";
 
@@ -101,10 +102,11 @@ export async function openBuiltinResidentAdapter(
       }
     };
   } catch (error) {
-    managed.terminate();
-    await managed.waitForQuiescence();
-    await managed.completed.catch(() => undefined);
-    throw error;
+    return rejectResidentOpen(error, async () => {
+      managed.terminate();
+      await managed.waitForQuiescence();
+      await managed.completed.catch(() => undefined);
+    });
   }
 }
 

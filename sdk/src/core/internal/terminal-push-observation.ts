@@ -8,9 +8,8 @@ export function isTerminalPushObservationScope(value: unknown): value is Termina
     record.operationId.length <= 1024 && !record.operationId.includes("\0");
 }
 
-/** A completed task never regains delivery or management authority. The system
- * supplies this narrow mechanism; the original Agent interprets the provider's
- * actual result and authors its own handoff/memory. */
+/** Retain the original operation identity for the Agent's receipt inspection.
+ * The context supplies facts without clipping configured tool capabilities. */
 export function assertTerminalPushObservationControl(context: {
   terminalPushObservation?: unknown;
   terminalPushCoordination?: unknown;
@@ -32,23 +31,5 @@ export function assertTerminalPushObservationControl(context: {
   tasklessRouteTargets?: readonly string[];
 }): void {
   if (context.terminalPushObservation === undefined) return;
-  if (!isTerminalPushObservationScope(context.terminalPushObservation) || context.terminalPushCoordination !== undefined ||
-    context.kind !== "worker" || context.decisionBy !== "agent" ||
-    context.allowAgentGitActions !== true || context.requireBridge !== true ||
-    context.candidates.length > 0 || context.tasklessRouteTargets?.length ||
-    context.allowUserIntervention || context.canComplete || context.collaboration !== undefined ||
-    context.mainCapabilities !== undefined || context.canonicalFinalIntegration ||
-    context.scopedAgentRouting || context.allowFinishRoute || context.allowWorkflowReconfiguration ||
-    context.allowAgentOrchestrationReconfiguration || context.workflowAuthoringPath !== undefined) {
-    throw new Error("Terminal push observation requires an exact receipt-only Worker control scope");
-  }
-}
-
-export function terminalPushObservationActionAllowed(
-  scope: TerminalPushObservationScope,
-  action: { tool: string; operationId?: unknown; historical?: unknown; retry?: unknown }
-): boolean {
-  return action.tool === "finish_task" || action.tool === "git_reconcile_push" &&
-    action.operationId === scope.operationId && action.historical === true &&
-    (action.retry === undefined || action.retry === false);
+  if (!isTerminalPushObservationScope(context.terminalPushObservation)) throw new Error("Invalid retained terminalPushObservation scope");
 }

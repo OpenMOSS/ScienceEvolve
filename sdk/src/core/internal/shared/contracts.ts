@@ -63,7 +63,7 @@ export function deriveMainCapabilities(input: MainCapabilityInput): MainCapabili
     schemaVersion: 1,
     controlMode,
     routeCandidates,
-    canReconfigure: controlMode === "autonomous" && input.allowMainReconfiguration,
+    canReconfigure: input.allowMainReconfiguration,
     canComplete: controlMode === "autonomous" && input.completionEligible,
     canRequestUser: controlMode === "autonomous" && input.allowUserIntervention
   };

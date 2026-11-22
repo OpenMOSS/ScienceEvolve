@@ -35,6 +35,14 @@ function example(): ScopedWorkflowContract {
 }
 
 describe("scoped workflow contract", () => {
+  it("accepts groups without a local editing switch and preserves stored metadata without inventing defaults", () => {
+    const current = example(); delete current.groups[0].allowLeaderReconfiguration;
+    expect(validateScopedWorkflowContract(current, agents).groups[0]).not.toHaveProperty("allowLeaderReconfiguration");
+    for (const value of [false, true]) {
+      const saved = example(); saved.groups[0].allowLeaderReconfiguration = value;
+      expect(validateScopedWorkflowContract(saved, agents)).toEqual(saved);
+    }
+  });
   it("represents the five-Agent, three-path example without fixed sub-workflow containers", () => {
     const graph = validateScopedWorkflowContract(example(), agents);
     expect(graph.groups[0]?.workflow.input.edges.map((edge) => edge.target)).toEqual([

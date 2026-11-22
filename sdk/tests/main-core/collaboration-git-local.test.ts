@@ -687,7 +687,7 @@ describe("LocalCollaborationGitService", () => {
       expect([...store.records.keys()].filter((key) => key !== record.id)).toEqual([]);
     });
 
-  it("reuses one clean Agent worktree for distinct execution branches without moving the old ref", async () => {
+  it("reuses one Agent worktree preserving unrelated pending files and the old ref", async () => {
     const { service, store, main } = await fixture(undefined, "agent");
     const agentId = "analyst";
     const worktreePath = service.canonicalAgentWorktree(agentId);
@@ -709,9 +709,8 @@ describe("LocalCollaborationGitService", () => {
 
     await fs.writeFile(path.join(worktreePath, "unfinished.txt"), "do not overwrite\n", "utf8");
     const third = { ...execution(service, store, "exec-third", agentId), worktreePath };
-    await expect(service.createDeliveryWorktree(third, 1, { kind: "main" }))
-      .rejects.toThrow(/dirty/);
-    expect(await git(worktreePath, ["branch", "--show-current"])).toBe(second.executionBranch);
+    await expect(service.createDeliveryWorktree(third, 1, { kind: "main" })).resolves.toMatchObject({ head: main.head });
+    expect(await git(worktreePath, ["branch", "--show-current"])).toBe(third.executionBranch);
     expect(await fs.readFile(path.join(worktreePath, "unfinished.txt"), "utf8"))
       .toBe("do not overwrite\n");
   });
@@ -843,16 +842,12 @@ describe("LocalCollaborationGitService", () => {
     expect(await git(main, ["branch", "--show-current"])).toBe("main");
   });
 
-  it("reports Main's exact pending entries and owner before a remote merge, preserving all work", async () => {
+  it("allows the real merge with pending Main files and preserves all work", async () => {
     const { service } = await fixture(undefined, "agent");
     const main = await service.prepareAgentManagementWorkspace("main");
     await fs.writeFile(path.join(main, "final-manifest.json"), "retained process evidence\n");
     const before = await git(main, ["status", "--porcelain=v1"]);
-    const error = await service.assertRemoteMergeTargetAvailable("main").catch(error => error);
-    expect(error).toBeInstanceOf(GitInputError);
-    expect(error).toMatchObject({ publicData: { blocker: "TARGET_WORKTREE_DIRTY", targetAgentId: "main", targetBranch: "main",
-      pendingEntries: ["?? final-manifest.json"] } });
-    expect(error.message).toContain("final-manifest.json");
+    await expect(service.assertRemoteMergeTargetAvailable("main")).resolves.toBeUndefined();
     expect(await git(main, ["status", "--porcelain=v1"])).toBe(before);
     expect(await fs.readFile(path.join(main, "final-manifest.json"), "utf8")).toBe("retained process evidence\n");
   });
@@ -1283,7 +1278,7 @@ describe("LocalCollaborationGitService", () => {
     expect(repairedGroup.status).toBe("mergeable");
     await expect(service.assertRemoteMergeTargetAvailable(
       service.groupBranch("group-final")
-    )).rejects.toThrow("frozen");
+    )).resolves.toBeUndefined();
     await expect(service.assertRemoteMergeTargetAvailable(
       service.groupBranch("group-final"),
       { execution: finalOwner, ownershipEpoch: 1 }

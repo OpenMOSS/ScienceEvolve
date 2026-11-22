@@ -1,4 +1,5 @@
 import { proxyFailureError } from "./errors.js";
+import { rejectResidentOpen } from "../resident-lifetime.js";
 import { pendingNativeProcesses, type NativeProcessOwner } from "./native-processes.js";
 import { resolveGatewayReasoning } from "../gateway-reasoning.js";
 import { redactTrace } from "../utils.js";
@@ -27,12 +28,11 @@ import type {
   ProjectState,
   TraceSink
 } from "../types.js";
-import { isTerminalPushObservationScope, terminalPushObservationActionAllowed } from "../internal/terminal-push-observation.js";
-import { isTerminalPushCoordinationScope, terminalPushCoordinationActionAllowed } from "../internal/terminal-push-coordination.js";
-import { assertWorktreeClosingControl, assertWorktreeClosingRequest, isWorktreeClosingScope, worktreeClosingActionAllowed } from "../internal/worktree-closing.js";
+import { isTerminalPushObservationScope } from "../internal/terminal-push-observation.js";
+import { isTerminalPushCoordinationScope } from "../internal/terminal-push-coordination.js";
+import { assertWorktreeClosingControl, assertWorktreeClosingRequest, isWorktreeClosingScope } from "../internal/worktree-closing.js";
 import { HANDOFF_CHARACTER_LIMIT } from "../content-limits.js";
 import { MAIN_AGENT_ORCHESTRATION_FILE } from "../main-workflow-files.js";
-import { controlDecisionsConflict, isControlDecision } from "../orchestration-control-decisions.js";
 import type {
   AdapterSmokeProbeInput,
   AdapterSmokeProbeResult,
@@ -526,7 +526,7 @@ async function validateLeaderResidentInputs(
   if (!staged) {
     throw new HarnessRuntimeError(
       "INVOCATION_INPUT_STAGING_FAILED",
-      "Leader resident preparation requires a management-only staged input snapshot",
+      "Leader resident preparation requires its staged input snapshot",
       { invocationId: request.invocationId },
       { source: "inputs" }
     );
@@ -1253,16 +1253,8 @@ function validControlCollaborationScope(
   tool: string,
   control: ControlMcpRequest
 ): boolean {
-  if (control.worktreeClosing) return worktreeClosingActionAllowed({ ...action, tool });
-  if (control.terminalPushCoordination) {
-    return terminalPushCoordinationActionAllowed(control.terminalPushCoordination, { ...action, tool });
-  }
-  if (tool === "coordinate_agent_receipt") return false;
-  if (control.terminalPushObservation) {
-    return terminalPushObservationActionAllowed(control.terminalPushObservation, { ...action, tool });
-  }
-  if (control.canonicalFinalIntegration && (["git_revert", "git_log", "git_show", "git_diff"].includes(tool) ||
-    tool === "github_get_pr" && action.sourceOperationId !== undefined)) return false;
+  if (tool === "coordinate_agent_receipt") return control.terminalPushCoordination !== undefined &&
+    action.incidentId === control.terminalPushCoordination.incidentId;
   const scope = control.collaboration;
   // Every assigned MCP scope exposes the Agent's own finish_task. Accept its
   // returned receipt here too: the live broker owns task/session authority
@@ -1294,8 +1286,6 @@ function validControlCollaborationScope(
     return true;
   }
   if (scope.role === "scoped-leader" || scope.role === "scoped-main") {
-    if (scope.worktreeClosingOnly && (tool !== "coordinate_group_task" ||
-      !["close_worktree", "escalate"].includes(String(action.operation)) || action.repairNodeId !== undefined)) return false;
     if (tool === "apply_workflow") return scope.allowReconfiguration && control.allowWorkflowReconfiguration === true;
     if (tool === "route_to_agent") return Boolean(scope.sourceArrivalRequestId || scope.sourceOuterNodeRunId) && scope.routeCandidates.includes(String(action.target));
     if (tool === "assign_group_tasks") return action.groupRunId === scope.groupRunId && action.coordinatorEpoch === scope.coordinatorEpoch &&
@@ -1391,7 +1381,6 @@ function validateAdapterResult(
     );
   }
   const callIds = new Set<string>();
-  const decisions: ControlActionEnvelope["action"][] = [];
   for (const raw of actions as ControlActionEnvelope[]) {
     const envelope = raw as unknown as Record<string, unknown>;
     const action = envelope?.action as Record<string, unknown> | undefined;
@@ -1416,8 +1405,8 @@ function validateAdapterResult(
       !callId || callId.length > 512 || /[\s\u0000-\u001f\u007f]/u.test(callId) ||
       callIds.has(callId) || receivedAt !== canonicalReceivedAt ||
       !CONTROL_ACTION_TOOLS.has(tool) || !validControlAction(action, tool) ||
-      !control || !validControlCollaborationScope(action, tool, control) ||
-      decisions.some((existing) => controlDecisionsConflict(existing, action as unknown as ControlActionEnvelope["action"]))) {
+      tool === "apply_workflow" && (request.agent !== "main" || request.kind !== "main") ||
+      !control || !validControlCollaborationScope(action, tool, control)) {
       throw new HarnessRuntimeError(
         "HARNESS_CONTRACT_VIOLATION",
         `${descriptor.label} returned an invalid orchestration control envelope`,
@@ -1426,8 +1415,6 @@ function validateAdapterResult(
       );
     }
     callIds.add(callId);
-    const acceptedAction = action as unknown as ControlActionEnvelope["action"];
-    if (isControlDecision(acceptedAction)) decisions.push(acceptedAction);
   }
   return { ...value, handoff: handoff.trim(), ...(actions.length ? { controlActions: actions } : {}) };
 }
@@ -1653,10 +1640,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     input: PrepareResidentScopeRequest
   ): Promise<ResidentScopeOpenRequest> {
     const { signal } = input;
-    const mechanismOnly = input.request.terminalPushObservation !== undefined || input.request.terminalPushCoordination !== undefined || input.request.worktreeClosing !== undefined;
-    const request = mechanismOnly
-      ? { ...input.request, permission: "workspace" as const }
-      : input.request;
+    const request = input.request;
     const context = request.executionContext;
     if (!context) {
       throw new HarnessRuntimeError(
@@ -1683,8 +1667,8 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       try {
         assertWorktreeClosingRequest(request, input.sameEpochReopen);
         if (!isWorktreeClosingScope(request.worktreeClosing, request.agent) ||
-          !isDeepStrictEqual(request.worktreeClosing, request.control?.worktreeClosing) || input.inputs || input.mcpRows?.length) {
-          throw new Error("Worktree closing rejects mismatched control, staged management inputs and external MCP rows");
+          !isDeepStrictEqual(request.worktreeClosing, request.control?.worktreeClosing)) {
+          throw new Error("Worktree closing control must match its retained scope");
         }
         assertWorktreeClosingControl({ ...request.control!, agent: request.agent, kind: request.kind });
       } catch (error) {
@@ -1693,7 +1677,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     }
     if (request.terminalPushObservation !== undefined &&
       (!isTerminalPushObservationScope(request.terminalPushObservation) ||
-        context.role !== "delivery" || request.kind !== "worker" ||
+        context.role !== "delivery" ||
         request.project.git?.enabled !== true || request.sessionContinuity !== "strict" ||
         request.project.agentSessions?.[request.agent]?.durable !== true ||
         !input.sameEpochReopen || request.terminalControlRepair !== undefined ||
@@ -1748,7 +1732,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
 
     let stagedSkills: Awaited<ReturnType<typeof stageInvocationSkills>>;
     try {
-      stagedSkills = mechanismOnly ? { skillPaths: [], autoSkillPaths: [] } : await stageInvocationSkills(
+      stagedSkills = await stageInvocationSkills(
         request.skillPaths,
         request.autoSkillPaths ?? [],
         request.project.git?.enabled ? path.dirname(inputs.inboxPath) : inputs.workspacePath,
@@ -2084,10 +2068,10 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       });
       return { lease, evidence: opened.evidence };
     } catch (error) {
-      await opened.driver.close().catch(async () => {
-        await Promise.resolve(opened.driver.forceClose?.());
+      return rejectResidentOpen(error, async () => {
+        try { await opened.driver.close(); }
+        catch { await opened.driver.forceClose(); }
       });
-      throw error;
     }
   }
 
@@ -2239,7 +2223,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         binding.activate(current);
         const result = await this.runOnce(current, onTrace, signal, notification ? `sii-${++notificationTurn}` : undefined);
         notification = await binding.wait(result.handoff, onTrace);
-        if (!notification) { await binding.assertTaskComplete(); await binding.clearWait(); return result; }
+        if (!notification) { await binding.clearWait(); return result; }
       }
     } finally { binding.close(); }
   }

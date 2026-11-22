@@ -11,6 +11,8 @@ import {
 } from "../../src/core/harness-runtime/process-host.js";
 import type { LaunchPlan } from "../../src/core/harness-runtime/contracts.js";
 import { InvocationRecoveryController } from "../../src/core/harness-runtime/invocation-recovery.js";
+import { trackResidentOpens } from "../../src/core/resident-lifetime.js";
+import { HarnessRuntimeError } from "../../src/core/harness-runtime/errors.js";
 import { agentEnvironment } from "../../src/core/harness-runtime/runtime-support.js";
 import { NATIVE_PROCESS_SCOPE_ENV, NATIVE_PROCESS_SUPPORT_ENV, nativeProcessScope, pendingNativeProcesses, recoverNativeProcesses, type NativeProcessRecord } from "../../src/core/harness-runtime/native-processes.js";
 import { requestNativeBackgroundJob } from "../../src/core/harness-runtime/background-jobs.js";
@@ -1217,6 +1219,40 @@ describe("CommonProcessHost", () => {
       }
     }
   );
+
+  it.runIf(process.platform === "linux").each(["supervisor", "partial-spawn"] as const)(
+    "keeps the failed resident %s open in the stop drain until quiescence is proved", async mode => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "resident-open-drain-")); temporaryRoots.push(root);
+      const host = new CommonProcessHost(), scopeId = "fixture-scope", projectId = "fixture-project";
+      const env = buildInvocationEnvironment({ common: { SCIENCEEVOLVE_PROJECT_ID: projectId, SCIENCEEVOLVE_AGENT_HARNESS: "fixture",
+        SCIENCEEVOLVE_RESIDENT_SCOPE_ID: scopeId, SCIENCEEVOLVE_RESIDENT_ROLE: "delivery", SCIENCEEVOLVE_EXECUTION_ID: scopeId,
+        SCIENCEEVOLVE_OWNERSHIP_EPOCH: "1", SCIENCEEVOLVE_ROLE_WORKSPACE: root, SCIENCEEVOLVE_GATEWAY_API_KEY: "fixture-route" } });
+      const session = { schemaVersion: 1 as const, harnessId: "fixture", adapterVersion: "fixture", generation: 1,
+        nativeId: "original", durable: true, createdAt: "2026-01-01T00:00:00Z" };
+      let confirmed = false;
+      const wait = vi.fn(async () => { if (!confirmed) throw new Error("fixture native tree still live"); });
+      const start = vi.spyOn(host, "start").mockImplementation(() => {
+        if (mode === "partial-spawn") throw new HarnessRuntimeError("HARNESS_PROCESS_EXITED", "partial raw spawn", { stopProof: "unconfirmed" });
+        return { child: { exitCode: 7, signalCode: null }, terminate() {}, completed: Promise.resolve(), waitForQuiescence: wait } as unknown as ReturnType<typeof host.start>;
+      });
+      if (mode === "partial-spawn") vi.spyOn(host, "cleanupResidentInterrupted").mockImplementation(async (identity, runtimePath, options) => {
+        expect(identity).toMatchObject({ projectId, scopeId, executionId: scopeId, ownershipEpoch: 1 });
+        expect(runtimePath).toBe(root); expect(options?.allowMissingClaim).not.toBe(true);
+        await wait();
+      });
+      const tracker = trackResidentOpens({ async open() {
+        await host.startResident({ scopeId, role: "delivery", harnessId: "fixture", runtimePath: root, workspacePath: root,
+          signal: new AbortController().signal, recoveryBudget: new InvocationRecoveryController(1), session: () => session,
+          route: { baseUrl: "http://127.0.0.1/v1", token: "fixture-route" }, commonEnvironment: env, authorityEnvironment: env },
+        { command: process.execPath, args: [], cwd: root, env, eventFormat: "jsonl", session, rawLogLimitBytes: 1024 });
+        throw new Error("Unexpected success publishing a resident");
+      } });
+      await expect(tracker.launcher.open()).rejects.toThrow();
+      await expect(tracker.stopRemaining()).rejects.toThrow(/Stop was not confirmed/);
+      expect(JSON.parse(await fs.readFile(path.join(root, "resident-launch-claim-v1-1.json"), "utf8")).status).toBe("launching");
+      confirmed = true; await tracker.stopRemaining(); await tracker.stopRemaining();
+      expect(wait).toHaveBeenCalledTimes(3); expect(start).toHaveBeenCalledOnce();
+    });
 
   it.runIf(process.platform === "linux").each(["previous_boot", "same_boot_foreign_namespace", "active_marker", "identity_mismatch"] as const)(
     "reconciles an original resident claim with a colliding current process (%s)", async (mode) => {

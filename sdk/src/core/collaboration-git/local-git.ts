@@ -378,13 +378,13 @@ export class LocalCollaborationGitService {
     await this.assertAuthority(execution, expectedOwnershipEpoch, branch, "checkpoint");
     if (execution.restrictedClosing) {
       const closing = await this.observeRestrictedWorktreeClosing(execution, expectedOwnershipEpoch, execution.restrictedClosing.scope, signal);
-      if (!expectedHead || closing.head !== safeSha(expectedHead, "closing publication head") || closing.pendingPaths.length) throw new GitInputError("Closing publication requires its exact clean checkpoint");
+      if (!expectedHead || closing.head !== safeSha(expectedHead, "closing publication head")) throw new GitInputError("Closing publication requires its exact checkpoint");
       await this.command(this.repositoryPath,
         ["push", "--porcelain", "origin", `${closing.head}:refs/heads/${branch}`], signal,
         [0], undefined, undefined, false, async () => {
           await this.assertAuthority(execution, expectedOwnershipEpoch, branch, "checkpoint");
           const current = await this.observeRestrictedWorktreeClosing(execution, expectedOwnershipEpoch, execution.restrictedClosing!.scope, signal);
-          if (current.head !== closing.head || current.pendingPaths.length) throw new GitInputError("Closing checkpoint moved before publication");
+          if (current.head !== closing.head) throw new GitInputError("Closing checkpoint moved before publication");
         });
       return closing.head;
     }
@@ -415,7 +415,7 @@ export class LocalCollaborationGitService {
     const closingGuard = async () => {
       if (!execution.restrictedClosing) return;
       const fact = await this.observeRestrictedWorktreeClosing(execution, expectedOwnershipEpoch, execution.restrictedClosing.scope, signal);
-      if (fact.head !== head || fact.pendingPaths.length) throw new GitInputError("Retained closing push requires its exact clean checkpoint");
+      if (fact.head !== head) throw new GitInputError("Retained closing push requires its exact checkpoint");
     };
     await closingGuard();
     await this.assertAuthority(execution, expectedOwnershipEpoch, branch, "provider.mutate");
@@ -447,11 +447,8 @@ export class LocalCollaborationGitService {
     return this.isAncestor(ancestor, descendant, signal);
   }
 
-  /**
-   * Fail-closed preflight for a provider merge. A group branch checked out by
-   * a retained final-integration execution is frozen unless S explicitly
-   * supplies that execution's current epoch for a repair-PR fast-forward.
-   */
+  /** Validate an explicitly supplied checkout authority. Git reports any
+   * conflict with pending work when the requested synchronization runs. */
   async assertRemoteMergeTargetAvailable(
     targetBranch: string,
     checkedOutTarget?: CheckedOutMergeTargetAuthority,
@@ -472,7 +469,7 @@ export class LocalCollaborationGitService {
   /**
    * A final-integration checkout intentionally freezes its group branch while
    * its PR is unresolved. Once S has made the group terminal, detach that
-   * clean retained worktree so future provider reconciliation is no longer
+   * retained worktree so future provider reconciliation is no longer
    * blocked while every historical commit remains addressable.
    */
   async releaseFinalIntegrationWorktree(
@@ -502,10 +499,6 @@ export class LocalCollaborationGitService {
     }
     if (await this.worktreeHead(actualPath, signal) !== head) {
       throw new GitInputError("Final-integration worktree is not at the retained group head");
-    }
-    const status = await this.command(actualPath, ["status", "--porcelain"], signal);
-    if (status.stdout.trim()) {
-      throw new GitInputError("Final-integration worktree is dirty and cannot be released");
     }
     await this.command(actualPath, ["update-ref", "--no-deref", "HEAD", head], signal);
     if (await this.checkedOutWorktree(branch, signal)) {
@@ -1214,10 +1207,6 @@ export class LocalCollaborationGitService {
     );
     const worktree = this.worktreeFor(execution);
     await this.observeWorktree(execution, branch, signal);
-    const status = await this.command(worktree, ["status", "--porcelain=v1"], signal);
-    if (status.stdout.trim()) {
-      throw new GitInputError("Execution worktree must be clean before conflict preparation");
-    }
     const sourceBranch = source.kind === "main"
       ? MAIN_BRANCH
       : this.groupBranch(source.groupRunId);
@@ -1609,26 +1598,7 @@ export class LocalCollaborationGitService {
     authority: CheckedOutMergeTargetAuthority | undefined,
     signal?: AbortSignal
   ): Promise<void> {
-    // Trusted PR synchronization may fast-forward the permanent, read-only
-    // Main checkout, but must never discard uncommitted or foreign work.
-    if (this.worktreeMode === "agent" && branch === MAIN_BRANCH &&
-      path.resolve(checkedOutPath) === this.canonicalAgentWorktree("main") && !authority) {
-      await this.prepareAgentManagementWorkspace("main", signal);
-      const pending = (await this.command(checkedOutPath, ["status", "--porcelain=v1", "--untracked-files=all"], signal)).stdout.trimEnd();
-      if (pending.trim()) {
-        const entries = pending.split(/\r?\n/).slice(0, 100).map(line => line.slice(0, 1024));
-        throw new GitInputError(`Main management worktree must be clean before synchronization. Main must review and preserve its pending files before retrying this merge. Pending entries:\n${entries.join("\n")}`, {
-          blocker: "TARGET_WORKTREE_DIRTY", targetBranch: MAIN_BRANCH, targetAgentId: "main", pendingEntries: entries,
-          recovery: "Return this blocker to Main to handle its own uncommitted files; retain the original PR and do not discard files or repeat the merge unchanged."
-        });
-      }
-      return;
-    }
-    if (!authority) {
-      throw new GitInputError(
-        "Merge target is frozen while its final-integration worktree is retained"
-      );
-    }
+    if (!authority) return;
     const { execution, ownershipEpoch } = authority;
     if (
       execution.purpose !== "final-integration" ||
@@ -1639,14 +1609,6 @@ export class LocalCollaborationGitService {
       throw new GitInputError("Checked-out merge target authority does not match its worktree");
     }
     await this.assertAuthority(execution, ownershipEpoch, branch, "merge.integrate");
-    const status = await this.command(
-      checkedOutPath,
-      ["status", "--porcelain=v1"],
-      signal
-    );
-    if (status.stdout.trim()) {
-      throw new GitInputError("Checked-out merge target worktree must be clean before synchronization");
-    }
   }
 
   private async assertAuthority(
@@ -1722,12 +1684,6 @@ export class LocalCollaborationGitService {
           worktreePath, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal, [0, 1]
         )).stdout.trim();
         if (currentBranch !== branch) {
-          const status = await this.command(
-            worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"], signal
-          );
-          if (status.stdout.trim()) {
-            throw new GitInputError("Agent worktree is dirty; branch switch would risk unfinished work");
-          }
           const baseSha = (await this.command(
             this.repositoryPath, ["rev-parse", "--verify", `${baseRef}^{commit}`], signal
           )).stdout.trim();

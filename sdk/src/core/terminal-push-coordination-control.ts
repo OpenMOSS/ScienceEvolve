@@ -6,7 +6,7 @@ import type { CollaborationStateStore as CollaborationStateDatabase } from "./co
 import type { TerminalPushCoordinatorTurn } from "./collaboration-state/contracts.js";
 import type { ProjectStorage } from "./storage.js";
 import type { ControlMcpRequest, ProjectState, TerminalPushCoordinationScope } from "./types.js";
-import { terminalPushCoordinationActionAllowed } from "./internal/terminal-push-coordination.js";
+import { validateDisplayArtifacts } from "./display-artifact-validation.js";
 
 /** Internal mechanism only: the original manager interprets the evidence,
  * submits its own finish/memory and chooses a bounded coordination action.
@@ -59,11 +59,26 @@ export async function terminalPushCoordinationControlAuthorityFactory(options: {
         throw new Error("User intervention is disabled by this Workflow");
       }
       if (envelope.projectId !== turn.projectId || envelope.agent !== turn.agentId || envelope.invocationId !== turn.invocationId ||
-        activeCapabilityHash !== capabilityHash || envelope.stateVersion !== turn.coordinatorEpoch || envelope.capabilityHash !== capabilityHash || envelope.expiresAt !== undefined ||
-        !terminalPushCoordinationActionAllowed(scope, envelope.action))
+        activeCapabilityHash !== capabilityHash || envelope.stateVersion !== turn.coordinatorEpoch || envelope.capabilityHash !== capabilityHash || envelope.expiresAt !== undefined)
         throw new Error("Historical coordination action lost its exact live manager authority");
       await assertInputCurrent();
-      await options.database.stageTerminalPushCoordinatorAction({ ...turn, controlCapabilityHash: capabilityHash, envelope });
+      if (envelope.action.tool === "select_display") {
+        const display = { primary: envelope.action.primary, items: envelope.action.items ?? [] };
+        await validateDisplayArtifacts(options.storage, options.state, display);
+        options.state.display = display;
+        await options.storage.saveState(options.state);
+        return { status: "recorded", display };
+      }
+      if (envelope.action.tool === "publish_artifact") {
+        throw new Error("Artifact publication requires an owning delivery execution; this invocation has no bound delivery execution");
+      }
+      if (["finish_task", "coordinate_agent_receipt", "request_user"].includes(envelope.action.tool)) {
+        await options.database.stageTerminalPushCoordinatorAction({ ...turn, controlCapabilityHash: capabilityHash, envelope });
+      } else {
+        await options.database.appendEvent({ projectId: turn.projectId, agentId: turn.agentId, invocationId: turn.invocationId,
+          requestId: `receipt-action:${turn.invocationId}:${envelope.callId}`, type: "agent.terminal_push_coordinator.action.requested",
+          payload: { incidentId: turn.incidentId, envelope } });
+      }
       if (envelope.action.tool === "finish_task") {
         const current = (await options.database.terminalPushCoordinatorTurns(turn.projectId)).find(entry => entry.invocationId === turn.invocationId)!;
         const saved = await options.storage.saveTerminalPushCoordinatorCompletion(current);

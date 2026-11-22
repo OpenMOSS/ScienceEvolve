@@ -50,6 +50,7 @@ export interface ScopedWorkflowManagement {
   resolveRootRoute?(group: ScopedGroupRunRecord, nodeRunId: string, candidates: readonly string[], output: string): Promise<void>;
   completeGroup?(group: ScopedGroupRunRecord): Promise<void>;
   recoverGroup?(group: ScopedGroupRunRecord, arrivalRequestIds: string[]): Promise<void>;
+  assistMember?(group: ScopedGroupRunRecord, request: import("./collaboration-state/contracts.js").CollaborationEvent): Promise<void>;
   recoverGlobal?(root: ScopedGroupRunRecord): Promise<void>;
   continueSkipped?(group: ScopedGroupRunRecord, arrivalRequestId: string): Promise<void>;
 }
@@ -60,7 +61,7 @@ export class ScopedManagementDeferredError extends Error {
 
 function isScopedManagementOccupancy(error: unknown): error is CollaborationStateError {
   return error instanceof CollaborationStateError && error.code === "ACTIVE_NODE_CONFLICT" &&
-    error.details.reason === "management-occupancy";
+    ["management-occupancy", "native-occupancy"].includes(String(error.details.reason));
 }
 
 function stableIdentity(prefix: string, parts: string[]): string {
@@ -89,6 +90,12 @@ export class ScopedWorkflowRuntime {
       this.finals = new ScopedGroupFinalIntegrator(database, git, options.invokeFinalAgent);
     }
   }
+
+  private wakeGeneration = 0;
+  private wakePump?: () => void;
+
+  /** A durable explicit dispatch wakes the graph pump while its caller continues. */
+  wake(): void { this.wakeGeneration++; this.wakePump?.(); }
 
   activateGroup(input: ActivateRuntimeScopedGroupInput): Promise<ActivatedScopedGroup> {
     return this.withProject(input.projectId, async () => this.performActivation(input));
@@ -316,6 +323,7 @@ export class ScopedWorkflowRuntime {
     };
     try {
       while (true) {
+        const generation = this.wakeGeneration;
         input.signal?.throwIfAborted();
         await this.assertRepository(input.projectId, input.repository);
         await this.options.beforeAdmission?.();
@@ -325,6 +333,11 @@ export class ScopedWorkflowRuntime {
           if (await this.isDescendant(input.projectId, group, root.id)) groups.push(group);
         }
         const groupById = new Map(groups.map((group) => [group.id, group]));
+        if (this.management?.assistMember) for (const group of groups) {
+          for (const request of await this.database.pendingLeaderRequests(input.projectId, group.id)) {
+            await schedule(`leader-request:${request.requestId}`, group.id, () => this.management!.assistMember!(group, request));
+          }
+        }
         const unplanned = new Set<string>();
         if (this.management) for (const group of groups) {
           if (group.status !== "running" || (await this.database.scopedGroupPlan(input.projectId, group.id))) continue;
@@ -342,11 +355,6 @@ export class ScopedWorkflowRuntime {
         for (const arrival of arrivals) {
           const group = groupById.get(arrival.groupRunId)!;
           if (group.status !== "running" || arrival.status !== "queued" || unplanned.has(group.id)) continue;
-          const managementBlocked = await this.database.scopedManagementBlocksBusiness(input.projectId, group.id);
-          if (managementBlocked && !issues.some((issue) => issue.arrivalRequestId === arrival.requestId && issue.kind === "waiting_for_management")) {
-            issues.push({ kind: "waiting_for_management", groupRunId: group.id, arrivalRequestId: arrival.requestId,
-              message: "Scoped arrival is queued behind an overlapping management turn; it will resume after the turn releases" });
-          }
           if ((await this.database.scopedGroupIssues(input.projectId)).some((issue) => issue.groupRunId === group.id &&
             issue.kind === "initialization" && issue.arrivalRequestId === arrival.requestId)) continue;
           if (!arrival.pathContext && (await this.database.scopedGroupWorkflow(input.projectId, group.id)).loops?.length) {
@@ -370,9 +378,6 @@ export class ScopedWorkflowRuntime {
           }
           if (arrival.targetKind === "collaboration") {
             await schedule(`child:${arrival.requestId}`, group.id, async () => {
-              if ((await this.database.scopedManagementBlocksBusiness(input.projectId, group.id))) {
-                throw new ScopedManagementDeferredError();
-              }
               await this.performActivation({ projectId: input.projectId,
                 groupRunId: stableIdentity("scoped-group", [input.projectId, arrival.requestId]), groupId: arrival.childGroupId!,
                 activationRequestId: arrival.requestId, workflowRevision: group.workflowRevision,
@@ -404,9 +409,6 @@ export class ScopedWorkflowRuntime {
           const continuation = await this.database.scopedAgentReportContinuation(input.projectId, execution.id, execution.ownershipEpoch);
           await schedule(`worker:${execution.id}:${execution.ownershipEpoch}${continuation
             ? `:coordinated:${continuation.envelope.invocationId}:${continuation.envelope.callId}` : ""}`, group.id, async () => {
-            if ((await this.database.scopedManagementBlocksBusiness(input.projectId, group.id))) {
-              throw new ScopedManagementDeferredError();
-            }
             if (!repository) {
               if (!this.agents.prepareWorkspaceDelivery || !this.options.workspace) throw new Error("Workspace delivery runner is unavailable");
               const delivery = await this.agents.prepareWorkspaceDelivery({ projectId: input.projectId, executionId: execution.id,
@@ -501,23 +503,30 @@ export class ScopedWorkflowRuntime {
             continue;
           }
           if ((await this.database.scopedGroupIssues(input.projectId)).some((issue) => issue.groupRunId === group.id && issue.kind === "final")) continue;
-          await schedule(`final:${group.id}:${(await this.database.scopedGroupIssueGeneration(input.projectId, group.id))}:${integrationRequest?.integrationOwnerAgentId ?? "legacy"}`, group.id, async () => {
-            if ((await this.database.scopedManagementBlocksBusiness(input.projectId, group.id))) {
-              throw new ScopedManagementDeferredError();
-            }
+          await schedule(`final:${group.id}:${(await this.database.scopedGroupIssueGeneration(input.projectId, group.id))}:${integrationRequest?.integrationOwnerAgentId ?? "legacy"}:${(await this.database.scopedFinalIntegration(input.projectId, group.id))?.ownershipEpoch ?? 0}`, group.id, async () => {
             const result = await this.atTarget(input.projectId, gitDeliveryRef(group.integrationTarget), async () => this.finals!.integrate({
               projectId: input.projectId, groupRunId: group.id, repository, signal: input.signal,
               deferCompletion: Boolean(this.management),
               integrationOwnerAgentId: integrationRequest?.integrationOwnerAgentId,
               selectedWeakTarget: group.parentArrivalRequestId
                 ? (await this.database.scopedArrivalRouteDecision(input.projectId, group.parentArrivalRequestId))?.targetNodeId : undefined })).catch(async (error) => {
+                  if (integrationRequest && !input.signal?.aborted && !(error instanceof ScopedManagementDeferredError)) {
+                    const dispatch = (await this.database.scopedAcceptedLeaderActions(input.projectId, group.id))
+                      .filter(entry => entry.envelope.action.tool === "request_group_integration").at(-1)?.envelope;
+                    await this.database.appendEvent({ projectId: input.projectId, agentId: group.leaderAgentId,
+                      ...(dispatch ? { invocationId: dispatch.invocationId } : {}),
+                      type: "scoped.dispatch.failed", payload: { groupRunId: group.id, targetAgentId: integrationRequest.integrationOwnerAgentId,
+                        ...(dispatch ? { requestId: `scoped-leader-action:${dispatch.invocationId}:${dispatch.callId}` } : {}),
+                        reason: error instanceof Error ? redactTrace(error.message) : "Final delivery failed" } });
+                  }
                   if (this.management && !input.signal?.aborted && !(error instanceof ScopedManagementDeferredError)) await this.database.recordScopedGroupIssue({ projectId: input.projectId, groupRunId: group.id, kind: "final",
                     reason: error instanceof Error ? redactTrace(error.message) : "Canonical final Git delivery failed" });
                   throw error;
                 });
             if (result.status === "waiting_for_pull") issues.push({ kind: "waiting_for_pull", groupRunId: group.id,
               message: `Group final PR ${result.pullRequest.providerNumber} remains ${result.pullRequest.status}` });
-            if (result.status === "waiting_for_pull" && this.management && ["conflicted", "closed"].includes(result.pullRequest.status))
+            if ((result.status === "waiting_for_pull" || result.status === "awaiting_completion") && result.pullRequest &&
+              this.management && ["conflicted", "closed"].includes(result.pullRequest.status))
               await this.database.recordScopedGroupIssue({ projectId: input.projectId, groupRunId: group.id, kind: "final", reason: `Canonical final PR ${result.pullRequest.providerNumber} is ${result.pullRequest.status}` });
             await this.onProgress?.(input.projectId);
           });
@@ -576,7 +585,13 @@ export class ScopedWorkflowRuntime {
         if (!pending.size) break;
         // A fast path can release its next node while an independent native
         // turn is still running. Waiting for an entire wave would lose that.
-        await Promise.race(pending.values());
+        if (this.wakeGeneration !== generation) continue;
+        try {
+          await Promise.race([...pending.values(), new Promise<void>(resolve => {
+            this.wakePump = resolve;
+            if (this.wakeGeneration !== generation) resolve();
+          })]);
+        } finally { this.wakePump = undefined; }
       }
     } finally {
       // Never return/lose authority while any launched phase is still live,
@@ -612,8 +627,7 @@ export class ScopedWorkflowRuntime {
         continue;
       }
       const arrival = finalArrivals.find((item) => item.requestId === issue.arrivalRequestId);
-      if (arrival?.status === "queued" && ["running", "integrating"].includes(group.status) &&
-        (await this.database.scopedManagementBlocksBusiness(input.projectId, group.id))) finalIssues.push(issue);
+      if (arrival?.status === "queued" && ["running", "integrating"].includes(group.status)) finalIssues.push(issue);
     }
     return { status: groupRun.status === "completed" ? "completed" : "waiting", groupRun, issues: finalIssues };
   }

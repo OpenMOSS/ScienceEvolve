@@ -107,6 +107,9 @@ export function controlResultDisplayText(envelope: ControlActionEnvelope, result
   if (envelope.action.tool === "apply_workflow" && result !== undefined) {
     return `${receiptId ? `${controlResultMarker(receiptId)}\n` : ""}Workflow adjustment: ${JSON.stringify(result)}`;
   }
+  if (envelope.action.tool === "request_group_integration" && result && typeof result === "object" && "status" in result) {
+    return `${receiptId ? `${controlResultMarker(receiptId)}\n` : ""}Integration dispatch result: ${JSON.stringify(result)}. Queued is a durable execution request, not proof that the Agent started or that Git succeeded. The execution timeline and subsequent coordination results report actual start, return or failure.`;
+  }
   const summary = agentGitResultText(envelope.action.tool, result);
   return `${summary}${summary ? "\n" : ""}${controlResultText(envelope, result, receiptId)}\nControl-action staging and atomic invocation commit refer to internal control records, not Git staging, automatic Git commits, or successful business operations. Inspect the actual provider result for the Git outcome.`;
 }

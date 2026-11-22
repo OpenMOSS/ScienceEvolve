@@ -132,13 +132,15 @@ export class MainSourceWorkspaceStore {
     try { await fs.lstat(path.join(source, ".git")); gitMetadata = true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     const tracked = new Map<string, "100644" | "100755">();
+    const conflicted = new Set<string>();
     if (gitMetadata) {
       const top = (await readonlyGit(source, ["rev-parse", "--show-toplevel"], signal)).toString("utf8").trim();
       if (await fs.realpath(top) !== source) throw new Error("Source Git directory must be the exact working-tree root");
       const text = new TextDecoder("utf-8", { fatal: true }).decode(await readonlyGit(source, ["ls-files", "--stage", "-z"], signal));
       for (const line of text.split("\0").filter(Boolean)) {
         const match = /^(\d+) [0-9a-f]+ (\d)\t(.+)$/.exec(line);
-        if (!match || match[2] !== "0") throw new Error("Source Git index has unresolved/conflicting entries");
+        if (!match) throw new Error("Source Git index contains a malformed entry");
+        if (match[2] !== "0") conflicted.add(match[3]!);
         if (!["100644", "100755"].includes(match[1]!)) {
           if (!options.files || options.files.includes(match[3]!)) throw new Error("Source symlinks/submodules require an explicit import strategy");
           continue;
@@ -159,7 +161,7 @@ export class MainSourceWorkspaceStore {
       const sha256 = hash(bytes), blob = path.join(directory, "blobs", sha256);
       try { await fs.writeFile(blob, bytes, { flag: "wx", mode: 0o600 }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-      entries.push({ path: name, sha256, size: bytes.length, mode: tracked.get(name) ?? (executable ? "100755" : "100644") });
+      entries.push({ path: name, sha256, size: bytes.length, mode: conflicted.has(name) ? (executable ? "100755" : "100644") : tracked.get(name) ?? (executable ? "100755" : "100644") });
     }
     validateEntries(entries);
     const manifest: Manifest = { schemaVersion: 1, files: entries };

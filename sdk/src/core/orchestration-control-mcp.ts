@@ -9,14 +9,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 import type { ControlAction, ControlActionEnvelope, AgentName, DisplayItem, CollaborationControlScope, WorkflowNodeId, TerminalPushObservationScope, TerminalPushCoordinationScope } from "./types.js";
-import { assertTerminalPushObservationControl, terminalPushObservationActionAllowed } from "./internal/terminal-push-observation.js";
-import { assertTerminalPushCoordinationControl, terminalPushCoordinationActionAllowed } from "./internal/terminal-push-coordination.js";
-import { assertWorktreeClosingControl, worktreeClosingActionAllowed } from "./internal/worktree-closing.js";
+import { assertTerminalPushObservationControl } from "./internal/terminal-push-observation.js";
+import { assertTerminalPushCoordinationControl } from "./internal/terminal-push-coordination.js";
+import { assertWorktreeClosingControl } from "./internal/worktree-closing.js";
 import type { MainCapabilitySnapshot } from "./internal/shared/contracts.js";
 import { AUTHORITATIVE_WORKFLOW_REFERENCES, CONTROL_BRIDGE_PROGRESS_PROTOCOL, type ControlActionRejection } from "./orchestration-control-bridge.js";
 import type { RuntimeMcpToolDefinition } from "./harness-runtime/contracts.js";
 import { containsCredentialMaterial, redactTrace, safeGitArtifactRelativePath, safeProjectRelativePath } from "./utils.js";
-import { controlDecisionsConflict, isControlDecision } from "./orchestration-control-decisions.js";
 import { sameControlActionRequest } from "./control-action-identity.js";
 import { controlResultDisplayText } from "./control-result-receipts.js";
 import { agentGitResultSummary } from "./agent-git-result.js";
@@ -224,18 +223,12 @@ function assertCollaborationScope(value: unknown): asserts value is Collaboratio
         if (!option || !(scope.failedArrivalRequestIds as string[]).includes(option.arrivalRequestId) ||
           !Array.isArray(option.allowedOperations) || new Set(option.allowedOperations).size !== option.allowedOperations.length ||
           option.allowedOperations.some((operation: unknown) => typeof operation !== "string" || !(scope.role === "scoped-main" ? ["retry", "skip"] : ["retry", "escalate", "close_worktree"]).includes(operation) ||
-            operation === "close_worktree" && !(scope.closingArrivalRequestIds as string[] | undefined)?.includes(option.arrivalRequestId) ||
-            scope.worktreeClosingOnly && !["close_worktree", "escalate"].includes(operation)) ||
+            operation === "close_worktree" && !(scope.closingArrivalRequestIds as string[] | undefined)?.includes(option.arrivalRequestId)) ||
           !Array.isArray(option.repairNodeIds) || option.repairNodeIds.some((id: unknown) => typeof id !== "string" || !id || id.length > 256) ||
           !option.blockedOperations || typeof option.blockedOperations !== "object" || Array.isArray(option.blockedOperations) ||
           Object.values(option.blockedOperations).some(reason => typeof reason !== "string"))
           throw new Error("Recovery options exceed the current collaboration role or exact failure scope");
       }
-    }
-    if (scope.worktreeClosingOnly !== undefined && (scope.worktreeClosingOnly !== true || scope.role !== "scoped-leader" ||
-      scope.allowReconfiguration !== false || (scope.memberNodeIds as string[]).length || (scope.routeCandidates as string[]).length ||
-      scope.sourceArrivalRequestId !== undefined || scope.sourceOuterNodeRunId !== undefined)) {
-      throw new Error("Completed group closing cannot carry business planning, routing or reconfiguration authority");
     }
     if (typeof scope.allowReconfiguration !== "boolean" || scope.executionId !== undefined || scope.taskId !== undefined ||
       scope.ownershipEpoch !== undefined) throw new Error("scoped Leader cannot carry business ownership");
@@ -361,19 +354,17 @@ function capabilityFromEnvironment(): CapabilityContext {
 }
 
 export function toolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[] {
+  const currentMain = context.agent === "main" && context.kind === "main";
   const userTools = context.mainConversation ? [replyToUserTool()] : [];
   if (context.mainConversation === "turn") return [...userTools, ...(mainCanReconfigure(context) ? [applyWorkflowTool(true)] : []), ...(context.searchTree ? searchTreeTools() : []),
-    ...(context.projectState ? projectStateTools(context.projectStateReconciliation !== false, false) : [])];
+    ...(context.projectState ? projectStateTools(currentMain && context.projectStateReconciliation !== false, false, currentMain) : [])];
   if (context.mainAssistance === "reply") return [...mainAssistanceTools(), ...userTools];
-  const currentMain = context.terminalPushCoordination ? context.terminalPushCoordination.role === "main"
-    : context.collaboration ? context.collaboration.role === "scoped-main"
-      : context.kind === "main" && !context.worktreeClosing && !context.terminalPushObservation;
   return [...userTools, ...(context.mainAssistance ? mainAssistanceTools() : []), ...(context.workflowGate ? workflowGateTools() : []), ...(context.searchTree ? searchTreeTools() : []), ...(context.nativeBackgroundJobs && context.projectState ? [nativeBackgroundJobTool()] : []), ...controlToolsFor(context), ...(context.projectState ? projectStateTools(currentMain && context.projectStateReconciliation !== false,
-    context.collaboration?.role === "scoped-leader") : [])];
+    context.collaboration?.role === "scoped-leader", currentMain) : [])];
 }
 
 function mainCanReconfigure(context: CapabilityContext): boolean {
-  return context.kind === "main" && (context.mainCapabilities?.canReconfigure ??
+  return context.agent === "main" && context.kind === "main" && (context.mainCapabilities?.canReconfigure ??
     (context.allowAgentOrchestrationReconfiguration === true || context.allowWorkflowReconfiguration === true));
 }
 
@@ -409,69 +400,7 @@ function nativeBackgroundJobTool(): RuntimeMcpToolDefinition {
 }
 
 function controlToolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[] {
-  if (context.worktreeClosing !== undefined) {
-    assertWorktreeClosingControl(context);
-    return [
-      { ...finishTaskTool(), description: "Record your own separate worktree closing supplement and optional memory. The original report, business completion and Memory remain immutable. This receipt does not close the issue, release the next task, or replace actual delivery and native Stop." },
-      ...agentGitTools().filter(tool => !["git_prepare_conflict", "git_log", "git_show", "git_diff", "git_revert"].includes(tool.name)).map(tool => {
-        if (tool.name === "git_push") return { ...tool,
-          description: "Explicitly checkpoint only the original Leader-authorized pending files with your own reason, then publish the exact clean closing SHA on the original branch. Original report A is immutable; any distinct B requires its own matching delivery. An unchanged A needs no empty commit.",
-          inputSchema: { ...tool.inputSchema, required: ["callId", "reason"], properties: {
-            callId: CALL_ID_SCHEMA, reason: { type: "string", minLength: 1, maxLength: 8192 }
-          } } };
-        if (tool.name === "git_reconcile_push") return { ...tool,
-          description: "Observe only your selected push from this closing invocation's separate journal. Retry=true explicitly resends that original exact SHA after fresh authority and worktree checks; no new checkpoint is made. Inspect the real result yourself.",
-          inputSchema: { ...tool.inputSchema, properties: { callId: CALL_ID_SCHEMA,
-            operationId: { type: "string", minLength: 1, maxLength: 1024 }, retry: { type: "boolean" },
-            historical: { type: "boolean", const: false }
-          } } };
-        if (tool.name === "git_get_operation") return { ...tool,
-          description: "Read one exact operation from this closing invocation's separate journal. Original business operations and reports are retained separately. This read does not retry, finalize, or settle the closing issue." };
-        if (tool.name === "github_get_pr") return { ...tool,
-          description: "Observe only the current original owner's exact closing PR; historical repair sources do not grant closing business authority.",
-          inputSchema: { type: "object", additionalProperties: false, required: ["callId"], properties: {
-            callId: CALL_ID_SCHEMA, providerNumber: { type: "integer", minimum: 1 }
-          } } };
-        return tool;
-      })
-    ];
-  }
-  if (context.terminalPushCoordination !== undefined) {
-    assertTerminalPushCoordinationControl(context);
-    const scope = context.terminalPushCoordination;
-    const tools: RuntimeMcpToolDefinition[] = [finishTaskTool(), {
-      name: "coordinate_agent_receipt",
-      description: "Decide only the assigned Agent receipt issue after reading its actual evidence and handoff. Retry authorizes that Agent to inspect its receipt again; escalate passes your own rationale to your direct parent coordinator. The system transports your decision after your own finish_task, actual handoff and native Stop. You coordinate; you do not perform that Agent's work, push, create a PR, choose a business route or wake arbitrary Agents.",
-      inputSchema: { type: "object", additionalProperties: false, required: ["callId", "incidentId", "operation", "rationale"], properties: {
-        callId: CALL_ID_SCHEMA, incidentId: { type: "string", const: scope.incidentId },
-        operation: { type: "string", enum: scope.role === "main" ? ["retry"] : ["retry", "escalate"] },
-        rationale: { type: "string", minLength: 1, maxLength: MAX_TEXT }
-      } }
-    }];
-    if (context.allowUserIntervention && scope.canRequestUser) tools.push({ name: "request_user",
-      description: "As the assigned Main coordinator, request the user's decision about this exact unresolved issue. Explain the actual evidence and blocker yourself; finish_task and your handoff are still required. This does not complete or reconfigure the project.",
-      inputSchema: { type: "object", additionalProperties: false, required: ["callId", "message", "rationale"], properties: {
-        callId: CALL_ID_SCHEMA, message: { type: "string", minLength: 1, maxLength: MAX_TEXT },
-        rationale: { type: "string", minLength: 1, maxLength: MAX_TEXT }, context: { type: "string", maxLength: MAX_TEXT }
-      } }
-    });
-    return tools.map(tool => ({ ...tool, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false } }));
-  }
-  if (context.terminalPushObservation !== undefined) {
-    assertTerminalPushObservationControl(context);
-    return [finishTaskTool(), {
-      name: "git_reconcile_push",
-      description: "Read the actual remote result of your completed task's exact retained push. Set historical=true and inspect the returned provider evidence yourself. This turn cannot push, retry, create or merge a PR, or reopen business work. Submit your own finish_task receipt and concise handoff after inspecting the result, including an unresolved blocker when necessary.",
-      inputSchema: { type: "object", additionalProperties: false, required: ["callId", "operationId", "historical"], properties: {
-        callId: CALL_ID_SCHEMA,
-        operationId: { type: "string", enum: [context.terminalPushObservation.operationId] },
-        historical: { type: "boolean", const: true },
-        retry: { type: "boolean", const: false }
-      } },
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
-    }];
-  }
-  if (context.collaboration) return [finishTaskTool(), ...collaborationToolsFor(context.collaboration, context.allowUserIntervention)].map((tool) => ({
+  if (context.collaboration) return [finishTaskTool(), ...collaborationToolsFor(context.collaboration, context.allowUserIntervention, context.agent === "main" && context.kind === "main")].map((tool) => ({
     ...tool,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
   }));
@@ -491,12 +420,19 @@ function controlToolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[]
     (context.scopedAgentRouting === true ? routeCandidates.length > 0 : routeCandidates.length >= 2 &&
       routeCandidates.every((candidate) => candidate !== "finish" && candidate !== "main")));
   const tools: RuntimeMcpToolDefinition[] = [finishTaskTool()];
-  if (context.allowAgentGitActions === true && context.kind === "worker") {
+  if (context.terminalPushCoordination) tools.push({ name: "coordinate_agent_receipt",
+    description: "Explicitly request retry or escalation for the retained receipt incident. Inspect its actual evidence and choose the next action yourself.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["callId", "incidentId", "operation", "rationale"], properties: {
+      callId: CALL_ID_SCHEMA, incidentId: { type: "string", const: context.terminalPushCoordination.incidentId },
+      operation: { type: "string", enum: ["retry", "escalate"] }, rationale: { type: "string", minLength: 1, maxLength: MAX_TEXT }
+    } }
+  });
+  if (context.allowAgentGitActions === true) {
     tools.push(...agentGitTools());
   }
   if (canRoute) tools.push({
     name: "route_to_agent",
-    description: "Commit this invocation's sole routing decision after the work and handoff are complete.",
+    description: "Choose the next configured route. A later explicit route updates a pending choice; already started work remains recorded and must be stopped explicitly if necessary.",
     inputSchema: { type: "object", additionalProperties: false, required: ["callId", "target", ...(context.kind === "main" && !(context.tasklessRouteTargets?.length) ? ["assignment"] : context.kind === "worker" ? ["rationale"] : [])], properties: { callId: CALL_ID_SCHEMA, target: { type: "string", enum: routeCandidates }, assignment: { type: "string", maxLength: 20_000, description: "Bounded role-specific scope only. Reference the canonical User requirement for datasets, dependencies, numeric facts, filenames, sizes, and output constraints; never restate or alter them here." }, rationale: { type: "string" }, context: { type: "string" }, successCriteria: { type: "array", items: { type: "string" } } } }
   });
   tools.push({
@@ -528,15 +464,8 @@ function controlToolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[]
   });
   // These controls are confined to the invocation's validated capability and
   // project workspace; explicit hints avoid an impossible headless prompt.
-  return tools.filter((tool) => !context.canonicalFinalIntegration ||
-    ["finish_task", "git_get_operation", "github_create_pr", "github_get_pr", "github_merge_pr", "github_update_pr", "github_close_pr"].includes(tool.name)).map((tool) => ({
+  return tools.map((tool) => ({
     ...tool,
-    ...(context.canonicalFinalIntegration && tool.name === "github_get_pr" ? {
-      description: "Observe only this canonical delivery's exact owned PR; historical repair sources belong to a new business task.",
-      inputSchema: { type: "object", additionalProperties: false, required: ["callId"], properties: {
-        callId: CALL_ID_SCHEMA, providerNumber: { type: "integer", minimum: 1 }
-      } }
-    } : {}),
     annotations: { readOnlyHint: ["git_get_operation", "git_log", "git_show", "git_diff", "github_get_pr"].includes(tool.name), destructiveHint: false, openWorldHint: false }
   }));
 }
@@ -671,17 +600,17 @@ export function visibleToolNamesForPrompt(
 
 function recoveryOperations(scope: Extract<CollaborationControlScope, { role: "scoped-leader" | "scoped-main" }>, arrivalRequestId: string, useHints = true): string[] {
   if (useHints && scope.recoveryOptions) return scope.recoveryOptions.find(option => option.arrivalRequestId === arrivalRequestId)?.allowedOperations ?? [];
-  return scope.role === "scoped-main" ? ["retry", "skip"] : [...(scope.worktreeClosingOnly ? [] : ["retry"]), "escalate",
+  return scope.role === "scoped-main" ? ["retry", "skip"] : ["retry", "escalate",
     ...(scope.closingArrivalRequestIds?.includes(arrivalRequestId) ? ["close_worktree"] : [])];
 }
 
-function collaborationToolsFor(scope: CollaborationControlScope, allowUserIntervention: boolean): RuntimeMcpToolDefinition[] {
+function collaborationToolsFor(scope: CollaborationControlScope, allowUserIntervention: boolean, isMain: boolean): RuntimeMcpToolDefinition[] {
   if (scope.role === "scoped-leader" || scope.role === "scoped-main") {
     const identity = { groupRunId: { type: "string", const: scope.groupRunId },
       coordinatorEpoch: { type: "integer", const: scope.coordinatorEpoch } };
     const actionableIds = scope.failedArrivalRequestIds.filter(id => recoveryOperations(scope, id).length > 0);
     const operations = [...new Set(actionableIds.flatMap(id => recoveryOperations(scope, id)))];
-    const tools: RuntimeMcpToolDefinition[] = scope.role === "scoped-main" || scope.worktreeClosingOnly ? [] : [{ name: "assign_group_tasks",
+    const tools: RuntimeMcpToolDefinition[] = scope.role === "scoped-main" ? [] : [{ name: "assign_group_tasks",
       description: "Plan bounded instructions for this group's direct graph nodes. taskId is a node reference, not a new task or parallel edge. The existing graph and FIFO own execution.",
       inputSchema: { type: "object", additionalProperties: false, required: ["callId", "groupRunId", "coordinatorEpoch", "tasks"],
         properties: { callId: CALL_ID_SCHEMA, ...identity, tasks: { type: "array", minItems: 1,
@@ -691,15 +620,12 @@ function collaborationToolsFor(scope: CollaborationControlScope, allowUserInterv
       inputSchema: { type: "object", additionalProperties: false, required: ["callId", "target", "rationale"],
         properties: { callId: CALL_ID_SCHEMA, target: { type: "string", enum: scope.routeCandidates }, rationale: { type: "string", maxLength: MAX_TEXT },
           assignment: { type: "string", maxLength: MAX_TEXT } } } });
-    if (scope.allowReconfiguration) tools.push({ name: "apply_workflow", description: (scope.role === "scoped-main"
-      ? "Apply the formal global workflow.json proposal using Main's existing configuration authority. Runtime and active execution fields remain locked."
-      : "Apply the formal workflow.json proposal only to this group. Runtime fields, outside graphs and existing child internals are locked.") + " Preserve the original draft and baseHash/baseVersion; read the read-only .scienceevolve/workflow-current.json reference and explicitly reconcile a stale or unversioned draft before resubmitting. Submit only the bound workflow.json proposal.",
+    if (isMain && scope.allowReconfiguration) tools.push({ name: "apply_workflow", description: "Apply Main's formal global workflow.json proposal, including during group management. Whether to adjust is Main's decision. Runtime and active execution fields remain locked. Preserve the original draft and baseHash/baseVersion; read the read-only .scienceevolve/workflow-current.json reference and explicitly reconcile a stale or unversioned draft before resubmitting. Submit only the bound workflow.json proposal.",
       inputSchema: { type: "object", additionalProperties: false, required: ["callId", "path", "rationale"],
         properties: { callId: CALL_ID_SCHEMA, path: { type: "string", const: "workflow.json" }, rationale: { type: "string", maxLength: MAX_TEXT } } } });
     if (actionableIds.length) tools.push({ name: "coordinate_group_task", description: (scope.role === "scoped-main"
       ? "Resolve an exact retained failure assigned to Main through scoped escalation or the formal direct key-state entry: retry its retained branch/session or approve skipping a failed Worker, including its mechanism issue, after native Stop and settlement of its original Git operations. Skip excludes its report from successful evidence; it preserves PR/Git history and requires an explicit local continuation. It cannot skip a group/final-integration incident or discard unknown Git outcomes. This global Main authority is distinct from a local Leader role."
-      : (scope.worktreeClosingOnly ? "Coordinate only retained original-owner closing in this completed group, or escalate to the parent manager. Completed tasks and routes stay closed."
-        : "Retry a stopped failed direct-group task using its retained branch/session, or escalate to the parent manager. Leaders cannot skip tasks.") +
+      : "Retry a stopped failed direct-group task using its retained branch/session, or escalate to the parent manager. Leaders cannot skip tasks." +
         (scope.closingArrivalRequestIds?.length ? " For an explicitly identified closing arrival, close_worktree separately authorizes only its original owner/epoch and selected identified files; ordinary retry grants no closing writes." : "")) +
         (scope.recoveryOptions ? ` Current per-arrival choices: ${JSON.stringify(scope.recoveryOptions)}. Choose only that arrival's allowedOperations. Resolve blockedOperations prerequisites through the responsible original Agent. After recording decisions, finish_task and end this management turn so they can take effect.` : ""),
       inputSchema: { type: "object", additionalProperties: false,
@@ -711,12 +637,12 @@ function collaborationToolsFor(scope: CollaborationControlScope, allowUserInterv
             properties: { executionId: { type: "string", minLength: 1, maxLength: 256 }, ownershipEpoch: { type: "integer", minimum: 1 },
               paths: { type: "array", minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 4096 } } }
           } } : {}),
-          ...(scope.worktreeClosingOnly || scope.recoveryOptions && !scope.recoveryOptions.some(option => option.repairNodeIds.length) ? {} : { repairNodeId: { type: "string", minLength: 1, maxLength: 256, description: "Supply only for a final-PR conflict retry: copy an eligible repairNodeIds graph node for this arrival. Otherwise omit this optional field. This does not grant the Leader business-write authority." } }),
+          ...(scope.recoveryOptions && !scope.recoveryOptions.some(option => option.repairNodeIds.length) ? {} : { repairNodeId: { type: "string", minLength: 1, maxLength: 256, description: "Supply only for a final-PR conflict retry: copy an eligible repairNodeIds graph node for this arrival. Otherwise omit this optional field. This does not grant the Leader business-write authority." } }),
           rationale: { type: "string", maxLength: MAX_TEXT } } } });
-    if (scope.role === "scoped-leader" && !scope.worktreeClosingOnly) {
+    if (scope.role === "scoped-leader") {
       tools.push({
         name: "request_group_integration",
-        description: "After every required path reaches Finish, nominate one eligible non-leader Agent for the group's explicit final Git delivery. This records a request; it does not make the Leader perform business Git work.",
+        description: "Assign an Agent in this group, including yourself, to its final Git delivery. An explicit new request continues delivery independently of earlier automatic reminders. The receipt identifies the request; inspect execution updates for its actual launch and outcome.",
         inputSchema: { type: "object", additionalProperties: false, required: ["callId", "groupRunId", "coordinatorEpoch", "integrationOwnerAgentId"], properties: {
           callId: CALL_ID_SCHEMA, groupRunId: identity.groupRunId, coordinatorEpoch: identity.coordinatorEpoch,
           integrationOwnerAgentId: { type: "string", minLength: 1, maxLength: 128 }
@@ -724,7 +650,7 @@ function collaborationToolsFor(scope: CollaborationControlScope, allowUserInterv
       });
       tools.push({
         name: "complete_group",
-        description: "After your own finish_task receipt and the explicit final integration proof, record the group's completion summary and release its planned parent route.",
+        description: "After the final delivery task returns, record the group's actual outcome and release its planned parent route. Report incomplete Git or publication facts honestly; task return and confirmed merge are separate facts.",
         inputSchema: { type: "object", additionalProperties: false, required: ["callId", "groupRunId", "coordinatorEpoch", "output"], properties: {
           callId: CALL_ID_SCHEMA, groupRunId: identity.groupRunId, coordinatorEpoch: identity.coordinatorEpoch,
           output: { type: "string", minLength: 1, maxLength: MAX_TEXT }
@@ -834,7 +760,7 @@ async function readActions(file: string): Promise<ControlActionEnvelope[]> {
   }
 }
 
-async function stageAction(context: CapabilityContext, action: ControlAction, id: string): Promise<{ envelope: ControlActionEnvelope; result?: unknown; receiptId?: string }> {
+async function stageAction(context: CapabilityContext, action: ControlAction, id: string): Promise<{ envelope: ControlActionEnvelope; result?: unknown; receiptId?: string; reminders?: string[] }> {
   if (context.bridgePath || context.bridgePort !== undefined) {
     return stageActionOverBridge(context, action, id);
   }
@@ -860,14 +786,7 @@ async function stageAction(context: CapabilityContext, action: ControlAction, id
       if (!sameControlActionRequest(existing.action, action)) throw new Error("callId was already used for a different action");
       return { envelope: existing };
     }
-    const lockedDecision = current.find((item) => controlDecisionsConflict(item.action, action));
-    if (lockedDecision) {
-      if (sameDecision(lockedDecision.action, action)) return { envelope: lockedDecision };
-      throw new Error("the invocation decision is already locked");
-    }
-    const next = [...current, envelope].sort((left, right) =>
-      Number(isControlDecision(left.action)) - Number(isControlDecision(right.action))
-    );
+    const next = [...current, envelope];
     await fs.mkdir(path.dirname(context.stagingPath), { recursive: true });
     const temporary = `${context.stagingPath}.${process.pid}.${Date.now()}.tmp`;
     await fs.writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -914,46 +833,6 @@ function agentGitAction(name: typeof TOOL_NAMES[number], args: Record<string, un
   throw new Error("Agent Git tool is not available");
 }
 
-function sameDecision(existing: ControlAction, candidate: ControlAction): boolean {
-  if (existing.tool === "coordinate_agent_receipt" && candidate.tool === "coordinate_agent_receipt") return JSON.stringify(existing) === JSON.stringify(candidate);
-  if (existing.tool === "coordinate_group_task" && candidate.tool === "coordinate_group_task") return JSON.stringify(existing) === JSON.stringify(candidate);
-  if (existing.tool === "route_to_agent" && candidate.tool === "route_to_agent") {
-    return existing.target === candidate.target;
-  }
-  if (existing.tool === "complete_project" && candidate.tool === "complete_project") {
-    return true;
-  }
-  if (existing.tool === "request_user" && candidate.tool === "request_user") {
-    return JSON.stringify(existing) === JSON.stringify(candidate);
-  }
-  if (existing.tool === "apply_workflow" && candidate.tool === "apply_workflow") {
-    return existing.path === candidate.path;
-  }
-  if (existing.tool === "assign_group_tasks" && candidate.tool === "assign_group_tasks") {
-    return existing.groupRunId === candidate.groupRunId &&
-      existing.coordinatorEpoch === candidate.coordinatorEpoch &&
-      JSON.stringify(existing.tasks) === JSON.stringify(candidate.tasks);
-  }
-  if (existing.tool === "claim_group_task" && candidate.tool === "claim_group_task") {
-    return existing.taskId === candidate.taskId &&
-      existing.coordinatorEpoch === candidate.coordinatorEpoch;
-  }
-  if (
-    existing.tool === "request_group_integration" &&
-    candidate.tool === "request_group_integration"
-  ) {
-    return existing.groupRunId === candidate.groupRunId &&
-      existing.coordinatorEpoch === candidate.coordinatorEpoch &&
-      existing.integrationOwnerAgentId === candidate.integrationOwnerAgentId;
-  }
-  if (existing.tool === "complete_group" && candidate.tool === "complete_group") {
-    return existing.groupRunId === candidate.groupRunId &&
-      existing.coordinatorEpoch === candidate.coordinatorEpoch &&
-      existing.output === candidate.output;
-  }
-  return false;
-}
-
 function matchingGroupIdentity(
   args: Record<string, unknown>,
   scope: CollaborationControlScope
@@ -974,10 +853,6 @@ function collaborationAction(
   const scope = context.collaboration;
   if (!scope) throw new Error("collaboration control scope is missing");
   if (scope.role === "scoped-leader" || scope.role === "scoped-main") {
-    if (scope.worktreeClosingOnly && (name !== "coordinate_group_task" ||
-      !["close_worktree", "escalate"].includes(String(args.operation)) || args.repairNodeId !== undefined)) {
-      throw new Error("Completed group permits only original-owner closing coordination");
-    }
     if (name === "route_to_agent") {
       const target = text(args.target, "target", 256);
       if ((!scope.sourceArrivalRequestId && !scope.sourceOuterNodeRunId) || !scope.routeCandidates.includes(target)) throw new Error("route is outside the current scoped graph node");
@@ -985,7 +860,8 @@ function collaborationAction(
         ...(args.assignment === undefined ? {} : { assignment: text(args.assignment, "assignment") }) };
     }
     if (name === "apply_workflow") {
-      if (!scope.allowReconfiguration || args.path !== "workflow.json") throw new Error("scoped apply_workflow is not allowed");
+      if (context.agent !== "main" || context.kind !== "main" || !scope.allowReconfiguration || args.path !== "workflow.json")
+        throw new Error("Only authorized Main may apply the global workflow");
       return { tool: name, path: "workflow.json", rationale: text(args.rationale, "rationale") };
     }
     if (name === "coordinate_group_task") {
@@ -1101,7 +977,7 @@ async function requestBridge(
   context: CapabilityContext,
   payload: Record<string, unknown>,
   id: string
-): Promise<{ ok?: unknown; envelope?: unknown; result?: unknown; stateResult?: unknown; receiptId?: unknown; error?: unknown }> {
+): Promise<{ ok?: unknown; envelope?: unknown; result?: unknown; stateResult?: unknown; receiptId?: unknown; reminders?: unknown; error?: unknown }> {
   return new Promise((resolve, reject) => {
     const socket = context.bridgePath
       ? net.createConnection(context.bridgePath)
@@ -1170,7 +1046,7 @@ async function stageActionOverBridge(
   context: CapabilityContext,
   action: ControlAction,
   id: string
-): Promise<{ envelope: ControlActionEnvelope; result?: unknown; receiptId?: string }> {
+): Promise<{ envelope: ControlActionEnvelope; result?: unknown; receiptId?: string; reminders?: string[] }> {
   const response = await requestBridge(context, { action }, id);
   if (response.ok !== true || !response.envelope || typeof response.envelope !== "object") {
     throw new BridgeActionRejectedError(
@@ -1186,9 +1062,13 @@ async function stageActionOverBridge(
   if (response.receiptId !== undefined && (typeof response.receiptId !== "string" || !/^[a-f0-9]{64}$/.test(response.receiptId))) {
     throw new Error("control bridge result has an invalid receipt identity");
   }
+  if (response.reminders !== undefined && (!Array.isArray(response.reminders) || response.reminders.some(item => typeof item !== "string"))) {
+    throw new Error("control bridge returned invalid reminder messages");
+  }
   return { envelope: response.envelope as ControlActionEnvelope,
     ...(typeof response.receiptId === "string" ? { receiptId: response.receiptId } : {}),
-    ...(response.result === undefined ? {} : { result: response.result }) };
+    ...(response.result === undefined ? {} : { result: response.result }),
+    ...(response.reminders === undefined ? {} : { reminders: response.reminders as string[] }) };
 }
 
 function bridgeActionRejection(value: unknown, stateVersion: number, stateRequest = false): ControlActionRejection {
@@ -1370,21 +1250,12 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
   }
   const args = params.arguments && typeof params.arguments === "object" ? params.arguments as Record<string, unknown> : {};
   try {
-    if (context.worktreeClosing !== undefined && !worktreeClosingActionAllowed({ ...args, tool: name })) {
-      throw new Error("This closing turn permits only its own finish receipt and necessary closing Git operations; git_push requires your own reason");
-    }
-    if (context.terminalPushCoordination !== undefined) {
-      assertTerminalPushCoordinationControl(context);
-      if (!terminalPushCoordinationActionAllowed(context.terminalPushCoordination, { ...args, tool: name }))
-        throw new Error("This coordinator can only finish its own turn or decide its exact assigned receipt issue");
-      const fields = name === "finish_task" ? ["callId", "summary", "memory"] : name === "request_user"
-        ? ["callId", "message", "rationale", "context"] : ["callId", "incidentId", "operation", "rationale"];
-      if (Object.keys(args).some(field => !fields.includes(field))) throw new Error("Unexpected coordinator action field");
-    }
-    if (context.terminalPushObservation && !terminalPushObservationActionAllowed(
-      context.terminalPushObservation, { ...args, tool: name }
-    )) {
-      throw new Error("This receipt turn permits only finish_task and historical observation of its exact retained push without retry");
+    const schema = controlToolsFor(context).find(tool => tool.name === name)?.inputSchema;
+    if (schema?.additionalProperties === false && schema.properties) {
+      const fields = schema.properties as Record<string, unknown>;
+      for (const field of Object.keys(args)) {
+        if (!Object.hasOwn(fields, field)) throw new Error(`${name} has an unexpected argument: ${field}`);
+      }
     }
     if (name === "request_user" && !context.allowUserIntervention) {
       throw new Error("User requests are not authorized in this invocation. Honor the project policy: when user intervention is disabled, choose reasonable assumptions, continue research without waiting for clarification, and document missing information and limitations in Memory and the final deliverable.");
@@ -1404,15 +1275,12 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
       action = { tool: "finish_task", ...(args.summary === undefined ? {} : { summary: text(args.summary, "summary") }),
         ...(args.memory === undefined ? {} : { memory: text(args.memory, "memory") }) };
     } else if (name === "coordinate_agent_receipt") {
-      if (!context.terminalPushCoordination || !terminalPushCoordinationActionAllowed(context.terminalPushCoordination, { ...args, tool: name }))
+      if (!context.terminalPushCoordination || args.incidentId !== context.terminalPushCoordination.incidentId)
         throw new Error("Receipt coordination is not allocated to this invocation");
       action = { tool: "coordinate_agent_receipt", incidentId: text(args.incidentId, "incidentId", 1024),
         operation: args.operation as "retry" | "escalate", rationale: text(args.rationale, "rationale") };
     } else if (GIT_TOOL_NAMES.has(name as typeof TOOL_NAMES[number])) {
-      if (context.kind !== "worker" || context.allowAgentGitActions !== true ||
-        context.canonicalFinalIntegration && (["git_push", "git_reconcile_push", "git_prepare_conflict", "git_log", "git_show", "git_diff", "git_revert"].includes(name) || args.sourceOperationId !== undefined) ||
-        context.worktreeClosing && args.sourceOperationId !== undefined)
-        throw new Error("Agent Git tools are not allowed in this invocation");
+      if (context.allowAgentGitActions !== true) throw new Error("Git tools require this invocation's repository authority");
       action = agentGitAction(name as typeof TOOL_NAMES[number], args);
     } else if (context.collaboration) {
       action = collaborationAction(context, name as typeof TOOL_NAMES[number], args);
@@ -1486,10 +1354,17 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
       action = { tool: "complete_project", rationale: text(args.rationale, "rationale", 20_000) };
     }
     const staged = await stageAction(context, action, id);
+    if (context.worktreeClosing) staged.reminders = [...(staged.reminders ?? []),
+      "This input includes retained pending-file delivery facts. Inspect the original grant and actual tool results, then decide whether to continue that work or perform another authorized action."];
+    if (context.terminalPushObservation) staged.reminders = [...(staged.reminders ?? []),
+      "A retained push result is being inspected. Check its actual remote outcome before deciding whether to retry or perform further work; an unknown result is not a failed push."];
+    if (context.terminalPushCoordination) staged.reminders = [...(staged.reminders ?? []),
+      "The original receipt incident remains recorded. Decide whether your next action addresses it, requests assistance or continues other authorized work."];
     const gitResult = agentGitResultSummary(action.tool, staged.result);
     await reply({ content: [{
       type: "text",
-      text: controlResultDisplayText(staged.envelope, staged.result, staged.receiptId)
+      text: [controlResultDisplayText(staged.envelope, staged.result, staged.receiptId),
+        ...(staged.reminders ?? []).map(reminder => `Reminder: ${reminder}`)].join("\n\n")
     }], ...(gitResult ? { structuredContent: { actionAccepted: true, git: gitResult, result: staged.result ?? null } }
       : action.tool === "apply_workflow" && context.mainConversation === "turn" ? { structuredContent: staged.result }
       : action.tool === "finish_task" ? { structuredContent: { actionAccepted: true, status: staged.result === undefined ? "staged" : "recorded",

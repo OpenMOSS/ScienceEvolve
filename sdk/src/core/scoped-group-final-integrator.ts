@@ -120,8 +120,8 @@ export class ScopedGroupFinalIntegrator {
     const recovered = await this.database.scopedFinalRecoveryPull(input.projectId, execution.id, execution.ownershipEpoch);
     const operationPrefix = execution.ownershipEpoch === 1 ? execution.id : `${execution.id}-epoch-${execution.ownershipEpoch}`;
     const agentResult = this.options.invokeAgent ? await this.options.invokeAgent(integration, input) : undefined;
-    if (this.options.invokeAgent && (!agentResult || (await this.database.executionSupervisionResult(input.projectId, integration.id))?.outcome !== "resolved")) {
-      if (!(await this.database.executionSupervisionResult(input.projectId, integration.id))) {
+    if (this.options.invokeAgent && (!agentResult || (await this.database.executionSupervisionResult(input.projectId, integration.id, integration.ownershipEpoch))?.outcome !== "resolved")) {
+      if (!(await this.database.executionSupervisionResult(input.projectId, integration.id, integration.ownershipEpoch))) {
         throw new OperationStoreViolationError("Final Agent returned without a delivery result or supervision record");
       }
       return { status: "awaiting_completion", integration, ...(agentResult ? { pullRequest: agentResult } : {}) };

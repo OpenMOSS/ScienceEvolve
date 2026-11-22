@@ -1,5 +1,6 @@
 import { dispatchMainInboxRequest } from "../main-assistance.js";
 import { requestInvocationSearchTree } from "../search-tree-mcp.js";
+import { rejectResidentOpen } from "../resident-lifetime.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -20,9 +21,9 @@ import readline from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { Transform } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
-import { isTerminalPushObservationScope, terminalPushObservationActionAllowed } from "../internal/terminal-push-observation.js";
-import { isTerminalPushCoordinationScope, terminalPushCoordinationActionAllowed } from "../internal/terminal-push-coordination.js";
-import { assertWorktreeClosingRequest, worktreeClosingActionAllowed } from "../internal/worktree-closing.js";
+import { isTerminalPushObservationScope } from "../internal/terminal-push-observation.js";
+import { isTerminalPushCoordinationScope } from "../internal/terminal-push-coordination.js";
+import { assertWorktreeClosingRequest } from "../internal/worktree-closing.js";
 import { collaborationSessionKey } from "../internal/shared/collaboration-session-key.js";
 import { CONTROL_DRAIN_TIMEOUT_MS, controlRequestTimeoutMs } from "../control-request-lifetime.js";
 import { redactTrace } from "../utils.js";
@@ -181,7 +182,7 @@ export interface ResidentScopedLeaderControlScope {
   memberNodeIds: string[]; routeCandidates: string[]; sourceArrivalRequestId?: string;
   sourceOuterNodeRunId?: string;
   failedArrivalRequestIds: string[]; recoveryOptions?: import("../types.js").ScopedRecoveryOption[];
-  closingArrivalRequestIds?: string[]; worktreeClosingOnly?: true; allowReconfiguration: boolean;
+  closingArrivalRequestIds?: string[]; allowReconfiguration: boolean;
 }
 
 export interface ResidentStandaloneRouteControlScope {
@@ -386,7 +387,6 @@ export class HarnessRuntimeResidentAdapter {
 
     const request: AgentRunRequest = {
       ...input.request,
-      ...(input.request.terminalPushObservation || input.request.terminalPushCoordination || input.request.worktreeClosing ? { permission: "workspace" as const } : {}),
       ...(input.request.worktreeClosing ? { worktreeClosing: structuredClone(input.request.worktreeClosing) } : {}),
       project: structuredClone(input.request.project),
       executionContext: structuredClone(context)
@@ -422,12 +422,10 @@ export class HarnessRuntimeResidentAdapter {
           )
         : undefined;
     } catch (error) {
-      await gatewayFrontdoor.close().catch(() => undefined);
-      throw error;
+      return rejectResidentOpen(error, () => gatewayFrontdoor.close());
     }
-    const siiBinding = await this.#options.runtime.openSiiBinding(request, input.signal, input.filesystemAuthorityInput, input.inputs).catch(async error => {
-      await gatewayFrontdoor.close(); await controlFrontdoor?.close(); throw error;
-    });
+    const siiBinding = await this.#options.runtime.openSiiBinding(request, input.signal, input.filesystemAuthorityInput, input.inputs)
+      .catch(error => rejectResidentOpen(error, () => gatewayFrontdoor.close(), async () => { await controlFrontdoor?.close(); }));
     if (siiBinding) request.siiMcp = { url: siiBinding.url };
     const broker = new StableTurnAuthorityBroker({
       siiBinding,
@@ -452,7 +450,7 @@ export class HarnessRuntimeResidentAdapter {
       onTrace: input.onTrace
     });
 
-    let openedLease: ResidentProcessLease | undefined;
+    let closeLease: (() => Promise<void>) | undefined;
     try {
       const launchRequest: AgentRunRequest = {
         ...request,
@@ -478,21 +476,16 @@ export class HarnessRuntimeResidentAdapter {
       });
       broker.configurePrompt(prepared.spec.inputs, prepared.spec.policy, prepared.filesystemAuthority, Boolean(prepared.filesystemMcp));
       const result = await this.#options.runtime.openResidentScope(prepared);
-      openedLease = result.lease;
+      let controlSeq = result.lease.acknowledgedControlSeq;
+      closeLease = async () => {
+        await this.#options.runtime.closeResident({ ...broker.leaseAuthority(harnessId, residentScopeId(context), ++controlSeq),
+          ...(result.lease.physicalLeaseId ? { physicalLeaseId: result.lease.physicalLeaseId } : {}) });
+      };
       broker.bindNativeSession(result.lease.session);
       if (siiBinding) siiBinding.session = result.lease.session;
       return new FacadeResidentHandle(this.#options.runtime, broker, result.lease, this.#options.recoveryDelayMs);
     } catch (error) {
-      await broker.close().catch(() => undefined);
-      if (openedLease) {
-        // openResidentScope owns native cleanup until it returns; after return
-        // the handle normally owns it. This branch is only a bootstrap-release
-        // failure, so close the registered lease as well.
-        const snapshot = { ...broker.leaseAuthority(harnessId, residentScopeId(context), 1),
-          ...(openedLease.physicalLeaseId ? { physicalLeaseId: openedLease.physicalLeaseId } : {}) };
-        await this.#options.runtime.closeResident(snapshot).catch(() => undefined);
-      }
-      throw error;
+      return rejectResidentOpen(error, () => broker.close(), ...(closeLease ? [closeLease] : []));
     }
   }
 }
@@ -557,7 +550,7 @@ class FacadeResidentHandle implements HarnessRuntimeResidentHandle {
         notification = this.#broker.siiEnabled ? await this.#broker.waitForExperiments(result.handoff) : undefined;
         experimentNotice = Boolean(notification);
         if (!notification) {
-          await this.#broker.assertExperimentsComplete();
+          await this.#broker.remindExperimentState();
           await this.#broker.clearExperimentWait(); return result;
         }
         round += 1;
@@ -773,7 +766,13 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
   waitForExperiments(handoff: string | undefined): Promise<string | undefined> { return this.#options.siiBinding?.wait(handoff, (kind, message, data) => this.trace(kind, message, data)) ?? Promise.resolve(undefined); }
   beginExperimentResume(): Promise<void> { return this.#options.siiBinding?.beginResume() ?? Promise.resolve(); }
   clearExperimentWait(): Promise<void> { return this.#options.siiBinding?.clearWait() ?? Promise.resolve(); }
-  assertExperimentsComplete(): Promise<void> { return this.#options.siiBinding?.assertTaskComplete() ?? Promise.resolve(); }
+  async remindExperimentState(): Promise<void> {
+    const binding = this.#options.siiBinding;
+    if (!binding) return;
+    for (const reminder of await binding.taskCompletionReminders()) {
+      await this.trace("status", reminder, { experimentReminder: true });
+    }
+  }
   readonly #options: StableTurnAuthorityBrokerOptions;
   readonly #pending = new Map<string, PreparedTurnAuthority>();
   readonly #returnedTurns = new Map<string, { turn: ResidentTurn; onTrace: TraceSink }>();
@@ -1185,17 +1184,6 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
         return request.onControlResult!(input, structuredClone(this.#nativeSession));
       } } : {}),
       revalidate: (envelope, stagedActions) => {
-        if (template.worktreeClosing && !worktreeClosingActionAllowed(envelope.action)) {
-          throw adapterError("Worktree closing rejected an action outside its exact closing scope");
-        }
-        if (template.terminalPushCoordination &&
-          !terminalPushCoordinationActionAllowed(template.terminalPushCoordination, envelope.action)) {
-          throw adapterError("Receipt coordinator rejected an action outside its exact coordination scope");
-        }
-        if (template.terminalPushObservation &&
-          !terminalPushObservationActionAllowed(template.terminalPushObservation, envelope.action)) {
-          throw adapterError("Terminal push observation rejected an action outside its exact receipt scope");
-        }
         return authority.revalidate(envelope, stagedActions);
       },
       ...(authority.onRejected
@@ -2022,7 +2010,7 @@ function assertOpenInputAuthority(input: HarnessRuntimeResidentOpenInput): void 
   if (observation !== undefined || scopedObservation !== undefined) {
     if (!isTerminalPushObservationScope(observation) ||
       !isDeepStrictEqual(observation, scopedObservation) || context.role !== "delivery" ||
-      input.request.kind !== "worker" || input.request.project.git?.enabled !== true ||
+      input.request.project.git?.enabled !== true ||
       input.request.project.agentSessions?.[input.request.agent]?.durable !== true ||
       input.request.sessionContinuity !== "strict" || !input.sameEpochReopen ||
       input.request.terminalControlRepair !== undefined) {
@@ -2031,7 +2019,7 @@ function assertOpenInputAuthority(input: HarnessRuntimeResidentOpenInput): void 
   }
   if (context.role === "leader") {
     if (!input.inputs) {
-      throw adapterError("Leader resident requires explicit management-only InvocationInputs");
+      throw adapterError("Leader resident requires its prepared InvocationInputs");
     }
     const scope = input.controlScope;
     const contextIsMainRoute = "routeScopeId" in context;
@@ -2144,7 +2132,6 @@ function deriveControlTemplate(
           failedArrivalRequestIds: [...scope.failedArrivalRequestIds], allowReconfiguration: scope.allowReconfiguration,
           ...(scope.recoveryOptions ? { recoveryOptions: structuredClone(scope.recoveryOptions) } : {}),
           ...(scope.closingArrivalRequestIds ? { closingArrivalRequestIds: [...scope.closingArrivalRequestIds] } : {}),
-          ...(scope.worktreeClosingOnly ? { worktreeClosingOnly: true as const } : {}),
           ...(scope.sourceArrivalRequestId ? { sourceArrivalRequestId: scope.sourceArrivalRequestId } : {}),
           ...(scope.sourceOuterNodeRunId ? { sourceOuterNodeRunId: scope.sourceOuterNodeRunId } : {}) }, requireBridge: true };
     }
