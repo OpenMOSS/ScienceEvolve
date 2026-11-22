@@ -40,12 +40,12 @@
 | autoresearch | 固定 checkout、专用实验 workspace、运行 tag 和初始 master 提交；数据缓存、uv 依赖和单 GPU。只修改 `train.py`，固定 `prepare.py` 和依赖，每个候选训练 300 秒；提前设置总实验上限。 |
 | Biomni A1/E1 | E1 解释器、数据湖、所需数据库与 Python/R/Bash/CLI 工具；默认 `self_critic=false`、`test_time_scale_round=0`。 |
 | Biomni-R0 | 已溯源的原始 training/reward recipe、基础权重、E1 环境、固定任务划分、GPU trainer 与部署服务；设置累计训练、时间和费用预算及适用的 authorizationId。缺少原 recipe 时停在准备阶段。 |
-| 化学 Coscientist | 与设备及 firmware/API 匹配的手册、Task manifest、编译、执行和真实测量服务；实验方案、累计实验预算与物理实验 authorizationId。历史数据分析和模拟不能作为物理实验完成证据。 |
+| 化学 Coscientist | 各工具结果/错误直接返回 Planner；optimization 仅为按需分析扩展，不是实验必经阶段。与设备及 firmware/API 匹配的手册、Task manifest、编译、执行和真实测量服务；实验方案、累计实验预算与物理实验 authorizationId。历史数据分析和模拟不能作为物理实验完成证据。 |
 | Google AI co-scientist | 文献和资料检索、领域预测工具、持久化假设池；设置评价标准、资源预算、终止条件与是否仅保留新颖候选。按课题准备实验接口。 |
 | DrugEvolve | Task workspace、Python 环境、`config.json`、run-dir、固定数据划分、基线及训练/评估 launcher；在 run_spec 设置轮数、patience、失败上限、单次训练时限与停止条件。 |
 | 通用科研 | 数据、固定模型与评测器，以及可计量的推理预算；检索、实验、绘图与报告所需工具。 |
 | FunSearch | `specification.py`、固定 test inputs JSON、实现 `create_sandbox` 的适配器及 Python 环境。方法默认 10 岛、每 prompt 4 个样本、温度参数 0.1/30000，每 14400 秒重置弱半岛；提前设置总预算。 |
-| InternAgent 1.5 | 固定 Task manifest、评测器、KG/检索/embedding、SPM/TEM/SKM 和图增强 Monte Carlo 数值接口；至少两轮及跨轮反馈所需的累计预算。 |
+| InternAgent 1.5 | Generation 生成假设，Verification 管理 optimization 并复核真实结果；固定双槽批次不等于论文动态知识流调度。固定 Task manifest、评测器、KG/检索/embedding、SPM/TEM/SKM 和图增强 Monte Carlo 数值接口；至少两轮及跨轮反馈所需的累计预算。 |
 | Kosmos | 固定版本 kosmos-figures 的原始 CSV、CPU 分析环境、文献检索与 SQLite world-model；两轮分析中保留来源和 claim IDs，后续轮次消费已有证据。 |
 | Meta-Harness | 固定版本的 text_classification Task、MemorySystem、数据与配置，指定 run_name；固定 Task 模型与种子。默认搜索 20 轮、每轮 3 个候选；默认不执行 finalize/test，需要在冻结搜索结果后明确开启。 |
 | Raven Host | Task manifest、roster、instance、节点依赖、领域工具与预算。默认 strict-host，当前 SDK 的完整动态 DAG/在线控制缺口会阻断；显式选择 limited-batch 时仅使用两个预绑定 specialist 槽位，不能据此声称完整 Raven 方法验收。 |

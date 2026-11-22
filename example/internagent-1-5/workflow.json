@@ -135,7 +135,7 @@
       "webSearch": false,
       "sessionPersistence": true,
       "decisionBy": "main",
-      "instructions": "生成研究候选并作为 optimization 组 Leader 派工。先读真实 graph 证据、TEM/SKM 和 novelty/历史失败；综合直接回答、检索回答、自驱检索修订，register_ideas 保存证据。实际 evaluate_baseline 并核验真实终态；为两分支明确假设、operator 覆盖与预算。在 management turn 只派发上下文，候选程序由 optimizer 编写。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。",
+      "instructions": "承担 Generation 子系统的假设生成。先读真实 graph 证据、TEM/SKM 和 novelty/历史失败；综合直接回答、检索回答、自驱检索修订，register_ideas 保存证据。实际 evaluate_baseline 并核验真实终态；把已登记假设、baseline 回执、operator 覆盖要求与预算交 verification。实验优化和派工属于 Verification 子系统，候选程序由 optimizer 编写。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。",
       "mcpServers": [
         {
           "name": "internagent-1-5-tools",
@@ -204,7 +204,7 @@
       "webSearch": false,
       "sessionPersistence": true,
       "decisionBy": "main",
-      "instructions": "读取双分支全量真实候选/失败，独立比较 baseline 与公平 scorer/split、源码、visit/value 更新和引用归属。必要复验仍用锁定 Task 工具；汇总可信结果和未解决问题交 evolution。不以单次分数提升证明泛化。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。\n用 reevaluate_candidate 对锁定源码/Task/scorer 和预注册 repeatPlan 实际复验，get_job 核对终态。",
+      "instructions": "承担 Verification 子系统并作为 optimization 组 Leader。首次接收 generation 时核对当前假设、baseline 回执和预算，安排并行实验；管理 turn 只派工/集成，不执行业务。optimization 返回后，按 get_state 的当前批次和实际回执读取双分支全量真实候选/失败，独立比较 baseline 与公平 scorer/split、源码、visit/value 更新和引用归属。必要复验仍用锁定 Task 工具；需补充实验且预算允许时再交 optimization，当前验证完成后汇总可信结果和未解决问题交 evolution。缺服务或 unknown 交 Main 暂停，不误判为首次派工或重跑已完成批次。不以单次分数提升证明泛化。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。\n用 reevaluate_candidate 对锁定源码/Task/scorer 和预注册 repeatPlan 实际复验，get_job 核对终态。",
       "mcpServers": [
         {
           "name": "internagent-1-5-tools",
@@ -263,7 +263,7 @@
     "method-protocol": {
       "files": {
         "SKILL.md": "---\nname: method-protocol\ndescription: internagent-1-5 方法状态、输入输出、循环与验收协议\n---\n先阅读 references/method.md 与 references/backend.md。按当前任务核验真实证据，缺少必需资源时返回阻断。\n",
-        "references/method.md": "# InternAgent 1.5 方法协议\n来源：SOURCES.json 的 fa8c3ee；https://arxiv.org/html/2602.08990v1 §2.1–2.4；固定 docs/deep_research.md、docs/memory_module.md、internagent/stage.py。\n\nTask 是明确的算法发现或经验科学任务，指标/数据/实际执行器由 Task manifest 固定；workflow 承担 Generation→Verification→Evolution。不能调用完整 InternAgent/MLEvolve/DR 自治引擎。\n\n1. preflight 验证真实检索/全文、异构知识图谱+向量排序、embedding、SPM/TEM/SKM、baseline、实验执行/评分与图增强 Monte Carlo 数值接口。缺任一完整目标要求的能力则 blocked。\n2. flow_planner 查询 SPM，建立 search/solve/answer 节点、requires/provides/constrains 边和来源；选择全部依赖满足的任务分给两个研究 worker。它也作组 Leader，但 management turn 不研究、不写业务文件。\n3. 两研究 worker 各自 claim 任务，实际检索/读取全文、图路径/向量证据，commit 结果。FlowGraph 与世界知识图谱是两个结构，不能用一份 Memory.md 替代。组 Finish 后 flow_planner 核验全依赖与知识缺口，补图或转 generation。该固定双槽批次会引入同步屏障，是调度保真限制。\n4. generation 实际消费 TEM/SKM/IdeaGraph，输出可证伪想法、方法、真实 baseline 与评测计划，并保存 memory record IDs。综合 direct/search-augmented/self-driven 三类回答，避免只拼引文。\n5. optimizer_a/b 并行执行图增强 Monte Carlo 的 selection→expansion→simulation→backpropagation。只让工具提供数值选择、租约、执行与回传；候选代码由 Agent 生成。保留 primary、intra_branch、cross_branch、multi_branch 四运算符与来源：父边承担 credit ancestry，引用边不能盲目重复回传。回传每个实际 job 的指标/失败，后续候选消费已返回的跨支经验。\n6. verification 对所有分支/候选/基线独立核对代码和指标，选择复验方案；使用真实重复实验与原 scorer，不向 held-out 测试集调参。\n7. evolution 在每批真实结果后立即保存 TEM/online memory，归纳 SPM；对成对方法/结果提炼长期经验，更新 SKM/IdeaGraph 与 novel research objective/生成 prompt。它改变 Task 的研究方向，不是自动重写 SDK workflow。下一轮 generation 或 flow_planner 必须记录实际消费。\n8. 至少两轮才可主张跨轮反馈，不能把两轮当论文全部尺度。轮数/候选数/时间预算来自 Task manifest，未填写不运行；达到预算输出未接受/负面结果或请求 Main 暂停，不自动加预算。审计包含三子系统、四运算符、真实检索与记忆消费、重复评测和交付。\n\n物理执行需另外明确授权与原子设备接口。算法路径不宣称验证所有湿实验领域；具体 Monte Carlo 公式、operator 参数与 embedding 必须锁定已核验实现，现有桥接器不实现算法。",
+        "references/method.md": "# InternAgent 1.5 方法协议\n来源：SOURCES.json 的 fa8c3ee；https://arxiv.org/html/2602.08990v1 §2.1–2.4；固定 docs/deep_research.md、docs/memory_module.md、internagent/stage.py。\n\nTask 是明确的算法发现或经验科学任务，指标/数据/实际执行器由 Task manifest 固定；workflow 承担 Generation→Verification→Evolution。不能调用完整 InternAgent/MLEvolve/DR 自治引擎。\n\n1. preflight 验证真实检索/全文、异构知识图谱+向量排序、embedding、SPM/TEM/SKM、baseline、实验执行/评分与图增强 Monte Carlo 数值接口。缺任一完整目标要求的能力则 blocked。\n2. flow_planner 查询 SPM，建立 search/solve/answer 节点、requires/provides/constrains 边和来源；选择全部依赖满足的任务分给两个研究 worker。它也作组 Leader，但 management turn 不研究、不写业务文件。\n3. 两研究 worker 各自 claim 任务，实际检索/读取全文、图路径/向量证据，commit 结果。FlowGraph 与世界知识图谱是两个结构，不能用一份 Memory.md 替代。组 Finish 后 flow_planner 核验全依赖与知识缺口，补图或转 generation。该固定双槽批次会引入同步屏障，是调度保真限制。\n4. generation 实际消费 TEM/SKM/IdeaGraph，输出可证伪想法、方法、真实 baseline 与评测计划，并保存 memory record IDs。综合 direct/search-augmented/self-driven 三类回答，避免只拼引文。\n5. verification 负责 Verification 子系统的实验规划、optimization 组管理和结果复核；generation 只生成假设并提供 baseline。verification 按当前批次真实状态决定派工或复核，不重复已完成实验。optimizer_a/b 在该子系统内并行执行图增强 Monte Carlo 的 selection→expansion→simulation→backpropagation。只让工具提供数值选择、租约、执行与回传；候选代码由 Agent 生成。保留 primary、intra_branch、cross_branch、multi_branch 四运算符与来源：父边承担 credit ancestry，引用边不能盲目重复回传。回传每个实际 job 的指标/失败，后续候选消费已返回的跨支经验。\n6. verification 对所有分支/候选/基线独立核对代码和指标，选择复验方案；使用真实重复实验与原 scorer，不向 held-out 测试集调参。\n7. evolution 在每批真实结果后立即保存 TEM/online memory，归纳 SPM；对成对方法/结果提炼长期经验，更新 SKM/IdeaGraph 与 novel research objective/生成 prompt。它改变 Task 的研究方向，不是自动重写 SDK workflow。下一轮 generation 或 flow_planner 必须记录实际消费。\n8. 至少两轮才可主张跨轮反馈，不能把两轮当论文全部尺度。轮数/候选数/时间预算来自 Task manifest，未填写不运行；达到预算输出未接受/负面结果或请求 Main 暂停，不自动加预算。审计包含三子系统、四运算符、真实检索与记忆消费、重复评测和交付。\n\n物理执行需另外明确授权与原子设备接口。算法路径不宣称验证所有湿实验领域；具体 Monte Carlo 公式、operator 参数与 embedding 必须锁定已核验实现，现有桥接器不实现算法。",
         "references/backend.md": "# 新增工作流的原子工具合同\n\n2026-10-14。此接口是本次设计选择，不是上游原有 API。`task-bridge.cjs` 是传输适配器，不能提供训练器、设备、知识图谱或科研算法本身；相应服务尚未实现/接入。所有新 workflow 内嵌该代码及逐角色 `tools.json`，可单独复制 JSON 校验。SDK 提供 MCP 协议库；外部依赖由服务部署方负责。\n\n## 部署与请求\n\n每个方法配置其 `*_BACKEND_URL`、`*_BACKEND_TOKEN` 和全新的 `*_SCOPE_ID` 环境变量。认证可选，但未启用认证时 `*_BACKEND_TOKEN` 仍须显式定义为空值，不能省略该 envFrom 源变量。workflow 的 `envFrom` 映射到桥接器的 `SCIENCEEVOLVE_TASK_BACKEND_URL/TOKEN/SCOPE_ID`。URL 是明确的 HTTPS 或本机 HTTP POST 端点；不保存凭据，不自动重定向。backend 在远端按 token/scope/actor 校验权限，不能把调用方传来的 actor 当身份认证。\n\n请求格式：\n\n```json\n{\"schemaVersion\":1,\"method\":\"internagent-1-5\",\"scopeId\":\"unique-run-scope\",\"actor\":\"verification\",\"operation\":\"get_state\",\"requestId\":\"unique-read-id\",\"arguments\":{}}\n```\n\n响应必须回显 schemaVersion、method、scopeId、operation、requestId，并返回 `status: ok|blocked|failed|unknown`、`data` 和 `evidence` 数组。每个证据包含 `id/uri/kind/sha256`，SHA-256 是真实字节摘要。成功写入必须有非空的持久回执。`read_artifact` 返回 `data.text/data.sha256`，桥接器核验实际 UTF-8 字节；其他证据的科学内容仍需审核，不由传输层判定正确。成功提交作业表示已入队，只有后续 `get_job` 的真实终态与测量能证明执行。\n\n## 一致性与恢复\n\n- 状态保存在 backend 的专属 scope，不能放在 SDK 会刷新的 Skill/MCP 执行副本。各 worktree 只导出自己的结果目录。\n- 写操作要求稳定 `requestId`；状态变更还要求 `expectedRevision`。backend 在事务中实现幂等、CAS 和追加式事件账本。参数相同的重放返回原回执；同 ID 不同参数拒绝。\n- 30 秒传输超时或异常响应后，写操作结果为 unknown。用 `get_request(originalRequestId)` 对账，不换 ID 重复训练、部署或物理作业。查询本身不触发新作业。\n- backend 返回类型化的能力清单、原子接口版本、软件/模型/数据/评分器摘要、资源探测和预算。能力缺失返回 blocked，不提供模拟回执。\n- 服务只能提供检索、图/记忆存取、数值选择/回传、具体环境步、编译、实验作业、训练作业和权重部署等原子操作。禁止暴露 `run_internagent/run_raven_host/run_coscientist` 等完整自治系统入口。研究规划、候选内容、优化方向和终止裁决由 SDK Agent 作出。\n\n## 各方法的附加合同\n\n### InternAgent 1.5\n\n能力清单至少包括真实文献检索/全文、图+向量检索、FlowGraph CAS、可执行 baseline、实验评分器、图增强 Monte Carlo 的数值选择/回传、SPM/TEM/SKM 以及有效 embedding。任务记忆、在线保存、长期 IdeaGraph/PromptEvolver 与 DR 的 SPM 需区分。`select_search_context` 返回选择参数、visit/value、父/祖先/跨支引用、运算符和租约，Agent 产生候选；`record_evaluation` 根据真实 job 回执回传分数。不得把最新 MLEvolve 整体启动当成这些能力。\n\nFlowGraph 节点含 search/solve/answer 类型、任务、状态、结果 context；边含 requires/provides/constrains 语义、来源与修订。`claim_flow_node` 事务中检查全部依赖、节点未重复执行、分支身份与 epoch。当前 SDK 用两个 worker 在批次边界调度，新增动态节点只能由 Planner 后续批次处理：这保持数据依赖，但不是原方法即时按 ready-set 推进，报告须扣分。\n\n### Biomni-R0\n\n`read_training_recipe` 必须给出已溯源的原方法 recipe 及待核对项、基础权重/环境/任务版本、真实 reward 定义、数据划分、训练/评估参数。无法核对原训练策略时，不能填写自选 GRPO/PPO 或随意 reward 当作原方法。此设计没有固化未经证实的 SFT/RL 阶段；服务按核实 recipe 执行原子训练作业。训练前核验 reward 与 split，held-out 标注不进入训练上下文。\n\n`collect_trajectories` 是固定 policy 与真实 E1 工具环境的任务执行；轨迹保留 observation/action/tool result/terminal outcome/policy hash，不包含自改研究规划。`score_trajectories` 由独立评分器产出奖励。`submit_training` 必须返回 job、输入轨迹/奖励/recipe 摘要；终态返回真实 checkpoint。部署和评估均绑定 checkpoint 字节摘要，明确环境与旧权重回退。使用发布成品 R0 只能作为比较基线，不能替代训练。\n\n### Chemical Coscientist\n\n检索/设备文档工具返回真实 URL、版本、内容摘要及可读取证据；文档必须与实际设备/API 匹配。`compile_protocol` 校验输入代码和设备能力，返回源码摘要、编译结果与设备绑定。`submit_experiment` 需要真实 `authorizationId` 和相同代码/设备摘要；设备服务在提交端核验授权、参数范围与资源，workflow prompt 不代替设备约束。\n\n`get_job` 返回真实物理作业状态、测量/错误/样品链；断线未知作业先对账。优化读取真实结果、噪声/失败和预算后决定下一实验。Git 只管理代码/报告，不能撤销湿实验。simulation/historical-data 是独立标记的模式，不计为湿实验复现。\n\n### Raven Host\n\n新模板只提供 SDK 内可执行的固定双 specialist 批次及边界判定骨架。backend 仅记录图、节点、instance、记忆与原子领域工具，不可承担 Host 规划或另建运行时来声称 SDK 原生支持完整 Raven。严格默认 Host 需求在 preflight 返回 blocked：当前合同缺任意 AND ready-set、在线通知/裁决、在途取消与图替换。\n\njudge 回执区分 incomplete、判定不可用、参数错误；未通过节点输出不能提供给依赖节点。最多两次 continuation 是节点总预算，不因新批次/重启归零。固定两个 SDK 会话仅提供有限 instance 复用；跨任意图实例、逐节点 Skills/MCP、stint 自动推进仍是待实现接口。这个模板不能把所有 specialist 强制串行，也不能把批次重跑写成原语义的在线 continue/replan。\n\n## 运行前应做的验证\n\n先离线校验 JSON 和实际 Skill/MCP 暂存，再对部署后的原子服务验证资源/权限/幂等/CAS/unknown 对账，最后才运行真实方法。JSON 校验、桥接 localhost 合同或接口清单不等于方法/论文验收。每次新运行记录唯一 SDK run ID 与 backend scope，保留负面结果、源字节摘要、累计预算和完整事件链。\n"
       }
     }
@@ -481,7 +481,7 @@
       },
       {
         "id": "optimization",
-        "displayName": "Graph augmented Monte Carlo branches",
+        "displayName": "Verification · parallel experiment search",
         "memberAgentIds": [],
         "renamePolicy": "editable"
       }
@@ -546,7 +546,7 @@
         },
         {
           "id": "optimization",
-          "leaderAgentId": "generation",
+          "leaderAgentId": "verification",
           "allowLeaderReconfiguration": false,
           "workflow": {
             "nodes": [
@@ -636,7 +636,7 @@
       "generation": [
         {
           "kind": "strong",
-          "target": "optimization"
+          "target": "verification"
         }
       ],
       "optimization": [
@@ -647,7 +647,11 @@
       ],
       "verification": [
         {
-          "kind": "strong",
+          "kind": "weak",
+          "target": "optimization"
+        },
+        {
+          "kind": "weak",
           "target": "evolution"
         }
       ],
@@ -677,6 +681,7 @@
       ]
     },
     "decisionPlans": {
+      "verification": "按 get_state 的当前假设/批次及真实回执区分派工和复核。尚需实验且授权预算允许则 optimization；当前验证完成才 evolution；资源缺失或 unknown 交 Main 暂停，不能重派已完成批次。",
       "preflight": "全部关键原子能力真实可用才 flow_planner；否则 Main 请求介入并暂停，不开始付费/物理任务。",
       "flow_planner": "依赖满足且仍缺证据则 knowledge；知识覆盖、矛盾处理与来源核验后 generation。跨批次 graph revision/预算保留。",
       "evolution": "核对累计轮次和真实 memory 保存/消费；继续实验选 generation，知识缺口选 flow_planner；达到明确停止策略选 audit。不能 silent disable memory。",

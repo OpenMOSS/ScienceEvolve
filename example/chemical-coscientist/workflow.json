@@ -66,7 +66,7 @@
       "webSearch": false,
       "sessionPersistence": true,
       "decisionBy": "main",
-      "instructions": "承担论文 Planner，读当前需求和累计实验观测后按需选择 web_search、documentation、code、experiment 或 audit。register_experiment_plan 固定目标、限制、真实来源/设备和预算。只有当前编译代码/手册/设备 hash 与授权齐备才 experiment；缺文献/手册优先检索。科学结论以实际测量为依据。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。",
+      "instructions": "承担论文 Planner，读当前需求和累计实验观测后按需选择 web_search、documentation、code、experiment 或 audit；所有工具结果和错误直接返回本 Planner。optimization 是可选的分析分工扩展，仅需要额外分析时委派，不是论文必经阶段。register_experiment_plan 固定目标、限制、真实来源/设备和预算。只有当前编译代码/手册/设备 hash 与授权齐备才 experiment；缺文献/手册优先检索。科学结论以实际测量为依据。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。",
       "mcpServers": [
         {
           "name": "chemical-coscientist-tools",
@@ -158,7 +158,7 @@
       "webSearch": false,
       "sessionPersistence": true,
       "decisionBy": "main",
-      "instructions": "核对 authorizationId、精确 compiledArtifact/device/plan 和最新状态，submit_experiment 提交真实物理 job。get_job 读 actual status/原始测量/样品/错误；unknown 先 get_request 对账，不能换 ID 或声称取消。record_observation 保留真实 raw receipt 与解释后交 optimization。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。",
+      "instructions": "核对 authorizationId、精确 compiledArtifact/device/plan 和最新状态，submit_experiment 提交真实物理 job。get_job 读 actual status/原始测量/样品/错误；unknown 先 get_request 对账，不能换 ID 或声称取消。record_observation 保留真实 raw receipt 与解释后直接交 planner，由 Planner 判断重试、分析、下一实验或停止。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。",
       "mcpServers": [
         {
           "name": "chemical-coscientist-tools",
@@ -181,7 +181,7 @@
       "webSearch": false,
       "sessionPersistence": true,
       "decisionBy": "main",
-      "instructions": "evaluate_objective 从真实观测/对照计算目标与不确定性；比较先前失败/有效测量，提出下一实验的可检验改动、信息增益和预算成本，返回 Planner。算法来自已核验实验任务，不能把模型打分当产率；负结果保留。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。",
+      "instructions": "作为 Planner 按需委派的分析扩展（非论文独立必经角色），evaluate_objective 从真实观测/对照计算目标与不确定性；比较先前失败/有效测量，提出下一实验的可检验改动、信息增益和预算成本，返回 Planner。算法来自已核验实验任务，不能把模型打分当产率；负结果保留。\n\n你在 ScienceEvolve SDK main 内核中执行当前 Inbox 的确切任务。先通过工具发现加载实际 MCP schema，读取 method protocol 和 get_state；不能把前驱完成回执当成自己的新任务。科研决定由你作出，backend 只能提供原子工具。每条结论绑定真实来源/代码/数据/模型/执行回执；pending、unknown、blocked、科学负结果分别记录。写操作用稳定 requestId 和当前 expectedRevision；断线先 get_request 对账，不以新 ID 重复副作用。累计轮次/作业/费用预算保存在专属 scope，恢复不清零；预算未填写则 preflight 阻断。不得修改评分器、测试标签或用聊天分数代替实际结果。各业务角色只写 results/<role>/，导出之后通过当前 Inbox 暴露的真实文件/Git 工具提交、发布、集成，不能把 export 或 staged 控制回执当作已提交。Leader 的 planning turn 只 assign_group_tasks、finish_task 并立即 native Stop，不能轮询等待尚未派发的 worker；后续 integration turn 根据实际 PR/集成回执完成组。遵循实际暴露的工具与锁定权限，不猜参数。只有 Main 审核正式交付与方法证据后才能完成项目；必要工具缺失请求介入并暂停，不能虚构成功或无界重试。",
       "mcpServers": [
         {
           "name": "chemical-coscientist-tools",
@@ -217,7 +217,7 @@
     "method-protocol": {
       "files": {
         "SKILL.md": "---\nname: method-protocol\ndescription: chemical-coscientist 方法状态、输入输出、循环与验收协议\n---\n先阅读 references/method.md 与 references/backend.md。按当前任务核验真实证据，缺少必需资源时返回阻断。\n",
-        "references/method.md": "# 化学 Coscientist 方法协议\n来源：https://www.nature.com/articles/s41586-023-06792-0 与固定 gomesgroup/coscientist 417e82b 支持材料。公开 simple_implementation 只有简单表达式、随机数/停止工具，不是论文完整系统。不能把 Google co-scientist 假设系统混进这个方法。\n\nPlanner 按当前问题选择 web search、设备文档、code 或 experiment；这些工具不是强制顺序全跑，docs/web/code 可再次检索后返回 Planner。Planner 保存研究目标、科学假设、设备/样品/API 与预算，分解具体任务。工具角色完成后必须把实际证据交回 Planner，失败影响下一动作。\n\nCode 根据真实设备手册与 plan 编写完整可执行协议，用原子 sandbox 做必要数值/数据处理，用 compile_protocol 检查设备/API/代码 hash；编译/模拟成功不宣称执行。只有匹配当前计划和设备、具备真实 authorizationId 才由 experiment 提交物理作业。记录设备确认、job/样品 chain、原始测量/失败、代码与手册版本；queued/running/unknown 不计实验结果，断线先对账。\n\noptimization 从原始观测和目标/噪声/对照出发优化下一实验，保留失败并将原因/结果返回 Planner。优化算法和停止条件来自具体实验问题/固定支持材料，不能把随机数或模型自评分当收益。预算是累计实际实验次数/时间/费用，不由 weak route 次数隐含决定。支持历史数据/simulation 的独立评估模式，但它们只验证分析工具，不计湿实验闭环。Git 管理代码和报告，不撤销物理操作。\n\n审计须关联 search/docs/code/device/actual measurement 的完整证据链、真实结果驱动的后续实验、预算/停止和科学限制；Planner 自己写完方案不算任务完成。没有设备服务时 workflow 前置阻断；服务 backend 不得整套调用原 Coscientist。",
+        "references/method.md": "# 化学 Coscientist 方法协议\n来源：https://www.nature.com/articles/s41586-023-06792-0 与固定 gomesgroup/coscientist 417e82b 支持材料。公开 simple_implementation 只有简单表达式、随机数/停止工具，不是论文完整系统。不能把 Google co-scientist 假设系统混进这个方法。\n\nPlanner 按当前问题选择 web search、设备文档、code 或 experiment；这些工具不是强制顺序全跑，docs/web/code 可再次检索后返回 Planner。Planner 保存研究目标、科学假设、设备/样品/API 与预算，分解具体任务。工具角色完成后必须把实际证据交回 Planner，失败影响下一动作。\n\nCode 根据真实设备手册与 plan 编写完整可执行协议，用原子 sandbox 做必要数值/数据处理，用 compile_protocol 检查设备/API/代码 hash；编译/模拟成功不宣称执行。只有匹配当前计划和设备、具备真实 authorizationId 才由 experiment 提交物理作业。记录设备确认、job/样品 chain、原始测量/失败、代码与手册版本；queued/running/unknown 不计实验结果，断线先对账。\n\nexperiment 的观测和错误直接返回 Planner。Planner 根据原始观测和目标/噪声/对照决定下一实验；需要额外分析时可委派 optimization，后者属于可选分工扩展，分析结果仍返回 Planner。优化算法和停止条件来自具体实验问题/固定支持材料，不能把随机数或模型自评分当收益。预算是累计实际实验次数/时间/费用，不由 weak route 次数隐含决定。支持历史数据/simulation 的独立评估模式，但它们只验证分析工具，不计湿实验闭环。Git 管理代码和报告，不撤销物理操作。\n\n审计须关联 search/docs/code/device/actual measurement 的完整证据链、真实结果驱动的后续实验、预算/停止和科学限制；Planner 自己写完方案不算任务完成。没有设备服务时 workflow 前置阻断；服务 backend 不得整套调用原 Coscientist。",
         "references/backend.md": "# 新增工作流的原子工具合同\n\n2026-10-14。此接口是本次设计选择，不是上游原有 API。`task-bridge.cjs` 是传输适配器，不能提供训练器、设备、知识图谱或科研算法本身；相应服务尚未实现/接入。所有新 workflow 内嵌该代码及逐角色 `tools.json`，可单独复制 JSON 校验。SDK 提供 MCP 协议库；外部依赖由服务部署方负责。\n\n## 部署与请求\n\n每个方法配置其 `*_BACKEND_URL`、`*_BACKEND_TOKEN` 和全新的 `*_SCOPE_ID` 环境变量。认证可选，但未启用认证时 `*_BACKEND_TOKEN` 仍须显式定义为空值，不能省略该 envFrom 源变量。workflow 的 `envFrom` 映射到桥接器的 `SCIENCEEVOLVE_TASK_BACKEND_URL/TOKEN/SCOPE_ID`。URL 是明确的 HTTPS 或本机 HTTP POST 端点；不保存凭据，不自动重定向。backend 在远端按 token/scope/actor 校验权限，不能把调用方传来的 actor 当身份认证。\n\n请求格式：\n\n```json\n{\"schemaVersion\":1,\"method\":\"internagent-1-5\",\"scopeId\":\"unique-run-scope\",\"actor\":\"verification\",\"operation\":\"get_state\",\"requestId\":\"unique-read-id\",\"arguments\":{}}\n```\n\n响应必须回显 schemaVersion、method、scopeId、operation、requestId，并返回 `status: ok|blocked|failed|unknown`、`data` 和 `evidence` 数组。每个证据包含 `id/uri/kind/sha256`，SHA-256 是真实字节摘要。成功写入必须有非空的持久回执。`read_artifact` 返回 `data.text/data.sha256`，桥接器核验实际 UTF-8 字节；其他证据的科学内容仍需审核，不由传输层判定正确。成功提交作业表示已入队，只有后续 `get_job` 的真实终态与测量能证明执行。\n\n## 一致性与恢复\n\n- 状态保存在 backend 的专属 scope，不能放在 SDK 会刷新的 Skill/MCP 执行副本。各 worktree 只导出自己的结果目录。\n- 写操作要求稳定 `requestId`；状态变更还要求 `expectedRevision`。backend 在事务中实现幂等、CAS 和追加式事件账本。参数相同的重放返回原回执；同 ID 不同参数拒绝。\n- 30 秒传输超时或异常响应后，写操作结果为 unknown。用 `get_request(originalRequestId)` 对账，不换 ID 重复训练、部署或物理作业。查询本身不触发新作业。\n- backend 返回类型化的能力清单、原子接口版本、软件/模型/数据/评分器摘要、资源探测和预算。能力缺失返回 blocked，不提供模拟回执。\n- 服务只能提供检索、图/记忆存取、数值选择/回传、具体环境步、编译、实验作业、训练作业和权重部署等原子操作。禁止暴露 `run_internagent/run_raven_host/run_coscientist` 等完整自治系统入口。研究规划、候选内容、优化方向和终止裁决由 SDK Agent 作出。\n\n## 各方法的附加合同\n\n### InternAgent 1.5\n\n能力清单至少包括真实文献检索/全文、图+向量检索、FlowGraph CAS、可执行 baseline、实验评分器、图增强 Monte Carlo 的数值选择/回传、SPM/TEM/SKM 以及有效 embedding。任务记忆、在线保存、长期 IdeaGraph/PromptEvolver 与 DR 的 SPM 需区分。`select_search_context` 返回选择参数、visit/value、父/祖先/跨支引用、运算符和租约，Agent 产生候选；`record_evaluation` 根据真实 job 回执回传分数。不得把最新 MLEvolve 整体启动当成这些能力。\n\nFlowGraph 节点含 search/solve/answer 类型、任务、状态、结果 context；边含 requires/provides/constrains 语义、来源与修订。`claim_flow_node` 事务中检查全部依赖、节点未重复执行、分支身份与 epoch。当前 SDK 用两个 worker 在批次边界调度，新增动态节点只能由 Planner 后续批次处理：这保持数据依赖，但不是原方法即时按 ready-set 推进，报告须扣分。\n\n### Biomni-R0\n\n`read_training_recipe` 必须给出已溯源的原方法 recipe 及待核对项、基础权重/环境/任务版本、真实 reward 定义、数据划分、训练/评估参数。无法核对原训练策略时，不能填写自选 GRPO/PPO 或随意 reward 当作原方法。此设计没有固化未经证实的 SFT/RL 阶段；服务按核实 recipe 执行原子训练作业。训练前核验 reward 与 split，held-out 标注不进入训练上下文。\n\n`collect_trajectories` 是固定 policy 与真实 E1 工具环境的任务执行；轨迹保留 observation/action/tool result/terminal outcome/policy hash，不包含自改研究规划。`score_trajectories` 由独立评分器产出奖励。`submit_training` 必须返回 job、输入轨迹/奖励/recipe 摘要；终态返回真实 checkpoint。部署和评估均绑定 checkpoint 字节摘要，明确环境与旧权重回退。使用发布成品 R0 只能作为比较基线，不能替代训练。\n\n### Chemical Coscientist\n\n检索/设备文档工具返回真实 URL、版本、内容摘要及可读取证据；文档必须与实际设备/API 匹配。`compile_protocol` 校验输入代码和设备能力，返回源码摘要、编译结果与设备绑定。`submit_experiment` 需要真实 `authorizationId` 和相同代码/设备摘要；设备服务在提交端核验授权、参数范围与资源，workflow prompt 不代替设备约束。\n\n`get_job` 返回真实物理作业状态、测量/错误/样品链；断线未知作业先对账。优化读取真实结果、噪声/失败和预算后决定下一实验。Git 只管理代码/报告，不能撤销湿实验。simulation/historical-data 是独立标记的模式，不计为湿实验复现。\n\n### Raven Host\n\n新模板只提供 SDK 内可执行的固定双 specialist 批次及边界判定骨架。backend 仅记录图、节点、instance、记忆与原子领域工具，不可承担 Host 规划或另建运行时来声称 SDK 原生支持完整 Raven。严格默认 Host 需求在 preflight 返回 blocked：当前合同缺任意 AND ready-set、在线通知/裁决、在途取消与图替换。\n\njudge 回执区分 incomplete、判定不可用、参数错误；未通过节点输出不能提供给依赖节点。最多两次 continuation 是节点总预算，不因新批次/重启归零。固定两个 SDK 会话仅提供有限 instance 复用；跨任意图实例、逐节点 Skills/MCP、stint 自动推进仍是待实现接口。这个模板不能把所有 specialist 强制串行，也不能把批次重跑写成原语义的在线 continue/replan。\n\n## 运行前应做的验证\n\n先离线校验 JSON 和实际 Skill/MCP 暂存，再对部署后的原子服务验证资源/权限/幂等/CAS/unknown 对账，最后才运行真实方法。JSON 校验、桥接 localhost 合同或接口清单不等于方法/论文验收。每次新运行记录唯一 SDK run ID 与 backend scope，保留负面结果、源字节摘要、累计预算和完整事件链。\n"
       }
     }
@@ -383,7 +383,8 @@
       },
       {
         "name": "optimization",
-        "template": "general"
+        "template": "general",
+        "description": "可选分析扩展 · 按 Planner 请求执行"
       },
       {
         "name": "audit",
@@ -450,6 +451,10 @@
         },
         {
           "kind": "weak",
+          "target": "optimization"
+        },
+        {
+          "kind": "weak",
           "target": "audit"
         }
       ],
@@ -474,7 +479,7 @@
       "experiment": [
         {
           "kind": "strong",
-          "target": "optimization"
+          "target": "planner"
         }
       ],
       "optimization": [
