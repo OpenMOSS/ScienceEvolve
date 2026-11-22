@@ -4,6 +4,8 @@
 
 There are 23 examples, each started from `workflow.json` and `research_proposal.txt`. Each proposal describes a concrete research question, hypothesis, data, and evaluation plan. These are illustrative research designs, not completed experiments or claims of reproducing the original papers. Prepare resources using [runtime setup](RUNTIME.md) (Chinese), and configure gateways and reasoning options through the [CLI guide](../sdk/docs/main-cli.md).
 
+[Method mapping](METHODS.md) · [23 overviews + 36 readable stage/group views](../docs/readme/workflows/README_en.md). Method guides are separate from host routing. Serial/synchronous adaptations, external experiments and single-lab deployment are explicit. Raven remains limited-batch; Biomni-R0 still requires a verified original recipe. Screenshots are not scientific execution evidence.
+
 | Project | Orchestration | Configuration | Research proposal |
 | --- | --- | --- | --- |
 | AHE iterative optimization · [Paper](https://arxiv.org/abs/2604.25850) · [Official code](https://github.com/china-qijizhifeng/agentic-harness-engineering) | Git-off v2 | [workflow](01-ahe-evolve/workflow.json) | [research proposal](01-ahe-evolve/research_proposal.txt) |

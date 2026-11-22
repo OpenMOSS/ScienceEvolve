@@ -34,6 +34,16 @@ ScienceEvolve 是论文 [Rethinking Scientific Discovery in the Agentic Era](htt
 
 [![ScienceEvolve Web / Server](docs/readme/badges/web-server.svg)](https://github.com/OpenMOSS/ScienceEvolve-server) — **Web / Server 入口**。在网页中编排 Agent、连接模型网关、管理研究项目，查看轨迹与交付文件。
 
+## 近期更新
+
+### 2026-11-23
+
+- 运行带搜索树和 Workflow Gate 的工作流。
+- 配置 Agent 交接和工具权限。
+- 支持 Main 异步反馈，改进中断任务恢复。
+
+> **升级提示**　已有科研数据库的用户请先停服务并备份，再按[离线升级指南](docs/sqlite-writer-lifecycle.md)迁移到 SQLite schema 31。
+
 ## 组建自己的科研 Agent 团队
 
 > “这里有一个泊松方程求解器。请探索两种改进方案，验证收敛性，比较误差，并整理成报告。”
@@ -361,13 +371,13 @@ try {
 † Google AI co-scientist 与 ScientistTwo 按公开论文编排；AgentRxiv 的代码收录于 Agent Laboratory。固定版本与方法映射见各项目及共用 [SOURCES.json](example/SOURCES.json)。
 
 <details>
-<summary><strong>在 Web 编辑器中查看工作流结构</strong></summary>
+<summary><strong>工作流结构与可读细节</strong></summary>
 
-以下复用 main 的 Web 画布截图，展示软件开发与 AHE 的编排结构。SDK 使用上面的 JSON 配置和命令行运行。
+以下用 main 的真实前端画布组件，对本 SDK 配置单独排版并截图，不是完整 Web 编辑器窗口。未连接模型或运行研究。[23 张总览 + 36 张阶段／组内细节](docs/readme/workflows/README.md) · [逐例方法映射](example/METHODS.md)。SDK 使用上面的 JSON 配置和命令行运行。
 
-![软件开发与测试的 Web 画布：coding 实现、testing 独立验证、失败返回修复](docs/readme/workflows/02-software-development.jpg)
+![软件开发与测试的画布：coding 实现、testing 独立验证、失败返回修复](docs/readme/workflows/02-software-development.jpg)
 
-![AHE 的 Web 画布：执行、评分与优化，每批三轮后由 Main 决策](docs/readme/workflows/01-ahe-evolve.jpg)
+![AHE 的画布：执行、评分与优化，每批三轮后由 Main 决策](docs/readme/workflows/01-ahe-evolve.jpg)
 
 </details>
 

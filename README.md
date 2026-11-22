@@ -34,6 +34,16 @@ ScienceEvolve is the autonomous version of the research framework presented in [
 
 [![ScienceEvolve Web / Server](docs/readme/badges/web-server.svg)](https://github.com/OpenMOSS/ScienceEvolve-server) — **Web / Server entry.** Compose Agents visually, connect model gateways, manage research projects, and inspect traces and delivered files.
 
+## What's New
+
+### 2026-11-23
+
+- Run workflows with search trees and Workflow Gates.
+- Configure Agent handoffs and tool permissions.
+- Support async feedback from Main and improve interrupted task recovery.
+
+> **Upgrade**　Stop the relevant services and back up any existing research database before [migrating to SQLite schema 31](docs/sqlite-writer-lifecycle.md).
+
 ## Your research team, one workflow
 
 > “Here is a Poisson solver. Explore two improvements, validate convergence, compare the errors, and write a report.”
@@ -361,13 +371,13 @@ Choose from **23 workflows, including three introductory workflows**. Select a w
 † Google AI co-scientist and ScientistTwo follow the published papers; AgentRxiv code is included in Agent Laboratory. Pinned versions and method mappings are recorded in project manifests and the shared [SOURCES.json](example/SOURCES.json).
 
 <details>
-<summary><strong>Workflow structures in the Web editor</strong></summary>
+<summary><strong>Workflow structures and readable detail views</strong></summary>
 
-These Web canvas screenshots from main illustrate the software and AHE workflow structures. Run them in the SDK using the JSON configurations and CLI above.
+These documentation screenshots render this SDK's configurations with actual frontend canvas components from main and separate readable layouts; they are not full Web-editor screenshots. No models or research tasks were run. [23 overviews and 36 stage/group details](docs/readme/workflows/README_en.md) · [Method mapping](example/METHODS.md). Run workflows using the JSON configurations and CLI above.
 
-![Software development in the Web editor: coding, independent testing, and repair](docs/readme/workflows/02-software-development.jpg)
+![Software development canvas: coding, independent testing, and repair](docs/readme/workflows/02-software-development.jpg)
 
-![AHE in the Web editor: execution, evaluation, optimization, and Main decisions after each three-iteration batch](docs/readme/workflows/01-ahe-evolve.jpg)
+![AHE canvas: execution, evaluation, optimization, and Main decisions after each three-iteration batch](docs/readme/workflows/01-ahe-evolve.jpg)
 
 </details>
 

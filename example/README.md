@@ -6,6 +6,8 @@
 
 环境变量、服务依赖与运行参数见 [运行准备](RUNTIME.md)；网关与模型配置见 [main CLI](../sdk/docs/main-cli-zh.md)。
 
+[逐例方法映射](METHODS.md) · [23 个示例的 23 张总览 + 36 张可读细节](../docs/readme/workflows/README.md)。方法导读与宿主路由分开；同步／串行适配、外部实验、单 lab 部署均明确标注。Raven 仍为受限双槽，Biomni-R0 仍待原 recipe 核验；截图不代表真实科研完成。
+
 | 项目 | 编排 | 配置 | 研究课题 |
 | --- | --- | --- | --- |
 | AHE 循环优化 | Git-off v2 | [workflow](01-ahe-evolve/workflow.json) | [相关性筛选与拒答阈值对笔记问答准确性的影响](01-ahe-evolve/research_proposal.txt) |
