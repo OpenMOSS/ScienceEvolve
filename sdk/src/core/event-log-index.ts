@@ -127,6 +127,22 @@ export class EventLogIndex {
     return (await this.timelinePage(snapshot, Infinity, limit)).events;
   }
 
+  async bySequence(snapshot: EventLogSnapshot, sequences: readonly number[]): Promise<TimelineEvent[]> {
+    const wanted = new Set(sequences);
+    if (!wanted.size || !snapshot.blocks.length) return [];
+    const events = new Map<number, TimelineEvent>();
+    const handle = await fs.open(snapshot.file, "r");
+    try {
+      for (const block of snapshot.blocks) {
+        if (!sequences.some(seq => seq >= block.minSeq && seq <= block.maxSeq)) continue;
+        await readLines(snapshot.file, block.start, Math.min(block.end, snapshot.size), event => {
+          if (wanted.has(event.seq)) events.set(event.seq, event);
+        }, undefined, handle);
+      }
+    } finally { await handle.close(); }
+    return [...events.values()].sort((left, right) => left.seq - right.seq);
+  }
+
   async timelinePage(snapshot: EventLogSnapshot, before: number, limit: number): Promise<{ events: TimelineEvent[]; hasMore: boolean }> {
     const positions = snapshot.timeline.filter(position => position.seq < before);
     const events: TimelineEvent[] = [];

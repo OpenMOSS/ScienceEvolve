@@ -1482,9 +1482,9 @@ export interface AgentProgress {
 export interface OverallProgress {
   percent: number;
   label: string;
-  /** Position estimate from shortest workflow distances; not elapsed-time progress. */
+  /** Furthest reached position estimated from shortest workflow distances. */
   estimated: true;
-  /** Legacy activity telemetry; does not affect the percentage. */
+  /** Number of successful calls, including repetitions. */
   successfulCalls: number;
 }
 

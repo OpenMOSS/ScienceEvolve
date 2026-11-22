@@ -1,4 +1,5 @@
 import { archivedWorkflowSessionMatches, validArchivedWorkflowAgentSessions } from "./workflow-session-archive.js";
+import type { WorkflowConfigurationVersion } from "./workflow-adjustments.js";
 import {
   closeSync,
   fstatSync,
@@ -105,6 +106,13 @@ interface ActiveInvocationCommit {
   recoveryError?: Error;
 }
 
+/** Database reads run before entering publication; the exact workflow version
+ * is rechecked by the writer inside the checkpoint transaction. */
+interface CheckpointValidation {
+  beforeWrite(): Promise<void>;
+  workflowVersion: WorkflowConfigurationVersion;
+}
+
 interface ActiveProjectMutation {
   count: number;
   settled: Promise<void>;
@@ -208,6 +216,74 @@ function isAgentTimelineEvent(event: TimelineEvent): boolean {
   return AGENT_TIMELINE_EVENT_TYPES.has(event.type) ||
     event.type.startsWith("collaboration.execution.") ||
     typeof event.data?.sourceType === "string" && AGENT_CALL_SOURCE_TYPES.has(event.data.sourceType);
+}
+
+interface MessageHistoryQuery {
+  limit: number;
+  agent?: string;
+  keyword?: string;
+}
+
+function messageHistoryKey(event: TimelineEvent, query: MessageHistoryQuery): string | undefined {
+  const data = event.data ?? {};
+  const agent = data.agent ?? event.agentId ?? data.agentId;
+  if (query.agent && agent !== query.agent) return;
+  const raw = data.canonicalEvent ?? (data.resident === true ? data.event : undefined);
+  const canonical = raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
+  const kind = canonical?.kind;
+  const legacy = event.type === "agent.trace" && String(data.kind).toLowerCase() === "message" &&
+    String(data.itemType).toLowerCase() === "agent_message";
+  if (kind !== "assistant.message" && kind !== "reasoning.summary" && !legacy) return;
+  let body = (typeof canonical?.message === "string" && data.resident === true ? canonical.message : event.message).trim();
+  if (query.keyword && body.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(body);
+      const summary = [parsed.summary, parsed.assessment, parsed.markdown]
+        .find(value => typeof value === "string" && value.trim());
+      if (summary) body = summary.trim();
+    } catch { /* A message beginning with a brace can be ordinary prose. */ }
+  }
+  if (!body || (query.keyword && !body.toLowerCase().includes(query.keyword))) return;
+  const item = canonical?.itemId ?? (kind === "reasoning.summary" ? canonical?.eventId : undefined);
+  return item ? JSON.stringify([agent, canonical?.invocationId, canonical?.attempt ?? 0, kind, item]) : String(event.seq);
+}
+
+export function deferTraceDetail(event: TimelineEvent): TimelineEvent {
+  if (event.type !== "agent.trace") return event;
+  const data = event.data ?? {};
+  const raw = data.canonicalEvent ?? (data.resident === true ? data.event : undefined);
+  const canonical = raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
+  const kind = String(canonical?.kind ?? "");
+  const legacyKind = String(data.kind ?? "").toLowerCase();
+  const traceKind = String(data.traceKind ?? "").toLowerCase();
+  const itemType = String(data.itemType ?? "").toLowerCase();
+  const tool = kind.startsWith("tool.") || legacyKind === "tool";
+  const diagnostic = kind === "diagnostic" || (!kind && legacyKind !== "message" &&
+    (data.diagnostic === true || ["stderr", "diagnostic"].includes(legacyKind) || itemType === "diagnostic" ||
+      ["status", "stderr"].includes(traceKind) || ["proxy", "cli", "adapter"].includes(String(data.diagnosticSource ?? "").toLowerCase()) ||
+      /^protocol proxy\b/i.test(event.message)));
+  if (!tool && !diagnostic) return event;
+  const metadata = Object.fromEntries([
+    "agent", "agentId", "invocationId", "executionId", "taskId", "groupRunId", "cycle",
+    "eventId", "kind", "itemId", "itemType", "status", "traceKind", "sourceType",
+    "diagnosticSource", "usageScope", "ownershipEpoch", "coordinatorEpoch"
+  ].filter(key => data[key] !== undefined).map(key => [key, data[key]]));
+  const canonicalTool = canonical?.tool as Record<string, unknown> | undefined;
+  if (canonical) {
+    metadata.canonicalEvent = {
+      schemaVersion: canonical.schemaVersion, eventId: canonical.eventId, seq: canonical.seq,
+      invocationId: canonical.invocationId, harnessId: canonical.harnessId, kind: canonical.kind,
+      phase: canonical.phase, sourceType: canonical.sourceType, attempt: canonical.attempt,
+      itemId: canonical.itemId, parentItemId: canonical.parentItemId,
+      ...(canonicalTool && { tool: { callId: canonicalTool.callId, name: canonicalTool.name, status: canonicalTool.status } })
+    };
+  }
+  // Very old tools without item IDs use the command itself as their identity.
+  const legacyCommand = tool && !canonical && !data.itemId;
+  if (legacyCommand && data.command !== undefined) metadata.command = data.command;
+  return { ...event, message: legacyCommand ? event.message : "", data: {
+    ...metadata, traceDetailDeferred: true, ...(diagnostic && { diagnostic: true })
+  } };
 }
 
 function compactTimelineEvent(event: TimelineEvent): TimelineEvent {
@@ -530,21 +606,35 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     if (!this.checkpointBases.has(state)) this.checkpointBases.set(state, JSON.parse(JSON.stringify(state)));
   }
 
-  async saveState(state: ProjectState, beforeCommit?: () => void): Promise<void> {
+  /** Rebase an admitted project's Resume on the checkpoint written by its Stop. */
+  async reloadStoppedCheckpoint(state: ProjectState): Promise<void> {
+    const beforeRead = { base: this.checkpointBases.get(state), submitted: structuredClone(state) };
+    const latest = await this.readStateSnapshot(state.id);
+    if (!isRecord(latest) || latest.id !== state.id || typeof latest.controlProtocol !== "string" ||
+      latest.controlProtocol !== state.controlProtocol || typeof latest.phase !== "string" || typeof latest.status !== "string") {
+      throw new Error(`Project ${state.id} has an invalid lifecycle checkpoint`);
+    }
+    if (latest.status !== "paused") throw new Error("Cannot resume before native stop is confirmed");
+    this.refreshCheckpoint(state, beforeRead, latest);
+  }
+
+  /** beforeCommit is a synchronous, database-free publication check. */
+  async saveState(state: ProjectState, beforeCommit?: () => void, validation?: CheckpointValidation): Promise<void> {
     await this.mutateProject(state.id, async () => {
       beforeCommit?.();
       state.updatedAt = nowIso();
       await this.atomicJson(
         path.join(this.projectDir(state.id), "state.json"),
         state,
-        beforeCommit
+        beforeCommit,
+        validation
       );
     });
   }
 
   /** Refresh the durable request/config snapshot after an Agent configuration update. */
-  async refreshRequestSnapshot(state: ProjectState, beforeCommit?: () => void): Promise<void> {
-    beforeCommit?.();
+  async refreshRequestSnapshot(state: ProjectState, beforeCommit?: () => void | Promise<void>): Promise<void> {
+    await beforeCommit?.();
     await this.atomicText(
       path.join(this.projectDir(state.id), "request.md"),
       this.requestMarkdown(state),
@@ -777,10 +867,12 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
 
   private async stableProjectRead<T>(
     projectId: string,
-    read: () => Promise<T>
+    read: () => Promise<T>,
+    signal?: AbortSignal
   ): Promise<T> {
     while (true) {
-      await this.waitForProjectReadBarrier(projectId);
+      await this.waitForProjectReadBarrier(projectId, signal);
+      signal?.throwIfAborted();
       const epoch = this.projectEpoch(projectId);
       let outcome:
         | { ok: true; value: T }
@@ -804,9 +896,10 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
 
   async withStableProjectSnapshot<T>(
     projectId: string,
-    read: () => Promise<T>
+    read: () => Promise<T>,
+    signal?: AbortSignal
   ): Promise<T> {
-    return this.stableProjectRead(projectId, read);
+    return this.stableProjectRead(projectId, read, signal);
   }
 
   private async stableEventSnapshotSize(
@@ -981,7 +1074,8 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
 
   async readEventBootstrap(
     projectId: string,
-    limit = 1_000
+    limit = 1_000,
+    compactTrace = false
   ): Promise<EventBootstrap> {
     const boundedLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
     const size = await this.stableEventSnapshotSize(projectId) ?? 0;
@@ -989,7 +1083,8 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     const recent = await this.eventLogs.page(snapshot, Infinity, boundedLimit);
     const timeline = await this.eventLogs.timelinePage(snapshot, Infinity, 200);
     return {
-      events: recent.events,
+      events: compactTrace ? recent.events.map((event, i, events) =>
+        i < events.length - 40 ? deferTraceDetail(event) : event) : recent.events,
       timelineEvents: timeline.events.map(compactTimelineEvent),
       timelineHasMore: timeline.hasMore,
       totalEvents: snapshot.totalEvents,
@@ -1000,12 +1095,38 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   async readEventHistory(
     projectId: string,
     beforeSeq: number,
-    limit = 1_000
+    limit = 1_000,
+    compactTrace = false
   ): Promise<EventHistoryPage> {
     const boundedLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
     const size = await this.stableEventSnapshotSize(projectId) ?? 0;
     const snapshot = await this.eventLogs.snapshot(path.join(this.projectDir(projectId), "events.jsonl"), size);
-    return this.eventLogs.page(snapshot, beforeSeq, boundedLimit);
+    const page = await this.eventLogs.page(snapshot, beforeSeq, boundedLimit);
+    return compactTrace ? { ...page, events: page.events.map(deferTraceDetail) } : page;
+  }
+
+  async readEventDetails(projectId: string, sequences: readonly number[]): Promise<TimelineEvent[]> {
+    const size = await this.stableEventSnapshotSize(projectId) ?? 0;
+    const snapshot = await this.eventLogs.snapshot(path.join(this.projectDir(projectId), "events.jsonl"), size);
+    return this.eventLogs.bySequence(snapshot, sequences);
+  }
+
+  async readMessageHistory(projectId: string, beforeSeq: number, query: MessageHistoryQuery): Promise<EventHistoryPage> {
+    const size = await this.stableEventSnapshotSize(projectId) ?? 0;
+    const snapshot = await this.eventLogs.snapshot(path.join(this.projectDir(projectId), "events.jsonl"), size);
+    const page = await this.eventLogs.page(snapshot, beforeSeq, 2400);
+    const matched = new Set<string>();
+    let start = 0;
+    for (let i = page.events.length - 1; i >= 0; i--) {
+      const key = messageHistoryKey(page.events[i]!, query);
+      if (!key || matched.has(key)) continue;
+      if (matched.size === query.limit) {
+        start = i + 1;
+        break;
+      }
+      matched.add(key);
+    }
+    return { events: page.events.slice(start).map(deferTraceDetail), hasMore: start > 0 || page.hasMore };
   }
 
   async readTimelineHistory(projectId: string, beforeSeq: number, limit = 200): Promise<EventHistoryPage> {
@@ -1308,14 +1429,16 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     return filePath;
   }
 
-  async readHandoff(projectId: string, invocationId: string): Promise<string> {
+  async readHandoff(projectId: string, invocationId: string, expectedAgent?: AgentName): Promise<string> {
     this.assertInvocationId(invocationId);
     const root = await fs.realpath(this.projectDir(projectId));
     const directory = await fs.realpath(path.join(root, "messages"));
     this.assertDescendant(root, directory, "handoff directory");
-    const files = (await fs.readdir(directory)).filter((name) =>
-      new RegExp(`^\\d+_[A-Za-z0-9_-]+_${invocationId}_handoff\\.md$`).test(name));
-    if (files.length !== 1) throw new Error("Saved handoff not found or ambiguous");
+    const files = (await fs.readdir(directory)).filter((name) => {
+      const match = new RegExp(`^\\d+_([A-Za-z0-9_-]+)_${invocationId}_handoff\\.md$`).exec(name);
+      return match && (expectedAgent === undefined || match[1] === expectedAgent);
+    });
+    if (files.length !== 1) throw new Error(`Saved handoff not found or ambiguous: ${projectId}/${expectedAgent ?? "*"}/${invocationId}`);
     const file = await fs.realpath(path.join(directory, files[0]));
     this.assertDescendant(directory, file, "handoff");
     return fs.readFile(file, "utf8");
@@ -1431,6 +1554,14 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 4 * 1024 * 1024 ||
         await fs.realpath(filePath) !== filePath) throw new Error("Workflow proposal must be a bounded private regular file");
     return fs.readFile(filePath);
+  }
+
+  /** An unfinished native result is evidence for its one correction, not a committed handoff. */
+  async writeTerminalRepairHandoff(projectId: string, invocationId: string, handoff: string): Promise<string> {
+    if (!handoff.trim()) throw new Error("Terminal repair requires a nonempty original handoff");
+    const file = path.join(await this.invocationRuntimePath(projectId, invocationId), "terminal-repair-handoff.md");
+    await fs.writeFile(file, handoff, { encoding: "utf8", mode: 0o400, flag: "wx" });
+    return file;
   }
 
   async writeHandoff(
@@ -2072,6 +2203,22 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
       mode: 0o600
     });
     return manifestPath;
+  }
+
+  async registerWorkspaceArtifact(state: ProjectState, envelope: ControlActionEnvelope): Promise<ArtifactRecord> {
+    const action = envelope.action;
+    if (action.tool !== "publish_artifact" || envelope.projectId !== state.id || state.git?.enabled)
+      throw new Error("Workspace publication requires the publishing project's workspace action");
+    const source = await this.resolveWorkspaceArtifact(state.id, envelope.agent, action.path);
+    const modifiedAt = new Date(source.mtimeMs).toISOString();
+    const record: ArtifactRecord = {
+      id: `${envelope.agent}:${source.relativePath}`, agent: envelope.agent, invocationId: envelope.invocationId,
+      path: source.relativePath, title: action.title, kind: action.kind, description: action.description,
+      size: source.size, mediaType: source.mediaType, sha256: createHash("sha256").update(await fs.readFile(source.sourcePath)).digest("hex"),
+      registeredAt: nowIso(), modifiedAt, updatedAt: modifiedAt
+    };
+    state.artifacts = [...(state.artifacts ?? []).filter(item => item.path !== record.path), record];
+    return record;
   }
 
   async resolveWorkspaceArtifact(
@@ -3091,9 +3238,9 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     return projectId && (await this.projectStateStore?.domain(projectId)) ? { projectId, name } : undefined;
   }
 
-  protected async atomicJson(filePath: string, value: unknown, beforeCommit?: () => void): Promise<void> {
+  protected async atomicJson(filePath: string, value: unknown, beforeCommit?: () => void, validation?: CheckpointValidation): Promise<void> {
     if (path.basename(filePath) !== "state.json" || value === null || typeof value !== "object") {
-      return this.writeAtomicJson(filePath, value, beforeCommit);
+      return this.writeAtomicJson(filePath, value, beforeCommit, validation);
     }
     // Freeze the submitted JSON before the first async lookup or queue wait.
     // Keep the live object separately for refreshing it after publication.
@@ -3107,7 +3254,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     this.checkpointWrites.set(value, pending);
     try {
       if (previous) await previous.settled;
-      await this.writeAtomicJson(filePath, value, beforeCommit, checkpoint);
+      await this.writeAtomicJson(filePath, value, beforeCommit, validation, checkpoint);
     } finally {
       pending.shift();
       if (!pending.length) this.checkpointWrites.delete(value);
@@ -3116,7 +3263,8 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
   }
 
   private async writeAtomicJson(filePath: string, value: unknown, beforeCommit?: () => void,
-    checkpoint?: PendingCheckpoint): Promise<void> {
+    validation?: CheckpointValidation, checkpoint?: PendingCheckpoint): Promise<void> {
+    if (validation) await validation.beforeWrite();
     const target = await this.formalDocumentPath(filePath);
     if (target) {
       // The read barrier tracks overlapping mutations; it is not a write
@@ -3130,6 +3278,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
         if (previous) await previous;
         const prior = await this.projectStateStore!.read(target.projectId, target.name);
         if (!prior) throw new Error("Registered project has no authoritative document");
+        await validation?.beforeWrite();
         beforeCommit?.();
         if (checkpoint && checkpoint.base === undefined)
           throw new Error(`Project ${target.projectId} checkpoint save has no loaded baseline; reload state and apply only the intended changes`);
@@ -3138,11 +3287,13 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
           : value;
         const prepared = await prepareProjectStateDocumentView(filePath, next, prior);
         try {
+          await validation?.beforeWrite();
           beforeCommit?.();
-          // Commit the exact snapshot even if the live object changed.
+          // The worker checks workflow authority and CAS under its writer lock.
+          // Publication can check live memory, but cannot query that worker.
           await this.projectStateStore!.write(target.projectId, target.name, prepared.value, prior.version, document => {
             beforeCommit?.(); prepared.publish(document);
-          });
+          }, validation?.workflowVersion);
           if (checkpoint) this.refreshCheckpoint(value as ProjectState, checkpoint, prepared.value);
         } finally { prepared.discard(); }
       } finally {
@@ -3166,7 +3317,10 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
           throw new Error(`Project checkpoint ${filePath} save has no loaded baseline; reload state and apply only the intended changes`);
         const next = current === undefined ? checkpoint.submitted
           : mergeProjectCheckpoint(checkpoint.base, current, checkpoint.submitted);
-        await this.atomicText(filePath, `${JSON.stringify(next, null, 2)}\n`, beforeCommit);
+        await this.atomicText(filePath, `${JSON.stringify(next, null, 2)}\n`, async () => {
+          await validation?.beforeWrite();
+          beforeCommit?.();
+        });
         this.refreshCheckpoint(value as ProjectState, checkpoint, next);
       } finally {
         release();
@@ -3177,7 +3331,7 @@ ${rolePrompts ? `## Role prompts\n\n${rolePrompts}\n` : ""}
     await this.atomicText(filePath, `${JSON.stringify(value, null, 2)}\n`, beforeCommit);
   }
 
-  private refreshCheckpoint(state: ProjectState, checkpoint: PendingCheckpoint, saved: unknown): void {
+  private refreshCheckpoint(state: ProjectState, checkpoint: Pick<PendingCheckpoint, "base" | "submitted">, saved: unknown): void {
     const { submitted, base } = checkpoint;
     const refreshed = mergeProjectCheckpoint(submitted, saved, state, "project", true) as ProjectState;
     for (const key of Object.keys(state)) if (!(key in refreshed)) delete (state as unknown as Record<string, unknown>)[key];
@@ -3283,7 +3437,7 @@ function isCurrentMainProjectState(value: unknown): value is ProjectState {
   const scoped = orchestration.schemaVersion === 3;
   let scopedOuterNames: string[] | undefined;
   if (scoped) {
-    if (!isRecord(value.git) || value.git.enabled !== true) return false;
+    if (!isRecord(value.git) || typeof value.git.enabled !== "boolean") return false;
     try {
       scopedOuterNames = workflowOuterNodeIds(normalizeAgentOrchestrationTemplate(orchestration));
     } catch {

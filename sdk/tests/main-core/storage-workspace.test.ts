@@ -745,6 +745,33 @@ describe("ProjectStorage project workspace", () => {
     expect(await storage.readEvents(state.id)).toHaveLength(400);
   });
 
+  it("pages matching message bodies without counting diagnostics, tool calls or duplicate messages", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-message-history-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()), state = minimalState("prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await storage.createProject(state);
+    const message = (itemId: string, agentId = "main", body = "A matched result") => ({
+      type: "agent.trace" as const, agentId, message: body,
+      data: { canonicalEvent: { schemaVersion: 1, kind: "assistant.message", itemId, invocationId: "run" } }
+    });
+    const drafts = [
+      message("first"), message("second"),
+      ...Array.from({ length: 300 }, () => ({ type: "agent.trace" as const, message: "A private diagnostic", data: { traceKind: "status" } })),
+      message("third"), message("third"), message("other-agent", "worker"), message("other-keyword", "main", "Unrelated")
+    ];
+    for (let offset = 0; offset < drafts.length; offset += 100) {
+      await storage.appendEvents(state, drafts.slice(offset, offset + 100));
+    }
+    const query = { limit: 2, agent: "main", keyword: "result" };
+    const page = await storage.readMessageHistory(state.id, Infinity, query);
+    expect(page.hasMore).toBe(true);
+    expect(page.events[0]?.seq).toBe(2);
+    expect(page.events.filter(event => event.data?.traceDetailDeferred)).toHaveLength(300);
+    expect(JSON.stringify(page)).not.toContain("A private diagnostic");
+    const older = await storage.readMessageHistory(state.id, page.events[0]!.seq, query);
+    expect(older.events.map(event => event.seq)).toEqual([1]);
+    expect(older.hasMore).toBe(false);
+  });
+
   it("reads committed events during later project writes without exposing an unfinished log append", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-inflight-event-prefix-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()), state = minimalState("prj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");

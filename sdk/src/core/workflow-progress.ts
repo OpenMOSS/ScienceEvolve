@@ -1,7 +1,8 @@
 import { workflowOuterNodeRefs } from "./agent-orchestration.js";
+import { SYSTEM_CONTROLLER_AGENT } from "./system-controller.js";
 import type { AgentOrchestrationTemplate, ProjectState } from "./types.js";
 
-/** Estimate position in the outer workflow, without counting calls or loop iterations. */
+/** Estimate the furthest position reached in the current outer workflow. */
 export function workflowProgressPercent(state: ProjectState): number {
   if (state.status === "completed") return 100;
 
@@ -31,12 +32,31 @@ export function workflowProgressPercent(state: ProjectState): number {
   const current = activeRun?.node.nodeId ??
     (agent ? outerNodeForAgent(template, agent) : undefined) ??
     state.nodeRuns?.at(-1)?.node.nodeId ?? template.input.target;
-  const travelled = distancesFrom(template.input.target, forward).get(current);
-  const remaining = distancesFrom("finish", reverse).get(current);
-  if (travelled === undefined || remaining === undefined || remaining === 0) return 0;
+  const fromInput = distancesFrom(template.input.target, forward);
+  const toFinish = distancesFrom("finish", reverse);
+  const position = (nodeId: string) => {
+    const travelled = fromInput.get(nodeId);
+    const remaining = toFinish.get(nodeId);
+    if (travelled === undefined || remaining === undefined || remaining === 0) return 0;
+    return Math.min(99, Math.round(1000 * travelled / (travelled + remaining)) / 10);
+  };
 
-  // Both distances use the current node, so a longer branch still has meaningful progress.
-  return Math.min(99, Math.round(1000 * travelled / (travelled + remaining)) / 10);
+  let furthest = position(current);
+  if (state.nodeRuns?.length) {
+    for (const run of state.nodeRuns) {
+      if (run.status === "completed" && (state.workflowRevision === undefined || run.workflowRevision === state.workflowRevision)) {
+        furthest = Math.max(furthest, position(run.node.nodeId));
+      }
+    }
+  } else {
+    // Legacy projects record successful calls but have no durable outer-node runs.
+    for (const node of nodes) {
+      if (node.kind === "agent" && node.agentId !== SYSTEM_CONTROLLER_AGENT && (state.runCounts[node.agentId] ?? 0) > 0) {
+        furthest = Math.max(furthest, position(node.nodeId));
+      }
+    }
+  }
+  return furthest;
 }
 
 function distancesFrom(start: string, graph: Map<string, Set<string>>): Map<string, number> {

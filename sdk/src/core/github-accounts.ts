@@ -2,9 +2,10 @@ import {
   createCipheriv,
   createDecipheriv,
   createHash,
-  randomBytes
+  randomBytes,
+  timingSafeEqual
 } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import type { GitHubCredential, GitHubCredentialResolver } from "./collaboration-git/contracts.js";
 import { GitHubAuthorizationError } from "./collaboration-git/errors.js";
@@ -114,7 +115,7 @@ export interface GitHubAccountStoreOptions {
  */
 export class GitHubAccountStore {
   private mutationTail: Promise<void> = Promise.resolve();
-  private readonly oauth: GitHubOAuthConfiguration;
+  private oauth: GitHubOAuthConfiguration;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly now: () => Date;
   private readonly sessions = new Map<string, OAuthSession>();
@@ -125,6 +126,13 @@ export class GitHubAccountStore {
     options: GitHubAccountStoreOptions = {}
   ) {
     this.oauth = options.oauth ?? {};
+    if (!Object.values(this.oauth).some(Boolean)) {
+      try {
+        this.oauth = JSON.parse(readFileSync(this.oauthPath(), "utf8")) as GitHubOAuthConfiguration;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.now = options.now ?? (() => new Date());
   }
@@ -135,6 +143,41 @@ export class GitHubAccountStore {
       this.oauth.clientSecret?.trim() &&
       this.oauth.callbackUrl?.trim()
     );
+  }
+
+  async configureOAuth(config: Required<GitHubOAuthConfiguration>, origin: string, setupCode: string): Promise<boolean> {
+    const callback = new URL(config.callbackUrl);
+    if (this.safeOrigin(origin) !== callback.origin || callback.username || callback.password ||
+        callback.search || callback.hash || !callback.pathname.endsWith("/api/github/auth/callback")) {
+      throw new Error("Callback URL 必须使用当前站点地址并以 /api/github/auth/callback 结尾");
+    }
+    return this.serialize(async () => {
+      if (this.oauthConfigured()) return false;
+      let expected: string;
+      try {
+        expected = (await fs.readFile(path.join(this.root, "github-oauth-setup.key"), "utf8")).trim();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        return false;
+      }
+      const digest = (value: string) => createHash("sha256").update(value).digest();
+      if (expected.length < 32 || !timingSafeEqual(digest(expected), digest(setupCode))) return false;
+      const file = this.oauthPath();
+      const temporary = `${file}.${newId("tmp")}`;
+      try {
+        await fs.writeFile(temporary, JSON.stringify(config), { encoding: "utf8", mode: 0o600, flag: "wx" });
+        // Publish the complete configuration atomically without overwriting another setup.
+        await fs.link(temporary, file);
+      } finally {
+        await fs.rm(temporary, { force: true });
+      }
+      this.oauth = config;
+      return true;
+    });
+  }
+
+  private oauthPath(): string {
+    return path.join(this.root, "github-oauth.json");
   }
 
   async list(): Promise<GitHubAccountRecord[]> {

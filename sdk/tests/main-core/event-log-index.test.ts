@@ -40,6 +40,8 @@ it("seeks to a history page and SSE cursor without rereading old trace bodies", 
   const firstTimeline = await f.index.timelinePage(f.snapshot, 202, 3);
   expect(firstTimeline.events.map(event => event.seq)).toEqual([2]);
   expect(firstTimeline.hasMore).toBe(false);
+  expect((await f.index.bySequence(f.snapshot, [2998, 6000, 2998, 5999])).map(event => event.seq))
+    .toEqual([2998, 6000]);
   expect(f.snapshot.totalEvents).toBe(3000); expect(f.snapshot.lastSeq).toBe(6000);
   expect(bytes).toBeLessThan(f.snapshot.size / 4);
 });
