@@ -88,6 +88,37 @@ const fakeSources: Record<string, string> = {
     });`
 };
 
+describe("Main assistance in the active native turn", () => {
+  it.each([false, true])("binds Codex steer to the original turn and preserves rejected delivery (%s)", async rejected => {
+    const child = await fakeNative("codex-app-server", `
+      const r=require('node:readline').createInterface({input:process.stdin});
+      const send=v=>process.stdout.write(JSON.stringify(v)+'\\n'); let started=0;
+      r.on('line',line=>{const q=JSON.parse(line);
+        if(q.method==='initialize')return send({id:q.id,result:{userAgent:'assistance-fixture'}});
+        if(q.method==='thread/start')return send({id:q.id,result:{thread:{id:'codex-thread'}}});
+        if(q.method==='turn/start') { started++; send({id:q.id,result:{turn:{id:'original-turn'}}});
+          return send({method:'item/completed',params:{threadId:'codex-thread',turnId:'original-turn',item:{type:'commandExecution',id:'original-command'}}}); }
+        if(q.method==='turn/steer') {
+          if(q.params.threadId!=='codex-thread'||q.params.expectedTurnId!=='original-turn'||started!==1)throw Error('Lost original turn');
+          send(${rejected} ? {id:q.id,error:{code:-32000,message:'Original turn ended'}} : {id:q.id,result:{turnId:'original-turn'}});
+          if(!${rejected})send({method:'item/completed',params:{threadId:'codex-thread',turnId:'original-turn',item:{type:'userMessage',id:'assistance-receipt',content:q.params.input}}});
+          return send({method:'turn/completed',params:{threadId:'codex-thread',turn:{id:'original-turn',status:'completed',items:[{type:'agentMessage',text:'original work completed'}]}}}); }
+        if(q.method==='thread/unsubscribe')return send({id:q.id,result:{}});
+      });`);
+    const frames: Record<string, unknown>[] = [], failed = vi.fn(async () => {}), take = vi.fn(async () => ({ inputId: "assistance-input", text: "Main assistance reply for the original task" }));
+    const driver = await ResidentNativeDriver.open({ child, session: session("codex", "codex-thread"),
+      codec: codexAppServerCodec({ model: "fixture", workspacePath: child.spawnargs[1], sandbox: "read-only" }), ownershipEpoch: 1,
+      turnAuthority: { activate: async value => ({ inputId: value.inputId, invocationId: value.invocationId, ownershipEpoch: 1,
+        liveInput: { take, failed }, release: () => undefined }) }, onFrame: frame => { frames.push(frame); } });
+    const pid = child.pid;
+    await expect(driver.submit(turn(1))).resolves.toMatchObject({ handoff: "original work completed" });
+    expect(child.pid).toBe(pid); expect(take).toHaveBeenCalledTimes(1);
+    expect(failed).toHaveBeenCalledTimes(rejected ? 1 : 0);
+    expect(frames.some(frame => (frame.params as { item?: { id?: string } } | undefined)?.item?.id === "assistance-receipt")).toBe(!rejected);
+    await driver.close();
+  });
+});
+
 describe("DSH native history surface", () => {
   it.each(["previous-turn", "current-turn"] as const)("keeps DSH compaction surface replacements out of current result attribution (%s)", async mode => {
     const child = await fakeNative("dsh-sdk-json-rpc", dshHistoricalSurfaceSource(mode));

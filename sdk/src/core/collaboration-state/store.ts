@@ -1,3 +1,4 @@
+import { assistanceDeliveryText, assistanceReceiptChange, sameAssistanceTask, assistancePrompt, assistanceUpdate, assertAssistanceImmutable, type MainAssistanceRecord, type MainAssistanceOrigin } from "../main-assistance.js";
 import { assertAgentGateConfigurationUnchanged, requireGateChoice, gateFeedback, gateRunId, prepareGateRun, type GateRun } from "../workflow-gate.js";
 import { failureAttemptHistory, failureAttemptKey, summarizeFailureAttempts } from "../internal/shared/failure-attempt-history.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -3410,7 +3411,7 @@ export class CollaborationStateDatabase {
       SELECT 1 FROM scoped_leader_turns
       WHERE project_id = ? AND agent_id = ? AND status = 'active' LIMIT 1
     `).get(projectId, agentId);
-    return Boolean(execution || leadership || this.scopedFinalNativeTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped" && !this.executionSupervisionResult(projectId, turn.executionId)) ||
+    return Boolean(agentId === "main" && this.mainAssistanceOwnsMain(projectId) || execution || leadership || this.scopedFinalNativeTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped" && !this.executionSupervisionResult(projectId, turn.executionId)) ||
       this.scopedWorktreeClosingBlocksAgent(projectId, agentId));
   }
 
@@ -3420,6 +3421,7 @@ export class CollaborationStateDatabase {
   }
 
   private scopedAgentHasLiveInvocation(projectId: string, agentId: string, exceptClosingInvocationId?: string): boolean {
+    if (agentId === "main" && this.mainAssistanceOwnsMain(projectId)) return true;
     if (this.scopedWorktreeClosingTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped" &&
       turn.invocationId !== exceptClosingInvocationId)) return true;
     if (this.scopedFinalNativeTurns(projectId).some(turn => turn.agentId === agentId && turn.status !== "stopped" && !this.executionSupervisionResult(projectId, turn.executionId))) return true;
@@ -16495,6 +16497,146 @@ export class CollaborationStateDatabase {
         AND event_type = 'execution.agent_git.fact' ORDER BY seq DESC LIMIT 1`)
       .get(projectId, executionId, ownershipEpoch) as Row | undefined;
     return row ? parseJson<{ facts: import("../agent-git-tools.js").AgentGitFacts }>(row.payload_json, { facts: {} }).facts : undefined;
+  }
+
+  mainAssistance(projectId: string): MainAssistanceRecord[] {
+    this.assertOpen();
+    return (this.database.prepare(`SELECT payload_json FROM project_events WHERE project_id=? AND event_type='main.assistance.updated'
+      AND seq IN (SELECT MAX(seq) FROM project_events WHERE project_id=? AND event_type='main.assistance.updated'
+        GROUP BY json_extract(payload_json, '$.id')) ORDER BY json_extract(payload_json,'$.createdAt'), seq`).all(projectId, projectId) as Row[])
+      .map(row => JSON.parse(String(row.payload_json)) as MainAssistanceRecord);
+  }
+
+  private insertMainAssistance(head: HeadRow, record: MainAssistanceRecord): void {
+    this.insertEvent(head, { projectId: record.origin.projectId, eventId: `evt_${randomUUID()}`, ts: this.isoNow(),
+      requestId: `main-assistance:${record.id}:${record.version}`, type: "main.assistance.updated",
+      agentId: record.origin.agentId, invocationId: record.origin.invocationId, payload: record as unknown as Record<string, unknown> });
+  }
+
+  saveMainAssistance(record: MainAssistanceRecord, expectedVersion: number): MainAssistanceRecord {
+    return this.mutateProject(record.origin.projectId, undefined, head => {
+      const prior = this.mainAssistance(record.origin.projectId).find(item => item.id === record.id);
+      if (prior?.version === record.version && isDeepStrictEqual(prior, record)) return { changed: false, value: prior };
+      if ((prior?.version ?? 0) !== expectedVersion || record.version !== expectedVersion + 1) throw new Error("Main assistance version conflict");
+      if (prior) assertAssistanceImmutable(prior, record);
+      this.insertMainAssistance(head, record);
+      return { changed: true, value: record };
+    }).value;
+  }
+
+  prepareMainAssistanceDelivery(current: MainAssistanceOrigin, inputId: string): string {
+    if (!inputId) throw new Error("Assistance delivery requires a native input identity");
+    return this.mutateProject(current.projectId, undefined, head => {
+      if (!this.mainAssistanceOriginLive(current)) return { changed: false, value: "" };
+      const record = this.mainAssistance(current.projectId).find(item => item.reply && item.delivery?.status === "queued" &&
+        item.origin.agentId === current.agentId && item.origin.taskId === current.taskId);
+      if (!record) return { changed: false, value: "" };
+      if (!sameAssistanceTask(record.origin, current)) {
+        this.insertMainAssistance(head, assistanceUpdate(record, { delivery: { status: "unknown",
+          reason: "Original native Session no longer matches; reply retained without forwarding to the replacement Session" } }));
+        return { changed: true, value: "" };
+      }
+      const text = assistanceDeliveryText(record);
+      this.insertMainAssistance(head, assistanceUpdate(record, { delivery: { status: "offered", inputId, invocationId: current.invocationId,
+        session: structuredClone(current.session), text } }));
+      return { changed: true, value: text };
+    }).value;
+  }
+
+  observeMainAssistanceInput(projectId: string, agentId: string, invocationId: string, session: import("../harness-runtime/contracts.js").SessionRef,
+    event: Record<string, unknown>): void {
+    this.mutateProject(projectId, undefined, head => {
+      let changed = false;
+      for (const record of this.mainAssistance(projectId)) {
+        const update = assistanceReceiptChange(record, agentId, invocationId, session, event);
+        if (update) { this.insertMainAssistance(head, assistanceUpdate(record, update)); changed = true; }
+      }
+      return { changed, value: undefined };
+    });
+  }
+
+  failMainAssistanceDelivery(current: MainAssistanceOrigin, inputId: string, reason: string): void {
+    this.mutateProject(current.projectId, undefined, head => {
+      const record = this.mainAssistance(current.projectId).find(item => sameAssistanceTask(item.origin, current) && item.delivery?.inputId === inputId);
+      if (record?.delivery?.status !== "offered") return { changed: false, value: undefined };
+      this.insertMainAssistance(head, assistanceUpdate(record, { delivery: { ...record.delivery, status: "unknown", reason } }));
+      return { changed: true, value: undefined };
+    });
+  }
+
+  mainAssistanceOriginLive(origin: MainAssistanceOrigin): boolean {
+    if (!origin.executionContext) {
+      const checkpoint = this.projectStateDocument(origin.projectId, "project.checkpoint")?.value as ProjectState | undefined;
+      return Boolean(checkpoint && !["completed", "cancelled"].includes(checkpoint.status) &&
+        checkpoint.activeAgentExecution?.id === origin.taskId && checkpoint.activeAgentExecution.agent === origin.agentId);
+    }
+    const context = origin.executionContext;
+    if (context.role === "leader") return this.openRuntimeActivities(origin.projectId, false).some(item => item.invocationId === origin.invocationId);
+    const scoped = this.scopedExecution(origin.projectId, context.executionId);
+    if (scoped) return scoped.agentId === origin.agentId && !["completed", "cancelled", "stopped"].includes(scoped.status) &&
+      !this.scopedAgentTaskCompletion(origin.projectId, scoped.id, scoped.ownershipEpoch);
+    const row = this.database.prepare("SELECT status,agent_id FROM member_executions WHERE project_id=? AND execution_id=?")
+      .get(origin.projectId, context.executionId) as Row | undefined;
+    return Boolean(row && row.agent_id === origin.agentId && !["succeeded", "cancelled", "stopped", "stop_requested", "superseded"].includes(String(row.status)));
+  }
+
+  mainAssistanceOwnsMain(projectId: string): boolean {
+    return this.mainAssistance(projectId).some(item => item.main && !item.main.stoppedAt);
+  }
+
+  refreshMainAssistanceDeliveries(projectId: string): MainAssistanceRecord[] {
+    const existing = this.mainAssistance(projectId);
+    if (!existing.some(record => record.reply && record.delivery && !["received", "late"].includes(record.delivery.status) && !this.mainAssistanceOriginLive(record.origin))) return existing;
+    return this.mutateProject(projectId, undefined, head => {
+      let changed = false;
+      const records = this.mainAssistance(projectId).map(record => {
+        if (!record.reply || !record.delivery || ["received", "late"].includes(record.delivery.status) || this.mainAssistanceOriginLive(record.origin)) return record;
+        const next = assistanceUpdate(record, { delivery: { ...record.delivery, status: "late", reason: "Original task has ended; reply retained without reopening it" } });
+        this.insertMainAssistance(head, next); changed = true; return next;
+      });
+      return { changed, value: records };
+    }).value;
+  }
+
+  claimMainAssistance(projectId: string, id: string): MainAssistanceRecord | undefined {
+    return this.mutateProject(projectId, undefined, head => {
+      this.assertNotFrozen(head);
+      const record = this.mainAssistance(projectId).find(item => item.id === id);
+      if (!record || record.status !== "queued") return { changed: false, value: undefined };
+      const serial = this.projectStateDocument(projectId, "project.checkpoint")?.value as ProjectState | undefined;
+      if (this.mainAssistanceOwnsMain(projectId) || this.scopedAgentHasUnreleasedActivity(projectId, "main") ||
+        this.openRuntimeActivities(projectId, false).some(item => item.agentId === "main") ||
+        serial?.currentAgent === "main" && serial.activeInvocationId ||
+        this.database.prepare(`SELECT 1 FROM member_executions WHERE project_id=? AND agent_id='main'
+          AND status NOT IN ('succeeded','cancelled') LIMIT 1`).get(projectId)) return { changed: false, value: undefined };
+      const slot = this.firstAvailableLaneSlot(projectId, "management");
+      if (slot === undefined) return { changed: false, value: undefined };
+      const invocationId = `inv_${randomUUID().replaceAll("-", "")}`;
+      const epoch = Math.max(0, ...this.mainAssistance(projectId).map(item => item.main?.epoch ?? 0)) + 1;
+      const main = { invocationId, epoch, writerEpoch: this.lease.epoch, inputId: `assistance-${record.id}`, text: assistancePrompt(record) };
+      const next = assistanceUpdate(record, { status: "processing", main });
+      this.database.prepare(`INSERT INTO lane_leases(project_id,lane,slot,owner_kind,owner_id,acquired_at)
+        VALUES (?,'management',?,'coordinator',?,?)`).run(projectId, slot, `main-assistance:${invocationId}`, this.isoNow());
+      this.insertMainAssistance(head, next);
+      return { changed: true, value: next };
+    }).value;
+  }
+
+  releaseMainAssistance(projectId: string, id: string, invocationId: string, failure?: string, outcomeUnknown = false): MainAssistanceRecord {
+    return this.mutateProject(projectId, undefined, head => {
+      const record = this.mainAssistance(projectId).find(item => item.id === id);
+      if (!record?.main || record.main.invocationId !== invocationId) throw new Error("Main assistance stop lost its exact invocation");
+      if (record.main.stoppedAt) return { changed: false, value: record };
+      const next = assistanceUpdate(record, { main: { ...record.main, stoppedAt: this.isoNow() },
+        ...(failure ? { error: failure } : {}),
+        ...(!record.reply ? { status: outcomeUnknown ? "unknown" as const : "failed" as const, error: failure ?? "Main returned without an explicit reply" } : {}),
+        ...(record.reply && !this.mainAssistanceOriginLive(record.origin) && record.delivery?.status !== "received"
+          ? { delivery: { ...record.delivery, status: "late" as const, reason: "Original task has ended; retained without reopening it" } } : {}) });
+      this.database.prepare("DELETE FROM lane_leases WHERE project_id=? AND lane='management' AND owner_kind='coordinator' AND owner_id=?")
+        .run(projectId, `main-assistance:${invocationId}`);
+      this.insertMainAssistance(head, next);
+      return { changed: true, value: next };
+    }).value;
   }
 
   workflowGate(projectId: string, id: string): GateRun | undefined {

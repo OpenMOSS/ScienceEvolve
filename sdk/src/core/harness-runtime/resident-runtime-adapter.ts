@@ -263,7 +263,13 @@ export interface ResidentMainNodeControlScope {
   allowFinishRoute: false;
 }
 
+export interface ResidentMainAssistanceControlScope {
+  role: "main-assistance"; projectId: string; nodeRunId: string; routeScopeId: string;
+  leaderAgentId: "main"; coordinatorEpoch: number;
+}
+
 export type ResidentControlScope =
+  | ResidentMainAssistanceControlScope
   | ResidentReceiptCoordinatorControlScope
   | ResidentScopedLeaderControlScope
   | ResidentLeaderControlScope
@@ -388,6 +394,7 @@ export class HarnessRuntimeResidentAdapter {
     if (!model) throw adapterError(`Agent ${request.agent} has no locked resident model`);
     const controlTemplate = deriveControlTemplate(request, input.controlScope);
     if (controlTemplate && request.onProjectStateRequest) controlTemplate.projectState = true;
+    if (controlTemplate && request.onMainAssistanceRequest) controlTemplate.mainAssistance = request.agent === "main" ? "reply" : "request";
     if (controlTemplate && request.onWorkflowGateRequest) controlTemplate.workflowGate = true;
     if (controlTemplate && request.project.searchTree) controlTemplate.searchTree = true;
     if (controlTemplate && input.inputs?.workflowAuthoringPath) {
@@ -996,16 +1003,27 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
         inputId: turn.inputId,
         invocationId: turn.invocationId,
         ownershipEpoch: this.#options.ownershipEpoch,
+        ...(prepared.request.onPendingMainAssistance ? { liveInput: {
+          take: async () => {
+            if (this.#current !== prepared || prepared.revoked || !this.#nativeSession) return;
+            const inputId = `assistance-native-${randomUUID()}`;
+            const text = await prepared.request.onPendingMainAssistance!(inputId, structuredClone(this.#nativeSession));
+            return text ? { inputId, text } : undefined;
+          },
+          failed: async (inputId: string, reason: string) => { await prepared.request.onMainAssistanceDeliveryFailed?.(inputId, reason); }
+        } } : {}),
         inputSupplement: async () => {
           if (this.#current !== prepared || prepared.revoked || !this.#nativeSession)
             throw adapterError("Late native input facts lost their actual resident authority");
-          const rawSupplement = await prepared.request.onPendingWorkflowAdjustments?.(prepared.turn.inputId, structuredClone(this.#nativeSession),
+          const assistance = await prepared.request.onPendingMainAssistance?.(prepared.turn.inputId, structuredClone(this.#nativeSession)) ?? "";
+          const updates = await prepared.request.onPendingWorkflowAdjustments?.(prepared.turn.inputId, structuredClone(this.#nativeSession),
             async sources => {
               const index = await this.#options.runtime.publishContextIndex({ projectId: prepared.request.project.id,
                 projectPath: prepared.inputs.projectPath, inboxPath: prepared.inboxPath, sources });
               if (index) prepared.supplementaryIndexes.push(index);
               return index?.preview ?? "";
             }) ?? "";
+          const rawSupplement = [assistance, updates].filter(Boolean).join("\n\n");
           const supplement = fitContextInjection(rawSupplement, agentContextWindow(prepared.request.project.agents[prepared.request.agent]),
             prepared.supplementaryIndexes.map(index => ({ text: index.preview, alternatives: [index.compactPreview, index.minimalPreview] })),
             `${prepared.turn.prompt}\n\n${this.#promptContext!.policy.constraintPrompt}`).prompt;
@@ -1156,6 +1174,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       ...(template.expiresAt ? { expiresAt: template.expiresAt } : {}),
       stagingPath,
       signal,
+      ...(request.onMainAssistanceRequest ? { mainAssistanceNotice: async (inputId: string) => await request.onPendingMainAssistance?.(inputId, this.#nativeSession) ?? "", mainAssistance: (value: unknown, callId: string) => request.onMainAssistanceRequest!(value, callId) } : {}),
       ...(request.onWorkflowGateRequest ? { workflowGate: (value: unknown, callId: string) => request.onWorkflowGateRequest!(value, callId) } : {}),
       ...(request.project.searchTree ? { searchTree: input => requestInvocationSearchTree(request, input) } : {}),
       ...(request.onProjectStateRequest ? { projectState: input => request.onProjectStateRequest!(input) } : {}),
@@ -1190,7 +1209,8 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       bridge = await this.#options.controlBridgeFactory(service, stagingDirectory);
       const control: ControlMcpRequest = {
         ...stripControlAuthority(template),
-        ...(request.onWorkflowGateRequest ? { workflowGate: true } : {}),
+        ...(request.onMainAssistanceRequest ? { mainAssistance: request.agent === "main" ? "reply" as const : "request" as const } : {}),
+    ...(request.onWorkflowGateRequest ? { workflowGate: true } : {}),
         ...(request.project.searchTree ? { searchTree: true } : {}),
         ...(request.onProjectStateRequest ? { projectState: true, nativeBackgroundJobs: true } : {}),
         stagingPath,
@@ -2012,7 +2032,7 @@ function assertOpenInputAuthority(input: HarnessRuntimeResidentOpenInput): void 
     }
     const scope = input.controlScope;
     const contextIsMainRoute = "routeScopeId" in context;
-    const scopeIsMainRoute = scope?.role === "main-route" || scope?.role === "main-node" ||
+    const scopeIsMainRoute = scope?.role === "main-assistance" || scope?.role === "main-route" || scope?.role === "main-node" ||
       scope?.role === "receipt-coordinator" && typeof scope.routeScopeId === "string";
     const contextScopeId = contextIsMainRoute ? context.routeScopeId : context.groupRunId;
     const controlScopeId = scopeIsMainRoute ? scope.routeScopeId :
@@ -2078,6 +2098,11 @@ function deriveControlTemplate(
 ): ControlMcpRequest | undefined {
   const context = request.executionContext;
   if (!context) return undefined;
+  if (scope?.role === "main-assistance") {
+    if (request.agent !== "main" || request.kind !== "main" || !request.onMainAssistanceRequest) throw adapterError("Main assistance requires its exact request service");
+    return { stagingPath: "/turn-scoped/control-actions.json", capability: "turn-scoped", stateVersion: scope.coordinatorEpoch,
+      candidates: [], decisionBy: "main", allowUserIntervention: false, canComplete: false, mainAssistance: "reply", requireBridge: true };
+  }
   if (scope?.role === "receipt-coordinator") {
     return { stagingPath: "/turn-scoped/control-actions.json", capability: "turn-scoped",
       stateVersion: scope.coordinatorEpoch, candidates: [], decisionBy: "agent",
@@ -2195,6 +2220,7 @@ function discoveryCapabilityContext(
     agent: request.agent,
     invocationId: request.invocationId,
     stateVersion: control.stateVersion,
+    ...(request.onMainAssistanceRequest ? { mainAssistance: request.agent === "main" ? "reply" as const : "request" as const } : {}),
     ...(request.onWorkflowGateRequest ? { workflowGate: true } : {}),
         ...(request.project.searchTree ? { searchTree: true } : {}),
     ...(request.onProjectStateRequest || control.projectState ? { projectState: true } : {}),

@@ -1,3 +1,5 @@
+import { bindMainAssistance } from "./main-assistance-binding.js";
+import { assistanceUpdate, mainAssistanceRequestSchema, observeAssistanceInput, type MainAssistanceJournal, type MainAssistanceRecord } from "./main-assistance.js";
 import { bindWorkflowGates, workflowGateInput } from "./workflow-gate-binding.js";
 import { gateRunId, requireGateChoice, gateFeedback, prepareGateRun, type GateJournal, type GateRun, type GateOrigin } from "./workflow-gate.js";
 import { failureAttemptHistory } from "./internal/shared/failure-attempt-history.js";
@@ -331,6 +333,10 @@ export interface CollaborationProjectResumeOptions {
 
 export interface CollaborationRuntimeLifecycle {
   workflowGateJournal?(projectId: string): GateJournal;
+  pauseMainAssistance?(state: ProjectState): Promise<void>;
+  resumeMainAssistance?(state: ProjectState): Promise<void>;
+  cancelMainAssistance?(state: ProjectState): Promise<void>;
+  mainAssistanceRecords?(projectId: string): Promise<MainAssistanceRecord[]>;
   workflowGateRuns?(projectId: string): Promise<GateRun[]>;
   initialize(): Promise<void>;
   initializeNewProjectState?(state: ProjectState): void | Promise<void>;
@@ -455,6 +461,7 @@ export interface CollaborationResidentOpenInput {
   /** Required for a leader; staged under the invocation runtime, never a business workspace. */
   inputs?: InvocationInputs;
   controlScope?:
+    | import("./harness-runtime/resident-runtime-adapter.js").ResidentMainAssistanceControlScope
     | import("./harness-runtime/resident-runtime-adapter.js").ResidentReceiptCoordinatorControlScope
     | import("./harness-runtime/resident-runtime-adapter.js").ResidentScopedLeaderControlScope
     | {
@@ -541,6 +548,7 @@ export interface CollaborationResidentRecoveryResult {
  */
 export interface CollaborationResidentLauncher {
   open(input: CollaborationResidentOpenInput): Promise<CollaborationResidentHandle>;
+  stopMainAssistanceForRecovery?(input: { state: ProjectState; scopeId: string; ownershipEpoch: number; executionRuntimePath: string }): Promise<CollaborationResidentRecoveryResult>;
   stopScopedForRecovery?(input: {
     state: ProjectState; nodeRunId: string; scopeId: string; agentId: string;
     role: "leader" | "delivery"; ownershipEpoch: number; executionRuntimePath: string;
@@ -1092,6 +1100,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   #leaseError?: Error;
   #closed = false;
   readonly #runs = new Map<string, Promise<void>>();
+  readonly #assistanceRuns = new Map<string, Promise<void>>();
+  readonly #assistanceControllers = new Map<string, AbortController>();
   readonly #workflowRecoveryTimers = new Map<string, NodeJS.Timeout>();
   readonly #git = new Map<string, CollaborationGitRuntime>();
   readonly #gitAccounts = new Map<string, ProjectGitAccountBinding>();
@@ -1454,6 +1464,171 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return record;
   }
 
+  async pauseMainAssistance(state: ProjectState): Promise<void> {
+    this.#pausedProjects.add(state.id);
+    await this.#assistanceRuns.get(state.id);
+  }
+  async resumeMainAssistance(state: ProjectState): Promise<void> {
+    this.#pausedProjects.delete(state.id);
+    await this.recoverMainAssistance(state);
+    this.wakeMainAssistance(state);
+  }
+  async cancelMainAssistance(state: ProjectState): Promise<void> {
+    this.#assistanceControllers.get(state.id)?.abort(new Error("Project cancelled"));
+    for (const [key, entry] of this.#residents) if (entry.projectId === state.id && key.startsWith("main-assistance:")) {
+      if (entry.handle.stop) await entry.handle.stop(); else await entry.handle.close();
+    }
+    await this.#assistanceRuns.get(state.id);
+    for (const record of await this.database().mainAssistance(state.id)) if (record.status === "queued")
+      await this.database().saveMainAssistance(assistanceUpdate(record, { status: "failed", error: "Project cancelled before Main received the request" }), record.version);
+  }
+  private async recoverMainAssistance(state: ProjectState): Promise<void> {
+    if (this.#assistanceRuns.has(state.id)) return;
+    for (const record of await this.database().mainAssistance(state.id)) {
+      if (!record.main || record.main.stoppedAt) continue;
+      const nodeRunId = record.origin.executionContext?.nodeRunId ?? record.origin.taskId;
+      const recover = this.#residentLauncher?.stopMainAssistanceForRecovery;
+      try {
+        if (!recover) throw new Error("Original Main process stop cannot be confirmed by this launcher");
+        const proof = await recover({ state, scopeId: `management:${nodeRunId}:main-assistance-${state.id}`,
+          ownershipEpoch: record.main.epoch, executionRuntimePath: await this.#storage.invocationRuntimePath(state.id, record.main.invocationId) });
+        if (!proof.stopped) throw new Error("Main assistance process stop is unconfirmed");
+        await this.database().appendEvent({ projectId: state.id, requestId: `main-assistance-stop:${record.id}`, type: "main.assistance.stop.confirmed",
+          payload: { requestId: record.id, evidence: proof.evidence } });
+        await this.database().releaseMainAssistance(state.id, record.id, record.main.invocationId,
+          "Original Main outcome is unknown after interruption; retained without repeating the call", true);
+        this.#residents.delete(`main-assistance:${record.id}`);
+      } catch (error) {
+        const current = (await this.database().mainAssistance(state.id)).find(item => item.id === record.id)!;
+        const reason = safeRuntimeError(error);
+        if (current.error !== reason) await this.database().saveMainAssistance(assistanceUpdate(current, {
+          status: current.reply ? current.status : "unknown", error: reason }), current.version);
+      }
+    }
+  }
+
+  private assistanceJournal(): MainAssistanceJournal {
+    return { list: projectId => this.database().mainAssistance(projectId),
+      prepareDelivery: (current, inputId) => this.database().prepareMainAssistanceDelivery(current, inputId),
+      failDelivery: (current, inputId, reason) => this.database().failMainAssistanceDelivery(current, inputId, reason),
+      observeInput: (projectId, agentId, invocationId, session, event) => this.database().observeMainAssistanceInput(projectId, agentId, invocationId, session, event),
+      save: (record, version) => this.database().saveMainAssistance(record, version) };
+  }
+
+  async mainAssistanceRecords(projectId: string): Promise<MainAssistanceRecord[]> {
+    return this.database().refreshMainAssistanceDeliveries(projectId);
+  }
+
+  private wakeMainAssistance(state: ProjectState, newlyQueued = false): void {
+    const running = this.#assistanceRuns.get(state.id);
+    if (running) {
+      // Preserve an explicit enqueue racing with the pump's final empty read.
+      if (newlyQueued) void running.then(() => this.wakeMainAssistance(state));
+      return;
+    }
+    if (this.#shuttingDown || this.#closed || this.#pausedProjects.has(state.id) ||
+      this.#cancellingProjects.has(state.id) || state.pauseRequest || ["paused", "pausing", "cancelled", "completed"].includes(state.status)) return;
+    const controller = new AbortController(); this.#assistanceControllers.set(state.id, controller);
+    const pending = Promise.resolve().then(async () => {
+      for (;;) {
+        if (controller.signal.aborted || this.#pausedProjects.has(state.id) || state.pauseRequest || this.#shuttingDown || ["cancelled", "completed"].includes(state.status)) return;
+        const request = (await this.database().mainAssistance(state.id)).find(item => item.status === "queued");
+        if (!request) return;
+        const claimed = await this.database().claimMainAssistance(state.id, request.id);
+        if (!claimed) return;
+        await this.runMainAssistance(state, claimed, controller.signal);
+      }
+    }).catch(async error => {
+      // Queue failure is a recorded assistance fault, never a Worker failure.
+      if (!this.#closed) await this.database().appendEvent({ projectId: state.id, type: "main.assistance.queue.failed",
+        payload: { reason: safeRuntimeError(error) } });
+    }).finally(() => { if (this.#assistanceRuns.get(state.id) === pending) {
+      this.#assistanceRuns.delete(state.id); this.#assistanceControllers.delete(state.id);
+    } });
+    this.#assistanceRuns.set(state.id, pending);
+  }
+
+  private async waitForMainAssistance(state: ProjectState): Promise<void> {
+    await this.#assistanceRuns.get(state.id);
+    await this.recoverMainAssistance(state);
+    if (await this.database().mainAssistanceOwnsMain(state.id)) throw new Error("Main's original assistance invocation has an unknown stop state; reconcile it before another Main turn");
+  }
+
+  private async runMainAssistance(state: ProjectState, record: MainAssistanceRecord, signal: AbortSignal): Promise<void> {
+    const main = record.main!, database = this.database();
+    let handle: CollaborationResidentHandle | undefined, began = false, stopped = false, failure: string | undefined;
+    const residentKey = `main-assistance:${record.id}`;
+    const endTurn = this.beginNativeTaskTurn(state.id, signal, main.invocationId);
+    try {
+      if (!this.#residentLauncher) throw new Error("Main assistance requires the trusted native resident launcher");
+      const runtimePath = await this.#storage.invocationRuntimePath(state.id, main.invocationId);
+      const inbox = await this.#storage.writeInbox(state, "main", main.invocationId, main.text);
+      const nodeRunId = record.origin.executionContext?.nodeRunId ?? record.origin.taskId;
+      const routeScopeId = `main-assistance-${state.id}`;
+      const context: NonNullable<AgentRunRequest["executionContext"]> = { role: "leader", nodeRunId, routeScopeId, coordinatorEpoch: main.epoch };
+      const assistanceRoot = path.join(this.#storage.projectDir(state.id), "runtime", "main-assistance");
+      await fs.mkdir(assistanceRoot, { recursive: true, mode: 0o700 });
+      const inputs = await this.stageLeaderManagementInputs(state, main.invocationId, inbox, assistanceRoot, "main", "main-assistance-workspace");
+      inputs.runtimePath = runtimePath;
+      const request: AgentRunRequest = this.#executionInputBuilder ? await this.#executionInputBuilder.build({ state, agentId: "main", executionContext: context,
+        assignment: main.text, invocationId: main.invocationId, inboxPath: inputs.inboxPath, projectPath: inputs.projectPath,
+        worktreePath: inputs.workspacePath, runtimePath }) : { project: structuredClone(state), purpose: "workflow", agent: "main", kind: "main",
+          permission: state.agents.main.permission, invocationId: main.invocationId, inboxPath: inputs.inboxPath, projectPath: inputs.projectPath,
+          workspacePath: inputs.workspacePath, schemaPath: "", skillPaths: [], autoSkillPaths: [], availableSkillPaths: [], runtimePath, executionContext: context, sessionContinuity: "strict" };
+      const sessionKey = collaborationSessionKey("main", context, state.orchestration.schemaVersion === 3);
+      const assertCurrent = async () => {
+        this.assertWritable(); signal.throwIfAborted();
+        const current = (await database.mainAssistance(state.id)).find(item => item.id === record.id);
+        if (!current?.main || current.main.invocationId !== main.invocationId || current.main.stoppedAt) throw new Error("Main assistance invocation is no longer active");
+        return current;
+      };
+      request.onDurableSessionStarted = async (session, legacyId) => {
+        await assertCurrent(); state.agentSessions = { ...state.agentSessions, [sessionKey]: session };
+        state.agentSessionIds = { ...state.agentSessionIds, [sessionKey]: legacyId }; await this.saveState(state);
+      };
+      request.onNativeUserInput = async (event, session) => { if (session) await observeAssistanceInput(this.assistanceJournal(), state.id, "main", main.invocationId, session, event); };
+      request.onOfficialHarnessEvent = request.onNativeUserInput;
+      this.attachUsageCallbacks(state, request);
+      request.onMainAssistanceRequest = async (value, callId) => {
+        const current = await assertCurrent(), input = mainAssistanceRequestSchema.parse(value);
+        if (input.operation === "list") return [current];
+        if (input.operation !== "read" && input.operation !== "reply" || input.requestId !== current.id) throw new Error("Main assistance is bound to one original request");
+        if (input.operation === "read") return current;
+        if (!current.main?.receivedAt) throw new Error("Main assistance has no actual native receipt for this request");
+        if (current.reply) {
+          if (current.reply.text !== input.text) throw new Error("Main assistance already has an immutable reply");
+          return current;
+        }
+        const live = await database.mainAssistanceOriginLive(current.origin);
+        return database.saveMainAssistance(assistanceUpdate(current, { status: "replied",
+          reply: { text: input.text, callId, invocationId: main.invocationId, savedAt: nowIso() },
+          delivery: live ? { status: "queued" } : { status: "late", reason: "Original task has ended; reply retained without reopening it" } }), current.version);
+      };
+      const control = { stagingPath: path.join(runtimePath, "assistance-control.json"), capability: randomUUID(), stateVersion: main.epoch,
+        candidates: [], decisionBy: "main" as const, allowUserIntervention: false, canComplete: false, mainAssistance: "reply" as const, requireBridge: true };
+      began = true;
+      handle = await this.#residentLauncher.open({ request, inputs, executionRuntimePath: runtimePath,
+        filesystemAuthorityInput: await this.filesystemAuthorityInput(state), signal, onTrace: this.traceSink(state, "main", main.invocationId),
+        controlScope: { role: "main-assistance", projectId: state.id, nodeRunId, routeScopeId, leaderAgentId: "main", coordinatorEpoch: main.epoch },
+        turnRequestFactory: async () => ({ request, onTrace: this.traceSink(state, "main", main.invocationId) }),
+        controlAuthorityFactory: async () => ({ control, revalidate: async () => { throw new Error("Assistance does not authorize Workflow control actions"); } }) });
+      this.#residents.set(residentKey, { projectId: state.id, handle });
+      await this.submitNativeTurn(state, handle, { inputId: main.inputId, invocationId: main.invocationId, prompt: main.text });
+    } catch (error) { failure = safeRuntimeError(error); }
+    finally {
+      try { if (handle) { await handle.close(); stopped = true; } else if (!began) stopped = true; }
+      catch (error) { failure = `Main assistance native stop is unconfirmed: ${safeRuntimeError(error)}`; }
+      if (stopped) this.#residents.delete(residentKey);
+      endTurn();
+      if (stopped) await database.releaseMainAssistance(state.id, record.id, main.invocationId, failure);
+      else {
+        const current = (await database.mainAssistance(state.id)).find(item => item.id === record.id)!;
+        await database.saveMainAssistance(assistanceUpdate(current, { status: current.reply ? current.status : "unknown",
+          error: failure ?? "Main assistance native outcome is unknown" }), current.version);
+      }
+    }
+  }
+
   workflowGateJournal(projectId: string): GateJournal {
     return { read: async id => this.database().workflowGate(projectId, id),
       save: async (run, expected) => {
@@ -1478,6 +1653,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       await this.database().bindSerialProjectStateInvocation(identity);
       request.onProjectStateRequest = async input => this.requestSerialProjectState(state, identity, input);
     }
+    if (request.agent === "main") await this.waitForMainAssistance(state);
     if (state.orchestration.gates?.length) {
       const journal = this.workflowGateJournal(state.id);
       for (const id of state.pendingGateDeliveries ?? []) {
@@ -1510,9 +1686,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       this.assertWritable();
       await this.database().confirmSerialWorkflowAdjustmentInput(context, inputId, session, event);
     };
+    bindMainAssistance(request, task.id, this.assistanceJournal(), async () => {
+      if (!request.onProjectStateRequest) throw new Error("Main assistance requires live task authority");
+      await request.onProjectStateRequest({ operation: "list" });
+    }, () => this.wakeMainAssistance(state, true));
+    this.wakeMainAssistance(state);
   }
 
   async recoverProject(state: ProjectState): Promise<boolean> {
+    await this.recoverMainAssistance(state);
     if (!state.git?.enabled) return false;
     this.#storage.trackCheckpoint(state);
     const savedProjectPause = hasUserWorkflowPause(state);
@@ -2570,6 +2752,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     // An initializer or failure handler already inside an await boundary must
     // see cancellation immediately and must not schedule/save a stale state.
     this.#cancellingProjects.add(state.id);
+    this.#assistanceControllers.get(state.id)?.abort(new Error("Project cancelled"));
     // A safe-point Pause may hold the lifecycle lane while an Agent's turn
     // remains active. Stop must release that wait before entering its own
     // existing durable-intent and physical-close path, rather than waiting
@@ -3120,6 +3303,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     for (const timer of this.#workflowRecoveryTimers.values()) clearTimeout(timer);
     this.#workflowRecoveryTimers.clear();
     for (const controller of this.#controllers.values()) controller.abort();
+    for (const controller of this.#assistanceControllers.values()) controller.abort();
     const residentEntries = [...this.#residents.entries()];
     const residentStops = await Promise.allSettled(residentEntries.map(async ([, { handle }]) => {
       await handle.close();
@@ -3150,7 +3334,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         // A concurrently settling run may already have closed or fenced it.
       }
     }
-    await Promise.allSettled([...this.#runs.values()]);
+    await Promise.allSettled([...this.#runs.values(), ...this.#assistanceRuns.values()]);
     // Preserve any actual return that was already arriving when close began.
     // Only after active submits settle may Stop accounting seal this turn.
     for (const [index, [, entry]] of residentEntries.entries()) {
@@ -5866,6 +6050,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     signal: AbortSignal,
     afterActivation?: () => Promise<void> | void
   ): Promise<void> {
+    if (nodeId === "main") await this.waitForMainAssistance(state);
     const initialRequestId = state.cycle > 1 ? `input-${state.id}-cycle-${state.cycle}` : `input-${state.id}`;
     const initialProjectInput = input.activationRequestId === initialRequestId && !input.sourceNodeRunId && !input.sourceAgentId;
     const reopened = state.phase === "collaboration:reopened";
@@ -10083,7 +10268,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       throw new Error("Management proposal snapshot identity is invalid");
     }
     const fixed = state.orchestration.schemaVersion === 3;
-    const prepare = (await this.git(state.id)).prepareAgentManagementWorkspace;
+    const prepare = fixed ? (await this.git(state.id)).prepareAgentManagementWorkspace : undefined;
     if (fixed && !prepare) throw new Error("Scoped management requires the canonical Agent workspace service");
     const workspacePath = fixed ? await prepare!.call((await this.git(state.id)), coordinatorAgentId)
       : path.join(runtimePath, workspaceName);
@@ -10119,12 +10304,14 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const inboxPath = path.join(snapshotRoot, `${invocationId}-Inbox.md`);
     const memoryPath = path.join(snapshotRoot, "Memory.md");
     const bytes = await fs.readFile(authorityInbox);
-    const snapshot = await this.optionalManagementMemorySnapshot(state.id);
+    const memory = state.git?.enabled
+      ? managementMemoryDocument(state.id, await this.optionalManagementMemorySnapshot(state.id), coordinatorAgentId)
+      : await fs.readFile(path.join(await this.#storage.roleWorkspace(state.id, coordinatorAgentId, invocationId), "Memory.md"), "utf8");
     await Promise.all([
       writeImmutableRecoveryFile(inboxPath, bytes, 0o400),
       writeImmutableRecoveryFile(
         memoryPath,
-        managementMemoryDocument(state.id, snapshot, coordinatorAgentId),
+        memory,
         0o400
       )
     ]);
@@ -10404,6 +10591,16 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       };
       await this.saveState(state);
     };
+    if (request.agent !== "main" && request.executionContext) {
+      const ctx = request.executionContext;
+      bindMainAssistance(request, ctx.role === "leader" ? request.invocationId : ctx.executionId, this.assistanceJournal(), async () => {
+        await request.onProjectStateRequest!({ operation: "list" });
+      }, () => this.wakeMainAssistance(state, true));
+    }
+    this.attachUsageCallbacks(state, request, execution);
+  }
+
+  private attachUsageCallbacks(state: ProjectState, request: AgentRunRequest, execution?: MemberExecution): void {
     const priorUsage = request.onTokenUsage;
     const priorUsageFailure = request.onTokenUsagePersistenceFailure;
     request.onTokenUsage = async (usage) => {
@@ -11480,6 +11677,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     controlActions?: ControlActionEnvelope[];
     acceptedActions?: AcceptedMainRouteAction[];
   } | undefined> {
+    await this.waitForMainAssistance(state);
     const decideRoute = this.#residentLauncher?.decideRoute;
     if (!decideRoute) return undefined;
     const previousWorkflowRevision = state.workflowRevision;
@@ -13010,6 +13208,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
   }
 
   private async saveState(state: ProjectState): Promise<void> {
+    this.wakeMainAssistance(state);
     this.assertWritable();
     if (["paused", "completed", "cancelled", "stopped"].includes(state.status)) await this.#invocationDispatcher?.flush?.(state.id);
     checkpointWorkflowRecovery(state, { delayMs: this.#harnessRecoveryDelayMs });

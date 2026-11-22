@@ -1340,6 +1340,7 @@ export interface ProjectState {
   workflowRevision?: number;
   /** Serial outer-node ownership; member executions are scoped below it. */
   activeNodeRunId?: NodeRunId;
+  mainAssistance?: import("./main-assistance.js").MainAssistanceRecord[];
   workflowGates?: import("./workflow-gate.js").GateRun[];
   nodeRuns?: NodeRun[];
   groupRuns?: GroupRun[];
@@ -1887,6 +1888,9 @@ export interface AgentRunRequest {
   onResidentNativeOpened?: (binding: { runtimePath: string; session: SessionRef }) => Promise<void> | void;
   /** Server-only result capture with the actual opened resident Session. */
   onControlResult?: (input: import("./control-result-receipts.js").ControlResultInput, session: SessionRef) => Promise<string> | string;
+  onMainAssistanceRequest?: (request: unknown, callId: string) => Promise<unknown>;
+  onMainAssistanceDeliveryFailed?: (inputId: string, reason: string) => Promise<void>;
+  onPendingMainAssistance?: (inputId: string, session?: SessionRef) => Promise<string>;
   onWorkflowGateRequest?: (request: unknown, callId: string) => Promise<unknown>;
   /** Server-only state service; no caller-selected identity or project. */
   onProjectStateRequest?: (request: import("./project-state.js").ProjectStateRequest) => Promise<unknown> | unknown;
@@ -2006,6 +2010,7 @@ export interface ControlActionEnvelope {
 }
 
 export interface ControlMcpRequest {
+  mainAssistance?: "request" | "reply";
   workflowGate?: boolean;
   searchTree?: boolean;
   /** Built-in collaboration capability, independent of business tool selection. */

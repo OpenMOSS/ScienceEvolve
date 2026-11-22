@@ -1,3 +1,4 @@
+import { validateStagedInvocationInputs } from "../../src/core/harness-runtime/invocation-inputs.js";
 import { CollaborationRuntimeCoordinator } from "../../src/core/collaboration-runtime.js";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
@@ -166,6 +167,62 @@ function purposeOnlyHarness(
 }
 
 describe("public Main orchestration state machine", () => {
+  it.each(["reply", "failure", "late"] as const)("keeps serial Main assistance separate from the configured Main route (%s)", async outcome => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-serial-assistance-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); let continued = false, mainCalls = 0;
+    const session = (agent: string) => ({ schemaVersion: 1 as const, harnessId: "codex", adapterVersion: "1", generation: 0,
+      nativeId: `original-${agent}`, durable: true, createdAt: "2026-11-16T00:00:00Z" });
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, residentLauncher: { open: async input => {
+      await validateStagedInvocationInputs({ ...input.inputs!, projectId: input.request.project.id, invocationId: input.request.invocationId, mainAssistance: true });
+      return { pause: async () => {}, resume: async () => {}, close: async () => {}, submit: async turn => {
+        mainCalls++; const request = input.request;
+        await request.onDurableSessionStarted!(session("main"), "original-main");
+        await request.onNativeUserInput!({ kind: "user.message", eventId: "actual-main-input", invocationId: request.invocationId, harnessId: "codex", message: turn.prompt }, session("main"));
+        await vi.waitFor(() => expect(continued).toBe(true));
+        if (outcome === "failure") throw new Error("Main native execution failed");
+        const [record] = await request.onMainAssistanceRequest!({ operation: "list" }, "list") as Array<{ id: string; origin: { taskId: string } }>;
+        if (outcome === "late") await vi.waitFor(async () => {
+          const checkpoint = await coordinator.database().projectStateDocument(request.project.id, "project.checkpoint");
+          expect((checkpoint!.value as ProjectState).activeAgentExecution?.id).not.toBe(record.origin.taskId);
+        });
+        await request.onMainAssistanceRequest!({ operation: "reply", requestId: record.id, text: "Check the actual baseline." }, "reply");
+        return { handoff: "Answered" };
+      } };
+    } } });
+    const runner = new ScriptedRunner(async request => {
+      if (request.agent === "main") {
+        expect(request.control?.mainAssistance).toBeUndefined();
+        expect(request.control?.canComplete).toBe(true);
+        return mainResult(request, decision("finish", "Normal configured Main completion"));
+      }
+      await request.onDurableSessionStarted!(session("worker"), "original-worker");
+      const saved = await request.onMainAssistanceRequest!({ operation: "request", requestId: "original-question", question: "Which evidence should I compare?" }, "request") as { status: string };
+      expect(saved.status).toBe("queued"); continued = true;
+      if (outcome !== "late") await vi.waitFor(async () => {
+        const [record] = await coordinator.database().mainAssistance(request.project.id);
+        expect(["replied", "failed"]).toContain(record.status);
+      });
+      if (outcome === "reply") {
+        const text = await request.onPendingMainAssistance!("original-tool-boundary", session("worker"));
+        expect(text).toContain("Check the actual baseline.");
+        await request.onNativeUserInput!({ kind: "user.message", eventId: "actual-reply-input", invocationId: request.invocationId, harnessId: "codex", message: text }, session("worker"));
+      }
+      return { handoff: workerResult("worker").markdown };
+    });
+    const orchestrator = new Orchestrator(storage, new SkillCatalog([builtinSkillRoot]), runner,
+      { retryBaseMs: 1, retryMaxMs: 1, agentConcurrency: 2 }, undefined, coordinator);
+    liveOrchestrators.push(orchestrator); await orchestrator.initialize();
+    const project = await orchestrator.createProject(projectInput(twoAgentOrchestration({ input: "worker", termination: "worker", workerRoutes: [{ kind: "strong", target: "finish" }] })));
+    await vi.waitFor(async () => { const observed = await orchestrator.getProject(project.id);
+      expect(observed?.status, JSON.stringify({ error: observed?.lastError, mainCalls, calls: runner.calls.map(call => call.agent), records: observed?.mainAssistance })).toBe("completed"); }, { timeout: 3000 });
+    await orchestrator.waitForIdle(project.id);
+    const result = await orchestrator.getProject(project.id);
+    expect(result?.status).toBe("completed"); expect(mainCalls).toBe(1);
+    expect(runner.calls.map(call => call.agent)).toEqual(["worker", "main"]);
+    expect(result?.mainAssistance?.[0]).toMatchObject(outcome === "failure" ? { status: "failed", error: "Main native execution failed" }
+      : { status: "replied", delivery: { status: outcome === "late" ? "late" : "received" } });
+  });
+
   it.each(["code", "agent"] as const)("runs a serial %s Gate with the original input and no implicit Main handoff", async kind => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-serial-gate-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub());

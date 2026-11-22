@@ -81,6 +81,155 @@ afterEach(async () => {
 });
 
 describe("CollaborationRuntimeCoordinator", () => {
+  it("runs Main assistance concurrently, queues Main turns and returns replies to the same original task", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-main-assistance-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_acacacacacacacacacacacacacacacac");
+    state.orchestration.input.target = "idea";
+    state.orchestration.routes.idea = [{ kind: "strong", target: "finish" }]; state.orchestration.termination.agent = "idea";
+    await storage.createProject(state);
+    let continued = false, mainActive = 0, maximumMainActive = 0;
+    const starts: string[] = [];
+    const session = (agent: string) => ({ schemaVersion: 1 as const, harnessId: "fixture", adapterVersion: "1", generation: 0,
+      nativeId: `original-${agent}`, durable: true, createdAt: "2026-11-16T00:00:00.000Z" });
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, gitFactory: options => happyGitFake(options, []),
+      residentLauncher: { open: async input => { if (input.controlScope?.role === "main-assistance") await validateStagedInvocationInputs({ ...input.inputs!, projectId: state.id, invocationId: input.request.invocationId, mainAssistance: true }); return ({ pause: async () => {}, resume: async () => {}, close: async () => {}, submit: async turn => {
+        const request = input.request; starts.push(request.agent);
+        await request.onDurableSessionStarted?.(session(request.agent), session(request.agent).nativeId);
+        if (request.agent === "main") {
+          mainActive++; maximumMainActive = Math.max(maximumMainActive, mainActive);
+          await request.onNativeUserInput!({ kind: "user.message", eventId: `received-${turn.inputId}`, invocationId: request.invocationId,
+            harnessId: "fixture", message: turn.prompt }, session("main"));
+          await waitFor(() => continued);
+          const [record] = await request.onMainAssistanceRequest!({ operation: "list" }, "list") as Array<{ id: string }>;
+          await request.onMainAssistanceRequest!({ operation: "reply", requestId: record.id, text: `Check the actual evidence for ${record.id}` }, "reply");
+          mainActive--; return { handoff: "Answered the original question" };
+        }
+        const first = await request.onMainAssistanceRequest!({ operation: "request", requestId: "question-1", question: "Which evidence is missing?" }, "ask-1") as { requestId: string; status: string };
+        expect(first.status).toBe("queued");
+        expect((await coordinator.database().projectState(state.id)).executions.find(item => item.invocationId === request.invocationId)?.status).toBe("working");
+        continued = true;
+        await request.onMainAssistanceRequest!({ operation: "request", requestId: "question-2", question: "How should I check the metric?" }, "ask-2");
+        await waitFor(async () => (await coordinator.database().mainAssistance(state.id)).filter(item => item.reply).length === 2);
+        for (let index = 0; index < 2; index++) {
+          const notice = await request.onPendingMainAssistance!(`tool-boundary-${index}`, session("idea"));
+          expect(notice).toContain("Main assistance reply");
+          await request.onLiveHarnessEvent!({ schemaVersion: 1, eventId: `native-reply-${index}`, seq: index + 1, timestamp: new Date().toISOString(),
+            invocationId: request.invocationId, harnessId: "fixture", kind: "tool.completed", phase: "completed",
+            tool: { callId: `state-${index}`, name: "state_list", toolType: "mcp", status: "completed", outputPreview: notice } });
+        }
+        expect(await request.onPendingMainAssistance!("duplicate", session("idea"))).toBe("");
+        return agentFixtureDelivery(input, turn, { handoff: "Continued original work and used both Main replies" }, coordinator);
+      } }); } } });
+    liveCoordinators.push(coordinator); await coordinator.initialize(); await coordinator.createProject(state, { enabled: true, provider: "github" });
+    await waitFor(() => state.status === "completed" || Boolean(state.lastError));
+    expect(state.lastError).toBeUndefined(); expect(starts).toEqual(["idea", "main", "main"]); expect(maximumMainActive).toBe(1);
+    const records = await coordinator.database().mainAssistance(state.id);
+    expect(records).toHaveLength(2);
+    for (const record of records) expect(record).toMatchObject({ status: "replied", main: { receivedAt: expect.any(String), stoppedAt: expect.any(String) }, delivery: { status: "received" },
+      origin: { agentId: "idea", session: { nativeId: "original-idea" } } });
+    expect((await coordinator.database().projectState(state.id)).executions).toHaveLength(1);
+  });
+
+  it.each([false, true])("recovers interrupted serial Main assistance without replaying the call (stop proved=%s)", async stopped => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-assistance-recovery-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae"); state.git = { enabled: false, status: "disabled" }; await storage.createProject(state);
+    const open = vi.fn(async () => { throw new Error("Recovery must not call Main again"); });
+    const stop = vi.fn(async () => ({ stopped, evidence: { originalProcess: stopped ? "stopped" : "unknown" } }));
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, residentLauncher: { open, stopMainAssistanceForRecovery: stop } });
+    liveCoordinators.push(coordinator); await coordinator.initialize();
+    const db = coordinator.database(); await db.createProject({ projectId: state.id, workflowRevision: 1, workflowSnapshot: state.orchestration,
+      git: state.git, workerCapacity: 1, managementCapacity: 1 });
+    const timestamp = new Date().toISOString();
+    await db.saveMainAssistance({ id: "interrupted-request", version: 1, question: "Retained question", callId: "ask", status: "queued", createdAt: timestamp, updatedAt: timestamp,
+      origin: { projectId: state.id, agentId: "idea", taskId: "retained-task", invocationId: "original-worker", session: {
+        schemaVersion: 1, harnessId: "codex", adapterVersion: "fixture", generation: 0, nativeId: "original-worker", durable: true, createdAt: timestamp } } }, 0);
+    const claim = (await db.claimMainAssistance(state.id, "interrupted-request"))!;
+    expect(await coordinator.recoverProject(state)).toBe(false);
+    const [record] = await db.mainAssistance(state.id);
+    expect(record.status).toBe("unknown"); expect(Boolean(record.main?.stoppedAt)).toBe(stopped);
+    expect(record.main?.invocationId).toBe(claim.main!.invocationId); expect(open).not.toHaveBeenCalled();
+    await coordinator.recoverProject(state);
+    expect(open).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledTimes(stopped ? 1 : 2);
+    if (!stopped) expect((await db.mainAssistance(state.id))[0].version).toBe(record.version);
+  });
+
+  it.each(["root", "group"] as const)("delivers direct Main assistance to an active scoped %s task", async mode => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-scoped-assistance-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_adadadadadadadadadadadadadadadad");
+    state.orchestration = { ...state.orchestration, schemaVersion: 3, input: { source: "input", target: mode === "group" ? "G" : "idea" },
+      routes: { main: [], idea: [{ kind: "strong", target: "finish" }], G: [{ kind: "strong", target: "finish" }] },
+      collaborations: mode === "group" ? [{ id: "G", displayName: "G", memberAgentIds: [], renamePolicy: "editable" }] : [],
+      termination: { ...state.orchestration.termination, agent: mode === "group" ? "G" : "idea" },
+      scopedWorkflow: { schemaVersion: 1, rootAgentIds: mode === "group" ? ["main"] : ["main", "idea"], groups: mode === "group" ? [{ id: "G", leaderAgentId: "main", allowLeaderReconfiguration: false,
+        workflow: { nodes: [{ kind: "agent", nodeId: "G_idea", agentId: "idea" }], input: { source: "input", edges: [{ kind: "parallel", target: "G_idea" }] },
+          routes: { G_idea: [{ kind: "strong", target: "finish" }] } } }] : [] } };
+    await storage.createProject(state); let delivered = false, workerInvocations = 0, mainCalls = 0;
+    const session = (agent: string) => ({ schemaVersion: 1 as const, harnessId: "codex", adapterVersion: "1", generation: 0,
+      nativeId: `original-${agent}`, durable: true, createdAt: "2026-11-16T00:00:00Z" });
+    const groupRefs = new Set<string>();
+    const coordinator = new CollaborationRuntimeCoordinator({ storage,
+      gitFactory: options => { const base = happyGitFake(options, []); return { ...base,
+        async beginGroup(request) { const result = await base.beginGroup(request); groupRefs.add(result.group.branch); return result; },
+        async observeRemoteRef(repository, ref) { const exists = !ref.startsWith("groups/") || groupRefs.has(ref);
+          return { owner: repository.owner, repository: repository.name, ref, status: exists ? "present" as const : "missing" as const,
+            ...(exists ? { sha: "a".repeat(40) } : {}), observedAt: new Date().toISOString() }; },
+        async createGroupFinalPullRequest() { throw new Error("Group integration is outside this assistance boundary"); },
+        async mergeGroupFinalPullRequest() { throw new Error("Group integration is outside this assistance boundary"); },
+        async reconcileGroupFinalPullRequest() { throw new Error("Group integration is outside this assistance boundary"); },
+        async checkpointGroupCompletion() { throw new Error("Group completion is outside this assistance boundary"); },
+        async prepareAgentManagementWorkspace(agentId) { const workspace = path.join(storage.projectDir(state.id), "git-worktrees", "agents", agentId); await fs.mkdir(workspace, { recursive: true }); return workspace; }
+      }; }, residentLauncher: { open: async input => {
+        await input.onOpened?.();
+        if (input.controlScope?.role === "main-assistance") await validateStagedInvocationInputs({ ...input.inputs!, projectId: state.id, invocationId: input.request.invocationId, fixedAgentId: "main", mainAssistance: true });
+        return { pause: async () => {}, resume: async () => {}, close: async () => {}, submit: async turn => {
+          const request = input.request;
+          if (input.controlScope?.role === "scoped-leader") {
+            const scope = input.controlScope;
+            const authority = await input.controlAuthorityFactory!({ request, turn });
+            const envelopes: ControlActionEnvelope[] = [];
+            for (const action of [
+              { tool: "finish_task", summary: "Assigned original group work" },
+              { tool: "assign_group_tasks", groupRunId: scope.groupRunId, coordinatorEpoch: scope.coordinatorEpoch,
+                tasks: scope.memberNodeIds.map(taskId => ({ taskId, assignment: "Check the baseline" })) }
+            ] as ControlAction[]) {
+              const envelope: ControlActionEnvelope = { projectId: state.id, agent: request.agent, invocationId: turn.invocationId,
+                callId: `assistance-plan-${envelopes.length}`, receivedAt: new Date().toISOString(), stateVersion: authority.control.stateVersion,
+                capabilityHash: authority.control.capabilityHash, action };
+              await authority.revalidate(envelope, envelopes); envelopes.push(envelope);
+            }
+            return { handoff: "Original group plan", controlActions: envelopes };
+          }
+          await request.onDurableSessionStarted?.(session(request.agent), `original-${request.agent}`);
+          if (input.controlScope?.role === "main-assistance") {
+            mainCalls++;
+            await request.onNativeUserInput!({ kind: "user.message", eventId: "actual-main-input", invocationId: request.invocationId, harnessId: "codex", message: turn.prompt }, session("main"));
+            const [record] = await request.onMainAssistanceRequest!({ operation: "list" }, "list") as Array<{ id: string }>;
+            await request.onMainAssistanceRequest!({ operation: "reply", requestId: record.id, text: "Compare the retained baseline." }, "reply");
+            return { handoff: "Answered original task" };
+          }
+          workerInvocations++;
+          await request.onMainAssistanceRequest!({ operation: "request", requestId: "scoped-question", question: "Which baseline?" }, "ask");
+          await waitFor(async () => (await coordinator.database().mainAssistance(state.id)).some(item => Boolean(item.reply)));
+          const text = await request.onPendingMainAssistance!("original-tool-result", session("idea"));
+          expect(text).toContain("Compare the retained baseline.");
+          await request.onNativeUserInput!({ kind: "user.message", eventId: "actual-worker-input", invocationId: request.invocationId, harnessId: "codex", message: text }, session("idea"));
+          delivered = true;
+          return blockingResident(input.signal).submit(turn);
+        } };
+      } } });
+    liveCoordinators.push(coordinator); await coordinator.initialize(); await coordinator.createProject(state, { enabled: true, provider: "github" });
+    await waitFor(() => delivered || Boolean(state.lastError));
+    expect(state.lastError).toBeUndefined(); expect(delivered).toBe(true);
+    expect(workerInvocations).toBe(1); expect(mainCalls).toBe(1);
+    expect((await coordinator.database().mainAssistance(state.id))[0]).toMatchObject({ status: "replied", delivery: { status: "received" },
+      origin: { agentId: "idea", executionContext: { role: "delivery", executionId: expect.any(String), ...(mode === "group" ? { groupRunId: expect.any(String) } : {}) } } });
+    await coordinator.cancelProject(state, { reason: "user_cancelled", actor: "user" });
+  });
+
   it.each(["code", "agent"] as const)("executes a root %s Gate using its real bound invocation and one downstream activation", async kind => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-root-gate-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();

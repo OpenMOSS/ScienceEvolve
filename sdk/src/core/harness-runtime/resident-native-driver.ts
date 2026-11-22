@@ -58,12 +58,18 @@ export interface ResidentProtocolBufferState {
   maxObservedOversizedFrames: number;
 }
 
+export interface ResidentLiveInput {
+  take(): Promise<{ inputId: string; text: string } | undefined>;
+  failed(inputId: string, reason: string): Promise<void>;
+}
+
 export interface ResidentTurnAuthorityLease {
   inputId: string;
   invocationId: string;
   ownershipEpoch: number;
   /** Trusted late input facts; cannot change route, capability or identity. */
   inputSupplement?: () => Promise<string> | string;
+  liveInput?: ResidentLiveInput;
   /** Read the exact turn's proxy failure before revoking/disposal loses it. */
   classifyFailure?(error: unknown): unknown;
   release(
@@ -123,7 +129,8 @@ export interface ResidentProtocolCodec {
   submit(
     connection: ResidentProtocolConnection,
     session: SessionRef,
-    turn: ResidentTurn
+    turn: ResidentTurn,
+    liveInput?: ResidentLiveInput
   ): Promise<AgentRunResult>;
   close(connection: ResidentProtocolConnection, session: SessionRef): Promise<void>;
 }
@@ -541,7 +548,7 @@ export class ResidentNativeDriver implements ResidentHarnessDriver {
       });
       try {
         nativeSubmissionAttempted = true;
-        result = await this.#codec.submit(this.#connection, this.session, nativeTurn);
+        result = await this.#codec.submit(this.#connection, this.session, nativeTurn, authority.liveInput);
       } finally {
         this.#activityClock.end();
       }
@@ -1666,7 +1673,7 @@ export function codexAppServerCodec(options: {
       }
       return { ...session, nativeId: threadId };
     },
-    async submit(connection, session, turn) {
+    async submit(connection, session, turn, liveInput) {
       if (session.nativeId !== threadId) throw driverError("Codex driver SessionRef changed");
       completedTurnId = "";
       const requestId = connection.requestId();
@@ -1738,6 +1745,20 @@ export function codexAppServerCodec(options: {
         }
         rememberSubagents(frame, threadId, turnId);
         await connection.notify(frame, turn);
+        if (liveInput && frame.method === "item/completed" && ["commandExecution", "mcpToolCall", "dynamicToolCall", "toolCall", "fileChange"].includes(String(maybeRecord(params.item)?.type))) {
+          const notice = await liveInput.take();
+          if (notice) {
+            const steerId = connection.requestId();
+            connection.expectInputEcho?.(session, notice.text);
+            await connection.send({ id: steerId, method: "turn/steer", params: { threadId, expectedTurnId: turnId,
+              input: [{ type: "text", text: notice.text }] } });
+            const receipt = await connection.next(value => value.id === steerId, "Codex assistance steer receipt");
+            if (receipt.error || maybeRecord(receipt.result)?.turnId !== turnId) {
+              await liveInput.failed(notice.inputId, `Native assistance input was not confirmed: ${JSON.stringify(receipt.error ?? receipt.result)}`);
+            }
+            await connection.notify(receipt, turn);
+          }
+        }
         if (frame.method !== "turn/completed") continue;
         if (frameTurnId !== turnId) {
           throw driverError("Codex turn completion omitted its native turn identity");

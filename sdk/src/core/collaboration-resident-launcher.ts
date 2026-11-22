@@ -307,6 +307,18 @@ export function createProductionCollaborationResidentLauncher(
   return {
     open: trackedOpen,
 
+    async stopMainAssistanceForRecovery(input) {
+      const harnessId = requiredHarness(input.state, "main");
+      const reconciliation = await runtime.reconcileResidentStartup({ executionId: input.scopeId, harnessId,
+        runtimePath: input.executionRuntimePath, nextOwnershipEpoch: input.ownershipEpoch + 1 });
+      if (!reconciliationProvesStop(reconciliation, input.ownershipEpoch)) {
+        await runtime.cleanupResidentInterrupted({ projectId: input.state.id, harnessId, scopeId: input.scopeId,
+          role: "leader", coordinatorEpoch: input.ownershipEpoch }, input.executionRuntimePath, { allowMissingClaim: true });
+      }
+      return { stopped: true, evidence: { protocol: "main-assistance-stop-v1", projectId: input.state.id,
+        scopeId: input.scopeId, ownershipEpoch: input.ownershipEpoch, runtimePath: input.executionRuntimePath, nativeProcessScanCleared: true } };
+    },
+
     async stopScopedForRecovery(input) {
       if (input.state.orchestration.schemaVersion !== 3) throw new Error("Scoped process recovery requires a v3 project");
       const harnessId = requiredHarness(input.state, input.agentId);

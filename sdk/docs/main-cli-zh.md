@@ -400,3 +400,5 @@ Git-off 通过 workspace 指定工作目录。legacy 引擎已移除；旧运行
 2026-10-06 的原目录适配、Codex/Pi/DSH 实测和已知边界见 [更新与测试记录](workspace-main-acceptance-20261006-zh.md)。
 普通 workspace 调用可使用 `scienceevolve_read_invocation_input` 分块读取本轮 Inbox/Memory；
 该工具不接收任意文件路径，也不使 shell 变为允许。
+
+异步 Main 请求与原任务答复记录见 [Main 求助](main-assistance.md)。`run show` 与 SDK `run.snapshot().mainAssistance` 使用同一持久记录。

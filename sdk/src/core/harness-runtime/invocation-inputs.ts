@@ -331,6 +331,7 @@ export async function validateStagedInvocationInputs(input: {
   memoryPath: string;
   runtimePath: string;
   fixedAgentId?: string;
+  mainAssistance?: boolean;
   workflowAuthoringPath?: string;
   workflowCurrentPath?: string;
   workflowAuthoringInvocationId?: string;
@@ -363,6 +364,14 @@ export async function validateStagedInvocationInputs(input: {
         workspaceRoot !== path.join(projectRoot, "git-worktrees", "agents", input.fixedAgentId) ||
         path.resolve(input.workspacePath) !== workspaceRoot || !isWithin(runtimeRoot, path.join(projectRoot, "runtime"))) {
         throw new Error("Management workspace must be the current Agent's fixed project directory");
+      }
+    } else if (input.mainAssistance) {
+      const expected = path.join(projectRoot, "runtime", "main-assistance", "main-assistance-workspace");
+      if (workspaceRoot !== expected || path.resolve(input.workspacePath) !== expected ||
+        runtimeRoot !== path.join(projectRoot, "runtime", input.invocationId) ||
+        !isWithin(inboxPath, path.join(expected, ".scienceevolve", "management", input.invocationId)) ||
+        !isWithin(memoryPath, path.join(expected, ".scienceevolve", "management", input.invocationId))) {
+        throw new Error("Main assistance inputs lost their exact retained workspace and invocation snapshot");
       }
     } else if (!isWithin(workspaceRoot, runtimeRoot)) {
       throw new Error("Purpose workspace resolves outside its invocation runtime");

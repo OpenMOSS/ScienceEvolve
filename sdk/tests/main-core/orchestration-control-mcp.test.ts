@@ -84,6 +84,33 @@ function expectRecoverableToolError(
 }
 
 describe("orchestration control MCP", () => {
+  it.each(["request", "reply"] as const)("exposes explicit Main assistance and preserves original tool results (%s)", async mode => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-assistance-mcp-")); roots.push(root);
+    const settings = context(root, { mainAssistance: mode, ...(mode === "reply" ? { agent: "main", kind: "main" } : {}) });
+    const assistance = vi.fn(async () => ({ requestId: "saved", status: "queued" }));
+    let notices = 0;
+    const service = new ControlActionService({ projectId: String(settings.projectId), agent: String(settings.agent), invocationId: String(settings.invocationId),
+      stateVersion: 4, capability: "capability-test-secret", stagingPath: String(settings.stagingPath), revalidate: async () => undefined,
+      mainAssistance: assistance, mainAssistanceNotice: async () => { if (++notices === 1) return "Main assistance reply for original task"; throw new Error("Actual notice storage failure"); } });
+    const bridge = await startControlActionBridge(service, root);
+    try {
+      const responses = await runMcp({ ...settings, bridgePath: bridge.endpoint.path, bridgeHost: bridge.endpoint.host, bridgePort: bridge.endpoint.port }, [
+        { id: 1, method: "tools/list" },
+        { id: 2, method: "tools/call", params: { name: "main_assistance", arguments: { operation: "request", requestId: "q1", question: "Actual question" } } },
+        { id: 3, method: "tools/call", params: { name: "main_assistance", arguments: { operation: "list" } } }
+      ]);
+      const names = (responses[0].result as { tools: Array<{ name: string }> }).tools.map(item => item.name);
+      if (mode === "reply") expect(names).toEqual(["main_assistance"]);
+      else { expect(names).toContain("main_assistance"); expect(names).toContain("finish_task"); }
+      for (const response of responses.slice(1)) expect(response.result).toMatchObject({ structuredContent: { requestId: "saved", status: "queued" } });
+      if (mode === "request") {
+        expect(JSON.stringify(responses[1].result)).toContain("Main assistance reply for original task");
+        expect(JSON.stringify(responses[2].result)).toContain("Actual notice storage failure");
+        expect(responses[2].result).not.toMatchObject({ isError: true });
+      } else expect(notices).toBe(0);
+    } finally { await bridge.close(); }
+  });
+
   it.each([true, false])("reports actual finish persistence through real MCP (saved facts: %s)", async saved => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "finish-facts-mcp-")); roots.push(root);
     const settings = context(root);

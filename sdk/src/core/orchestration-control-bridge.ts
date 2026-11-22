@@ -254,6 +254,8 @@ export class ControlActionRejectedError extends Error {
 }
 
 export interface ControlActionServiceOptions {
+  mainAssistanceNotice?: (inputId: string) => Promise<string>;
+  mainAssistance?: (value: unknown, callId: string) => Promise<unknown>;
   workflowGate?: (value: unknown, callId: string) => Promise<unknown>;
   searchTree?: (request: unknown) => Promise<unknown>;
   nativeJobScope?: NativeJobScope;
@@ -431,6 +433,23 @@ export class ControlActionService {
       () => undefined
     );
     return operation;
+  }
+
+  async requestMainAssistanceNotice(capability: string, inputId: string): Promise<string> {
+    this.assertCapability(capability, true);
+    if (!inputId) throw new Error("Assistance notice requires its native tool call identity");
+    return await this.options.mainAssistanceNotice?.(inputId) ?? "";
+  }
+
+  async requestMainAssistance(capability: string, value: unknown, callId: string): Promise<unknown> {
+    this.assertCapability(capability, true);
+    const operation = this.writeQueue.then(async () => {
+      this.assertCapability(capability, true); this.options.signal?.throwIfAborted();
+      if (!this.options.mainAssistance) throw new Error("Main assistance is unavailable for this invocation");
+      return this.options.mainAssistance(value, callId);
+    });
+    this.writeQueue = operation.then(() => {}, () => {}); this.activeRequests.add(operation);
+    try { return await operation; } finally { this.activeRequests.delete(operation); }
   }
 
   async requestWorkflowGate(capability: string, value: unknown, callId: string): Promise<unknown> {
@@ -644,6 +663,8 @@ export interface ControlActionBridge {
 }
 
 interface BridgeRequest {
+  mainAssistanceNotice?: boolean;
+  mainAssistanceRequest?: unknown;
   workflowGateRequest?: unknown;
   searchTreeRequest?: unknown;
   capability?: unknown;
@@ -765,6 +786,22 @@ async function handleBridgeLine(
   socket.once("close", clearPending);
   try {
     const request = JSON.parse(line) as BridgeRequest;
+    if (request.mainAssistanceNotice === true) {
+      if (typeof request.capability !== "string" || typeof request.callId !== "string" ||
+        request.mainAssistanceRequest !== undefined || request.workflowGateRequest !== undefined || request.searchTreeRequest !== undefined ||
+        request.backgroundJob !== undefined || request.action !== undefined || request.stateRequest !== undefined)
+        throw new Error("Assistance notice requires a separate authenticated request");
+      const stateResult = await service.requestMainAssistanceNotice(request.capability, request.callId);
+      if (!socket.destroyed && !socket.writableEnded) socket.write(`${JSON.stringify({ ok: true, stateResult })}\n`);
+      return;
+    }
+    if (request.mainAssistanceRequest !== undefined) {
+      if (typeof request.capability !== "string" || typeof request.callId !== "string" || request.workflowGateRequest !== undefined || request.searchTreeRequest !== undefined || request.action !== undefined || request.stateRequest !== undefined || request.backgroundJob !== undefined)
+        throw new Error("Main assistance requests cannot be combined with other actions");
+      const stateResult = await service.requestMainAssistance(request.capability, request.mainAssistanceRequest, String(request.callId));
+      if (!socket.destroyed && !socket.writableEnded) socket.write(`${JSON.stringify({ ok: true, stateResult })}\n`);
+      return;
+    }
     if (request.workflowGateRequest !== undefined) {
       if (typeof request.capability !== "string" || typeof request.callId !== "string" || request.searchTreeRequest !== undefined || request.action !== undefined || request.stateRequest !== undefined || request.backgroundJob !== undefined)
         throw new Error("Gate requests cannot be combined with other actions");

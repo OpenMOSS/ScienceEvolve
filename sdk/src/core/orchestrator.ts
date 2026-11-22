@@ -909,6 +909,8 @@ export class Orchestrator {
   private async projectView(state: ProjectState): Promise<ProjectView> {
     const liveState = (await this.collaborationRuntime?.projectReadModel?.(state)) ?? state;
     const project = structuredClone(liveState) as ProjectView;
+    const assistance = await this.collaborationRuntime?.mainAssistanceRecords?.(state.id);
+    if (assistance?.length) project.mainAssistance = assistance;
     if (liveState.orchestration.gates?.length) project.workflowGates = await this.collaborationRuntime?.workflowGateRuns?.(state.id);
     // Main is a public first-class Agent. Clone all configurations before
     // exposing the read model so callers cannot mutate runtime state.
@@ -1760,6 +1762,7 @@ export class Orchestrator {
       return await this.projectView(state);
     }
     state.pauseRequest ??= { requestedAt: nowIso() };
+    await this.collaborationRuntime?.pauseMainAssistance?.(state);
     if (state.currentAgent) {
       state.status = "pausing";
       state.phase = `pausing:after:${state.currentAgent}`;
@@ -1792,6 +1795,7 @@ export class Orchestrator {
     }
     if (options?.preserveRecoveryBudget) throw new Error("Cannot resume retained scoped recovery in a non-Git project");
     state.pauseRequest = undefined;
+    await this.collaborationRuntime?.resumeMainAssistance?.(state);
     beginWorkflowRecovery(state, { renew: true });
     runtime.sleepController?.abort();
     if (
@@ -3089,6 +3093,7 @@ export class Orchestrator {
     state.cancellationSettledAt = undefined;
     state.status = "cancelling";
     state.phase = "cancelling";
+    await this.collaborationRuntime?.cancelMainAssistance?.(state);
     runtime.queueController?.abort();
     runtime.sleepController?.abort();
     runtime.controller?.abort();
@@ -3884,9 +3889,14 @@ export class Orchestrator {
       if (formalSerialState) control.nativeBackgroundJobs = true;
       if (state.searchTree) control.searchTree = true;
       if (state.orchestration.gates?.length) control.workflowGate = true;
+      if (agent !== "main" && this.collaborationRuntime) control.mainAssistance = "request";
       controlStateVersion = control.stateVersion;
       controlCapabilityHash = control.capabilityHash;
       const controlService = new ControlActionService({
+        ...(agent !== "main" && this.collaborationRuntime ? { mainAssistanceNotice: async (inputId: string) => await baseRunRequest.onPendingMainAssistance?.(inputId) ?? "", mainAssistance: async (value: unknown, callId: string) => {
+          if (!baseRunRequest.onMainAssistanceRequest) throw new Error("Main assistance is unavailable in this task");
+          return baseRunRequest.onMainAssistanceRequest(value, callId);
+        } } : {}),
         ...(state.orchestration.gates?.length ? { workflowGate: async (value: unknown, callId: string) => {
           if (!baseRunRequest.onWorkflowGateRequest) throw new Error("No Gate is available in this invocation's configured path");
           return baseRunRequest.onWorkflowGateRequest(value, callId);

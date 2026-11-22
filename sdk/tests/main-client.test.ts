@@ -62,6 +62,19 @@ describe("explicit main SDK facade (no real model/GitHub)", () => {
       node: { id: "speed", kind: "direction", name: "Speed", parentId: "root" } });
     expect(await (await sdk.getRun(run.id)).searchTree({ operation: "overview" })).toMatchObject({ nodes: [{ id: "speed" }] });
   });
+  it("retains Main assistance facts in snapshots and after SDK reconnect", async () => {
+    const { sdk, runtime, gateway } = await fixture();
+    const run = await sdk.start({ title: "Assistance view", requirement: "Retain late replies", workflow: mainOnly(), gatewayBindings: { defaultGatewayId: gateway.id } });
+    await run.wait(); await runtime.orchestrator.waitForIdle(run.id);
+    const timestamp = new Date().toISOString();
+    await runtime.collaborationRuntime.database().saveMainAssistance({ id: "retained-question", version: 1, callId: "ask", question: "Which baseline?", status: "replied",
+      origin: { projectId: run.id, agentId: "worker", taskId: "ended-task", invocationId: "original", session: { schemaVersion: 1, harnessId: "codex", adapterVersion: "fixture", generation: 0, nativeId: "original-session", durable: true, createdAt: timestamp } },
+      reply: { text: "Compare the baseline.", savedAt: timestamp, invocationId: "main-reply", callId: "reply" }, delivery: { status: "late", reason: "Original task ended" }, createdAt: timestamp, updatedAt: timestamp }, 0);
+    for (const view of [await run.snapshot(), await (await sdk.getRun(run.id)).snapshot(), (await sdk.listRuns())[0]])
+      expect(view.mainAssistance).toMatchObject([{ id: "retained-question", status: "replied", delivery: { status: "late" }, reply: { text: "Compare the baseline." } }]);
+    expect((await run.snapshot()).status).toBe("completed");
+  });
+
   it("automatically detects model reasoning after saving a gateway through the SDK facade", async () => {
     const modelFetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));

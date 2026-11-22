@@ -310,6 +310,9 @@ function adapterVisibleRequest(
   delete adapterSafeRequest.nativeInputNotices;
   delete adapterSafeRequest.onDurableSessionStarted;
   delete adapterSafeRequest.onControlResult;
+  delete adapterSafeRequest.onMainAssistanceRequest;
+  delete adapterSafeRequest.onPendingMainAssistance;
+  delete adapterSafeRequest.onMainAssistanceDeliveryFailed;
   delete adapterSafeRequest.onProjectStateRequest;
   delete adapterSafeRequest.onPendingControlResults;
   delete adapterSafeRequest.onPendingWorkflowAdjustments;
@@ -549,6 +552,8 @@ async function validateLeaderResidentInputs(
     memoryPath: staged.memoryPath,
     runtimePath: request.runtimePath,
     ...(request.project.orchestration?.schemaVersion === 3 ? { fixedAgentId: request.agent } : {}),
+    ...(request.agent === "main" && request.onMainAssistanceRequest && request.executionContext?.role === "leader" &&
+      request.executionContext.routeScopeId === `main-assistance-${request.project.id}` ? { mainAssistance: true } : {}),
     ...(staged.workflowAuthoringPath ? { workflowAuthoringPath: staged.workflowAuthoringPath,
       ...(staged.workflowCurrentPath ? { workflowCurrentPath: staged.workflowCurrentPath } : {}),
       workflowAuthoringInvocationId: staged.workflowAuthoringInvocationId } : {})
@@ -2395,6 +2400,10 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
           return index?.preview ?? "";
         },
         ...(expectedSession ? { expectedSession } : {}) });
+      if (expectedSession) {
+        const assistance = await request.onPendingMainAssistance?.(workflowInputId, expectedSession);
+        workflowSupplement = [assistance, workflowSupplement].filter(Boolean).join("\n\n");
+      }
       if (typeof workflowSupplement !== "string") throw new HarnessRuntimeError("HARNESS_CONTRACT_VIOLATION", "Workflow input supplement must be text");
       signal.throwIfAborted();
       return workflowSupplement ? `${workflowSupplement}\n\n${prompt}` : prompt;

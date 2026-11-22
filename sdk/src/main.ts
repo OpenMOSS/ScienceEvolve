@@ -19,3 +19,5 @@ export type { MainHarnessGatewayImportOptions } from "./main-harness-gateway.js"
 export type { SearchTreeConfig, SearchTreeNode, SearchTreeRequest, SearchTreeSnapshot } from "./core/search-tree.js";
 
 export type { WorkflowGate, GateRun, GateOrigin } from "./core/internal/shared/workflow-gate.js";
+
+export type { MainAssistanceRecord, MainAssistanceOrigin } from "./core/main-assistance.js";
