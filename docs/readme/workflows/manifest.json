@@ -1,0 +1,2507 @@
+[
+  {
+    "id": "dynamic-research-workflow",
+    "source": "example/dynamic-research-workflow/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "a94bc9125c002523cf237475b261c8997a276c2409c1cbbc164282b4a61ce4ce",
+    "screenshot": "dynamic-research-workflow.jpg",
+    "details": [],
+    "screenshotSha256": "2415bc7001ee0ea2f50d008b0a54f34e00cbeaa8d2464dc7211ae312c9875f69",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2025
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "idea",
+      "execution",
+      "writing",
+      "review",
+      "finish"
+    ],
+    "edgeCount": 10,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "01-ahe-evolve",
+    "source": "example/01-ahe-evolve/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "7177f848d021d80244199da45140e340574c005eaa6a30ed9ddba9bfd9b10389",
+    "screenshot": "01-ahe-evolve.jpg",
+    "details": [],
+    "screenshotSha256": "967c332ab084ae4f826a075db7779f51c4821553ff94142a9e9cd6cb99776c4f",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2025
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "execute",
+      "judge",
+      "optimizer",
+      "finish"
+    ],
+    "edgeCount": 9,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "02-software-development",
+    "source": "example/02-software-development/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "def6a577ac1c4babf41f2864432a757678ed2dcfca5caf8a6774219ad4ceed42",
+    "screenshot": "02-software-development.jpg",
+    "details": [],
+    "screenshotSha256": "08d0a87913cc3f37086f25d958a258da3af7742eae46bdcfeaa8a04a2ab1225e",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 1752
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "coding",
+      "testing",
+      "finish"
+    ],
+    "edgeCount": 6,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "aris",
+    "source": "example/aris/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "00f7b55a81449222ee5b4ebbc1447333625f3a6649c7f98cd9ec2422b34d3fd8",
+    "screenshot": "aris.jpg",
+    "details": [
+      {
+        "screenshot": "aris--stage-1.jpg",
+        "title": "1. W1 · 文献、想法与评审",
+        "screenshotSha256": "63afb21d505e02fcc93fd3fa9a75c9e6fd3d81006f8a349e9b04aacd4eddb323",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "literature",
+          "ideas",
+          "novelty",
+          "refine",
+          "reviewer",
+          "finish"
+        ],
+        "edgeCount": 12,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "literature",
+          "ideas",
+          "novelty",
+          "refine",
+          "reviewer"
+        ]
+      },
+      {
+        "screenshot": "aris--stage-2.jpg",
+        "title": "2. W1.5 / W2 · 研究与反馈",
+        "screenshotSha256": "0522a088c9d4646948a4d01684b7c649a6ec44e0430765f66e8680f95b28f491",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "bridge",
+          "research_loop",
+          "summary",
+          "reviewer",
+          "finish"
+        ],
+        "edgeCount": 10,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "bridge",
+          "research_loop",
+          "summary",
+          "reviewer"
+        ]
+      },
+      {
+        "screenshot": "aris--stage-3.jpg",
+        "title": "3. W3 · 条件写作与论文评审",
+        "screenshotSha256": "28ad2a210db45feb0a624e7c7e3f49f6b3284a87698eab3b5b635478963c8ca4",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2298
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "paper_plan",
+          "figures",
+          "paper_write",
+          "paper_compile",
+          "paper_improve",
+          "paper_assurance",
+          "paper_reviewer",
+          "finish"
+        ],
+        "edgeCount": 16,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "paper_plan",
+          "figures",
+          "paper_write",
+          "paper_compile",
+          "paper_improve",
+          "paper_assurance",
+          "paper_reviewer"
+        ]
+      }
+    ],
+    "screenshotSha256": "d45536eec8473eb188c3d640a84110b1822db987f274bbe60b8c16fa0ebe3f9b",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 3390
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "literature",
+      "ideas",
+      "novelty",
+      "refine",
+      "bridge",
+      "research_loop",
+      "summary",
+      "paper_plan",
+      "figures",
+      "paper_write",
+      "paper_compile",
+      "paper_improve",
+      "paper_assurance",
+      "reviewer",
+      "paper_reviewer",
+      "finish"
+    ],
+    "edgeCount": 32,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "metaharness",
+    "source": "example/metaharness/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "693861f97e6088ac029a9d132b18e1e50ed6cdb6df8b39093eddce939e8105b6",
+    "screenshot": "metaharness.jpg",
+    "details": [],
+    "screenshotSha256": "6ce88af9eb3c74362a2c96c3631ec701378f1f5ed2fc72b10b45f509de53c5ae",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2025
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "propose",
+      "evaluate",
+      "analyze",
+      "finish"
+    ],
+    "edgeCount": 7,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "autoresearch",
+    "source": "example/autoresearch/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "8fabadffe37a216f6d2cad1eb5cd183d643507f491c3e2a9b522ccd397bfdbb2",
+    "screenshot": "autoresearch.jpg",
+    "details": [],
+    "screenshotSha256": "fdd4ea36432ecf54aac637eb09f463c6c413b4909cfaf3636a8568e396808b5e",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2025
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "propose",
+      "train",
+      "select",
+      "finish"
+    ],
+    "edgeCount": 7,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "funsearch",
+    "source": "example/funsearch/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "50e875ec98a30abc2d8e2755f900cf1ce6a808213277e3c5b3c4ca248ae0ca2d",
+    "screenshot": "funsearch.jpg",
+    "details": [],
+    "screenshotSha256": "13fe9a36927feaabefbcd5b63c1393bae67ecf1daecd55150b19265770f22c3f",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 1752
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "sample",
+      "evaluate",
+      "finish"
+    ],
+    "edgeCount": 6,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "agent-laboratory",
+    "source": "example/agent-laboratory/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "b1458e74feb40ad13b0fda10051781ad9b75875d0ca401f3d801aab8e2bc1efe",
+    "screenshot": "agent-laboratory.jpg",
+    "details": [
+      {
+        "screenshot": "agent-laboratory--stage-1.jpg",
+        "title": "1. 研究阶段 · 同一角色可跨阶段复用",
+        "screenshotSha256": "bee4cc6992cb723021bad4895eba118a2d3dd14c668870ba52678d79d1564689",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "phd",
+          "postdoc",
+          "ml_engineer",
+          "sw_engineer",
+          "professor",
+          "finish"
+        ],
+        "edgeCount": 12,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "phd",
+          "postdoc",
+          "ml_engineer",
+          "sw_engineer",
+          "professor"
+        ]
+      },
+      {
+        "screenshot": "agent-laboratory--stage-2.jpg",
+        "title": "2. 代码求解器 · 串行尝试与反馈",
+        "screenshotSha256": "4887a6e5b5bf66c6f34fd3e77725db1fc80b9e2d398d8fa50ff130da32eed41e",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "code_propose",
+          "code_execute",
+          "code_reward",
+          "code_reflect",
+          "finish"
+        ],
+        "edgeCount": 10,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "code_propose",
+          "code_execute",
+          "code_reward",
+          "code_reflect"
+        ]
+      },
+      {
+        "screenshot": "agent-laboratory--stage-3.jpg",
+        "title": "3. 论文求解器与三位评审",
+        "screenshotSha256": "86c653aaa6f2e1f7d9d6748c75f8855dd8ca8a478ad2a005891c164342eacfa7",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "paper_propose",
+          "paper_execute",
+          "paper_reward",
+          "review_1",
+          "review_2",
+          "review_3",
+          "finish"
+        ],
+        "edgeCount": 14,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "paper_propose",
+          "paper_execute",
+          "paper_reward",
+          "review_1",
+          "review_2",
+          "review_3"
+        ]
+      }
+    ],
+    "screenshotSha256": "3b5de21458cd77c1e1a4963f062ce601bfc37aa90514424149816352b8fb6bb3",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 3390
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "phd",
+      "postdoc",
+      "ml_engineer",
+      "sw_engineer",
+      "professor",
+      "code_propose",
+      "code_execute",
+      "code_reward",
+      "code_reflect",
+      "paper_propose",
+      "paper_execute",
+      "paper_reward",
+      "review_1",
+      "review_2",
+      "review_3",
+      "finish"
+    ],
+    "edgeCount": 32,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "sciagents",
+    "source": "example/sciagents/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "bada3038a51b8b270f342f74d781b4cea9f6f125e66641b9e22b8db9f41c4a71",
+    "screenshot": "sciagents.jpg",
+    "details": [
+      {
+        "screenshot": "sciagents--stage-1.jpg",
+        "title": "1. 图推理与提案",
+        "screenshotSha256": "f1c99fd8477dc39f7c98b5ef0e578b9f41187c4a47f56e5f294f73bb9ebca1d4",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "planner",
+          "assistant",
+          "ontologist",
+          "scientist",
+          "finish"
+        ],
+        "edgeCount": 10,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "planner",
+          "assistant",
+          "ontologist",
+          "scientist"
+        ]
+      },
+      {
+        "screenshot": "sciagents--stage-2.jpg",
+        "title": "2. 七方面细化",
+        "screenshotSha256": "84a58cec7ea5f0f34708902e8a9983f35584811c30408bc83d943fe5d6914a15",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2298
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "hypothesis_agent",
+          "outcome_agent",
+          "mechanism_agent",
+          "design_principles_agent",
+          "unexpected_properties_agent",
+          "comparison_agent",
+          "novelty_agent",
+          "finish"
+        ],
+        "edgeCount": 16,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "hypothesis_agent",
+          "outcome_agent",
+          "mechanism_agent",
+          "design_principles_agent",
+          "unexpected_properties_agent",
+          "comparison_agent",
+          "novelty_agent"
+        ]
+      },
+      {
+        "screenshot": "sciagents--stage-3.jpg",
+        "title": "3. 批评、新颖性与报告",
+        "screenshotSha256": "058f057f6cc26851df3fdf38d812b3d22841369791eca8505aa3b65e83668cb3",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "critic_agent",
+          "novelty_assistant",
+          "report",
+          "finish"
+        ],
+        "edgeCount": 8,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "critic_agent",
+          "novelty_assistant",
+          "report"
+        ]
+      }
+    ],
+    "screenshotSha256": "d88b5cef74892f285fdc49018772b40500aa7c60967cde887c4afdc5c788d7cd",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 3117
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "planner",
+      "assistant",
+      "ontologist",
+      "scientist",
+      "hypothesis_agent",
+      "outcome_agent",
+      "mechanism_agent",
+      "design_principles_agent",
+      "unexpected_properties_agent",
+      "comparison_agent",
+      "novelty_agent",
+      "critic_agent",
+      "novelty_assistant",
+      "report",
+      "finish"
+    ],
+    "edgeCount": 30,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "robin",
+    "source": "example/robin/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "06bb293a413b62a10a7a46703f6a0f7f2968e61c0b91e45e0680f35d7b217346",
+    "screenshot": "robin.jpg",
+    "details": [
+      {
+        "screenshot": "robin--stage-1.jpg",
+        "title": "1. Assay 检索与筛选",
+        "screenshotSha256": "5a728207179001a9ba34b706a67469fe05a42d337855face7709dd5031cf756e",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "assay_queries",
+          "assay_literature",
+          "assay_proposals",
+          "assay_reports",
+          "assay_rank",
+          "finish"
+        ],
+        "edgeCount": 12,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "assay_queries",
+          "assay_literature",
+          "assay_proposals",
+          "assay_reports",
+          "assay_rank"
+        ]
+      },
+      {
+        "screenshot": "robin--stage-2.jpg",
+        "title": "2. 候选检索与筛选",
+        "screenshotSha256": "e1b64e3b86ce599ebae3bb022b928519c65d99f4f258a0d24ba150a34321d7e9",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "candidate_queries",
+          "candidate_literature",
+          "candidate_proposals",
+          "candidate_reports",
+          "candidate_rank",
+          "finish"
+        ],
+        "edgeCount": 12,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "candidate_queries",
+          "candidate_literature",
+          "candidate_proposals",
+          "candidate_reports",
+          "candidate_rank"
+        ]
+      },
+      {
+        "screenshot": "robin--stage-3.jpg",
+        "title": "3. 外部实验后 · 分析与下一轮",
+        "screenshotSha256": "4f06a06b53edfde0b3185abf8045d5eafc0c0ca42b3f391a002600c3f8b8a540",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "analysis",
+          "consensus",
+          "interpret",
+          "followup",
+          "finish"
+        ],
+        "edgeCount": 10,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "analysis",
+          "consensus",
+          "interpret",
+          "followup"
+        ]
+      }
+    ],
+    "screenshotSha256": "6f09565d22818d72c91709b61e46c1b37083569fe6ce7e3b26d934629f347f07",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 3117
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "assay_queries",
+      "assay_literature",
+      "assay_proposals",
+      "assay_reports",
+      "assay_rank",
+      "candidate_queries",
+      "candidate_literature",
+      "candidate_proposals",
+      "candidate_reports",
+      "candidate_rank",
+      "analysis",
+      "consensus",
+      "interpret",
+      "followup",
+      "finish"
+    ],
+    "edgeCount": 30,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "co-scientist",
+    "source": "example/co-scientist/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "b3512010dabc8605d8d6312f22406839f1abbb6fca19f76724b7742db5225b9c",
+    "screenshot": "co-scientist.jpg",
+    "details": [
+      {
+        "screenshot": "co-scientist--stage-1.jpg",
+        "title": "1. 核心科学角色 · 同步调度",
+        "screenshotSha256": "9ddde4636dc5cc014e09cf66eb6cc7c7268fafa931dba5b5f6e3f8e527595bfa",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "generation",
+          "reflection",
+          "proximity",
+          "ranking",
+          "evolution",
+          "meta_review",
+          "finish"
+        ],
+        "edgeCount": 14,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "generation",
+          "reflection",
+          "proximity",
+          "ranking",
+          "evolution",
+          "meta_review"
+        ]
+      },
+      {
+        "screenshot": "co-scientist--stage-2.jpg",
+        "title": "2. 外部验证扩展",
+        "screenshotSha256": "c0225da97e556bbee54fa85bb11c1e5a503fd0762361a1cea8ec648fbf061659",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 1752
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "wetlab",
+          "finish"
+        ],
+        "edgeCount": 4,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "wetlab"
+        ]
+      }
+    ],
+    "screenshotSha256": "ada65914705c2f91fe4297b0aae0069caa112031fbdc0656d73bfd5ba40bf030",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2298
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "generation",
+      "reflection",
+      "proximity",
+      "ranking",
+      "evolution",
+      "meta_review",
+      "wetlab",
+      "finish"
+    ],
+    "edgeCount": 16,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "biomni",
+    "source": "example/biomni/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "38683f23c64b0126623de6c11528c614fe371c718af50fecc408a4d7f6365a1a",
+    "screenshot": "biomni.jpg",
+    "details": [],
+    "screenshotSha256": "09eeeab9c79fd2d02a00728c1773fc5f79e141dae78e38442d8a8aa80a4a8994",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2025
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "retrieval",
+      "researcher",
+      "execute",
+      "critic",
+      "wetlab",
+      "finish"
+    ],
+    "edgeCount": 12,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "agentrxiv",
+    "source": "example/agentrxiv/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "bb670fb64795bff390ef641a5513900a0c74a139c76fe8a3867b656b50852c25",
+    "screenshot": "agentrxiv.jpg",
+    "details": [
+      {
+        "screenshot": "agentrxiv--stage-1.jpg",
+        "title": "1. 单实验室研究与 archive 客户端",
+        "screenshotSha256": "e4b6e571777709336b345cda1b8fc8127504a8a844b9e799b30706b1dbe650e3",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "phd",
+          "postdoc",
+          "ml_engineer",
+          "sw_engineer",
+          "professor",
+          "archive",
+          "finish"
+        ],
+        "edgeCount": 14,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "phd",
+          "postdoc",
+          "ml_engineer",
+          "sw_engineer",
+          "professor",
+          "archive"
+        ]
+      },
+      {
+        "screenshot": "agentrxiv--stage-2.jpg",
+        "title": "2. 代码求解器",
+        "screenshotSha256": "e7a1e4740068ae0780c77a14834e69ef1bf77bd4601274fd49a882feffdca6ec",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "code_propose",
+          "code_execute",
+          "code_reward",
+          "code_reflect",
+          "finish"
+        ],
+        "edgeCount": 10,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "code_propose",
+          "code_execute",
+          "code_reward",
+          "code_reflect"
+        ]
+      },
+      {
+        "screenshot": "agentrxiv--stage-3.jpg",
+        "title": "3. 写作、评审与发布准备",
+        "screenshotSha256": "5268cf70010032e8f6a10bae4f3fa07143558ce28888e156f116293c75d0eca7",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "paper_propose",
+          "paper_execute",
+          "paper_reward",
+          "review_1",
+          "review_2",
+          "review_3",
+          "finish"
+        ],
+        "edgeCount": 14,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "paper_propose",
+          "paper_execute",
+          "paper_reward",
+          "review_1",
+          "review_2",
+          "review_3"
+        ]
+      }
+    ],
+    "screenshotSha256": "c258ca72db5241b3a4627be7ad078e1deb3c1cfbac646a8d01b736758a67a9bd",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 3390
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "phd",
+      "postdoc",
+      "ml_engineer",
+      "sw_engineer",
+      "professor",
+      "code_propose",
+      "code_execute",
+      "code_reward",
+      "code_reflect",
+      "paper_propose",
+      "paper_execute",
+      "paper_reward",
+      "review_1",
+      "review_2",
+      "review_3",
+      "archive",
+      "finish"
+    ],
+    "edgeCount": 34,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "rrsi",
+    "source": "example/rrsi/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "8e056cb5049e75ef249bb6d30f57baca0e806ed29af2262529130a9b517cd7cf",
+    "screenshot": "rrsi.jpg",
+    "details": [
+      {
+        "screenshot": "rrsi--stage-1.jpg",
+        "title": "1. 准备、诊断与候选修复",
+        "screenshotSha256": "168a5bdd66ce6650208c77ad65cb915a1696722e551a99e8638930ad35b22489",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "task_setup",
+          "analyst",
+          "digester",
+          "proposer",
+          "critic",
+          "finish"
+        ],
+        "edgeCount": 12,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "task_setup",
+          "analyst",
+          "digester",
+          "proposer",
+          "critic"
+        ]
+      },
+      {
+        "screenshot": "rrsi--stage-2.jpg",
+        "title": "2. 测量、正则化选择与冻结评测",
+        "screenshotSha256": "97780d27c4e1e598196097b1929c687e1227a25f4a1d14330e15a1a8f276ddb5",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "measurement",
+          "selector",
+          "heldout",
+          "audit",
+          "finish"
+        ],
+        "edgeCount": 10,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "measurement",
+          "selector",
+          "heldout",
+          "audit"
+        ]
+      }
+    ],
+    "screenshotSha256": "1dbb94952b0a7c8dff18614fcd9904e4a35835d041ec696fc7a9451c19019287",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2571
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "task_setup",
+      "analyst",
+      "digester",
+      "proposer",
+      "critic",
+      "measurement",
+      "selector",
+      "heldout",
+      "audit",
+      "finish"
+    ],
+    "edgeCount": 20,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "drugevolve",
+    "source": "example/drugevolve/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "4ab31994ac99f0b8d645c75f6af37f6be4cccf871bf12da3f8fd67308bf992f8",
+    "screenshot": "drugevolve.jpg",
+    "details": [
+      {
+        "screenshot": "drugevolve--stage-1.jpg",
+        "title": "1. Researcher / Engineer",
+        "screenshotSha256": "525d2e49b0ce2b2574a2d9d9444a4ca7633111d26c6f535d34729c48771e6d33",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "generator",
+          "inspector",
+          "implementer",
+          "trainer",
+          "debugger",
+          "finish"
+        ],
+        "edgeCount": 12,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "generator",
+          "inspector",
+          "implementer",
+          "trainer",
+          "debugger"
+        ]
+      },
+      {
+        "screenshot": "drugevolve--stage-2.jpg",
+        "title": "2. 评价、分析与记忆反馈",
+        "screenshotSha256": "05a08b02ed0cd08e23c29ebb3610d46813a789e5a0e3dbf1bbb5389caa34f83a",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2025
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "judger",
+          "analyzer",
+          "summarizer",
+          "finish"
+        ],
+        "edgeCount": 8,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "judger",
+          "analyzer",
+          "summarizer"
+        ]
+      }
+    ],
+    "screenshotSha256": "f1814b5f746bb8e5e651e3d5f86416249d6f974673da810458e94f3eedd813b0",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2298
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "generator",
+      "inspector",
+      "implementer",
+      "trainer",
+      "debugger",
+      "judger",
+      "analyzer",
+      "summarizer",
+      "finish"
+    ],
+    "edgeCount": 18,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "scientist-two",
+    "source": "example/scientist-two/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "9d9bb7b7b9423781c15487df39907c4298e5bec37176b0d8eefb376288568896",
+    "screenshot": "scientist-two.jpg",
+    "details": [
+      {
+        "screenshot": "scientist-two--stage-1.jpg",
+        "title": "1. 任务、局限与种子",
+        "screenshotSha256": "a5fb338f18a56146d5b4d7fdfe934756c1258916b494412e42b5e893f52e8b47",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2058
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "task_setup",
+          "limitation_extract",
+          "limitation_verify",
+          "seed_generate",
+          "novelty_check",
+          "finish"
+        ],
+        "edgeCount": 12,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "task_setup",
+          "limitation_extract",
+          "limitation_verify",
+          "seed_generate",
+          "novelty_check"
+        ]
+      },
+      {
+        "screenshot": "scientist-two--stage-2.jpg",
+        "title": "2. Baseline / Subset · 评价与修复",
+        "screenshotSha256": "b089885ca717915cdef3dd6f5330126006563c4444e584b685efc3eaf3712df5",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2058
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "baseline_coding",
+          "subset_coding",
+          "subset_critic",
+          "subset_engineering",
+          "finish"
+        ],
+        "edgeCount": 10,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "baseline_coding",
+          "subset_coding",
+          "subset_critic",
+          "subset_engineering"
+        ]
+      },
+      {
+        "screenshot": "scientist-two--stage-3.jpg",
+        "title": "3. Full · 进化与选择",
+        "screenshotSha256": "00fec7d36a05a9eb736f9e55405ea6feaf90b6276907eeb1a27bf796d4fa6d79",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2058
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "full_coding",
+          "full_critic",
+          "full_engineering",
+          "spec_filter",
+          "idea_evolve",
+          "selector",
+          "finish"
+        ],
+        "edgeCount": 14,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "full_coding",
+          "full_critic",
+          "full_engineering",
+          "spec_filter",
+          "idea_evolve",
+          "selector"
+        ]
+      },
+      {
+        "screenshot": "scientist-two--stage-4.jpg",
+        "title": "4. 消融与结果对照",
+        "screenshotSha256": "659dee5d15da6075bfd7d7396ec8c34dccd15c41a744ea2d2a2bb5e8d76fdaae",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2058
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "ablation_plan",
+          "ablation_coding",
+          "ablation_critic",
+          "result_comparison",
+          "finish"
+        ],
+        "edgeCount": 10,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "ablation_plan",
+          "ablation_coding",
+          "ablation_critic",
+          "result_comparison"
+        ]
+      },
+      {
+        "screenshot": "scientist-two--stage-5.jpg",
+        "title": "5. 论文草稿与质量整合",
+        "screenshotSha256": "19feafebdc0a53f3c5fec112a67a1a65f6a077a011cb08d1f236523fa9207018",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2058
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "draft_outline",
+          "draft_literature",
+          "draft_figures",
+          "draft_sections",
+          "draft_quality",
+          "draft_quality_merge",
+          "finish"
+        ],
+        "edgeCount": 14,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "draft_outline",
+          "draft_literature",
+          "draft_figures",
+          "draft_sections",
+          "draft_quality",
+          "draft_quality_merge"
+        ]
+      },
+      {
+        "screenshot": "scientist-two--stage-6.jpg",
+        "title": "6. 内容与格式；评审准备",
+        "screenshotSha256": "5bcb0fa50c0c94995b8f4961517630101addba0bd846dab832f8a408fec41322",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2058
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "content_refine",
+          "format_review",
+          "format_fix",
+          "review_summary",
+          "review_literature",
+          "review_expand",
+          "finish"
+        ],
+        "edgeCount": 14,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "content_refine",
+          "format_review",
+          "format_fix",
+          "review_summary",
+          "review_literature",
+          "review_expand"
+        ]
+      },
+      {
+        "screenshot": "scientist-two--stage-7.jpg",
+        "title": "7. 评审证据与问答",
+        "screenshotSha256": "b5cec77daed45da33a416a781d4c1170ff362c4fb761405e0e08f4994888f837",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2058
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "review_historian",
+          "review_baselines",
+          "novelty_questions",
+          "soundness_questions",
+          "novelty_answer",
+          "soundness_answer",
+          "finish"
+        ],
+        "edgeCount": 14,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "review_historian",
+          "review_baselines",
+          "novelty_questions",
+          "soundness_questions",
+          "novelty_answer",
+          "soundness_answer"
+        ]
+      },
+      {
+        "screenshot": "scientist-two--stage-8.jpg",
+        "title": "8. 同行评审、rebuttal 与 meta-review",
+        "screenshotSha256": "3e19a89c9651cda1490a67f7ff597fd8b4b194ebd49d3ceec97299e3070379ab",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2058
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "peer_review",
+          "rebuttal_plan",
+          "rebuttal_coding",
+          "paper_enhancer",
+          "meta_review",
+          "finish"
+        ],
+        "edgeCount": 12,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "peer_review",
+          "rebuttal_plan",
+          "rebuttal_coding",
+          "paper_enhancer",
+          "meta_review"
+        ]
+      },
+      {
+        "screenshot": "scientist-two--stage-9.jpg",
+        "title": "9. 引用、方法与最终审计",
+        "screenshotSha256": "f01230756548f1a2f6efb41cdf554f1540e2c14aea87a3372efdc9efd89e98e3",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 2058
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "main",
+          "reference_verify",
+          "method_audit",
+          "integrity_writer",
+          "score_reproduce",
+          "final_spec_audit",
+          "export",
+          "finish"
+        ],
+        "edgeCount": 14,
+        "selectedNodeIds": [
+          "input",
+          "main",
+          "finish",
+          "reference_verify",
+          "method_audit",
+          "integrity_writer",
+          "score_reproduce",
+          "final_spec_audit",
+          "export"
+        ]
+      }
+    ],
+    "screenshotSha256": "ef1e9b98d667ef929a0e187b3fdacadd371f8d329097840fcf2d27a0cad6caf9",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 7791
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "task_setup",
+      "limitation_extract",
+      "limitation_verify",
+      "seed_generate",
+      "novelty_check",
+      "baseline_coding",
+      "subset_coding",
+      "subset_critic",
+      "subset_engineering",
+      "full_coding",
+      "full_critic",
+      "full_engineering",
+      "spec_filter",
+      "idea_evolve",
+      "selector",
+      "ablation_plan",
+      "ablation_coding",
+      "ablation_critic",
+      "result_comparison",
+      "draft_outline",
+      "draft_literature",
+      "draft_figures",
+      "draft_sections",
+      "draft_quality",
+      "content_refine",
+      "format_review",
+      "format_fix",
+      "review_summary",
+      "review_literature",
+      "review_expand",
+      "review_historian",
+      "review_baselines",
+      "novelty_questions",
+      "soundness_questions",
+      "novelty_answer",
+      "soundness_answer",
+      "peer_review",
+      "rebuttal_plan",
+      "rebuttal_coding",
+      "paper_enhancer",
+      "meta_review",
+      "reference_verify",
+      "method_audit",
+      "integrity_writer",
+      "score_reproduce",
+      "final_spec_audit",
+      "export",
+      "draft_quality_merge",
+      "finish"
+    ],
+    "edgeCount": 98,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "ai-scientist-v2",
+    "source": "example/ai-scientist-v2/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "5ac8bba046da57266a4ae6fd7db45e135040ff032477434b7afbeb3008a81cb6",
+    "screenshot": "ai-scientist-v2.jpg",
+    "details": [
+      {
+        "screenshot": "ai-scientist-v2--group-experiments.jpg",
+        "title": "组内细节 / Group: experiments",
+        "screenshotSha256": "bce344203f59ee61db5398f2e0fc50d78a7f4bbb53899d8c98ea9de65732c6e5",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 1503
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "expand_a",
+          "expand_b",
+          "finish"
+        ],
+        "edgeCount": 4,
+        "groupId": "experiments"
+      }
+    ],
+    "screenshotSha256": "4666f012ebac08c7de34073387cc638161d2c5e961b8d9238c7da68689163965",
+    "viewport": {
+      "width": 1287,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1931,
+      "height": 2133
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "idea",
+      "manager",
+      "writer",
+      "reflector",
+      "reviewer",
+      "experiments",
+      "finish"
+    ],
+    "edgeCount": 8,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "internagent-1-5",
+    "source": "example/internagent-1-5/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "a9049acb9904b8ffee6efee3fb958232767e8ffd8b69dc2b9317ec2f90e37913",
+    "screenshot": "internagent-1-5.jpg",
+    "details": [
+      {
+        "screenshot": "internagent-1-5--group-knowledge.jpg",
+        "title": "组内细节 / Group: knowledge",
+        "screenshotSha256": "9916b89efe8f024980fe071178b08b9a4f417410a8c1b820dc005fb8a0797ee9",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 1503
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "evidence_a",
+          "evidence_b",
+          "finish"
+        ],
+        "edgeCount": 4,
+        "groupId": "knowledge"
+      },
+      {
+        "screenshot": "internagent-1-5--group-optimization.jpg",
+        "title": "组内细节 / Group: optimization",
+        "screenshotSha256": "809bd3d8e1e248e29b2dfe1a9893ef5756b91c93fe4dcb5c1988590bdbf3478c",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 1503
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "search_a",
+          "search_b",
+          "finish"
+        ],
+        "edgeCount": 4,
+        "groupId": "optimization"
+      }
+    ],
+    "screenshotSha256": "79b66c87b86667d18d7ee2adb67e0eb3bdf747e6cd572df95573ad022f0d8202",
+    "viewport": {
+      "width": 1287,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1931,
+      "height": 2406
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "preflight",
+      "flow_planner",
+      "generation",
+      "verification",
+      "evolution",
+      "audit",
+      "knowledge",
+      "optimization",
+      "finish"
+    ],
+    "edgeCount": 17,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "biomni-r0",
+    "source": "example/biomni-r0/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "26d57d528373e60402fc8b77d2fef67dbc69f74e4706a951ba8bf51dea49b524",
+    "screenshot": "biomni-r0.jpg",
+    "details": [],
+    "screenshotSha256": "54409a4beb3fedc8b3d2c85f819a1a6ffd6ce7143541bd50bd1493167d94acf7",
+    "viewport": {
+      "width": 1313,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1970,
+      "height": 2406
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "preflight",
+      "curator",
+      "rollout",
+      "reward",
+      "trainer",
+      "deployer",
+      "evaluator",
+      "audit",
+      "finish"
+    ],
+    "edgeCount": 18,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "chemical-coscientist",
+    "source": "example/chemical-coscientist/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "e6c52f5e43cf0dba25df740fa60d082594c0a7d4cd68de1d7dd32170ef6ea0ff",
+    "screenshot": "chemical-coscientist.jpg",
+    "details": [],
+    "screenshotSha256": "dccb51bfdb1a20bf39b4e9868bb272db17934bdf9fc6b78b815a5835ab7b6da0",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2439
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "preflight",
+      "planner",
+      "web_search",
+      "documentation",
+      "code",
+      "experiment",
+      "optimization",
+      "audit",
+      "finish"
+    ],
+    "edgeCount": 18,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "raven",
+    "source": "example/raven/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "60cb2d86a1bb67ab855344dbe97da352368855776e9f186945f2b810eaedb5f9",
+    "screenshot": "raven.jpg",
+    "details": [
+      {
+        "screenshot": "raven--group-delegation.jpg",
+        "title": "组内细节 / Group: delegation",
+        "screenshotSha256": "1d9882c11f9c3e8b0948333807a6b618f45d413e93cd636686464993898ebf31",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 1503
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "slot_a",
+          "slot_b",
+          "finish"
+        ],
+        "edgeCount": 4,
+        "groupId": "delegation"
+      }
+    ],
+    "screenshotSha256": "dfad01c04981df3c060d1a285d96e9c8070a9d516ffd40d5add3ea14772da8fa",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2025
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "preflight",
+      "judge",
+      "audit",
+      "delegation",
+      "finish"
+    ],
+    "edgeCount": 8,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "kosmos",
+    "source": "example/kosmos/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "63e80b58db3910aedbfcf2bb44243d8abd9f7e92ed145a8572886385a05e91e8",
+    "screenshot": "kosmos.jpg",
+    "details": [
+      {
+        "screenshot": "kosmos--group-trajectories.jpg",
+        "title": "组内细节 / Group: trajectories",
+        "screenshotSha256": "e8f024a93ae3b04fffc6644b9f8ed883968fbb8503ed5c61cb7874a7ee6dc88f",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 1503
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "data_traj",
+          "literature_traj",
+          "finish"
+        ],
+        "edgeCount": 4,
+        "groupId": "trajectories"
+      }
+    ],
+    "screenshotSha256": "866fb000bd6606321873aca93c5511301c51f8ef201c24b80ee4b01321b0ecb9",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 2025
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "planner",
+      "synthesis",
+      "audit",
+      "trajectories",
+      "finish"
+    ],
+    "edgeCount": 7,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  },
+  {
+    "id": "alphaevolve",
+    "source": "example/alphaevolve/workflow.json",
+    "sourceRepository": "ScienceEvolve SDK",
+    "sourceSha256": "13c97e1a7e045b20dbc7f309b9b46e8f108af643efb450bfd66c2238c4d3fe3d",
+    "screenshot": "alphaevolve.jpg",
+    "details": [
+      {
+        "screenshot": "alphaevolve--group-search.jpg",
+        "title": "组内细节 / Group: search",
+        "screenshotSha256": "8c14bd94cee72f4ae42095945967879b452d08720f217a904dbbc7195a354762",
+        "viewport": {
+          "width": 1284,
+          "height": 1000,
+          "deviceScaleFactor": 1.5
+        },
+        "imageSize": {
+          "width": 1926,
+          "height": 1503
+        },
+        "canvasZoom": 1,
+        "nodeTitleCssPx": 16,
+        "nodeIds": [
+          "input",
+          "generate_a",
+          "generate_b",
+          "finish"
+        ],
+        "edgeCount": 4,
+        "groupId": "search"
+      }
+    ],
+    "screenshotSha256": "9dc2ae880fc3c5536383baab5d5dcc16a9e79b043f2ce43cdb67acf973fecd9d",
+    "viewport": {
+      "width": 1284,
+      "height": 1000,
+      "deviceScaleFactor": 1.5
+    },
+    "imageSize": {
+      "width": 1926,
+      "height": 1752
+    },
+    "canvasZoom": 1,
+    "nodeTitleCssPx": 16,
+    "nodeIds": [
+      "input",
+      "main",
+      "audit",
+      "search",
+      "finish"
+    ],
+    "edgeCount": 3,
+    "capture": "Isolated documentation presentation using actual CanvasWorld / CanvasNodes / CanvasEdges and semantic adapter/router; export + generic import validated; custom print card sizing/layout; no backend or model execution",
+    "frontendCommit": "e2cd98de3802a5f49d2e55d904b1aeaec29b67dd",
+    "captureDate": "2026-11-14",
+    "browserVersion": "151.0.7922.34",
+    "captureSources": {
+      "scripts/workflow-gallery/catalog.mjs": "7e46ca90b601d1239af6c2f1d20af195f81251331d78a280e487f6b188d666ee",
+      "scripts/workflow-gallery/prepare.mts": "c9f4e3d0a53d95486847e0cb9cd75bc57b91fcd1a47fd2bfa5dc089f8497defb",
+      "scripts/workflow-gallery/view.tsx": "17da2b30d59f8207658df8a8ccebdacddacf465212becc899f207b7f0dce6e68",
+      "scripts/workflow-gallery/view.css": "799f6f161c23ee183de3fdd81ffb4ee083c1c393633afe71b96ebf5ff009024b",
+      "scripts/workflow-gallery/capture.mjs": "d7b4432c8ecb6bb2fab4eacfb81da5eb74905386d0fae0fe267990d764ec18a3",
+      "web/src/components/workflow-canvas/CanvasWorld.tsx": "1c16bfe8c2fc587909480a8acd4a8dd9355b08709045df6b90d064a73970ab6e",
+      "web/src/components/workflow-canvas/CanvasNodes.tsx": "f9e5ae33208404e2c88f8f27a30744cf8ec1a52e78d8758ec37004838bea8683",
+      "web/src/components/workflow-canvas/CanvasEdges.tsx": "7298c487228b137e7136be6b42b56a8b2f0becf20816bb2da2f7937e2f03e410",
+      "web/src/components/workflow-canvas/workflow-canvas.css": "7dbff4f341589ec5dcf6acd863e4f4d8312cdbd81bf7db62c56a87c42317ca5e",
+      "web/src/components/workflow-canvas/core/canvas-adapter.ts": "23ff1cd0ca6142d319e01d2865bc80eee95cc5ae4a8e8515dccb9227671f01aa",
+      "web/src/components/workflow-canvas/core/canvas-layout.ts": "a70b4d765f6da333e71f01c0a259bc9c1a2aebcb01140d0425b84971d0216b3d",
+      "web/src/components/workflow-canvas/core/canvas-router.ts": "023c082e28d585eba46704fb4f1120e143131147ee099e9f726c08fa45b2cfcd",
+      "web/src/components/workflow-canvas/core/scoped-canvas-layout.ts": "f68c642c88ac2a259d5ddd1c9c1af83767e6a55313c3944376110ad764bdc8a3"
+    }
+  }
+]
