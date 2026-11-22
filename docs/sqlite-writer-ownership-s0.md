@@ -126,6 +126,49 @@ and Windows/macOS behavior remain separate acceptance gates. No production
 schema, public API, dependency manifest, sync baseline or running service changed
 in this slice.
 
+## Combined schema-29 protocol rehearsal (2026-11-18)
+
+The paired `protocol-fixture.mjs` and `protocol.test.mjs` combine the guarded lock,
+legacy refusal and durable epoch transactions. These are **isolated test fixtures,
+not production migrations or runtime code**. They load the same pinned old main
+and SDK sources recorded above. The actual old Store is closed before migration;
+its future expiry remains in the preserved old row and is not a takeover signal.
+
+Nine checks passed on each checkout: research tables/unknown-effect evidence
+preserved, old authority rows immutable, old acquire/attach rejected without
+writes, repeated migration rejected, restart epoch advanced, stale/closed callers
+rejected, DDL/actual SQLite error rollback, lost COMMIT result fencing, a real
+reader-blocked COMMIT, acquisition pre/post-COMMIT faults, and invalid host/schema/
+connection/binding/overflow refusal. The protocol is explicitly probe-namespaced;
+the table layout is fixture-only. `DELETE/FULL` remains in force. Connection path
+checks are not claimed to atomically identify a SQLite handle under arbitrary
+path mutation.
+
+- SDK: 9/9 in one run, ~77.6 s.
+- Main: first combined run hit its 120-second outer timeout, without a completed
+  test result; **not a pass**. A read-only inspection refused the hot-journal
+  fixture (SQLite errcode 776). A separate copied fixture recovered to integrity
+  `ok`, schema 29, zero writer rows and zero project rows, with no new sidecar
+  present. The interrupted operation was still in old fixture initialization,
+  not the new migration. The underlying stall cause is not established.
+- Main rerun: first case 1/1 (~3.9 s), remaining cases 8/8 (~59.4 s). The test
+  contract, DELETE/FULL and assertions were not weakened to obtain these results.
+  No process from the timed-out fixture remained.
+- Strengthened full-schema rollback snapshots also compare indexes and triggers;
+  the seven affected cases passed again (main ~45.1 s, SDK ~57.6 s), without
+  counting repeats as additional behaviors.
+
+The fixture treats errors after entering COMMIT as unconfirmed, preserves their
+cause, fences the guard and never retries. A still-active transaction is cleaned
+up without claiming that an already-completed COMMIT was undone. The post-COMMIT
+hook tests lost acknowledgement, not real storage failure. Closed SQLite and
+completed runtime drain remain prerequisites for releasing ownership.
+
+This rehearsal does not finish earlier-schema upgrades, fresh database setup,
+sidecar-directory durability, offline restore/rebind or product Worker/recovery
+integration. It does not certify Windows/macOS or GPFS failure behavior. S0 and
+the stage-one exit remain incomplete; Online has not begun.
+
 ## Integration design to implement and verify in S1/S2
 
 These are implementation requirements, **not capabilities of the current Store**.
@@ -187,6 +230,9 @@ must remain paired and tested, not be inferred from the small DDL fixture.
   fails before its acquire/failed-open-expiry writes. Preserve prior authority
   evidence rather than dropping research rows or resetting epochs. The new
   table's exact DDL and schema version are not finalized by this fixture.
+- The schema-29 rehearsal preserves the old owner row in an immutable table and
+  creates a separately named, probe-only owner table in one transaction. It is
+  evidence for the transition, not finalized production DDL or upgrade tooling.
 - Existing old-protocol databases need an explicit offline upgrade after the
   old runtime is confirmed stopped and backed up. Absence of the **new** lock,
   an expired old lease or a dead PID is not proof of that stop. No mixed-protocol
