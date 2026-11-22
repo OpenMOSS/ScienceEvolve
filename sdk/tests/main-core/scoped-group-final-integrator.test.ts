@@ -220,54 +220,128 @@ describe("scoped canonical group final integration", () => {
     expect(git.remoteMutations).toEqual({ creates: 1, merges: 1 });
   });
 
-  it("waits for the Leader's own finish and explicit complete_group decision before releasing a parent", async () => {
-    const { database, git, integrator, input, finishWorker, options } = await fixture();
+  async function leaderCompletionFixture({ nested = false, returnWithoutMerge = false, restartBeforeDecision = false } = {}) {
+    const setup = await fixture(nested);
+    const { git, integrator, input, finishWorker, options } = setup;
+    let database = setup.database;
+    const { groupRunId } = input;
     finishWorker();
-    const first = database.claimScopedLeaderTurn({ projectId: "project-1", groupRunId: "run-G", agentId: "main",
+    const first = database.claimScopedLeaderTurn({ projectId: "project-1", groupRunId, agentId: "main",
       invocationId: "leader-integrate", runtimePath: join(options.databasePath, "runtime", "leader-integrate") })!;
-    database.markScopedLeaderOpened({ projectId: "project-1", groupRunId: "run-G", agentId: "main", invocationId: "leader-integrate",
+    database.markScopedLeaderOpened({ projectId: "project-1", groupRunId, agentId: "main", invocationId: "leader-integrate",
       coordinatorEpoch: first.coordinatorEpoch });
     const finish = (callId: string, invocationId: string, epoch: number) => ({ projectId: "project-1", agent: "main", invocationId,
       callId, stateVersion: epoch, capabilityHash: "a".repeat(64), receivedAt: NOW,
       action: { tool: "finish_task" as const, summary: "Leader finished its management task" } });
-    database.recordScopedLeaderTaskCompletion({ projectId: "project-1", groupRunId: "run-G", agentId: "main", invocationId: "leader-integrate",
+    database.recordScopedLeaderTaskCompletion({ projectId: "project-1", groupRunId, agentId: "main", invocationId: "leader-integrate",
       coordinatorEpoch: first.coordinatorEpoch, envelope: finish("finish-integrate", "leader-integrate", first.coordinatorEpoch) });
-    database.acceptScopedLeaderAction({ projectId: "project-1", groupRunId: "run-G", agentId: "main", invocationId: "leader-integrate",
+    database.acceptScopedLeaderAction({ projectId: "project-1", groupRunId, agentId: "main", invocationId: "leader-integrate",
       coordinatorEpoch: first.coordinatorEpoch, residentStopConfirmed: true, envelope: { projectId: "project-1", agent: "main", invocationId: "leader-integrate",
         callId: "request-final", stateVersion: first.coordinatorEpoch, capabilityHash: "a".repeat(64), receivedAt: NOW,
-        action: { tool: "request_group_integration", groupRunId: "run-G", coordinatorEpoch: first.coordinatorEpoch, integrationOwnerAgentId: "worker" } } });
-    database.releaseScopedLeaderTurn({ projectId: "project-1", groupRunId: "run-G", agentId: "main", invocationId: "leader-integrate",
+        action: { tool: "request_group_integration", groupRunId, coordinatorEpoch: first.coordinatorEpoch, integrationOwnerAgentId: "worker" } } });
+    database.releaseScopedLeaderTurn({ projectId: "project-1", groupRunId, agentId: "main", invocationId: "leader-integrate",
       coordinatorEpoch: first.coordinatorEpoch, residentStopConfirmed: true });
-    const pending = await integrator.integrate({ ...input, deferCompletion: true, integrationOwnerAgentId: "worker" });
+    const finalIntegrator = returnWithoutMerge ? new ScopedGroupFinalIntegrator(database, git, {
+      invokeAgent: async (integration) => {
+        database.appendEvent({ projectId: input.projectId, agentId: "worker", invocationId: "final-delivery",
+          type: "execution.supervision.finished", payload: { executionId: integration.id, groupRunId,
+            ownershipEpoch: integration.ownershipEpoch, outcome: "exhausted", missing: ["merged pull request"] } });
+        return undefined;
+      }
+    }) : integrator;
+    const pending = await finalIntegrator.integrate({ ...input, deferCompletion: true, integrationOwnerAgentId: "worker" });
     expect(pending.status).toBe("awaiting_completion");
-    expect(database.scopedGroupRun("project-1", "run-G")?.status).toBe("integrating");
+    expect(database.scopedGroupRun("project-1", groupRunId)?.status).toBe("integrating");
+    expect(database.scopedFinalIntegration("project-1", groupRunId)?.status).toBe("integrating");
     expect(database.projectState("project-1").activeNodeRunId).toBe("node-G");
-    const second = database.claimScopedLeaderTurn({ projectId: "project-1", groupRunId: "run-G", agentId: "main",
+    if (restartBeforeDecision) {
+      database.close();
+      database = CollaborationStateDatabase.open(options);
+      databases.push(database);
+    }
+    const second = database.claimScopedLeaderTurn({ projectId: "project-1", groupRunId, agentId: "main",
       invocationId: "leader-complete", runtimePath: join(options.databasePath, "runtime", "leader-complete") })!;
-    database.markScopedLeaderOpened({ projectId: "project-1", groupRunId: "run-G", agentId: "main", invocationId: "leader-complete",
+    database.markScopedLeaderOpened({ projectId: "project-1", groupRunId, agentId: "main", invocationId: "leader-complete",
       coordinatorEpoch: second.coordinatorEpoch });
-    const currentAuthority = { projectId: "project-1", groupRunId: "run-G", agentId: "main", invocationId: "leader-complete",
+    const currentAuthority = { projectId: "project-1", groupRunId, agentId: "main", invocationId: "leader-complete",
       coordinatorEpoch: second.coordinatorEpoch };
     const currentComplete = { projectId: "project-1", agent: "main", invocationId: "leader-complete", callId: "complete-final",
       stateVersion: second.coordinatorEpoch, capabilityHash: "b".repeat(64), receivedAt: NOW,
-      action: { tool: "complete_group" as const, groupRunId: "run-G", coordinatorEpoch: second.coordinatorEpoch, output: "Final merge verified" } };
+      action: { tool: "complete_group" as const, groupRunId, coordinatorEpoch: second.coordinatorEpoch, output: returnWithoutMerge ? "Reviewed the returned work" : "Final merge verified" } };
+    return { database, git, options, currentAuthority, currentComplete,
+      finishEnvelope: finish("finish-complete", "leader-complete", second.coordinatorEpoch) };
+  }
+
+  it("keeps the Leader's completion decision separate from its own task receipt", async () => {
+    const { database, currentAuthority, currentComplete } = await leaderCompletionFixture();
     // The integration round's finish cannot substitute for this completion
     // round even though both management calls use the same Agent and group.
-    expect(() => database.revalidateScopedLeaderAction({ ...currentAuthority, envelope: currentComplete })).toThrow(/returned task/);
-    database.recordScopedLeaderTaskCompletion({ projectId: "project-1", groupRunId: "run-G", agentId: "main", invocationId: "leader-complete",
-      coordinatorEpoch: second.coordinatorEpoch, envelope: finish("finish-complete", "leader-complete", second.coordinatorEpoch) });
+    const { projectId, groupRunId, agentId, invocationId, coordinatorEpoch } = currentAuthority;
+    database.revalidateScopedLeaderAction({ ...currentAuthority, envelope: currentComplete });
+    expect(database.scopedLeaderTaskCompleted(projectId, groupRunId, agentId, invocationId, coordinatorEpoch)).toBe(false);
+    expect(database.scopedGroupRun(projectId, groupRunId)?.status).toBe("integrating");
+    expect(() => database.completeScopedGroupAfterLeaderDecision({ ...currentAuthority, output: currentComplete.action.output }))
+      .toThrow(/accepted complete_group decision/);
+  });
+
+  it("commits both completion records once for the Leader's accepted decision", async () => {
+    const { database, git, currentAuthority, currentComplete, finishEnvelope } = await leaderCompletionFixture();
+    database.recordScopedLeaderTaskCompletion({ ...currentAuthority, envelope: finishEnvelope });
     expect(() => database.completeScopedGroupAfterLeaderDecision({ ...currentAuthority, output: "Final merge verified" }))
       .toThrow(/accepted complete_group/);
-    const complete = { projectId: "project-1", agent: "main", invocationId: "leader-complete", callId: "complete-final",
-      stateVersion: second.coordinatorEpoch, capabilityHash: "b".repeat(64), receivedAt: NOW,
-      action: { tool: "complete_group" as const, groupRunId: "run-G", coordinatorEpoch: second.coordinatorEpoch, output: "Final merge verified" } };
-    database.acceptScopedLeaderAction({ projectId: "project-1", groupRunId: "run-G", agentId: "main", invocationId: "leader-complete",
-      coordinatorEpoch: second.coordinatorEpoch, residentStopConfirmed: true, envelope: complete });
-    const completed = database.completeScopedGroupAfterLeaderDecision({ projectId: "project-1", groupRunId: "run-G", agentId: "main",
-      invocationId: "leader-complete", coordinatorEpoch: second.coordinatorEpoch, output: "Final merge verified", requestId: "scoped-group-complete:run-G:complete-final" });
+    database.acceptScopedLeaderAction({ ...currentAuthority, residentStopConfirmed: true, envelope: currentComplete });
+    const command = { ...currentAuthority, output: currentComplete.action.output, requestId: "scoped-group-complete:run-G:complete-final" };
+    const completed = database.completeScopedGroupAfterLeaderDecision(command);
     expect(completed.groupRun.status).toBe("completed");
+    expect(database.scopedFinalIntegration("project-1", "run-G")?.status).toBe("completed");
+    expect(database.completeScopedGroupAfterLeaderDecision(command)).toMatchObject({ replay: true, revision: completed.revision });
     expect(database.projectState("project-1").activeNodeRunId).toBe("node-G");
     expect(git.remoteMutations).toEqual({ creates: 1, merges: 1 });
+  });
+
+  it.each(["merged", "returned"] as const)("replays the same parent successor after a %s child delivery and a restart", async (delivery) => {
+    const { database, options, currentAuthority, currentComplete, finishEnvelope } =
+      await leaderCompletionFixture({ nested: true, returnWithoutMerge: delivery === "returned", restartBeforeDecision: true });
+    const { projectId, groupRunId } = currentAuthority;
+    const parentArrivals = database.scopedArrivals("run-G");
+    expect(parentArrivals.map(arrival => [arrival.targetNodeId, arrival.status])).toEqual([["G_H", "running"]]);
+    expect(Boolean(database.scopedGroupFinalMergeFact(projectId, groupRunId))).toBe(delivery === "merged");
+
+    database.recordScopedLeaderTaskCompletion({ ...currentAuthority, envelope: finishEnvelope });
+    database.acceptScopedLeaderAction({ ...currentAuthority, residentStopConfirmed: true, envelope: currentComplete });
+    const command = { ...currentAuthority, output: currentComplete.action.output, requestId: `scoped-group-complete:${groupRunId}:${currentComplete.callId}` };
+    const first = database.completeScopedGroupAfterLeaderDecision(command);
+    expect(first.parentRoute).toMatchObject({ kind: "activate", activation: { targetNodeId: "G_next", sourceRunId: parentArrivals[0]!.requestId } });
+    expect(first).toMatchObject({ replay: false, groupRun: { status: "completed" },
+      parentArrival: { status: "completed" }, parentReadyForFinalIntegration: false });
+    const event = database.eventByRequestId(projectId, command.requestId)!;
+    expect(event.payload.parentRoute).toEqual(first.parentRoute);
+
+    database.close();
+    const reopened = CollaborationStateDatabase.open(options);
+    databases.push(reopened);
+    expect(reopened.completeScopedGroupAfterLeaderDecision(command)).toEqual({ ...first, replay: true });
+    expect(reopened.eventByRequestId(projectId, command.requestId)).toEqual(event);
+    const successors = reopened.scopedArrivals("run-G").filter(arrival => arrival.sourceRunId === parentArrivals[0]!.requestId);
+    expect(successors).toHaveLength(1);
+    expect(first.parentRoute).toMatchObject({ activation: { requestId: successors[0]!.requestId } });
+    expect(parentArrivals[0]!.pathContext?.pathId).toBeTruthy();
+    expect(successors[0]).toMatchObject({ targetNodeId: "G_next", status: "queued", pathContext: parentArrivals[0]!.pathContext });
+  });
+
+  it("rejects a different event with the completion request ID even when its output matches", async () => {
+    const { database, currentAuthority, currentComplete, finishEnvelope } = await leaderCompletionFixture({ nested: true });
+    const { projectId, groupRunId } = currentAuthority;
+    database.recordScopedLeaderTaskCompletion({ ...currentAuthority, envelope: finishEnvelope });
+    database.acceptScopedLeaderAction({ ...currentAuthority, residentStopConfirmed: true, envelope: currentComplete });
+    const output = currentComplete.action.output;
+    const requestId = "already-recorded";
+    const { event } = database.appendEvent({ projectId, requestId, type: "scoped.management.round.completed", payload: { groupRunId, output } });
+    expect(() => database.completeScopedGroupAfterLeaderDecision({ ...currentAuthority, output, requestId }))
+      .toThrow(/changed on replay/);
+    expect(database.eventByRequestId(projectId, requestId)).toEqual(event);
+    expect(database.scopedGroupRun(projectId, groupRunId)?.status).toBe("integrating");
+    expect(database.scopedArrivals("run-G").map(arrival => [arrival.targetNodeId, arrival.status])).toEqual([["G_H", "running"]]);
   });
 
   it("merges a child only into its direct parent before emitting the parent's serial successor", async () => {
@@ -325,7 +399,7 @@ describe("scoped canonical group final integration", () => {
     expect(database.projectState("project-1").scopedGroupFinalMerges).toEqual([]);
   });
 
-  it.each(["create", "merge", "sync"] as const)("recovers the %s boundary under the same lease without a second remote mutation", async (boundary) => {
+  it.each(["create", "merge", "sync"] as const)("recovers the %s boundary under a reconciled writer without a second remote mutation", async (boundary) => {
     const { database, git, integrator, input, finishWorker, options } = await fixture();
     finishWorker();
     git.crashAfter = boundary;
@@ -344,7 +418,10 @@ describe("scoped canonical group final integration", () => {
     const reopened = CollaborationStateDatabase.open(options);
     databases.push(reopened);
     const resumedGit = new StateBackedGit(reopened);
+    expect(reopened.writerLease().epoch).toBeGreaterThan(lease.epoch);
     const resumed = new ScopedGroupFinalIntegrator(reopened, resumedGit);
+    await expect(resumed.integrate(input)).rejects.toThrow(/no longer owns Git writes/);
+    reopened.recoverScopedFinalIntegration(input.projectId, input.groupRunId);
     expect(await resumed.integrate(input)).toMatchObject({ status: "completed" });
     expect(git.remoteMutations.creates + resumedGit.remoteMutations.creates).toBe(1);
     expect(git.remoteMutations.merges + resumedGit.remoteMutations.merges).toBe(1);

@@ -271,13 +271,16 @@ describe("ProjectStorage project workspace", () => {
     expect((await reloaded.listStates()).map(item => item.id)).toEqual([state.id]);
   });
 
-  it("rejects malformed v3 topology and Git-off state on reload", async () => {
+  it("loads v3 with explicit Git disabled and rejects a missing delivery setting or malformed topology", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-storage-v3-invalid-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub());
     const state = minimalState("prj_66666666666666666666666666666666");
     state.orchestration = normalizeNewGitOrchestration(state.orchestration);
     await storage.createProject(state);
     await expect(storage.tryLoadState(state.id)).resolves.toBeUndefined();
+    state.git = { enabled: false, status: "disabled" };
+    await storage.saveState(state);
+    expect((await storage.loadState(state.id)).orchestration).toEqual(state.orchestration);
     state.git = { enabled: true, status: "ready" };
     state.orchestration.scopedWorkflow!.rootAgentIds.push("unknown-agent");
     await storage.saveState(state);

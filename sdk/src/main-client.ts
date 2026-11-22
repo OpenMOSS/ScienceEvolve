@@ -21,7 +21,7 @@ import { prepareMainProjectInputs, type MainProjectInput } from "./main-project-
 export type { MainResearchSdkOptions } from "./main-options.js";
 
 const snapshotKeys = [
-  "searchTree", "workflowGates", "mainAssistance", "id", "title", "requirement", "status", "phase", "createdAt", "updatedAt", "completedAt", "cancelledAt",
+  "searchTree", "workflowGates", "mainAssistance", "mainConversation", "id", "title", "requirement", "status", "phase", "createdAt", "updatedAt", "completedAt", "cancelledAt",
   "inputFiles", "inputDescription",
   "currentAgent", "queuedAgent", "eventSeq", "completionGeneration", "lastError", "userIntervention",
   "agentProgress", "overallProgress", "latestHandoff", "artifacts", "display", "tokenUsage",
@@ -52,7 +52,7 @@ export interface MainResearchRun {
   exportWorkspace(options: MainWorkspaceExportOptions): Promise<MainWorkspaceExportResult>;
   /** Retry a blocked final delivery after resolving original-workspace conflicts; never force-overwrites. */
   syncWorkspace(): Promise<MainWorkspaceDelivery | undefined>;
-  addInput(message: string, options?: { mode?: "wait" | "interrupt"; requestId?: string }): Promise<MainRunSnapshot>;
+  addInput(message: string, options?: { mode?: "chat" | "wait" | "interrupt"; requestId?: string }): Promise<MainRunSnapshot>;
   respond(message: string): Promise<MainRunSnapshot>;
 }
 export interface MainResearchSdk {
@@ -241,6 +241,7 @@ export async function createMainSdkClient(runtime: MainApplicationRuntime, redac
         return redactor.clean(await runtime.gitWorkspaces.synchronize(state, true));
       }),
       addInput: (message, options = {}) => operation(async () => {
+        if (options.mode === "chat") return snapshot(await runtime.orchestrator.addProjectUserInput(id, message, "chat", options.requestId));
         const current = await read(id);
         if (current.status === "completed" && current.workspaceDelivery && current.workspaceDelivery.status !== "synced") {
           throw new Error("Resolve and synchronize the original workspace before opening a new completion generation");

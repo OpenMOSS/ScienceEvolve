@@ -9,6 +9,30 @@ import { BUILTIN_HARNESS_DESCRIPTORS } from "../../src/core/harness-runtime/regi
 import type { AgentRunRequest } from "../../src/core/types.js";
 
 describe("invocation policy", () => {
+  it("asks for the missing decision without resending the original same-session task", () => {
+    const instructions = "ROLE_FIXTURE: read and summarize the complete report";
+    const task = "TASK_FIXTURE: report the counts in samples A and B";
+    const handoff = "HANDOFF_FIXTURE: all the counts were checked";
+    const config = { instructions, mcpServers: [], webSearch: false } as AgentRunRequest["project"]["agents"][string];
+    const request = {
+      agent: "main", kind: "main", permission: "workspace", resumeThreadId: "fixture-session",
+      skillPaths: [], autoSkillPaths: [], project: { agents: { main: config } },
+      terminalControlRepair: { originalHandoff: handoff, handoffPath: "/runtime/handoff.md" },
+      control: { stagingPath: "/runtime/actions", capability: "fixture", stateVersion: 1, candidates: ["worker"],
+        decisionBy: "main", allowUserIntervention: true, canComplete: true }
+    } as AgentRunRequest;
+    const inputs = { projectPath: "/project", workspacePath: "/workspace", runtimePath: "/runtime",
+      inboxPath: "/runtime/inbox", memoryPath: "/workspace/Memory.md", inboxSha256: "fixture" };
+    const prompt = compileWorkflowPrompt(request, inputs, compileInvocationPolicy(config, request), { inlineInbox: task });
+    expect(prompt).toMatch(/decision|action|决定|决策/i);
+    for (const repeated of [instructions, task, handoff]) expect(prompt).not.toContain(repeated);
+    request.terminalControlRepair!.rejectedAction = "route_to_agent target=unavailable: target is not a current candidate";
+    request.control!.mainCapabilities = { ...request.control!.mainCapabilities!, routeCandidates: ["review", "writer"] };
+    const rejected = compileWorkflowPrompt(request, inputs, compileInvocationPolicy(config, request), { inlineInbox: task });
+    for (const value of ["route_to_agent", "target=unavailable", "review", "writer"]) expect(rejected).toContain(value);
+    for (const excluded of ["worker", instructions, task, handoff]) expect(rejected).not.toContain(excluded);
+  });
+
   it.each(["main", "worker", "leader"] as const)("sends %s only the project entry, current communication and configured instructions", role => {
     const config = { instructions: "Exact configured Agent instructions", mcpServers: [], webSearch: false } as AgentRunRequest["project"]["agents"][string];
     const request = { agent: role, kind: role === "main" ? "main" : "worker", permission: "workspace", skillPaths: [],
@@ -158,7 +182,7 @@ describe("invocation policy", () => {
       availableSkillPaths: ["/fixture/available/SKILL.md"],
       kind,
       agent: "main",
-      terminalControlRepair: { originalHandoff: "The analysis is complete" },
+      terminalControlRepair: { originalHandoff: "The analysis is complete".repeat(2_000), handoffPath: "/fixture/runtime/terminal-repair-handoff.md" },
       project: { agents: { main: config } },
       control: {
         stagingPath: "/fixture/runtime/control-actions.json",
@@ -187,7 +211,9 @@ describe("invocation policy", () => {
       webSearch: true
     });
     expect(prompt).toContain("Supply the missing formal completion/control action");
-    expect(prompt).toContain("The analysis is complete");
+    expect(prompt).not.toContain("The analysis is complete");
+    expect(prompt).toContain("/fixture/runtime/terminal-repair-handoff.md");
+    expect(prompt).toContain("finish_task receipt does not replace a routing decision");
     expect(prompt).toContain("large normal invocation context");
     expect(prompt).toContain(config.instructions);
     expect(prompt).not.toContain("context index");

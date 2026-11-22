@@ -9,9 +9,10 @@ export function managementInputRoot(projectPath: string, agent: string, invocati
   return path.join(projectPath, "agent-inputs", agent, "management", invocationId);
 }
 
-export function isManagementProposal(projectPath: string, workspacePath: string, agent: string,
+export function isManagementProposal(projectPath: string | undefined, workspacePath: string, agent: string,
   proposal: string): boolean {
-  const input = path.relative(path.join(projectPath, "agent-inputs", agent, "management"), proposal).split(path.sep).join("/");
-  const legacy = path.relative(path.join(workspacePath, ".scienceevolve", "management"), proposal).split(path.sep).join("/");
-  return [input, legacy].some(relative => /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}\/proposal\/workflow\.json$/.test(relative));
+  const roots = [path.join(workspacePath, ".scienceevolve", "management")];
+  if (projectPath) roots.push(path.join(projectPath, "agent-inputs", agent, "management"));
+  return roots.some(root => /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}\/proposal\/workflow\.json$/.test(
+    path.relative(root, proposal).split(path.sep).join("/")));
 }

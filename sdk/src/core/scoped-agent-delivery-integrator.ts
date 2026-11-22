@@ -2,12 +2,18 @@ import type { CollaborationGitFacade } from "./collaboration-git/facade.js";
 import type { GitExecutionAuthority, GitHubPullRequestFact, GitHubRepositoryFact } from "./collaboration-git/contracts.js";
 import { GitInputError, OperationStoreViolationError } from "./collaboration-git/errors.js";
 import { mergedPullSynchronizationOperationId } from "./collaboration-git/operation.js";
-import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
+import type { CollaborationStateStore } from "./collaboration-state/database-worker.js";
 import { CollaborationStateError } from "./collaboration-state/errors.js";
 import type { CompletedScopedAgentArrival, ScopedExecutionRecord } from "./collaboration-state/contracts.js";
 
 export type ScopedAgentDeliveryGit = Pick<CollaborationGitFacade,
   "observeRemoteRef" | "createPullRequest" | "mergePullRequest" | "reconcileMergedPullRequest">;
+
+type ScopedAgentDeliveryStore = Pick<CollaborationStateStore,
+  "scopedExecution" | "projectState" | "scopedAgentGitDeliveryStatus" | "executionSupervisionResult" |
+  "completeScopedAgentArrival" | "scopedGroupRun" | "completeScopedAgentArrivalAfterMerge" |
+  "scopedArrivals" | "previewScopedArrivalRoute" | "scopedAgentReport" | "bindScopedAgentReportHead" |
+  "operationsForProject" | "scopedRecoveryPull" | "scopedAgentRecordedDeliveryPull" | "scopedMergedSynchronization">;
 
 export interface IntegrateScopedAgentDeliveryInput {
   projectId: string;
@@ -30,7 +36,7 @@ export type ScopedAgentDeliveryResult =
 export class ScopedAgentDeliveryIntegrator {
   private readonly inFlight = new Set<string>();
 
-  constructor(private readonly database: CollaborationStateDatabase, private readonly git: ScopedAgentDeliveryGit,
+  constructor(private readonly database: ScopedAgentDeliveryStore, private readonly git: ScopedAgentDeliveryGit,
     private readonly options: { agentOwnsGit?: boolean } = {}) {}
 
   async integrate(input: IntegrateScopedAgentDeliveryInput): Promise<ScopedAgentDeliveryResult> {
@@ -46,7 +52,7 @@ export class ScopedAgentDeliveryIntegrator {
   private async performIntegration(input: IntegrateScopedAgentDeliveryInput): Promise<ScopedAgentDeliveryResult> {
     input.signal?.throwIfAborted();
     const execution = await this.database.scopedExecution(input.projectId, input.executionId);
-    if (!execution || execution.ownershipEpoch !== input.ownershipEpoch) {
+    if (!execution?.executionBranch || execution.ownershipEpoch !== input.ownershipEpoch) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped Agent execution ownership is stale or missing");
     }
     const projection = await this.database.projectState(input.projectId);
@@ -68,7 +74,7 @@ export class ScopedAgentDeliveryIntegrator {
     }
     if (!input.expectedHeadSha || !/^[0-9a-f]{40}$/i.test(input.expectedHeadSha)) throw new GitInputError("Scoped Agent delivery requires an exact reported head SHA");
     const group = await this.database.scopedGroupRun(input.projectId, execution.groupRunId);
-    if (!group) throw new OperationStoreViolationError("Scoped Agent delivery has no direct group");
+    if (!group?.groupBranch) throw new OperationStoreViolationError("Scoped Agent delivery has no direct group");
     if (execution.status === "completed") {
       const proof = projection.scopedAgentMerges?.find((fact) => fact.executionId === execution.id);
       if (!proof || proof.pullRequest.headSha !== input.expectedHeadSha) {
@@ -109,7 +115,7 @@ export class ScopedAgentDeliveryIntegrator {
       ref.owner !== input.repository.owner || ref.repository !== input.repository.name) {
       throw new GitInputError("Scoped Agent delivery requires the exact pushed execution branch head");
     }
-    await this.database.bindScopedAgentReportHead({
+    if (!report.headSha) await this.database.bindScopedAgentReportHead({
       projectId: input.projectId, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch,
       headSha: input.expectedHeadSha
     });

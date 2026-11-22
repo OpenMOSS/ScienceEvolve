@@ -28,7 +28,7 @@ import type { SessionRef } from "../harness-runtime/contracts.js";
 import type { RemoteMergeSyncFact } from "../collaboration-git/contracts.js";
 import type { ScopedRoutePlan } from "../scoped-workflow-planner.js";
 
-export const COLLABORATION_STATE_SCHEMA_VERSION = 30 as const;
+export const COLLABORATION_STATE_SCHEMA_VERSION = 31 as const;
 
 /** Exact native launch fact written by the trusted launcher, independent of
  * mutable workflow roles. This is evidence, never an Agent wake authority. */
@@ -295,7 +295,7 @@ export interface ActivateScopedGroupInput {
   groupId: string;
   activationRequestId: string;
   workflowRevision: number;
-  baseCommit: string;
+  baseCommit?: string;
   /** Omitted only for a top-level group. */
   parentGroupRunId?: GroupRunId;
   parentArrivalRequestId?: string;
@@ -321,9 +321,9 @@ export interface ScopedGroupRunRecord {
   activationRequestId: string;
   workflowRevision: number;
   leaderAgentId: AgentId;
-  baseCommit: string;
-  groupBranch: string;
-  integrationTarget: string;
+  baseCommit?: string;
+  groupBranch?: string;
+  integrationTarget?: string;
   status: string;
 }
 
@@ -678,7 +678,7 @@ export interface ScopedExecutionRecord {
   arrivalRequestId: string;
   agentId: AgentId;
   ownershipEpoch: number;
-  executionBranch: string;
+  executionBranch?: string;
   worktreePath: string;
   status: "running" | "integrating" | "merged" | "failed" | "paused" | "stopped" | "completed" | "cancelled";
 }
@@ -729,7 +729,7 @@ export interface ScopedAgentTurnRecord {
   writerLeaseEpoch: number;
   invocationId: string;
   runtimePath: string;
-  baseCommit: string;
+  baseCommit?: string;
   status: "reserved" | "opened" | "stopped";
   openedAt?: string;
   stoppedAt?: string;
@@ -741,7 +741,7 @@ export interface BeginScopedAgentTurnInput {
   ownershipEpoch: number;
   invocationId: string;
   runtimePath: string;
-  baseCommit: string;
+  baseCommit?: string;
   expectedRevision?: number;
 }
 
@@ -986,7 +986,7 @@ export interface StartStandaloneExecutionInput {
   executionId: ExecutionId;
   agentId: AgentId;
   assignment: string;
-  executionBranch: string;
+  executionBranch?: string;
   worktreePath: string;
   invocationId?: string;
   residentLaunchProtocol?: "trusted-supervisor-v1";

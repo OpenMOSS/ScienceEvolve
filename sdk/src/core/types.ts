@@ -1,3 +1,4 @@
+export { usesCollaborationScheduler } from "./internal/shared/project-runtime-status.js";
 import type { AgentHarness, AgentProtocol } from "./agent-runtime.js";
 import type { CancellationRequest } from "./cancellation.js";
 import type { WorkspaceCheckpoint } from "./workspace-checkpoint.js";
@@ -924,7 +925,7 @@ export interface MemberExecution {
   purpose: "delivery" | "final-integration";
   ownershipEpoch: number;
   status: MemberExecutionStatus;
-  executionBranch: string;
+  executionBranch?: string;
   worktreePath: string;
   pullRequestId?: PullRequestId;
   invocationId?: InvocationId;
@@ -1081,6 +1082,8 @@ export interface ActiveAgentExecution {
   startedAt?: string;
   firstInvocationId?: string;
   latestInvocationId?: string;
+  /** One automatic correction allowance for this original Main decision task. */
+  terminalControlRecovery?: { attempts: number; invocationId: string; reason: string };
 }
 
 /**
@@ -1341,6 +1344,7 @@ export interface ProjectState {
   /** Serial outer-node ownership; member executions are scoped below it. */
   activeNodeRunId?: NodeRunId;
   mainAssistance?: import("./main-assistance.js").MainAssistanceRecord[];
+  mainConversation?: ReturnType<typeof import("./main-assistance.js").conversationView>[];
   workflowGates?: import("./workflow-gate.js").GateRun[];
   nodeRuns?: NodeRun[];
   groupRuns?: GroupRun[];
@@ -1861,7 +1865,7 @@ export interface AgentRunRequest {
   /** Scoped workflow invariant: a still-existing Agent must never acquire a replacement native session. */
   sessionContinuity?: "strict";
   /** Resume the same Session for a missing terminal control action. */
-  terminalControlRepair?: { originalHandoff: string };
+  terminalControlRepair?: { originalHandoff: string; handoffPath?: string; rejectedAction?: string };
   terminalPushObservation?: TerminalPushObservationScope;
   terminalPushCoordination?: TerminalPushCoordinationScope;
   worktreeClosing?: WorktreeClosingScope;
@@ -1888,6 +1892,7 @@ export interface AgentRunRequest {
   onResidentNativeOpened?: (binding: { runtimePath: string; session: SessionRef }) => Promise<void> | void;
   /** Server-only result capture with the actual opened resident Session. */
   onControlResult?: (input: import("./control-result-receipts.js").ControlResultInput, session: SessionRef) => Promise<string> | string;
+  onReplyToUser?: (messageId: string, text: string, callId: string) => Promise<unknown>;
   onMainAssistanceRequest?: (request: unknown, callId: string) => Promise<unknown>;
   onMainAssistanceDeliveryFailed?: (inputId: string, reason: string) => Promise<void>;
   onPendingMainAssistance?: (inputId: string, session?: SessionRef) => Promise<string>;
@@ -2011,6 +2016,7 @@ export interface ControlActionEnvelope {
 
 export interface ControlMcpRequest {
   mainAssistance?: "request" | "reply";
+  mainConversation?: "inbox" | "turn";
   workflowGate?: boolean;
   searchTree?: boolean;
   /** Built-in collaboration capability, independent of business tool selection. */

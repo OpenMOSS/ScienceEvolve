@@ -1,3 +1,4 @@
+import { gitDeliveryRef } from "./collaboration-git/contracts.js";
 import assert from "node:assert/strict";
 import { consumeAcceptanceFault, readAcceptanceArmFile } from "./acceptance-controller.js";
 import type { ScopedInitialPreparation } from "./scoped-agent-execution.js";
@@ -12,7 +13,7 @@ export async function failR04InitialPreparation(input: ScopedInitialPreparation 
   if (execution.ownershipEpoch !== 1 || turn.status !== "reserved" || turn.openedAt || turn.stoppedAt) return;
   const bound = await readAcceptanceArmFile({ projectTitle: input.projectTitle, projectRoot: input.projectRoot,
     execution: { ...execution, purpose: "delivery" }, arrivalRequestId: arrival.requestId, groupRunId: groupRun.id,
-    base: groupRun.groupBranch, repository: input.repository, case: "R04", variant: "registered-unopened-preparation",
+    base: gitDeliveryRef(groupRun.groupBranch), repository: input.repository, case: "R04", variant: "registered-unopened-preparation",
     directory: input.directory ?? process.env.OPENFARS_R04_PREPARATION_FAULT_DIRECTORY });
   if (!bound) return;
   const { arm } = bound, target = arm.target;
@@ -25,7 +26,7 @@ export async function failR04InitialPreparation(input: ScopedInitialPreparation 
   assert.ok(execution.projectId === arm.projectId && execution.arrivalRequestId === arrival.requestId &&
     execution.groupRunId === groupRun.id && arrival.groupRunId === groupRun.id && arrival.agentId === execution.agentId &&
     turn.projectId === arm.projectId && turn.executionId === execution.id && turn.ownershipEpoch === 1 &&
-    turn.invocationId && /^[a-f0-9]{40}$/.test(turn.baseCommit), "R04 preparation lost its original reservation/base");
+    turn.invocationId && /^[a-f0-9]{40}$/.test(gitDeliveryRef(turn.baseCommit)), "R04 preparation lost its original reservation/base");
   if (await consumeAcceptanceFault(bound, { status: "registered-preparation-failed", stage: "reserved-before-session-begin",
     binding: { executionId: execution.id, invocationId: turn.invocationId, ownershipEpoch: 1, branch: execution.executionBranch,
       worktreePath: execution.worktreePath }, arrival, nativeTurn: turn, savedBase: turn.baseCommit,

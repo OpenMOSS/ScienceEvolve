@@ -9,6 +9,13 @@ import type {
   PullRequestId
 } from "../types.js";
 
+import { GitInputError } from "./errors.js";
+
+export function gitDeliveryRef(ref: string | undefined): string {
+  if (!ref) throw new GitInputError("Git delivery requires its recorded branch or commit");
+  return ref;
+}
+
 /** The execution fields the trusted Git service is allowed to rely on. */
 export type GitExecutionAuthority = Pick<
   MemberExecution,

@@ -16,7 +16,7 @@ import {
   HarnessRuntimeError,
   SessionResumeError
 } from "../errors.js";
-import { OfficialEventBridge } from "../official-event-bridge.js";
+import { OfficialEventBridge, contentText, eventRecord, safeEventText } from "../official-event-bridge.js";
 import {
   boundedUtf8Suffix,
   DEFAULT_RAW_LOG_LIMIT_BYTES,
@@ -154,6 +154,7 @@ export class PiAdapter extends AdapterBase implements HarnessAdapter {
       ...(context.prepareNativeInput ? [] : [prompt])
     ];
     let handoff: string | undefined;
+    let nativeFailure: string | undefined;
     let officialSessionId: string | undefined;
     let managed: ManagedProcess | undefined;
     let exit: ProcessExit | undefined;
@@ -187,6 +188,15 @@ export class PiAdapter extends AdapterBase implements HarnessAdapter {
           }
           officialSessionId = sessionId;
         }
+        if (frame.type === "message_end") {
+          const message = eventRecord(frame.message);
+          if (message?.role === "assistant") {
+            handoff = contentText(message.content);
+            nativeFailure = message.stopReason === "error" || message.stopReason === "aborted"
+              ? safeEventText(message.errorMessage).slice(0, 500) || "Pi ended the turn with " + message.stopReason
+              : undefined;
+          }
+        }
         const mapped = mapPiOfficialEvent(frame);
         if (mapped.length > 0 && !officialSessionId) {
           throw sessionIdentityError(
@@ -199,9 +209,6 @@ export class PiAdapter extends AdapterBase implements HarnessAdapter {
       },
       onActivity: request.onModelActivity,
       onNativeUserInput: context.onNativeUserInput,
-      onFullAssistantMessage: (message) => {
-        handoff = message;
-      },
       onEvent: async (event) => {
         await context.onEvent(event);
       },
@@ -237,6 +244,8 @@ export class PiAdapter extends AdapterBase implements HarnessAdapter {
       await managed.end(nativePrompt);
       exit = await managed.completed;
       await bridge.finish();
+      if (nativeFailure) throw new HarnessRuntimeError("HARNESS_PROCESS_EXITED", nativeFailure,
+        { harnessId: this.descriptor.id, exitCode: exit.code, signal: exit.signal }, { source: "adapter" });
       if (exit.code !== 0) {
         throw new HarnessRuntimeError(
           "HARNESS_PROCESS_EXITED",
@@ -283,6 +292,7 @@ export class PiAdapter extends AdapterBase implements HarnessAdapter {
             "Pi persisted session identity does not match its official event"
           );
         }
+        await context.onSessionStarted?.(spec.session!);
       }
       return await adapterResult(request, spec.session!, handoff);
     } catch (error) {

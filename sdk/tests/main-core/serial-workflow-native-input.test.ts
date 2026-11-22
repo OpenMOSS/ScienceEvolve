@@ -11,6 +11,7 @@ import type { SessionRef } from "../../src/core/harness-runtime/contracts.js";
 import type { SerialWorkflowNotificationContext } from "../../src/core/serial-workflow-notifications.js";
 import { workflowAdjustmentContextSources, type WorkflowAdjustmentNotificationFact } from "../../src/core/workflow-adjustment-notifications.js";
 import { dshSessionArtifactPath } from "../../src/core/harness-runtime/adapters/dsh-adapter.js";
+import { serialTaskRecoveryMessage } from "../../src/core/serial-task-recovery.js";
 
 const roots: string[] = [], databases: CollaborationStateDatabase[] = [];
 afterEach(async () => {
@@ -21,7 +22,7 @@ afterEach(async () => {
 type Harness = "codex" | "dsh" | "pi";
 // Controlled native CLIs exercise the actual built-in Adapter and process/input
 // transport. They do not establish receipt by an installed production model.
-async function nativeExecutable(root: string, workspacePath: string, harness: Harness, echo = true) {
+async function nativeExecutable(root: string, workspacePath: string, harness: Harness, echo = true, initialCodexHandoff?: string) {
   const executable = join(root, `${harness}.mjs`), capture = join(root, `${harness}-input.json`);
   await writeFile(executable, `#!/usr/bin/env node
 import fs from "node:fs";
@@ -30,6 +31,7 @@ import readline from "node:readline";
 import { zstdCompressSync } from "node:zlib";
 const harness = ${JSON.stringify(harness)}, echo = ${JSON.stringify(echo)};
 const args = process.argv.slice(2);
+const initialCodexHandoff = ${JSON.stringify(initialCodexHandoff ?? null)};
 if (harness === "codex" && args[0] === "debug" && args[1] === "models") {
   console.log(JSON.stringify({ models: [{ slug: "fixture-model", use_responses_lite: false, tool_mode: null }] }));
   process.exit(0);
@@ -84,7 +86,8 @@ if (harness === "dsh") {
   if (harness === "codex") {
     emit({ type: "thread.started", thread_id: "e7994308-34ed-4e5a-9319-8261cbd0744c" });
     if (echo) emit({ type: "item.completed", item: { id: "original-user-input", type: "user_message", content: [{ type: "text", text: prompt }] } });
-    emit({ type: "item.completed", item: { id: "original-answer", type: "agent_message", text: "Original native handoff." } });
+    const handoff = !args.includes("resume") && initialCodexHandoff !== null ? initialCodexHandoff : "Original native handoff.";
+    emit({ type: "item.completed", item: { id: "original-answer", type: "agent_message", text: handoff } });
     emit({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 3 } });
   } else {
     const file = args[args.indexOf("--session") + 1];
@@ -99,7 +102,7 @@ if (harness === "dsh") {
   return { executable, capture };
 }
 
-async function fixture(harness: Harness, large = false, echo = true) {
+async function fixture(harness: Harness, large = false, echo = true, initialCodexHandoff?: string) {
   const root = await mkdtemp(join(tmpdir(), "openfars-serial-native-input-")); roots.push(root);
   const projectId = `prj_${"1".repeat(32)}`, invocationId = "inv_original_notification";
   const projectPath = join(root, projectId), workspacePath = join(projectPath, "workspaces"),
@@ -143,7 +146,7 @@ async function fixture(harness: Harness, large = false, echo = true) {
       database.confirmSerialWorkflowAdjustmentInput(context, inputId, session, event); received.push(session);
     }
   };
-  const native = await nativeExecutable(root, workspacePath, harness, echo);
+  const native = await nativeExecutable(root, workspacePath, harness, echo, initialCodexHandoff);
   const runtime = new HarnessRuntimeFacade({ harnessExecutables: { [harness]: native.executable },
     protocolProxyFactory: async () => ({ baseUrl: "http://127.0.0.1:43198/v1", token: "fixture-token", close: async () => undefined }) });
   const receiptEvents = () => database.eventsAfter(projectId, 0, 1000).filter(event => event.type === "workflow.adjustment.notification.received");
@@ -175,6 +178,75 @@ describe("Ordinary workflow notification input through the actual built-in proce
     expect(f.receiptEvents()).toHaveLength(8);
     expect(f.database.prepareSerialWorkflowAdjustmentInput(f.context, "next-legitimate-input", actual)).toBeUndefined();
     expect(f.database.projectState(f.context.projectId).executions).toEqual([]);
+  }, 15_000);
+
+  it.each(["", "\n"])("resumes Codex for one missing final handoff in its original thread (%j)", async blank => {
+    const f = await fixture("codex", false, true, blank);
+    const result = await f.runtime.run(f.request, async () => undefined, new AbortController().signal);
+    const captured = JSON.parse(await readFile(f.native.capture, "utf8"));
+    expect(result.handoff).toBe("Original native handoff.");
+    expect(f.nativeInputs).toHaveLength(2);
+    expect(captured.prompt.trim()).toBe("上一轮没有交回结果说明。请根据刚才的工具结果，简短说明已完成什么、还有什么待做。");
+    expect(captured.args).toContain("resume");
+    expect(captured.args).toContain(result.threadId);
+    expect(new Set(f.actualSessions.map(session => session.nativeId))).toEqual(new Set([result.threadId]));
+    expect(f.receiptEvents()).toHaveLength(1);
+  }, 15_000);
+
+  it.each<Harness>(["codex", "pi"])("%s receives only the missing decision reminder in its confirmed Main session", async harness => {
+    const f = await fixture(harness);
+    const first = await f.runtime.run(f.request, async () => undefined, new AbortController().signal);
+    const session = f.actualSessions.at(-1)!;
+    f.request.project.agentSessions = { main: session };
+    f.request.project.agentSessionIds = { main: first.threadId! };
+    f.request.resumeThreadId = first.threadId;
+    f.request.terminalControlRepair = { originalHandoff: first.handoff };
+    const supplement = vi.fn(async () => "Unrelated pending workflow content");
+    f.request.onPrepareWorkflowAdjustmentInput = supplement;
+    await f.runtime.run(f.request, async () => undefined, new AbortController().signal);
+    const captured = JSON.parse(await readFile(f.native.capture, "utf8"));
+    expect(captured.prompt.trim()).toBe("上一轮还没有提交下一步决定。请根据刚才的判断，用本轮可用的流程工具提交决定。");
+    expect(supplement).not.toHaveBeenCalled();
+    expect(f.actualSessions.at(-1)?.nativeId).toBe(session.nativeId);
+    if (harness === "codex") expect(captured.args).toContain("resume");
+    else expect(captured.args[captured.args.indexOf("--session") + 1]).toBe(session.nativeId);
+  }, 15_000);
+
+  it.each<Harness>(["codex", "pi"])("%s receives exact retained-Worker recovery facts through native stdin and its original Session", async harness => {
+    const f = await fixture(harness);
+    f.request.project.agents.worker = { ...f.request.project.agents.main, sessionPersistence: true };
+    f.request.agent = "worker"; f.request.kind = "worker"; f.request.taskSessionId = "original-worker-task";
+    f.request.inboxPath = join(f.request.projectPath, "messages", `0001_${f.request.invocationId}_to_worker.md`);
+    await writeFile(f.request.inboxPath, "Inspect the existing report; do not repeat its write.");
+    f.request.onPrepareWorkflowAdjustmentInput = undefined;
+    f.request.onWorkflowAdjustmentInputReceived = undefined;
+    await f.runtime.run(f.request, async () => undefined, new AbortController().signal);
+    const original = f.actualSessions.at(-1)!;
+    f.request.project.agentSessions = { worker: original };
+    f.request.project.agentSessionIds = { worker: harness === "pi" ? `pi:${original.nativeId}` : original.nativeId };
+    const failedInvocation = f.request.invocationId;
+    f.request.project.activeAgentExecution = { id: "original-worker-task", agent: "worker", source: "configured-route",
+      createdAt: "2026-11-17T00:00:00Z", firstInvocationId: failedInvocation, latestInvocationId: failedInvocation };
+    f.request.project.agentFailureHistory = { worker: [{ invocationId: failedInvocation, failedAt: "2026-11-17T00:01:00Z",
+      error: "empty final handoff", errorType: "HarnessRuntimeError", errorCode: "HARNESS_CONTRACT_VIOLATION", errorSource: "adapter",
+      tracePath: "traces/original-worker.md", message: "Original assignment", candidateAgents: [] }] };
+    const message = serialTaskRecoveryMessage(f.request.project, "worker", failedInvocation)!;
+    const invocationId = "inv_retained_worker_resume";
+    const runtimePath = join(f.request.projectPath, "runtime", invocationId);
+    const inboxPath = join(f.request.projectPath, "messages", `0002_${invocationId}_to_worker.md`);
+    await mkdir(runtimePath, { recursive: true });
+    await writeFile(inboxPath, `来源：ScienceEvolve\n内容：${message}\n\n来源：main\n内容：Inspect the existing report; do not repeat its write.`);
+    f.request = { ...f.request, invocationId, runtimePath, inboxPath };
+    await f.runtime.run(f.request, async () => undefined, new AbortController().signal);
+    const captured = JSON.parse(await readFile(f.native.capture, "utf8"));
+    expect(captured.prompt).toContain(message);
+    expect(f.nativeInputs.at(-1)).toBe(captured.prompt);
+    expect(captured.prompt).toContain(failedInvocation);
+    expect(captured.prompt).toContain("original-worker-task");
+    expect(captured.prompt).toContain("empty final handoff");
+    expect(f.actualSessions.at(-1)?.nativeId).toBe(original.nativeId);
+    if (harness === "codex") expect(captured.args).toContain("resume");
+    else expect(captured.args[captured.args.indexOf("--session") + 1]).toBe(original.nativeId);
   }, 15_000);
 
   it("a successful native turn without the received input keeps notification facts pending", async () => {

@@ -1518,6 +1518,27 @@ describe("Resumable project Stop receipts", () => {
     expect(database.eventsAfter(projectId, 0).filter((event) => event.type === "runtime.activity.closed")).toEqual([]);
   });
 
+  it.each(["wrong event type", "different Stop request"])("rejects a conflicting Stop confirmation with the %s", async mismatch => {
+    const { database } = await stateFixture();
+    const projectId = "project-1";
+    createProject(database, { projectId });
+    const intent = database.appendEvent({ projectId, type: "project.cancellation.requested", payload: { resumable: true } }).event;
+    const requestId = `project-stop-confirmed:${projectId}:${intent.seq}`;
+    database.appendEvent({ projectId, requestId,
+      type: mismatch === "wrong event type" ? "project.note" : "project.cancellation.stop_confirmed",
+      payload: { requestedEventSeq: mismatch === "wrong event type" ? intent.seq : intent.seq - 1 } });
+    const events = database.eventsAfter(projectId, 0);
+
+    for (const readOrTransition of [
+      () => database.projectSchedulingState(projectId),
+      () => database.projectState(projectId),
+      () => database.confirmProjectCancellationStopped(projectId),
+      () => database.resumeProjectCancellation({ projectId })
+    ]) expect(readOrTransition).toThrow(requestId);
+    expect(database.eventsAfter(projectId, 0)).toEqual(events);
+    expect(database.projectCancellationIntent(projectId)?.seq).toBe(intent.seq);
+  });
+
   it("requires both the exact Worker and coordinator stop proofs and records no Agent completion", async () => {
     const { database } = await stateFixture();
     seedGroup(database, { tasks: [{ id: "stop-task", assignment: "Retain unfinished work", assigneeAgentId: "alice" }] });

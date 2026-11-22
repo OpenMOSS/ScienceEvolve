@@ -35,7 +35,7 @@ import type {
   ResidentAdapterLaunchDefinition
 } from "../resident-lease.js";
 import { residentScopeId } from "../resident-lease.js";
-import { validateStagedInvocationInputs } from "../invocation-inputs.js";
+import { isMainAssistanceTurn, validateStagedInvocationInputs } from "../invocation-inputs.js";
 import { installWindowsCodexPatch } from "../windows-codex-patch.js";
 import { NATIVE_PROCESS_SUPPORT_ENV } from "../native-processes.js";
 
@@ -320,7 +320,8 @@ function residentHarnessHome(input: ResidentAdapterLaunchRequest, directory: str
 }
 
 function usesFixedAgentWorkspace(input: ResidentAdapterLaunchRequest): boolean {
-  return input.spec.inputs.workspacePath === path.join(input.spec.inputs.projectPath, "git-worktrees", "agents", input.request.agent);
+  const expected = input.projectWorkspace ?? path.join(input.spec.inputs.projectPath, "git-worktrees", "agents", input.request.agent);
+  return input.spec.inputs.workspacePath === expected;
 }
 
 function gatewayLaunchRoute(input: ResidentAdapterLaunchRequest): { baseUrl: string; token: string } {
@@ -383,17 +384,17 @@ async function assertResidentLaunchAuthority(input: ResidentAdapterLaunchRequest
   }
   const isLeader = context.role === "leader";
   if (isLeader) {
-    const fixedManagement = input.spec.inputs.workspacePath ===
-      path.join(input.spec.inputs.projectPath, "git-worktrees", "agents", input.request.agent);
-    if (fixedManagement) {
+    const fixedManagement = usesFixedAgentWorkspace(input);
+    const mainAssistance = isMainAssistanceTurn(input.request);
+    if (fixedManagement || mainAssistance) {
       await validateStagedInvocationInputs({ ...input.spec.inputs,
-        projectId: input.request.project.id, invocationId: input.spec.invocationId,
-        fixedAgentId: input.request.agent });
+        projectId: input.request.project.id, invocationId: input.spec.invocationId, mainAssistance,
+        ...(fixedManagement ? { fixedAgentId: input.request.agent, projectWorkspace: input.projectWorkspace } : {}) });
     } else if (!isWithin(input.spec.inputs.workspacePath, input.executionRuntimePath) ||
       input.spec.inputs.workspacePath === input.executionRuntimePath) {
       throw launchError("Leader resident requires a management-only staged workspace");
     }
-    const proposalRoot = fixedManagement && input.spec.inputs.workflowAuthoringPath
+    const proposalRoot = (fixedManagement || mainAssistance) && input.spec.inputs.workflowAuthoringPath
       ? path.dirname(input.spec.inputs.workflowAuthoringPath) : undefined;
     const expectedWrites = proposalRoot ? [proposalRoot] : [];
     if (JSON.stringify(input.filesystemAuthority.writeRoots) !== JSON.stringify(expectedWrites) ||

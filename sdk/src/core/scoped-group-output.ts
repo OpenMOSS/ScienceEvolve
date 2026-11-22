@@ -42,6 +42,7 @@ export function scopedGroupOutput(projection: CredentialFreeProjectStateProjecti
 
 function availableReport(projection: CredentialFreeProjectStateProjection, output: string,
   execution: NonNullable<CredentialFreeProjectStateProjection["scopedExecutions"]>[number]): string {
+  if (!projection.git.enabled) return output;
   const merge = projection.scopedAgentMerges?.find(item => item.executionId === execution.id);
   return merge ? output : `${output}\n\nSource: ${execution.agentId}, task ${execution.id}, directory ${execution.worktreePath}. No merged delivery has been confirmed. Materials may be uncommitted or unavailable after directory cleanup; use the existing files according to the current task.`;
 }

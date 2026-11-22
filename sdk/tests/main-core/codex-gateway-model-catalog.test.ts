@@ -16,6 +16,21 @@ afterEach(async () => {
 });
 
 describe("Codex external gateway model catalog", () => {
+  it.each([
+    { label: "empty output", stdout: "", diagnostic: /empty|no output/i },
+    { label: "invalid JSON", stdout: "not-json-fixture-sensitive", diagnostic: /JSON/i },
+    { label: "invalid models field", stdout: '{"models":"fixture-sensitive"}', diagnostic: /models.*array|array.*models/i }
+  ])("explains malformed catalog output without echoing its contents ($label)", async ({ stdout, diagnostic }) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-invalid-catalog-"));
+    roots.push(root);
+    const executable = path.join(root, "catalog.mjs");
+    await fs.writeFile(executable, "process.stdout.write(" + JSON.stringify(stdout) + ")");
+    const result = prepareCodexGatewayModelCatalog(executable, "selected-model", root);
+    await expect(result).rejects.toThrow(diagnostic);
+    await expect(result).rejects.not.toThrow("fixture-sensitive");
+    expect(await fs.readdir(root)).toEqual(["catalog.mjs"]);
+  });
+
   it("keeps the selected GPT-5.6 slug while enabling ordinary Responses tools", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-gateway-catalog-test-"));
     roots.push(root);

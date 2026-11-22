@@ -1,13 +1,14 @@
 import { resolve as sdkFixturePath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/store.js";
 import { COLLABORATION_STATE_SCHEMA_VERSION } from "../../src/core/collaboration-state/contracts.js";
-import { legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
+import { upgradeCollaborationWriter } from "../../src/core/collaboration-state/upgrade-writer.js";
+import { legacyDeliveryFixture, legacyWriterFixture, openUpgradedFixture } from "./helpers/legacy-writer-fixture.js";
 
 function mergedScopedEvidence(
   executionId: string, base: `groups/${string}`, providerNumber: number, ownershipEpoch = 1
@@ -64,7 +65,7 @@ function mergedGroupEvidence(groupRunId: string, base: "main" | `groups/${string
   };
 }
 
-function activateFinalIntegrationFixture(database: CollaborationStateDatabase) {
+function activateFinalIntegrationFixture(database: CollaborationStateDatabase, workspace?: string) {
   database.createProject({
     projectId: "project-1", workflowRevision: 1,
     workflowSnapshot: {
@@ -82,17 +83,17 @@ function activateFinalIntegrationFixture(database: CollaborationStateDatabase) {
         }]
       }
     },
-    git: { enabled: true, status: "ready" }, workerCapacity: 1
+    git: workspace ? { enabled: false, status: "disabled" } : { enabled: true, status: "ready" }, workerCapacity: 1
   });
   const group = database.activateScopedGroup({
     projectId: "project-1", groupRunId: "run-G", groupId: "G", activationRequestId: "activate-G",
-    workflowRevision: 1, baseCommit: "base-G",
+    workflowRevision: 1, ...(workspace ? {} : { baseCommit: "base-G" }),
     outer: { nodeRunId: "node-G", inputSnapshotRef: "project:input", activatedByAgentId: "main" }
   });
   const arrivalRequestId = group.arrivals[0]!.requestId;
   database.claimScopedAgentArrival({
     projectId: "project-1", arrivalRequestId, agentId: "worker", executionId: "exec-worker",
-    worktreePath: sdkFixturePath("/srv/openfars/git-worktrees/agents/worker")
+    worktreePath: workspace ?? sdkFixturePath("/srv/openfars/git-worktrees/agents/worker")
   });
   return () => database.completeScopedAgentArrivalAfterMerge({
     projectId: "project-1", arrivalRequestId, executionId: "exec-worker", ownershipEpoch: 1,
@@ -101,6 +102,89 @@ function activateFinalIntegrationFixture(database: CollaborationStateDatabase) {
 }
 
 describe("scoped collaboration state schema", () => {
+  it.each([29, 30])("upgrades a stopped v%s Git project preserving the exact group, member, merge and backup", async version => {
+    const directory = await mkdtemp(join(tmpdir(), "delivery-upgrade-"));
+    const databasePath = join(directory, "state.sqlite");
+    const options = { databasePath, serviceId: "service", hostId: "host", topology: "single-host" as const };
+    let db = CollaborationStateDatabase.open(options);
+    try {
+      activateFinalIntegrationFixture(db)();
+      const original = db.projectState("project-1");
+      const lease = db.writerLease();
+      db.close();
+      const legacy = new DatabaseSync(databasePath);
+      try {
+        if (version === 29) legacyWriterFixture(legacy, lease, Date.now());
+        else legacyDeliveryFixture(legacy);
+      } finally { legacy.close(); }
+      expect(() => CollaborationStateDatabase.open(options)).toThrow(expect.objectContaining({ code: "WRITER_UPGRADE_REQUIRED" }));
+      const upgraded = await upgradeCollaborationWriter({ ...options, backupDirectory: join(directory, "backup"), confirmedStopped: true });
+      const backup = new DatabaseSync(upgraded.backupPath, { readOnly: true });
+      try {
+        expect(backup.prepare("SELECT schema_version FROM collaboration_state_meta").get()?.schema_version).toBe(version);
+        expect(backup.prepare("SELECT group_branch, base_commit FROM scoped_group_runs").get()).toMatchObject({ group_branch: "groups/run-G", base_commit: "base-G" });
+        expect(backup.prepare("SELECT execution_branch FROM scoped_executions").get()?.execution_branch).toBe("executions/exec-worker");
+      } finally { backup.close(); }
+      db = CollaborationStateDatabase.open(options);
+      expect(db.writerLease().epoch).toBe(lease.epoch + 2);
+      expect(db.projectState("project-1")).toEqual(original);
+      expect(db.verifyHealth().schemaVersion).toBe(31);
+    } finally { db.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("requires the original lock to upgrade a stopped v30 database", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "delivery-lock-"));
+    const databasePath = join(directory, "state.sqlite");
+    const options = { databasePath, serviceId: "service", hostId: "host", topology: "single-host" as const };
+    try {
+      CollaborationStateDatabase.open(options).close();
+      const database = new DatabaseSync(databasePath);
+      try { legacyDeliveryFixture(database); } finally { database.close(); }
+      const lock = databasePath + ".writer.lock";
+      await rename(lock, join(directory, "retained-original.lock"));
+      await expect(upgradeCollaborationWriter({ ...options, backupDirectory: join(directory, "backup"), confirmedStopped: true }))
+        .rejects.toThrow(/original writer lock/);
+      await expect(access(lock)).rejects.toMatchObject({ code: "ENOENT" });
+      const retained = new DatabaseSync(databasePath, { readOnly: true });
+      try { expect(retained.prepare("SELECT schema_version FROM collaboration_state_meta").get()?.schema_version).toBe(30); }
+      finally { retained.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("recovers a stopped workspace report once and refuses an incomplete or cross-invocation return", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "workspace-return-"));
+    const options = { databasePath: join(directory, "state.sqlite"), hostId: "host", serviceId: "s", topology: "single-host" as const };
+    let db = CollaborationStateDatabase.open(options);
+    try {
+      activateFinalIntegrationFixture(db, directory);
+      const execution = db.scopedExecution("project-1", "exec-worker")!;
+      const identity = { projectId: execution.projectId, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, invocationId: "inv_workspace_task" };
+      const runtimePath = join(directory, "runtime", identity.invocationId);
+      const report = { ...identity, output: "Measured result from the original worker", residentTurnCompleted: true as const, residentStopConfirmed: true };
+      db.beginScopedAgentTurn({ ...identity, runtimePath });
+      db.markScopedAgentTurnOpened({ ...identity, nativeProcessOpened: true });
+      expect(() => db.recordScopedAgentReport(report)).toThrow(/finish_task/);
+      const completion = { ...identity, agentId: execution.agentId, requestedAt: new Date().toISOString(), callId: "finish-1" };
+      expect(() => db.recordScopedAgentTaskCompletion({ ...completion, invocationId: "inv_another" })).toThrow(/exact opened/);
+      db.recordScopedAgentTaskCompletion(completion);
+      expect(() => db.recordScopedAgentReport({ ...report, residentStopConfirmed: false })).toThrow(/confirmed native stop/);
+      db.recordScopedAgentReport(report);
+      db.close();
+      db = CollaborationStateDatabase.open(options);
+      const returned = { ...identity, arrivalRequestId: execution.arrivalRequestId };
+      expect(() => db.completeScopedAgentArrival(returned)).toThrow(/stopped invocation/);
+      db.reconcileScopedAgentTurn({ ...identity, residentStopConfirmed: true, evidence: { protocol: "scoped-supervisor-stop-v1",
+        projectId: execution.projectId, agentId: execution.agentId, scopeId: execution.id, role: "delivery",
+        ownershipEpoch: 1, runtimePath, nativeProcessScanCleared: true } });
+      const first = db.completeScopedAgentArrival(returned);
+      const replay = db.completeScopedAgentArrival(returned);
+      expect(first.replay).toBe(false);
+      expect(replay).toMatchObject({ replay: true, revision: first.revision, route: first.route });
+      expect(db.scopedGroupReadyForFinalIntegration(execution.projectId, execution.groupRunId)).toBe(true);
+      expect(db.scopedAgentReport(execution.projectId, execution.id, 1)?.output).toBe(report.output);
+    } finally { db.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+
   it("migrates v26 event reads only under the exact live writer without changing projections or immutable facts", async () => {
     const directory = await mkdtemp(join(tmpdir(), "openfars-event-type-v27-migration-"));
     const databasePath = join(directory, "collaboration.sqlite");
@@ -1526,6 +1610,12 @@ describe("scoped collaboration state schema", () => {
         projectId: "project-1", groupRunId: "run-H",
         ...childFinalProof, pullRequest: { ...childFinalProof.pullRequest, head: "groups/run-G" }
       })).toThrow(/canonical group branch/);
+      expect(() => database!.completeScopedGroupAfterFinalMerge({
+        projectId: "project-1", groupRunId: "run-H", ...childFinalProof,
+        synchronization: { ...childFinalProof.synchronization, targetBranch: "main" }
+      })).toThrow(/exact local synchronization/);
+      expect(database.scopedFinalIntegration("project-1", "run-H")?.status).toBe("integrating");
+      expect(database.scopedGroupFinalMergeFact("project-1", "run-H")).toBeUndefined();
       const completedChild = database.completeScopedGroupAfterFinalMerge({
         projectId: "project-1", groupRunId: "run-H", ...childFinalProof
       });

@@ -1,5 +1,6 @@
 import {
   boundedPreview,
+  nativeUserNoticeFromResult,
   contentText,
   diagnosticEvent,
   eventArray,
@@ -112,6 +113,7 @@ export function dshOfficialEventMapper(expectedSessionId: string): OfficialEvent
           }]
         : [];
       return [...conflictDiagnostic, {
+        ...(!failed && bounded.truncated && !conflictingIds ? nativeUserNoticeFromResult(output) : {}),
         kind: failed ? "tool.failed" : "tool.completed",
         sourceType: type,
         itemId,

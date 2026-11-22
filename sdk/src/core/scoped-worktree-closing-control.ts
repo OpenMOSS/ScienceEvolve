@@ -1,3 +1,4 @@
+import { gitDeliveryRef } from "./collaboration-git/contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
@@ -118,7 +119,7 @@ export function scopedWorktreeClosingControlAuthorityFactory(options: {
         await options.database.recordScopedWorktreeClosingCheckpoint({ projectId: closing.projectId, executionId: closing.executionId,
           ownershipEpoch: closing.ownershipEpoch, restrictedClosing, observation: observed });
       }
-      const result = await executeAgentGitTool({ git: options.git, repository: options.repository, execution, base, facts, envelope, signal,
+      const result = await executeAgentGitTool({ git: options.git, repository: options.repository, execution, base: gitDeliveryRef(base), facts, envelope, signal,
         controlCapabilityHash: capabilityHash,
         recordedOperation: ownOperation, recordedRequest,
         recordRequest: async input => {

@@ -5,21 +5,44 @@ import { sameDurableSession } from "./control-result-receipts.js";
 import { validateSessionRef } from "./harness-runtime/session-ref.js";
 import { contentText } from "./harness-runtime/official-event-bridge.js";
 import type { SessionRef } from "./harness-runtime/contracts.js";
-import type { CollaborationExecutionContext } from "./types.js";
+import type { AgentRunRequest, CollaborationExecutionContext } from "./types.js";
 
 export interface MainAssistanceOrigin {
   projectId: string; agentId: string; taskId: string; invocationId: string; session: SessionRef;
   executionContext?: CollaborationExecutionContext;
 }
-export interface MainAssistanceRecord {
-  id: string; version: number; origin: MainAssistanceOrigin; callId: string; question: string;
+interface MainMessageRecord {
+  id: string; version: number; question: string;
   status: "queued" | "processing" | "replied" | "failed" | "unknown";
   main?: { invocationId: string; epoch: number; writerEpoch: number; inputId: string; text: string; session?: SessionRef;
     receivedAt?: string; eventId?: string; stoppedAt?: string };
   reply?: { text: string; callId: string; invocationId: string; savedAt: string };
+  error?: string; createdAt: string; updatedAt: string;
+}
+export interface MainAssistanceRecord extends MainMessageRecord {
+  origin: MainAssistanceOrigin; callId: string;
   delivery?: { status: "queued" | "offered" | "received" | "late" | "unknown"; inputId?: string;
     invocationId?: string; session?: SessionRef; text?: string; eventId?: string; receivedAt?: string; reason?: string };
-  error?: string; createdAt: string; updatedAt: string;
+}
+export interface MainConversationRecord extends MainMessageRecord {
+  origin: { kind: "user"; projectId: string };
+  requestId?: string;
+  offered?: Pick<NonNullable<MainMessageRecord["main"]>, "inputId" | "invocationId" | "text" | "session" | "receivedAt" | "eventId">;
+}
+export type MainInboxRecord = MainAssistanceRecord | MainConversationRecord;
+export function isUserConversation(record: MainInboxRecord): record is MainConversationRecord {
+  return "kind" in record.origin && record.origin.kind === "user";
+}
+export function conversationView(record: MainConversationRecord) {
+  return { id: record.id, message: record.question, createdAt: record.createdAt, status: record.status,
+    receivedAt: (record.main ?? record.offered)?.receivedAt, reply: record.reply?.text, error: record.error };
+}
+export function conversationId(projectId: string, key: string): string { return `chat_${hash([projectId, key])}`; }
+export function conversationWorkflowRequestId(invocationId: string): string {
+  return `main-conversation-workflow:${invocationId}`;
+}
+export function conversationPrompt(record: MainConversationRecord): string {
+  return `User message ${record.id}\n${record.question}\nEnd of user message ${record.id}\nRespond to the user using reply_to_user with this messageId and your answer. Read current progress with state_list and state_get when needed. Report a management action only after its authorized tool confirms the result. An ordinary question needs only a reply.`;
 }
 export interface MainAssistanceJournal {
   list(projectId: string): Promise<MainAssistanceRecord[]>;
@@ -35,10 +58,25 @@ export const mainAssistanceRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("read"), requestId: z.string().min(1).max(128) }).strict(),
   z.object({ operation: z.literal("reply"), requestId: z.string().min(1).max(128), text: z.string().trim().min(1).max(24_000) }).strict()
 ]);
+export const userReplySchema = z.object({
+  messageId: z.string().min(1).max(128), text: z.string().trim().min(1).max(100_000)
+}).strict();
+
+export async function dispatchMainInboxRequest(request: Pick<AgentRunRequest, "onMainAssistanceRequest" | "onReplyToUser">, value: unknown, callId: string) {
+  if (value && typeof value === "object" && "operation" in value && value.operation === "reply_user") {
+    if (!request.onReplyToUser) throw new Error("Only the receiving Main invocation can reply to a user");
+    const { operation, ...args } = value;
+    const { messageId, text } = userReplySchema.parse(args);
+    return request.onReplyToUser(messageId, text, callId);
+  }
+  if (!request.onMainAssistanceRequest) throw new Error("Main assistance is unavailable in this task");
+  return request.onMainAssistanceRequest(value, callId);
+}
+
 export function assistancePrompt(record: MainAssistanceRecord): string {
   return `Main assistance request ${record.id}\nFrom Agent ${record.origin.agentId}, original task ${record.origin.taskId}.\n${record.question}\n\nReply with main_assistance operation=reply, requestId=${record.id}. Use your authorized native tools when useful. This request does not authorize routing, reassignment, Workflow edits, Gate changes or project completion. The requester continues its original task independently. State any inability to resolve the question in your reply.`;
 }
-export function assistanceUpdate(record: MainAssistanceRecord, change: Partial<MainAssistanceRecord>): MainAssistanceRecord {
+export function assistanceUpdate<T extends MainInboxRecord>(record: T, change: Partial<NoInfer<T>>): T {
   return { ...record, ...change, version: record.version + 1, updatedAt: new Date().toISOString() };
 }
 export async function enqueueMainAssistance(journal: MainAssistanceJournal, origin: MainAssistanceOrigin, value: unknown, callId: string): Promise<MainAssistanceRecord> {
@@ -76,6 +114,17 @@ export async function observeAssistanceInput(journal: MainAssistanceJournal, pro
 }
 export function assistanceReceiptChange(record: MainAssistanceRecord, agentId: string, invocationId: string,
   session: SessionRef, event: Record<string, unknown>): Partial<MainAssistanceRecord> | undefined {
+  const message = nativeMainMessageText(invocationId, session, event);
+  if (!message) return;
+  if (event.kind === "user.message" && agentId === "main" && record.main?.invocationId === invocationId && !record.main.receivedAt && message.includes(record.main.text)) {
+    return { main: { ...record.main, session: structuredClone(session), receivedAt: new Date().toISOString(), eventId: String(event.eventId) } };
+  }
+  if (agentId === record.origin.agentId && record.delivery && ["offered", "unknown", "late"].includes(record.delivery.status) && record.delivery.invocationId === invocationId &&
+    record.delivery.session && sameDurableSession(record.delivery.session, session) && record.delivery.text && message.includes(record.delivery.text)) {
+    return { delivery: { ...record.delivery, status: "received", receivedAt: new Date().toISOString(), eventId: String(event.eventId) } };
+  }
+}
+export function nativeMainMessageText(invocationId: string, session: SessionRef, event: Record<string, unknown>): string | undefined {
   if (event.invocationId !== invocationId || event.harnessId !== session.harnessId || typeof event.eventId !== "string") return;
   const tool = event.tool as { outputPreview?: unknown; truncated?: boolean; isError?: boolean } | undefined;
   let message = event.kind === "user.message" && typeof event.message === "string" ? event.message
@@ -88,13 +137,7 @@ export function assistanceReceiptChange(record: MainAssistanceRecord, agentId: s
       message = contentText(result.content) || message;
     } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
   }
-  if (event.kind === "user.message" && agentId === "main" && record.main?.invocationId === invocationId && !record.main.receivedAt && message.includes(record.main.text)) {
-    return { main: { ...record.main, session: structuredClone(session), receivedAt: new Date().toISOString(), eventId: event.eventId } };
-  }
-  if (agentId === record.origin.agentId && record.delivery && ["offered", "unknown", "late"].includes(record.delivery.status) && record.delivery.invocationId === invocationId &&
-    record.delivery.session && sameDurableSession(record.delivery.session, session) && record.delivery.text && message.includes(record.delivery.text)) {
-    return { delivery: { ...record.delivery, status: "received", receivedAt: new Date().toISOString(), eventId: event.eventId } };
-  }
+  return message;
 }
 export function assertAssistanceImmutable(previous: MainAssistanceRecord, next: MainAssistanceRecord): void {
   for (const key of ["id", "origin", "callId", "question", "createdAt"] as const)

@@ -1,12 +1,37 @@
+import { initializeCollaborationStateSchema } from "../../../src/core/collaboration-state/schema.js";
 import { DatabaseSync } from "node:sqlite";
 import type { CollaborationStateOpenOptions, WriterLeaseToken } from "../../../src/core/collaboration-state/contracts.js";
 import { CollaborationStateDatabase } from "../../../src/core/collaboration-state/store.js";
 import { upgradeOwnerProtocol } from "../../../src/core/collaboration-state/owner-protocol.js";
 import { WriterOwner } from "../../../src/core/collaboration-state/writer-owner.js";
 
+/** Restore the exact pre-workspace delivery DDL in an isolated, stopped test database. */
+export function legacyDeliveryFixture(database: DatabaseSync): void {
+  const original = new DatabaseSync(":memory:");
+  const foreignKeys = database.prepare("PRAGMA foreign_keys").get()?.foreign_keys;
+  const rename = database.prepare("PRAGMA legacy_alter_table").get()?.legacy_alter_table;
+  try {
+    initializeCollaborationStateSchema(original);
+    database.exec("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON; BEGIN IMMEDIATE");
+    for (const table of ["scoped_group_runs", "scoped_executions", "scoped_agent_turns", "member_executions", "project_state_domains"]) {
+      const objects = original.prepare("SELECT type,sql FROM sqlite_schema WHERE tbl_name=? AND sql IS NOT NULL").all(table);
+      database.exec(`ALTER TABLE ${table} RENAME TO fixture_v31_${table}`);
+      database.exec(String(objects.find(o => o.type === "table")!.sql));
+      database.exec(`INSERT INTO ${table} SELECT * FROM fixture_v31_${table}; DROP TABLE fixture_v31_${table}`);
+      for (const o of objects) if (o.type !== "table") database.exec(String(o.sql));
+    }
+    database.exec("UPDATE collaboration_state_meta SET schema_version=30; COMMIT");
+  } finally {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    database.exec(`PRAGMA foreign_keys=${foreignKeys ? 1 : 0}; PRAGMA legacy_alter_table=${rename ? 1 : 0}`);
+    original.close();
+  }
+}
+
 /** Test-only conversion after the fixture's real owner has closed. Research
  * tables are unchanged; the test then applies its historical schema DDL. */
 export function legacyWriterFixture(database: DatabaseSync, lease: WriterLeaseToken, nowMs: number): void {
+  legacyDeliveryFixture(database);
   database.exec(`BEGIN IMMEDIATE;
     DROP TRIGGER legacy_writer_owner_no_update;
     DROP TRIGGER legacy_writer_owner_no_delete;

@@ -65,6 +65,22 @@ async function fixture() {
 }
 
 describe("one formal store for project checkpoints and experiment ledgers", () => {
+  it("reads a serial card's revision and public lifecycle from its committed checkpoint alone", async () => {
+    const f = await fixture();
+    expect(f.db.serialProjectSummaryCheckpoint(P)).toBeUndefined();
+    f.register();
+    await f.start();
+    const detail = f.db.projectState(P);
+    const documents = vi.spyOn(f.db, "projectStateDocument");
+    const card = f.db.serialProjectSummaryCheckpoint(P);
+    expect(card).toEqual({ stateRevision: detail.stateRevision, lifecycle: detail.formalState!.checkpoint.lifecycle });
+    expect(card?.lifecycle).toMatchObject({ currentAgent: "execution", status: "running" });
+    expect(JSON.stringify(card)).not.toContain("private-checkpoint-secret");
+    expect(documents.mock.calls).toEqual([[P, "project.checkpoint"]]);
+    documents.mockReturnValueOnce(undefined);
+    expect(() => f.db.serialProjectSummaryCheckpoint(P)).toThrow(`Serial project ${P} has no committed checkpoint`);
+  });
+
   it.each([false, true])("preserves accepted results when an older callback saves only its telemetry (formal=%s)", async formal => {
     const f = await fixture(); if (formal) f.register();
     const telemetry = await f.storage.loadState(P), publication = await f.storage.loadState(P);
@@ -260,22 +276,34 @@ describe("one formal store for project checkpoints and experiment ledgers", () =
   });
 
   it.each([false, true])("recovers the SDK transaction from its database marker despite a missing or misleading journal file (committed=%s)", async committed => {
-    const f = await fixture(); f.register(); await f.start("worker", "inv_transaction");
+    const f = await fixture(); f.register();
+    const { agentId, invocationId } = await f.start("worker", "inv_transaction");
     f.state.agentSessions = { execution: session }; await f.storage.saveState(f.state);
     const before = await f.storage.loadState(P);
-    await f.storage.beginInvocationCommit(f.state, "inv_transaction");
+    await f.storage.beginInvocationCommit(f.state, invocationId);
     const journal = f.db.projectStateDocument(P, "invocation.commit")!.value;
+    const handoff = "Reviewed evidence from the original Worker task.";
+    await f.storage.writeHandoff(f.state, agentId, invocationId, handoff);
+    const receipt = await f.storage.appendEvent(f.state, { type: "control.action.committed", agent: agentId,
+      message: "Worker completion accepted", data: { invocationId, callId: "finish-original-task", tool: "finish_task" } });
     f.state.phase = "actual-result-awaiting-commit"; await f.storage.saveState(f.state);
     expect(f.db.projectState(P).formalState?.invocationCommit.status).toBe("in_progress");
-    const directory = join(f.storage.projectDir(P), ".transactions", "inv_transaction");
+    const directory = join(f.storage.projectDir(P), ".transactions", invocationId);
     if (committed) {
-      await f.storage.commitInvocationCommit(f.state, "inv_transaction");
+      await f.storage.commitInvocationCommit(f.state, invocationId);
       await mkdir(directory, { recursive: true }); await writeFile(join(directory, "journal.json"), JSON.stringify(journal));
     } else await rm(join(directory, "journal.json"));
     const restartedStorage = new ProjectStorage(f.root, new EventHub()); await restartedStorage.configureProjectStateStore(f.adapter());
     await restartedStorage.recoverIncompleteCommits();
     const actual = await restartedStorage.loadState(P);
     expect(actual.phase).toBe(committed ? "actual-result-awaiting-commit" : before.phase);
+    expect(actual.activeAgentExecution?.id).toBe("original-task");
+    const savedHandoff = restartedStorage.readHandoff(P, invocationId, agentId);
+    if (committed) await expect(savedHandoff).resolves.toBe(handoff);
+    else await expect(savedHandoff).rejects.toThrow("Saved handoff not found");
+    const receipts = (await restartedStorage.readEvents(P)).filter(event =>
+      event.type === "control.action.committed" && event.data?.invocationId === invocationId);
+    expect(receipts).toEqual(committed ? [receipt] : []);
     expect(actual.agentSessions?.execution).toEqual(session);
     expect(f.db.projectState(P).formalState?.invocationCommit.status).toBe(committed ? "committed" : "idle");
     expect(JSON.stringify(f.db.projectState(P))).not.toContain("private-checkpoint-secret");

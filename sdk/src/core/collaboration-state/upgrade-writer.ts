@@ -27,9 +27,10 @@ export async function upgradeCollaborationWriter(input: {
   const inspection = new DatabaseSync(databasePath, { readOnly: true });
   try {
     const meta = inspection.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton=1").get();
-    const writer = inspection.prepare("SELECT host_id FROM writer_service_lease WHERE singleton=1").get();
-    if (!meta || typeof meta.schema_version !== "number" || meta.schema_version < 1 || meta.schema_version > 29)
-      throw new Error("Offline upgrade requires a legacy schema 1–29 database");
+    if (!meta || typeof meta.schema_version !== "number" || meta.schema_version < 1 || meta.schema_version > 30)
+      throw new Error("Offline upgrade requires a schema 1–30 database");
+    const writerTable = meta.schema_version === 30 ? "writer_service_owner" : "writer_service_lease";
+    const writer = inspection.prepare(`SELECT host_id FROM ${writerTable} WHERE singleton=1`).get();
     if (writer?.host_id !== input.hostId) throw new Error("Configured host does not match the original writer host");
     if (inspection.prepare("PRAGMA journal_mode").get()?.journal_mode !== "delete") throw new Error("Existing database must use DELETE journal mode");
     if (inspection.prepare("PRAGMA integrity_check").get()?.integrity_check !== "ok") throw new Error("Legacy database integrity check failed");

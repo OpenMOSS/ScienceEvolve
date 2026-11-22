@@ -1,6 +1,7 @@
 import type { HarnessEventKind } from "../contracts.js";
 import {
   boundedPreview,
+  nativeUserNoticeFromResult,
   contentText,
   diagnosticEvent,
   eventRecord,
@@ -33,6 +34,7 @@ export const mapPiOfficialEvent: OfficialEventMapper = (event) => {
     const name = eventString(event.toolName) ?? "tool";
     const callId = requiredCallId(event.toolCallId);
     return [{
+      ...(status === "completed" && bounded?.truncated ? nativeUserNoticeFromResult(output) : {}),
       kind: `tool.${status}` as HarnessEventKind,
       sourceType: type,
       message: name,

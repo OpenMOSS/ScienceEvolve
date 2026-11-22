@@ -1,3 +1,4 @@
+import { dispatchMainInboxRequest } from "../main-assistance.js";
 import { requestInvocationSearchTree } from "../search-tree-mcp.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -394,6 +395,7 @@ export class HarnessRuntimeResidentAdapter {
     if (!model) throw adapterError(`Agent ${request.agent} has no locked resident model`);
     const controlTemplate = deriveControlTemplate(request, input.controlScope);
     if (controlTemplate && request.onProjectStateRequest) controlTemplate.projectState = true;
+    if (controlTemplate && request.onReplyToUser) controlTemplate.mainConversation = input.controlScope?.role === "main-assistance" && !request.onMainAssistanceRequest ? "turn" : "inbox";
     if (controlTemplate && request.onMainAssistanceRequest) controlTemplate.mainAssistance = request.agent === "main" ? "reply" : "request";
     if (controlTemplate && request.onWorkflowGateRequest) controlTemplate.workflowGate = true;
     if (controlTemplate && request.project.searchTree) controlTemplate.searchTree = true;
@@ -1174,7 +1176,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       ...(template.expiresAt ? { expiresAt: template.expiresAt } : {}),
       stagingPath,
       signal,
-      ...(request.onMainAssistanceRequest ? { mainAssistanceNotice: async (inputId: string) => await request.onPendingMainAssistance?.(inputId, this.#nativeSession) ?? "", mainAssistance: (value: unknown, callId: string) => request.onMainAssistanceRequest!(value, callId) } : {}),
+      ...(request.onMainAssistanceRequest || request.onReplyToUser ? { mainAssistanceNotice: async (inputId: string) => await request.onPendingMainAssistance?.(inputId, this.#nativeSession) ?? "", mainAssistance: (value: unknown, callId: string) => dispatchMainInboxRequest(request, value, callId) } : {}),
       ...(request.onWorkflowGateRequest ? { workflowGate: (value: unknown, callId: string) => request.onWorkflowGateRequest!(value, callId) } : {}),
       ...(request.project.searchTree ? { searchTree: input => requestInvocationSearchTree(request, input) } : {}),
       ...(request.onProjectStateRequest ? { projectState: input => request.onProjectStateRequest!(input) } : {}),
@@ -1209,6 +1211,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       bridge = await this.#options.controlBridgeFactory(service, stagingDirectory);
       const control: ControlMcpRequest = {
         ...stripControlAuthority(template),
+        ...(request.onReplyToUser ? { mainConversation: template.mainConversation ?? "inbox" } : {}),
         ...(request.onMainAssistanceRequest ? { mainAssistance: request.agent === "main" ? "reply" as const : "request" as const } : {}),
     ...(request.onWorkflowGateRequest ? { workflowGate: true } : {}),
         ...(request.project.searchTree ? { searchTree: true } : {}),
@@ -1229,7 +1232,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       const command = await resolveOrchestrationControlMcpCommand();
       downstream = await ControlMcpDownstream.open(command, {
         SCIENCEEVOLVE_CONTROL_CONTEXT: serializeInvocationControlContext(control, {
-          projectId: request.project.id,
+          projectId: request.project.id, projectPath: request.projectPath,
           agent: request.agent,
           invocationId: turn.invocationId,
           kind: request.kind,
@@ -2099,9 +2102,9 @@ function deriveControlTemplate(
   const context = request.executionContext;
   if (!context) return undefined;
   if (scope?.role === "main-assistance") {
-    if (request.agent !== "main" || request.kind !== "main" || !request.onMainAssistanceRequest) throw adapterError("Main assistance requires its exact request service");
+    if (request.agent !== "main" || request.kind !== "main" || !(request.onMainAssistanceRequest || request.onReplyToUser)) throw adapterError("Main assistance requires its exact request service");
     return { stagingPath: "/turn-scoped/control-actions.json", capability: "turn-scoped", stateVersion: scope.coordinatorEpoch,
-      candidates: [], decisionBy: "main", allowUserIntervention: false, canComplete: false, mainAssistance: "reply", requireBridge: true };
+      candidates: [], decisionBy: "main", allowUserIntervention: false, canComplete: false, ...(request.onMainAssistanceRequest ? { mainAssistance: "reply" as const } : { mainConversation: "turn" as const, projectStateReconciliation: request.project.git?.enabled === true, allowWorkflowReconfiguration: request.project.orchestration.allowMainReconfiguration === true }), requireBridge: true };
   }
   if (scope?.role === "receipt-coordinator") {
     return { stagingPath: "/turn-scoped/control-actions.json", capability: "turn-scoped",
@@ -2179,7 +2182,7 @@ function deriveControlTemplate(
     ...(request.worktreeClosing ? { worktreeClosing: structuredClone(request.worktreeClosing) } : {}),
     ...(scope?.role === "scoped-agent" ? { scopedAgentRouting: true, allowFinishRoute: true,
       ...(scope.executionId.startsWith("group-final-") ? { canonicalFinalIntegration: true } : {}) } : {}),
-    ...(scope && ["scoped-agent", "standalone-route", "execution-artifact"].includes(scope.role ?? "")
+    ...(request.project.git?.enabled && scope && ["scoped-agent", "standalone-route", "execution-artifact"].includes(scope.role ?? "")
       ? { allowAgentGitActions: true } : {}),
     requireBridge: true
   };
@@ -2220,6 +2223,8 @@ function discoveryCapabilityContext(
     agent: request.agent,
     invocationId: request.invocationId,
     stateVersion: control.stateVersion,
+    ...(request.onReplyToUser ? { mainConversation: control.mainConversation ?? "inbox" } : {}),
+    ...(control.projectStateReconciliation === false ? { projectStateReconciliation: false } : {}),
     ...(request.onMainAssistanceRequest ? { mainAssistance: request.agent === "main" ? "reply" as const : "request" as const } : {}),
     ...(request.onWorkflowGateRequest ? { workflowGate: true } : {}),
         ...(request.project.searchTree ? { searchTree: true } : {}),

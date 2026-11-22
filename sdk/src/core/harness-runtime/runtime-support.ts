@@ -62,6 +62,7 @@ export function serializeInvocationControlContext(
   control: ControlMcpRequest,
   identity: {
     projectId: string;
+    projectPath: string;
     agent: AgentRunRequest["agent"];
     invocationId: string;
     kind: string;
@@ -73,6 +74,7 @@ export function serializeInvocationControlContext(
     agent: identity.agent,
     invocationId: identity.invocationId,
     stateVersion: control.stateVersion,
+    ...(control.mainConversation ? { mainConversation: control.mainConversation } : {}),
     ...(control.mainAssistance ? { mainAssistance: control.mainAssistance } : {}),
     ...(control.workflowGate ? { workflowGate: true } : {}),
     ...(control.searchTree ? { searchTree: true } : {}),
@@ -87,7 +89,7 @@ export function serializeInvocationControlContext(
     ...(control.scopedAgentRouting ? { scopedAgentRouting: true } : {}),
     ...(control.collaboration ? { collaboration: control.collaboration } : {}),
     ...(control.allowFinishRoute !== undefined ? { allowFinishRoute: control.allowFinishRoute } : {}),
-    ...(control.workflowAuthoringPath ? { workflowAuthoringPath: control.workflowAuthoringPath } : {}),
+    ...(control.workflowAuthoringPath ? { workflowAuthoringPath: control.workflowAuthoringPath, projectPath: identity.projectPath } : {}),
     allowUserIntervention: control.allowUserIntervention,
     allowAgentOrchestrationReconfiguration:
       control.allowAgentOrchestrationReconfiguration === true,
@@ -198,7 +200,7 @@ export function agentEnvironment(
   if (fixedToken) environment[FIXED_MCP_TOKEN_ENV_VAR] = fixedToken;
   if (control) {
     environment.SCIENCEEVOLVE_CONTROL_CONTEXT = serializeInvocationControlContext(control, {
-      projectId,
+      projectId, projectPath,
       agent,
       invocationId,
       kind,

@@ -136,6 +136,8 @@ export interface ResidentScopeOpenRequest {
   spec: InvocationSpec;
   session: SessionRef;
   launchRoute: import("./gateway-route.js").ModelRouteBinding;
+  /** Canonical v3 workspace verified by the host during input staging. */
+  projectWorkspace?: string;
   filesystemAuthority: FilesystemAuthority;
   mcpRows: readonly ResidentMcpRow[];
   /** Facade-captured credential used only for fixed-directory MCP indirection. */

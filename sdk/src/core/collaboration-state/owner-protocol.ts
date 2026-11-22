@@ -4,6 +4,7 @@ import { COLLABORATION_STATE_SCHEMA_VERSION, type WriterLeaseToken } from "./con
 import { CollaborationStateError } from "./errors.js";
 import { initializeCollaborationStateSchema } from "./schema.js";
 import { decodeWriterOwnerBinding, type WriterOwner } from "./writer-owner.js";
+import { installWorkspaceDeliverySchema } from "./workspace-delivery-schema.js";
 
 type OwnerIdentity = Omit<WriterLeaseToken, "epoch">;
 function invalid(message: string): never { throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", message); }
@@ -39,9 +40,9 @@ function token(row: Record<string, unknown>): WriterLeaseToken {
     if (typeof row[key] !== "string" || !(row[key] as string).trim()) invalid(`Missing writer ${key}`);
   return { serviceId: row.service_id as string, instanceId: row.instance_id as string, hostId: row.host_id as string, epoch };
 }
-function persistedOwner(database: DatabaseSync) {
+function persistedOwner(database: DatabaseSync, version: number = COLLABORATION_STATE_SCHEMA_VERSION) {
   const meta = database.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton=1").get();
-  if (meta?.schema_version !== COLLABORATION_STATE_SCHEMA_VERSION) invalid("Writer protocol schema does not match this runtime");
+  if (meta?.schema_version !== version) invalid("Writer protocol schema does not match this runtime");
   const row = database.prepare("SELECT * FROM writer_service_owner WHERE singleton=1").get();
   if (!row || row.protocol !== "lifecycle-lock-v1" || typeof row.identity_json !== "string") invalid("Writer ownership metadata is missing or invalid");
   return { lease: token(row), binding: decodeWriterOwnerBinding(JSON.parse(row.identity_json)), identityJson: row.identity_json };
@@ -77,12 +78,20 @@ function transition(database: DatabaseSync, owner: WriterOwner, identity: OwnerI
   database.prepare("INSERT INTO writer_service_owner VALUES(1,'lifecycle-lock-v1',?,?,?,?,?,?)")
     .run(identity.serviceId, identity.instanceId, identity.hostId, epoch, nowMs, JSON.stringify(owner.binding()));
   if (database.prepare("PRAGMA foreign_key_check").all().length) invalid("Writer protocol migration left invalid foreign keys");
+  installWorkspaceDeliverySchema(database);
   database.prepare("UPDATE collaboration_state_meta SET schema_version=? WHERE singleton=1").run(COLLABORATION_STATE_SCHEMA_VERSION);
   return { ...identity, epoch };
 }
+function formatTransaction<T>(database: DatabaseSync, owner: WriterOwner, work: () => T): T {
+  const foreignKeys = database.prepare("PRAGMA foreign_keys").get()?.foreign_keys;
+  const legacyRename = database.prepare("PRAGMA legacy_alter_table").get()?.legacy_alter_table;
+  database.exec("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON");
+  try { return transaction(database, owner, work); }
+  finally { database.exec(`PRAGMA legacy_alter_table=${legacyRename ? 1 : 0}; PRAGMA foreign_keys=${foreignKeys ? 1 : 0}`); }
+}
 export function initializeOwnerDatabase(database: DatabaseSync, owner: WriterOwner, identity: OwnerIdentity, nowMs: number): WriterLeaseToken {
   owner.claimAcquisition(database);
-  return transaction(database, owner, () => {
+  return formatTransaction(database, owner, () => {
     if (database.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().length)
       invalid("A new writer database must have no existing schema");
     initializeCollaborationStateSchema(database);
@@ -136,13 +145,24 @@ export function bindRestoredOwner(database: DatabaseSync, owner: WriterOwner, id
 export function upgradeOwnerProtocol(database: DatabaseSync, owner: WriterOwner, identity: OwnerIdentity, nowMs: number): WriterLeaseToken {
   owner.claimAcquisition(database);
   const meta = database.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton=1").get();
+  if (meta?.schema_version === 30) return formatTransaction(database, owner, () => {
+    owner.assertConnection(database);
+    const prior = persistedOwner(database, 30);
+    if (!isDeepStrictEqual(prior.binding, owner.binding())) invalid("Offline upgrade requires the original writer lock");
+    assertHost(prior.lease.hostId, identity.hostId);
+    const epoch = nextEpoch(prior.lease.epoch);
+    installWorkspaceDeliverySchema(database);
+    database.prepare("UPDATE writer_service_owner SET service_id=?,instance_id=?,epoch=?,acquired_at_ms=? WHERE singleton=1")
+      .run(identity.serviceId, identity.instanceId, epoch, nowMs);
+    database.prepare("UPDATE collaboration_state_meta SET schema_version=? WHERE singleton=1").run(COLLABORATION_STATE_SCHEMA_VERSION);
+    return assertOwnerProtocol(database, owner, { ...identity, epoch });
+  });
   if (!meta || typeof meta.schema_version !== "number" || !Number.isSafeInteger(meta.schema_version) || meta.schema_version < 1 || meta.schema_version > 29)
     invalid("Offline writer upgrade requires a supported schema 1–29");
   const row = database.prepare("SELECT * FROM writer_service_lease WHERE singleton=1").get();
   if (!row) invalid("Offline writer upgrade requires the original writer identity");
   const prior = token(row); assertHost(prior.hostId, identity.hostId);
   // Existing research migrations retain their individual atomic checkpoints.
-  // Failure leaves a supported intermediate legacy schema, never a fake v30.
   initializeCollaborationStateSchema(database, { writerLease: prior, offlineOwner: owner });
-  return transaction(database, owner, () => transition(database, owner, identity, nextEpoch(prior.epoch), nowMs));
+  return formatTransaction(database, owner, () => transition(database, owner, identity, nextEpoch(prior.epoch), nowMs));
 }

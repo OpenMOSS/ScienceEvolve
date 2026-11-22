@@ -1,3 +1,4 @@
+import { gitDeliveryRef } from "./collaboration-git/contracts.js";
 import { createHash } from "node:crypto";
 import { readAgentGitOperation } from "./agent-git-operation-query.js";
 import type { AgentGitDeliveryStatus } from "./agent-git-delivery.js";
@@ -114,7 +115,7 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
     if (action.mode !== "preview" && action.mode !== "status") {
       if (!input.recordRequest) throw new Error("Revert requires the original Agent request journal");
       await input.recordRequest({ operationId: attemptId, projectId: envelope.projectId, executionId: execution.id,
-        ownershipEpoch: execution.ownershipEpoch, executionBranch: execution.executionBranch, integrationTarget: base,
+        ownershipEpoch: execution.ownershipEpoch, executionBranch: gitDeliveryRef(execution.executionBranch), integrationTarget: base,
         repository: { owner: repository.owner, name: repository.name }, agentId: envelope.agent, invocationId: envelope.invocationId,
         callId: envelope.callId, requestedAt: envelope.receivedAt, action, expectedHead: action.expectedHead });
     }
@@ -147,7 +148,7 @@ async function executeAgentGitToolRequest(input: AgentGitToolInput,
   }
   const recordRequest = async (id: string, action: AgentGitOperationRequest["action"], expectedHead?: string) => {
     await input.recordRequest?.({ operationId: id, projectId: envelope.projectId, executionId: execution.id,
-      ownershipEpoch: execution.ownershipEpoch, executionBranch: execution.executionBranch, integrationTarget: base,
+      ownershipEpoch: execution.ownershipEpoch, executionBranch: gitDeliveryRef(execution.executionBranch), integrationTarget: base,
       repository: { owner: repository.owner, name: repository.name }, agentId: envelope.agent,
       invocationId: envelope.invocationId, callId: envelope.callId, requestedAt: envelope.receivedAt, action,
       ...(expectedHead ? { expectedHead } : {}) });

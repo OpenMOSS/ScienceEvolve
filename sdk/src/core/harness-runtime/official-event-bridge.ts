@@ -82,8 +82,8 @@ export interface OfficialEventBridgeOptions {
   onEvent: (event: HarnessEvent) => Promise<void> | void;
   /** Receives the redacted, unabridged terminal Assistant body for handoff storage. */
   onFullAssistantMessage?: (message: string) => Promise<void> | void;
-  /** Receives the same official user event with its complete redacted body.
-   * This private transport observation does not enlarge the display event. */
+  /** Receives the redacted native user input, including user messages embedded
+   * in a successful tool result whose public preview is bounded. */
   onNativeUserInput?: (event: HarnessEvent) => Promise<void> | void;
   /** Retained for Adapter API compatibility; unmapped frames are not activity. */
   onActivity?: (activity: AgentActivitySignal) => void;
@@ -96,7 +96,7 @@ export interface OfficialEventBridgeOptions {
 }
 
 export type HarnessEventDraft = Omit<HarnessEvent,
-  "schemaVersion" | "eventId" | "seq" | "timestamp" | "invocationId" | "harnessId" | "phase">;
+  "schemaVersion" | "eventId" | "seq" | "timestamp" | "invocationId" | "harnessId" | "phase"> & { nativeUserNotice?: string };
 
 /** Adapter-owned shallow mapping from one official native event envelope. */
 export type OfficialEventMapper = (
@@ -171,7 +171,8 @@ export class OfficialEventBridge {
         if (rawDraft.kind === "assistant.message" && typeof rawDraft.message === "string") {
           await this.options.onFullAssistantMessage?.(safeEventText(rawDraft.message));
         }
-        let draft = sanitizeDraft(rawDraft);
+        const { nativeUserNotice, ...publicDraft } = rawDraft;
+        let draft = sanitizeDraft(publicDraft);
         const semanticKey = terminalSemanticKey(draft);
         if (semanticKey && this.seenTerminalEvents.has(semanticKey)) {
           const tool = draft.tool;
@@ -201,6 +202,8 @@ export class OfficialEventBridge {
         try {
           if (event.kind === "user.message" && typeof rawDraft.message === "string") {
             await this.options.onNativeUserInput?.({ ...event, message: safeEventText(rawDraft.message) });
+          } else if (event.kind === "tool.completed" && event.tool && !event.tool.isError && nativeUserNotice) {
+            await this.options.onNativeUserInput?.({ ...event, tool: { ...event.tool, outputPreview: safeEventText(nativeUserNotice), truncated: false } });
           }
           await this.options.onEvent(event);
         } catch (error) {
@@ -345,6 +348,17 @@ export function normalizedUsage(
   const totalTokens = numberValue(usage.total_tokens ?? usage.totalTokens) ?? inputTokens + outputTokens;
   if (inputTokens === 0 && cachedInputTokens === 0 && outputTokens === 0 && totalTokens === 0) return undefined;
   return { protocol, model: eventString(usage.model) ?? "unknown", inputTokens, cachedInputTokens, outputTokens, totalTokens };
+}
+
+/** Preserve only the appended user-message block for receipt matching. The
+ * original tool output and the public trace keep their normal display bounds. */
+export function nativeUserNoticeFromResult(result: unknown): { nativeUserNotice?: string } {
+  const envelope = eventRecord(result);
+  if (envelope?.isError === true || envelope?.truncated === true) return {};
+  const content = Array.isArray(result) ? result : envelope?.content;
+  if (!Array.isArray(content)) return {};
+  const block = content.find(value => value?.type === "text" && typeof value.text === "string" && value.text.startsWith("User message chat_"));
+  return block ? { nativeUserNotice: block.text } : {};
 }
 
 export function boundedPreview(value: unknown): { text: string; truncated: boolean } {

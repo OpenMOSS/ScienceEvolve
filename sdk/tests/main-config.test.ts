@@ -141,10 +141,12 @@ describe("main workflow config uses main's actual contracts", () => {
     expect(Object.values(bound.agents).every((agent) => agent.harness === "pi")).toBe(true);
     expect(bound.orchestration).toEqual(config.orchestration);
   });
-  it("refuses Git-off groups and v3 even if there are no groups", () => {
-    expect(() => validateMainWorkflowConfig({ ...grouped(), git: { enabled: false } })).toThrow(/协作组要求启用 Git 机制/);
-    const config = validateMainWorkflowConfig({ git: { enabled: true } });
-    expect(() => validateMainWorkflowConfig({ ...config, git: { enabled: false } })).toThrow(/v3 workflow/);
+  it("preserves the same scoped graph with Git on or off, including a group-free v3 graph", () => {
+    for (const config of [grouped(), validateMainWorkflowConfig({ git: { enabled: true } })]) {
+      const off = validateMainWorkflowConfig({ ...config, git: { enabled: false } });
+      expect(off.git.enabled).toBe(false);
+      expect(off.orchestration).toEqual(validateMainWorkflowConfig({ ...config, git: { enabled: true } }).orchestration);
+    }
   });
   it.each(["gatewayId", "gatewaySnapshot", "gatewaySource", "apiKey", "baseUrl"])("rejects embedded deployment field %s", (key) => {
     expect(() => validateMainWorkflowConfig({ agents: { main: { [key]: "must-not-use" } } })).toThrow(/do not belong/);

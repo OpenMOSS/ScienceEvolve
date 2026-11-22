@@ -1,4 +1,5 @@
 import type { ActiveAgentExecution, ProjectState } from "./types.js";
+import type { WorkflowConfigurationVersion } from "./workflow-adjustments.js";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync, promises as fs } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { projectStateDigest } from "./project-state.js";
@@ -12,7 +13,7 @@ export type ProjectStateDocumentName = "project.checkpoint" | "sii.ledger" | "se
 export interface ProjectStateDomain {
   projectId: string;
   protocol: "project-state-v1";
-  scheduler: "git" | "serial";
+  scheduler: "git" | "scoped" | "serial";
   createdAt: string;
 }
 export interface ProjectStateDocument {
@@ -30,7 +31,7 @@ export interface ProjectStateDocumentStore {
   domain(projectId: string): ProjectStateDomain | undefined | Promise<ProjectStateDomain | undefined>;
   read(projectId: string, name: ProjectStateDocumentName): ProjectStateDocument | undefined | Promise<ProjectStateDocument | undefined>;
   write(projectId: string, name: ProjectStateDocumentName, value: unknown, expectedVersion: string,
-    publishView?: (document: ProjectStateDocument) => void): ProjectStateDocument | Promise<ProjectStateDocument>;
+    publishView?: (document: ProjectStateDocument) => void, expectedWorkflowVersion?: WorkflowConfigurationVersion): ProjectStateDocument | Promise<ProjectStateDocument>;
 }
 
 /** Apply only this writer's changes to the authoritative checkpoint. A stale
@@ -185,7 +186,7 @@ export function projectStateCheckpointProjection(document: ProjectStateDocument,
   // Sessions, private bytes and exact document CAS remain available.
   const collaborationOwned = new Set<string>(["status", "phase", "currentAgent", "activeInvocationId"]);
   const lifecycle = Object.fromEntries(fields.filter(k => state[k] !== undefined &&
-    (scheduler !== "git" || !collaborationOwned.has(k))).map(k => [k, structuredClone(state[k])])) as Partial<ProjectState>;
+    (scheduler === "serial" || !collaborationOwned.has(k))).map(k => [k, structuredClone(state[k])])) as Partial<ProjectState>;
   return projectStatePublicValue({ version: document.version, revision: document.revision, lifecycle,
     ...(state.activeAgentExecution ? { activeAgentExecution: structuredClone(state.activeAgentExecution) } : {}) }) as ProjectStateCheckpointProjection;
 }

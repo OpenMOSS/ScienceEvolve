@@ -39,7 +39,7 @@ it("holds ownership across elapsed old TTL without updating the owner row, then 
     expect(() => CollaborationStateDatabase.open({ ...f.options, instanceId: "competitor" })).toThrow(expect.objectContaining({ code: "WRITER_LEASE_HELD" }));
     f.database.appendEvent({ projectId: "project", type: "still-owned", payload: {}, requestId: "once" });
     expect(sql.prepare("SELECT * FROM writer_service_owner").get()).toEqual(before);
-    expect(f.database.verifyHealth()).toMatchObject({ schemaVersion: 30, journalMode: "delete", synchronous: "full" });
+    expect(f.database.verifyHealth()).toMatchObject({ schemaVersion: 31, journalMode: "delete", synchronous: "full" });
     const old = f.database.writerLease(); f.database.close();
     const next = CollaborationStateDatabase.open({ ...f.options, instanceId: "next" });
     try {
@@ -195,6 +195,24 @@ it("keeps lifecycle ownership during a business transaction crossing the old dea
   raw.exec("UPDATE writer_service_owner SET epoch=epoch+1");
   expect(() => f.database.appendEvent({ projectId: "project", type: "late", payload: {} })).toThrow(expect.objectContaining({ code: "WRITER_LEASE_STALE" }));
   expect(f.database.eventsAfter("project")).toEqual(before);
+});
+
+it("preserves the writer and event cursor across a real SQLITE_BUSY, then commits the original request once", async () => {
+  const f = await fixture(), holder = new DatabaseSync(f.databasePath);
+  const writer = Reflect.get(f.database, "database") as DatabaseSync;
+  writer.exec("PRAGMA busy_timeout=5");
+  const owner = f.database.writerLease(), events = f.database.eventsAfter("project");
+  const request = { projectId: "project", requestId: "same-after-busy", type: "test.saved", payload: {} };
+  try {
+    holder.exec("BEGIN IMMEDIATE");
+    expect(() => f.database.appendEvent(request)).toThrow(expect.objectContaining({ errcode: 5 }));
+    expect(f.database.eventsAfter("project")).toEqual(events);
+    expect(f.database.writerLease()).toEqual(owner);
+    holder.exec("ROLLBACK");
+    expect(f.database.appendEvent(request).replay).toBe(false);
+    expect(f.database.appendEvent(request).replay).toBe(true);
+    expect(f.database.eventsAfter("project").filter(row => row.requestId === request.requestId)).toHaveLength(1);
+  } finally { holder.close(); }
 });
 
 it("does not roll back another transaction when BEGIN fails and retains actual SQL errors", async () => {

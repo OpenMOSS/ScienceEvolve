@@ -73,10 +73,7 @@ export function validateMainWorkflowConfig(input: unknown, options: MainWorkflow
     orchestration: source.orchestration, git: source.git,
     skillDefinitions: source.skillDefinitions, mcpDefinitions: source.mcpDefinitions
   } });
-  if (parsed.orchestration.schemaVersion === 3 && !parsed.git.enabled) {
-    throw new Error("v3 workflow requires git.enabled: true; it must not fall back to the legacy scheduler");
-  }
-  const orchestration = parsed.git.enabled
+  const orchestration = parsed.git.enabled || parsed.orchestration.collaborations.length > 0
     ? normalizeNewGitOrchestration(parsed.orchestration) : parsed.orchestration;
   const agents = mergeAgentConfigs(parsed.agents, orchestration);
   validateProjectSkillReferences(agents, parsed.skillDefinitions ?? {});

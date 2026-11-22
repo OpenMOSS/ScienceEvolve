@@ -93,6 +93,7 @@ import {
 import {
   prepareInvocationInputs,
   prepareProjectUserInputsPath,
+  isMainAssistanceTurn,
   validateStagedInvocationInputs
 } from "./invocation-inputs.js";
 import { InvocationRecoveryController } from "./invocation-recovery.js";
@@ -310,6 +311,7 @@ function adapterVisibleRequest(
   delete adapterSafeRequest.nativeInputNotices;
   delete adapterSafeRequest.onDurableSessionStarted;
   delete adapterSafeRequest.onControlResult;
+  delete adapterSafeRequest.onReplyToUser;
   delete adapterSafeRequest.onMainAssistanceRequest;
   delete adapterSafeRequest.onPendingMainAssistance;
   delete adapterSafeRequest.onMainAssistanceDeliveryFailed;
@@ -518,7 +520,8 @@ function selectedNatureFigureConfig(
 
 async function validateLeaderResidentInputs(
   request: AgentRunRequest,
-  staged: InvocationSpec["inputs"] | undefined
+  staged: InvocationSpec["inputs"] | undefined,
+  resolveWorkspace?: HarnessRuntimeOptions["resolveProjectWorkspace"]
 ): Promise<InvocationSpec["inputs"]> {
   if (!staged) {
     throw new HarnessRuntimeError(
@@ -551,9 +554,9 @@ async function validateLeaderResidentInputs(
     inboxPath: request.inboxPath,
     memoryPath: staged.memoryPath,
     runtimePath: request.runtimePath,
-    ...(request.project.orchestration?.schemaVersion === 3 ? { fixedAgentId: request.agent } : {}),
-    ...(request.agent === "main" && request.onMainAssistanceRequest && request.executionContext?.role === "leader" &&
-      request.executionContext.routeScopeId === `main-assistance-${request.project.id}` ? { mainAssistance: true } : {}),
+    ...(request.project.orchestration?.schemaVersion === 3 ? { fixedAgentId: request.agent,
+      ...(!request.project.git?.enabled ? { projectWorkspace: await resolveWorkspace?.(request.project.id) ?? path.join(request.projectPath, "workspaces") } : {}) } : {}),
+    ...((request.onMainAssistanceRequest || request.onReplyToUser) && isMainAssistanceTurn(request) ? { mainAssistance: true } : {}),
     ...(staged.workflowAuthoringPath ? { workflowAuthoringPath: staged.workflowAuthoringPath,
       ...(staged.workflowCurrentPath ? { workflowCurrentPath: staged.workflowCurrentPath } : {}),
       workflowAuthoringInvocationId: staged.workflowAuthoringInvocationId } : {})
@@ -1603,7 +1606,10 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       invocationId: request.invocationId,
       mapEvent,
       onActivity: request.onModelActivity,
-      onNativeUserInput: event => { nativeUserMessage = event.message; },
+      onNativeUserInput: async event => {
+        if (event.kind === "tool.completed") await request.onNativeUserInput?.(event as unknown as Record<string, unknown>);
+        else nativeUserMessage = event.message;
+      },
       onEvent: event => {
         const message = nativeUserMessage;
         nativeUserMessage = undefined;
@@ -1730,7 +1736,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     }
 
     const stagedInputs = context.role === "leader"
-      ? await validateLeaderResidentInputs(request, input.inputs)
+      ? await validateLeaderResidentInputs(request, input.inputs, this.options.resolveProjectWorkspace)
       : await prepareInvocationInputs(request, this.options.resolveProjectWorkspace);
     const inputs = await this.prepareAgentContext(request, stagedInputs);
     await fs.mkdir(input.executionRuntimePath, { recursive: true, mode: 0o700 });
@@ -1950,6 +1956,8 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       session,
       launchRoute: { ...input.launchRoute },
       filesystemAuthority,
+      ...(request.project.orchestration?.schemaVersion === 3 && request.project.git?.enabled === false
+        ? { projectWorkspace: inputs.workspacePath } : {}),
       mcpRows,
       ...(facadeFixedMcpToken ? { fixedMcpToken: facadeFixedMcpToken } : {}),
       ...(filesystemMcp ? { filesystemMcp } : {}),
@@ -2338,7 +2346,9 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       }
       inputs = { ...inputs, additionalContextIndexes: views };
     }
-    const prompt = fitContextInjection(compileWorkflowPrompt(request, inputs, policy, {
+    const promptRequest = request.terminalControlRepair && !preparedSession.resumed ? { ...request, resumeThreadId: undefined } : request;
+    const shortMainCorrection = request.kind === "main" && Boolean(request.terminalControlRepair) && preparedSession.resumed;
+    const prompt = fitContextInjection(compileWorkflowPrompt(promptRequest, inputs, policy, {
       inlineInbox,
       ...(preparedSession.replaced
         ? {
@@ -2578,6 +2588,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
     let protocolRecoveryAttempted = false;
     let resumeRecoveryAttempted = false;
     let contextRecoveryAttempted = false;
+    let handoffRepairAttempted = false;
     const runCurrentAdapter = async (): Promise<AgentRunResult> => {
       try {
         const result = await this.runAdapter(
@@ -2597,7 +2608,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
             if (observedWorkflowSession) await request.onWorkflowAdjustmentInputReceived(event as unknown as Record<string, unknown>, structuredClone(observedWorkflowSession), workflowInputId);
             else pendingWorkflowInput = { event, inputId: workflowInputId };
           },
-          prepareNativeInput
+          handoffRepairAttempted || shortMainCorrection ? undefined : prepareNativeInput
         );
         const failure = route.getFailure();
         if (failure) throw proxyFailureError(failure, harnessId);
@@ -2624,11 +2635,15 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
       let result: AgentRunResult;
       while (true) {
         try {
-          result = await runCurrentAdapter();
+          result = validateAdapterResult(await runCurrentAdapter(), request, adapter.descriptor);
           break;
         } catch (error) {
           await eventIngress.drain(false);
           if (signal.aborted) throw error;
+          const emptyHandoff = error instanceof HarnessRuntimeError && error.code === "HARNESS_CONTRACT_VIOLATION" &&
+            (error.details.reason === "missing-natural-language-handoff" || error.details.reason === "handoff is empty");
+          // A continuation requires the native identity confirmed by this adapter attempt.
+          if (handoffRepairAttempted || (emptyHandoff && !observedWorkflowSession?.durable)) throw error;
           const protocolFailure = isProtocolToolArgumentsFailure(error);
           const contextFailure = error instanceof HarnessRuntimeError &&
             error.code === "MODEL_CONTEXT_LIMIT_EXCEEDED";
@@ -2655,20 +2670,21 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
           if (resumeRecoveryAttempted && (turnInactivityFailure || isSessionResumeFailure(error))) {
             throw sessionRecoveryExhaustedError(error, harnessId);
           }
-          if (!protocolFailure && !sessionResumeFailure && !contextFailure) throw error;
+          if (!emptyHandoff && !protocolFailure && !sessionResumeFailure && !contextFailure) throw error;
           const retainSession = spec.session!.durable;
           // Receipts belong to the invocation, not the process. A resumed
           // Session must retain successful effects and the decision lock.
           if (!retainSession && request.control) {
             await fs.rm(request.control.stagingPath, { force: true });
           }
+          if (emptyHandoff) handoffRepairAttempted = true;
           if (protocolFailure) protocolRecoveryAttempted = true;
           if (sessionResumeFailure) resumeRecoveryAttempted = true;
           if (contextFailure) contextRecoveryAttempted = true;
           await eventIngress.resetAttempt();
           // Restore the server-authoritative Inbox after the failed process
           // exits, before submitting another input to the original Session.
-          inputs = await this.prepareAgentContext(request, await prepareInvocationInputs(request, this.options.resolveProjectWorkspace));
+          if (!emptyHandoff) inputs = await this.prepareAgentContext(request, await prepareInvocationInputs(request, this.options.resolveProjectWorkspace));
           const recovered = retainSession
             ? this.sessions.resume(adapter, observedWorkflowSession ?? spec.session!)
             : await this.sessions.replace(
@@ -2676,7 +2692,7 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
               error instanceof Error ? error.message : "Native invocation failed"
             );
           const recoveryStrategy = retainSession ? "native-session-resume" : "ephemeral-session-replacement";
-          await onTrace("status", retainSession
+          await onTrace("status", emptyHandoff ? "Requesting the missing handoff in the confirmed native Session" : retainSession
             ? protocolFailure
               ? "Invalid tool arguments detected; retrying once in the original Session"
               : "Native session recovery retrying the original Session"
@@ -2714,7 +2730,9 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
             inputs,
             session: recovered.session,
             durableSession: recovered.session.durable,
-            prompt: compileWorkflowPrompt(request, inputs, policy, { inlineInbox, recoveryNote })
+            prompt: emptyHandoff
+              ? "上一轮没有交回结果说明。请根据刚才的工具结果，简短说明已完成什么、还有什么待做。"
+              : compileWorkflowPrompt(request, inputs, policy, { inlineInbox, recoveryNote })
           };
           observedWorkflowSession = retainSession ? recovered.session : undefined;
           pendingWorkflowInput = undefined;
@@ -2765,7 +2783,6 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
         }
       }
       await eventIngress.drain(true);
-      result = validateAdapterResult(result, request, adapter.descriptor);
       const finalSession: SessionRef = {
         ...spec.session!,
         nativeId: result.threadId || spec.session!.nativeId

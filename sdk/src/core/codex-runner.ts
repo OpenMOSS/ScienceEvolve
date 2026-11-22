@@ -787,11 +787,11 @@ export class CodexRunner {
           )
         );
       }
-      if (!lastAgentMessage) {
+      if (!lastAgentMessage?.trim()) {
         throw new HarnessRuntimeError(
           "HARNESS_CONTRACT_VIOLATION",
           "Codex completed without a final agent message",
-          { harnessId: harness },
+          { harnessId: harness, reason: "missing-natural-language-handoff" },
           { source: "adapter" }
         );
       }

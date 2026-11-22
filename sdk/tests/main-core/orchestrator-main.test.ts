@@ -21,6 +21,7 @@ import {
 } from "../../src/core/orchestrator.js";
 import { SkillCatalog } from "../../src/core/skill-catalog.js";
 import { ProjectStorage } from "../../src/core/storage.js";
+import { projectListSummary } from "../../src/core/project-list-summary.js";
 import { MAIN_AGENT_ORCHESTRATION_CURRENT_FILE } from "../../src/core/main-workflow-files.js";
 import { ControlActionService, startControlActionBridge } from "../../src/core/orchestration-control-bridge.js";
 import { defaultDecisionPlan } from "../../src/core/agent-orchestration.js";
@@ -40,6 +41,7 @@ import type {
   MainDecision,
   ProjectState,
   ProjectView,
+  TimelineEvent,
   TraceSink,
   WorkerResult
 } from "../../src/core/types.js";
@@ -167,6 +169,162 @@ function purposeOnlyHarness(
 }
 
 describe("public Main orchestration state machine", () => {
+  it.each(["question", "apply", "disabled", "stale", "concurrent", "active"] as const)("answers user chat in the original Main session while the serial Worker keeps its invocation (%s)", async mode => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-running-chat-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub());
+    const session = { schemaVersion: 1 as const, harnessId: "codex", adapterVersion: "1", generation: 0,
+      nativeId: "original-main", durable: true, createdAt: "2026-11-16T00:00:00Z" };
+    let release!: () => void, start!: () => void, mainTurns = 0;
+    const started = new Promise<void>(resolve => { start = resolve; });
+    const worker = new Promise<void>(resolve => { release = resolve; });
+    let duringValidation: (() => Promise<void>) | undefined;
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, validateWorkflowConfiguration: async (state, proposal) => {
+      await orchestrator.prepareWorkflowConfiguration(state, proposal);
+      const change = duringValidation;
+      duringValidation = undefined;
+      await change?.();
+    }, residentLauncher: { open: async input => {
+      const request = input.request;
+      expect(request.agent).toBe("main");
+      expect(request.resumeThreadId).toBe(session.nativeId);
+      expect(request.onMainAssistanceRequest).toBeUndefined();
+      return { pause: async () => {}, resume: async () => {}, close: async () => {}, submit: async turn => {
+        await validateStagedInvocationInputs({ ...input.inputs!, projectId: request.project.id, invocationId: request.invocationId, mainAssistance: true });
+        await request.onDurableSessionStarted!(session, session.nativeId);
+        const id = turn.prompt.match(/User message (chat_\w+)/)![1];
+        await expect(request.onReplyToUser!(id, "unconfirmed", "early")).rejects.toThrow(/native receipt/);
+        await expect(request.onProjectStateRequest!({ operation: "list" })).rejects.toThrow(/active Main authority/);
+        const { control, revalidate } = await input.controlAuthorityFactory!({ request, turn });
+        const service = new ControlActionService({ projectId: request.project.id, agent: "main", invocationId: turn.invocationId,
+          stateVersion: control.stateVersion, capability: control.capability, capabilityHash: control.capabilityHash, stagingPath: control.stagingPath, revalidate });
+        const apply = () => service.stageWithResult(control.capability, "edit-next", { tool: "apply_workflow", path: "workflow.json", rationale: "Adjust the next decision" });
+        if (mode === "disabled") {
+          expect(control.workflowAuthoringPath).toBeUndefined();
+          await expect(apply()).rejects.toThrow(/does not authorize/);
+        } else if (mode !== "question") {
+          expect(control.allowWorkflowReconfiguration).toBe(true);
+          await expect(apply()).rejects.toThrow(/native receipt/);
+        }
+        await request.onNativeUserInput!({ kind: "user.message", eventId: "native-user-input", invocationId: request.invocationId,
+          harnessId: session.harnessId, message: turn.prompt }, session);
+        if (mode !== "disabled" && mode !== "question") {
+          const file = input.inputs!.workflowAuthoringPath!;
+          const draft = JSON.parse(await fs.readFile(file, "utf8"));
+          draft.orchestration.decisionPlans[mode === "active" ? "worker" : "main"] = "Check the archived evidence before choosing the next step.";
+          const publishUserEdit = async () => {
+            const { current } = await orchestrator.getWorkflowAdjustments(request.project.id);
+            const proposal = structuredClone(current.snapshot);
+            proposal.orchestration.resultFormat.custom = "Save the current result.";
+            const update = await orchestrator.submitWorkflowAdjustment(request.project.id, {
+              projectId: request.project.id, requestId: "newer-user-edit", base: current.version, proposal });
+            expect(update.record.status).toBe("applied");
+          };
+          if (mode === "stale") await publishUserEdit();
+          if (mode === "concurrent") duringValidation = publishUserEdit;
+          await fs.writeFile(file, JSON.stringify(draft));
+          if (mode === "stale" || mode === "concurrent") await expect(apply()).rejects.toThrow(/stale|配置已发生修改/);
+          else {
+            const receipt = await apply();
+            expect(receipt.result).toMatchObject({ status: mode === "active" ? "pending" : "applied" });
+            expect((await apply()).result).toEqual(receipt.result);
+          }
+        }
+        const object = { kind: "project", id: request.project.id };
+        const current = await request.onProjectStateRequest!({ operation: "get", object }) as { version: string };
+        await request.onProjectStateRequest!({ operation: "patch", object, expectedVersion: current.version,
+          set: { progress: { step: "collecting" } }, reason: "User asked to record the current step", callId: "record-step" });
+        expect(await request.onProjectStateRequest!({ operation: "get", object })).toMatchObject({ extensions: { progress: { step: "collecting" } } });
+        return { handoff: "Worker is still collecting results." };
+      } };
+    } } });
+    const runner = new ScriptedRunner(async request => {
+      if (request.agent === "main") {
+        if (++mainTurns === 1) {
+          await request.onDurableSessionStarted!(session, session.nativeId);
+          return mainResult(request, decision("worker", "Collect results"), session.nativeId, true, false);
+        }
+        return mainResult(request, decision("finish", "Checked worker results"), session.nativeId, true, false);
+      }
+      start(); await worker;
+      return { handoff: workerResult("worker").markdown };
+    });
+    const orchestrator = new Orchestrator(storage, new SkillCatalog([builtinSkillRoot]), runner,
+      { retryBaseMs: 1, retryMaxMs: 1, agentConcurrency: 2 }, undefined, coordinator);
+    liveOrchestrators.push(orchestrator); await orchestrator.initialize();
+    const graph = twoAgentOrchestration({ input: "main", termination: "worker", workerRoutes: [{ kind: "strong", target: "finish" }] });
+    graph.allowMainReconfiguration = mode !== "disabled";
+    const project = await orchestrator.createProject(projectInput(graph));
+    try {
+      await started;
+      expect(runner.calls.map(call => call.agent)).toEqual(["main", "worker"]);
+      const before = (await orchestrator.getProject(project.id))!;
+      await expect(orchestrator.addProjectUserInput(project.id, "x".repeat(100_001), "chat", "too-long")).rejects.toThrow();
+      await orchestrator.addProjectUserInput(project.id, "What is the current step? Record it in project progress.", "chat", "browser-retry");
+      await vi.waitFor(async () => {
+        const current = await orchestrator.getProject(project.id);
+        expect(current?.mainConversation, JSON.stringify(current?.mainConversation)).toEqual([expect.objectContaining({
+          status: "replied", receivedAt: expect.any(String), reply: "Worker is still collecting results." })]);
+        expect(current).toMatchObject({ status: "running", currentAgent: "worker", activeInvocationId: before.activeInvocationId });
+      });
+      const receipts = (await coordinator.database().workflowAdjustments(project.id)).filter(item => item.source.kind === "main");
+      if (mode === "apply" || mode === "active") {
+        expect(receipts).toHaveLength(1);
+        expect(receipts[0]).toMatchObject({ status: mode === "apply" ? "applied" : "pending", source: { scope: { kind: "conversation" } } });
+      } else expect(receipts).toEqual([]);
+      const accepted = (await coordinator.database().workflowAdjustmentCurrent(project.id)).snapshot.orchestration;
+      expect(accepted.decisionPlans.main).toBe(mode === "apply" ? "Check the archived evidence before choosing the next step." : before.orchestration.decisionPlans.main);
+      expect(accepted.decisionPlans.worker).toBe(before.orchestration.decisionPlans.worker);
+      if (mode === "stale" || mode === "concurrent") expect(accepted.resultFormat.custom).toBe("Save the current result.");
+      expect((await orchestrator.addProjectUserInput(project.id, "What is the current step? Record it in project progress.", "chat", "browser-retry")).mainConversation).toHaveLength(1);
+      await expect(orchestrator.addProjectUserInput(project.id, "Different question", "chat", "browser-retry")).rejects.toThrow(/different content/);
+    } finally { release(); }
+    await orchestrator.waitForIdle(project.id);
+    expect((await orchestrator.getProject(project.id))?.status).toBe("completed");
+    if (mode === "active") expect((await coordinator.database().workflowAdjustments(project.id))[0]?.status).toBe("applied");
+    await expect(orchestrator.addProjectUserInput(project.id, "Continue?", "chat", "new")).rejects.toThrow(/running/);
+    expect(runner.calls.map(call => call.agent)).toEqual(["main", "worker", "main"]);
+  });
+
+  it("delivers queued user chat FIFO inside a busy serial Main without a competing Main turn", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-busy-chat-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub());
+    const open = vi.fn(async () => { throw new Error("Competing Main launched"); });
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, residentLauncher: { open } });
+    const session = { schemaVersion: 1 as const, harnessId: "codex", adapterVersion: "1", generation: 0,
+      nativeId: "busy-main", durable: true, createdAt: "2026-11-16T00:00:00Z" };
+    let active: AgentRunRequest | undefined, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const runner = new ScriptedRunner(async request => {
+      await request.onDurableSessionStarted!(session, session.nativeId);
+      active = request; await gate;
+      return mainResult(request, decision("finish", "Task complete"), session.nativeId, true, false);
+    });
+    const orchestrator = new Orchestrator(storage, new SkillCatalog([builtinSkillRoot]), runner,
+      { retryBaseMs: 1, retryMaxMs: 1, agentConcurrency: 2 }, undefined, coordinator);
+    liveOrchestrators.push(orchestrator); await orchestrator.initialize();
+    const project = await orchestrator.createProject(projectInput(mainOnlyOrchestration()));
+    try {
+      await vi.waitFor(() => expect(active).toBeDefined());
+      const first = await orchestrator.addProjectUserInput(project.id, "First question", "chat", "first");
+      const second = await orchestrator.addProjectUserInput(project.id, "Second question", "chat", "second");
+      expect(second.mainConversation?.map(item => item.status)).toEqual(["queued", "queued"]);
+      const request = active!;
+      for (const item of [first.mainConversation![0], second.mainConversation![1]]) {
+        const offer = await request.onPendingMainAssistance!(`tool-${item.id}`, session);
+        expect(offer).toContain(item.message);
+        expect(await request.onPendingMainAssistance!("other-boundary", session)).toBe("");
+        await expect(request.onReplyToUser!(item.id, "answer", "early")).rejects.toThrow(/native receipt/);
+        await request.onOfficialHarnessEvent!({ kind: "tool.completed", eventId: item.id, invocationId: request.invocationId,
+          harnessId: session.harnessId, tool: { outputPreview: JSON.stringify({ content: [{ type: "text", text: offer }] }) } }, session);
+        await request.onReplyToUser!(item.id, `Answer to ${item.message}`, "reply-" + item.id);
+      }
+      expect((await orchestrator.getProject(project.id))?.mainConversation?.map(item => item.reply)).toEqual(["Answer to First question", "Answer to Second question"]);
+      expect(open).not.toHaveBeenCalled();
+    } finally { release(); }
+    await vi.waitFor(async () => { const current = await orchestrator.getProject(project.id); expect(current?.status, JSON.stringify(current?.lastError)).toBe("completed"); });
+    await orchestrator.waitForIdle(project.id);
+  });
+
   it.each(["reply", "failure", "late"] as const)("keeps serial Main assistance separate from the configured Main route (%s)", async outcome => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-serial-assistance-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()); let continued = false, mainCalls = 0;
@@ -259,6 +417,50 @@ describe("public Main orchestration state machine", () => {
     expect(result?.workflowGates?.filter(run => run.evidence)).toHaveLength(1);
     expect(runner.calls.map(call => call.agent)).toEqual(kind === "code" ? ["worker", "review", "main"] : ["review", "worker", "main"]);
     expect(await fs.readFile(runner.calls[1].inboxPath, "utf8")).toContain("Negative feedback remains useful");
+  });
+
+  it("cancels a staged Worker completion before publishing its handoff or starting Main", async () => {
+    let signal: AbortSignal;
+    const { orchestrator, runner } = await harness(async (_request, _index, invocationSignal) => {
+      signal = invocationSignal;
+      return { handoff: workerResult("worker").markdown };
+    });
+    const storage = (orchestrator as unknown as { storage: ProjectStorage }).storage;
+    const append = storage.appendEvent.bind(storage);
+    const published = vi.spyOn(storage.hub, "publish");
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let staged = false;
+    vi.spyOn(storage, "appendEvent").mockImplementation(async (state, draft, beforeCommit) => {
+      const event = await append(state, draft, beforeCommit);
+      if (draft.type === "invocation.completed" && draft.agent === "worker") {
+        staged = true;
+        await gate;
+      }
+      return event;
+    });
+    const project = await orchestrator.createProject(projectInput(twoAgentOrchestration({
+      input: "worker", termination: "main", workerRoutes: [{ target: "main", kind: "strong" }]
+    })));
+    const cancellation = { actor: "deadline-monitor", reason: "arm_timeout" };
+    let cancelling: ReturnType<Orchestrator["cancel"]>;
+    try {
+      await vi.waitFor(() => expect(staged).toBe(true));
+      expect(storage.hasActiveInvocationCommit(project.id)).toBe(true);
+      cancelling = orchestrator.cancel(project.id, cancellation);
+      await vi.waitFor(() => expect(signal.aborted).toBe(true));
+    } finally {
+      release();
+    }
+    await cancelling;
+    await orchestrator.waitForIdle(project.id);
+    const invocationId = runner.calls[0].invocationId;
+    const isDelivery = (event: TimelineEvent) => event.data?.invocationId === invocationId &&
+      (event.type === "invocation.completed" || event.type === "handoff.saved");
+    expect(published.mock.calls.some(([event]) => isDelivery(event))).toBe(false);
+    expect((await storage.readEvents(project.id)).some(isDelivery)).toBe(false);
+    expect(await storage.loadState(project.id)).toMatchObject({ status: "cancelled", cancelledBy: cancellation.actor, cancelReason: cancellation.reason });
+    expect(runner.calls.map(call => call.agent)).toEqual(["worker"]);
   });
 
   it.each([false, true])("workflow continuity: restores the exact later Worker after failed commit rollback and retains a concurrent user Pause (%s)", async userPause => {
@@ -356,6 +558,47 @@ describe("public Main orchestration state machine", () => {
     }
   });
 
+  it.each([false, true])("starts independent listing projections while another project awaits I/O (failure=%s)", async failFirst => {
+    const { orchestrator } = await harness(async request => mainResult(request, decision("finish", "Task complete.")));
+    const first = await orchestrator.createProject({ ...projectInput(mainOnlyOrchestration()), title: "Slow projection" });
+    const second = await orchestrator.createProject({ ...projectInput(mainOnlyOrchestration()), title: "Independent projection" });
+    await Promise.all([orchestrator.waitForIdle(first.id), orchestrator.waitForIdle(second.id)]);
+    const views = orchestrator as unknown as { projectView(state: ProjectState): Promise<ProjectView> };
+    const projectView = views.projectView.bind(orchestrator);
+    let release!: () => void, firstStarted = false, secondStarted = false;
+    const pendingRead = new Promise<void>(resolve => { release = resolve; });
+    const failure = new Error("Original project read failed");
+    const projection = vi.spyOn(views, "projectView").mockImplementation(async state => {
+      if (state.id === first.id) {
+        firstStarted = true;
+        await pendingRead;
+        if (failFirst) throw failure;
+      } else if (state.id === second.id) secondStarted = true;
+      return projectView(state);
+    });
+    let settled = false;
+    const listing = orchestrator.listProjects().then(
+      projects => { settled = true; return { projects }; },
+      error => { settled = true; return { error }; }
+    );
+    try {
+      await vi.waitFor(() => expect(firstStarted).toBe(true), { timeout: 500 });
+      await vi.waitFor(() => expect(secondStarted).toBe(true), { timeout: 500 });
+      expect(settled).toBe(false);
+      release();
+      const result = await listing;
+      if (failFirst) expect(result).toEqual({ error: failure });
+      else expect(result).toEqual({ projects: expect.arrayContaining([
+        expect.objectContaining({ id: first.id, status: "completed" }),
+        expect.objectContaining({ id: second.id, status: "completed" })
+      ]) });
+      projection.mockRestore();
+      expect(await orchestrator.listProjects()).toHaveLength(2);
+    } finally {
+      release(); await listing; projection.mockRestore(); await orchestrator.shutdown();
+    }
+  });
+
   it.each(["failure reporting", "stop settlement"] as const)(
     "owns a detached loop rejection during %s and stops retrying without claiming durable success", async mode => {
       const { orchestrator } = await harness(async request => mainResult(request, decision("finish", "Complete")));
@@ -395,6 +638,43 @@ describe("public Main orchestration state machine", () => {
     }
   );
 
+  it("reads matching serial card and detail progress at each committed revision without loading the full card history", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-card-progress-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub());
+    const coordinator = new CollaborationRuntimeCoordinator({ storage });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const runner = new ScriptedRunner(async request => {
+      await gate;
+      return mainResult(request, decision("finish", "Research complete."));
+    });
+    const orchestrator = new Orchestrator(storage, new SkillCatalog([builtinSkillRoot]), runner,
+      { retryBaseMs: 1, retryMaxMs: 1 }, undefined, coordinator);
+    liveOrchestrators.push(orchestrator);
+    await orchestrator.initialize();
+    const project = await orchestrator.createProject(projectInput(mainOnlyOrchestration()));
+    const compare = async (status: string) => {
+      const detail = (await orchestrator.getProject(project.id))!;
+      expect(detail.status).toBe(status);
+      expect(detail.collaboration?.stateRevision).toEqual(expect.any(Number));
+      const read = vi.spyOn(coordinator, "projectReadModel");
+      try {
+        const card = await orchestrator.getProjectSummary(project.id);
+        expect(card).toEqual(projectListSummary(detail));
+        expect(await orchestrator.listProjectSummaries()).toEqual([card]);
+        expect(read).not.toHaveBeenCalled();
+        return card!.collaboration!.stateRevision;
+      } finally { read.mockRestore(); }
+    };
+    let runningRevision: number;
+    try {
+      await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
+      runningRevision = await compare("running");
+    } finally { release(); }
+    await orchestrator.waitForIdle(project.id);
+    expect(await compare("completed")).toBeGreaterThan(runningRevision);
+  });
+
   it("lists each committed project without requiring independent writers to become idle together", async () => {
     const { orchestrator } = await harness(async request => mainResult(request, decision("finish", "Task complete.")));
     const first = await orchestrator.createProject({ ...projectInput(mainOnlyOrchestration()), title: "First committed project" });
@@ -404,11 +684,11 @@ describe("public Main orchestration state machine", () => {
     let secondReady!: () => void;
     const secondRead = new Promise<void>(resolve => { secondReady = resolve; });
     const views = orchestrator as unknown as {
-      listingProjectView(runtime: { state: ProjectState }): Promise<ProjectView>;
+      readRegisteredProject(runtime: { state: ProjectState }, read: (state: ProjectState) => Promise<ProjectView>): Promise<ProjectView>;
     };
-    const capture = views.listingProjectView.bind(orchestrator);
-    vi.spyOn(views, "listingProjectView").mockImplementation(async runtime => {
-      const project = await capture(runtime);
+    const capture = views.readRegisteredProject.bind(orchestrator);
+    vi.spyOn(views, "readRegisteredProject").mockImplementation(async (...args) => {
+      const project = await capture(...args);
       if (project.id === second.id) secondReady();
       return project;
     });
@@ -469,7 +749,7 @@ describe("public Main orchestration state machine", () => {
       requirement: "Do not run v3 through the flat scheduler.",
       orchestration,
       agents: { main: { skills: [], autoSkills: [] } }
-    })).rejects.toThrow(/要求启用 Git collaboration/);
+    })).rejects.toThrow("组内 Workflow/v3 项目需要协作调度器");
     expect(runner.calls).toHaveLength(0);
     await orchestrator.shutdown();
   });
@@ -3745,7 +4025,7 @@ describe("public Main orchestration state machine", () => {
     await orchestrator.shutdown();
   }, 10_000);
 
-  it("retains the original task for automatic recovery when the evidence-aware repair also omits a terminal action", async () => {
+  it("retains the original task for explicit continuation when its bounded repair also omits a terminal action", async () => {
     const originalHandoff = "Main completed the business work but forgot to commit its decision.";
     const { orchestrator, runner } = await harness(async (request, index) => {
       await publishDurableSession(request, "thread_missing_terminal_twice");
@@ -3763,7 +4043,7 @@ describe("public Main orchestration state machine", () => {
       orchestration: mainOnlyOrchestration(),
       agents: { main: { skills: [], autoSkills: [] } }
     });
-    await waitForRuntimePhase(orchestrator, project.id, "missing-terminal-action");
+    await orchestrator.waitForIdle(project.id);
 
     expect(runner.calls).toHaveLength(2);
     expect(runner.calls[1]).toMatchObject({
@@ -3778,16 +4058,73 @@ describe("public Main orchestration state machine", () => {
       }
     });
     expect(await orchestrator.getProject(project.id)).toMatchObject({
-      status: "retrying",
-      phase: "missing-terminal-action",
+      status: "interrupted",
+      phase: "main-decision-required",
       queuedAgent: "main",
       mainInvocationSeq: 1,
       runCounts: { main: 0 },
       executionCounts: { main: 1 },
       agentSessionIds: { main: "thread_missing_terminal_twice" },
-      latestHandoff: { excerpt: originalHandoff },
-      activeAgentExecution: { agent: "main" }
+      activeAgentExecution: { agent: "main", terminalControlRecovery: { attempts: 1 } }
     });
+    const storage = (orchestrator as unknown as { storage: ProjectStorage }).storage;
+    expect(await storage.readHandoff(project.id, runner.calls[0].invocationId, "main")).toContain(originalHandoff);
+    expect(await fs.readFile(runner.calls[1].terminalControlRepair!.handoffPath!, "utf8")).toBe(originalHandoff);
+    expect((await orchestrator.getProject(project.id)).latestHandoff).toBeUndefined();
+    await orchestrator.shutdown();
+  }, 10_000);
+
+  it("retains a rejected route target for the original Main session and commits the corrected decision once", async () => {
+    let control!: ControlActionService;
+    const { orchestrator, runner } = await harness(async (request, index) => {
+      if (index === 0) {
+        await publishDurableSession(request, "confirmed-route-session");
+        await expect(control.stage(request.control!.capability, "route-invalid",
+          { tool: "route_to_agent", target: "unknown-node", assignment: "check the result" })).rejects.toThrow(/candidate|target/i);
+        return { handoff: "Ready to decide.", threadId: "confirmed-route-session" };
+      }
+      return mainResult(request, decision("finish", "Corrected decision"), "confirmed-route-session");
+    }, { controlBridgeFactory: async (authority, directory) => {
+      control = authority;
+      return startControlActionBridge(authority, directory);
+    } });
+    try {
+      const project = await orchestrator.createProject(projectInput(mainOnlyOrchestration()));
+      await orchestrator.waitForIdle(project.id);
+      expect(runner.calls).toHaveLength(2);
+      expect(runner.calls[1].resumeThreadId).toBe("confirmed-route-session");
+      expect(runner.calls[1].terminalControlRepair?.rejectedAction).toContain("unknown-node");
+      expect((await orchestrator.getProject(project.id))?.status).toBe("completed");
+    } finally { await orchestrator.shutdown(); }
+  });
+
+  it("keeps the cause and error code when Main's terminal-action repair fails", async () => {
+    const credential = "sk-repairfixture123456789";
+    const { orchestrator, runner } = await harness(async (request, index) => {
+      if (index === 0) {
+        await publishDurableSession(request, "thread_repair_failure");
+        return { handoff: "I finished checking the result.", threadId: "thread_repair_failure" };
+      }
+      throw new HarnessRuntimeError("MODEL_PROVIDER_FAILED", "Model provider request failed",
+        { protocolMessage: "Gateway queue unavailable with api_key=" + credential },
+        { source: "gateway", retryable: true });
+    });
+    const project = await orchestrator.createProject(projectInput(mainOnlyOrchestration()));
+    await orchestrator.waitForIdle(project.id);
+    const current = await orchestrator.getProject(project.id);
+    expect(current?.phase).toBe("main-decision-required");
+    const storage = (orchestrator as unknown as { storage: ProjectStorage }).storage;
+    const failure = (await storage.readEvents(project.id)).find(event => event.type === "invocation.failed");
+    expect.soft(failure?.data).toMatchObject({
+      errorType: "MissingMainTerminalActionError", errorCode: "MODEL_PROVIDER_FAILED", errorSource: "gateway"
+    });
+    for (const message of [current?.lastError, failure?.data?.error]) {
+      expect.soft(message).toContain("Main terminal-action repair failed");
+      expect.soft(message).toContain("Gateway queue unavailable");
+      expect.soft(message).not.toContain(credential);
+    }
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[1]?.resumeThreadId).toBe("thread_repair_failure");
     await orchestrator.shutdown();
   }, 10_000);
 

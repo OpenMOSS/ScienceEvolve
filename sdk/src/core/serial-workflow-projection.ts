@@ -6,6 +6,7 @@ import type { ProjectStorage } from "./storage.js";
 import type { ProjectState } from "./types.js";
 import { assertWorkflowGatewaySnapshots, credentialFreeAgentConfiguration, restoreAgentConfiguration, workflowGatewaySnapshotsNeedValidation } from "./scoped-agent-configuration.js";
 import { archiveRemovedWorkflowAgentSessions, removedWorkflowAgentTaskReason } from "./workflow-session-archive.js";
+import { assertWorkflowSessionHarnesses } from "./workflow-session-compatibility.js";
 import { sameWorkflowConfigurationVersion } from "./workflow-adjustments.js";
 
 // A surviving owner can add an original private snapshot while a failed file
@@ -29,12 +30,16 @@ export async function restoreSerialWorkflowConfiguration(database: Collaboration
   const snapshot = () => ({ orchestration: state.orchestration, ...credentialFreeAgentConfiguration({ agents: state.agents,
     skillDefinitions: state.skillDefinitions ?? {}, mcpDefinitions: state.mcpDefinitions ?? {} }) });
   const before = structuredClone(snapshot()), previousRevision = state.workflowRevision, previousAgents = structuredClone(state.agents);
-  const assertBindings = async () => {
+  const assertLocalBindings = () => {
     if (state.git?.enabled || state.orchestration.schemaVersion === 3)
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Serial configuration recovery cannot replace the project's scheduler");
     const reason = removedWorkflowAgentTaskReason(state, current.snapshot.agents);
     if (reason) throw new CollaborationStateError("UNSAFE_CONFIGURATION", reason);
+    assertWorkflowSessionHarnesses(state, current.snapshot.agents);
+  };
+  const assertBindings = async () => {
     await database.assertRetainedWorkflowSessionHarnesses(state.id, current.snapshot.agents, state);
+    assertLocalBindings();
   };
   await assertBindings();
   if ((state.workflowRevision ?? 1) === current.version.revision && isDeepStrictEqual(before, current.snapshot) &&
@@ -68,17 +73,21 @@ export async function restoreSerialWorkflowConfiguration(database: Collaboration
   const installed = structuredClone(installedConfiguration());
   const originalBindings = () => ({ sessions: state.agentSessions, legacyIds: state.agentSessionIds, meta: state.agentSessionMeta });
   const bindings = structuredClone(originalBindings());
+  const assertInstalled = () => {
+    assertLocalBindings();
+    if (!isDeepStrictEqual(originalBindings(), bindings))
+      throw new CollaborationStateError("WORKFLOW_ADJUSTMENT_CONFLICT", "Original Session changed during serial persistence; retain it and retry");
+    if (!isDeepStrictEqual(installedConfiguration(), installed))
+      throw new CollaborationStateError("WORKFLOW_ADJUSTMENT_CONFLICT", "Original configuration changed during serial persistence; retain it and retry");
+    assertWorkflowGatewaySnapshots(state.agents);
+  };
   const assertCurrent = async () => {
     await database.assertWriterLeaseHeld();
     const authority = await database.serialWorkflowAdjustmentCurrent(state.id);
     if (!authority || !sameWorkflowConfigurationVersion(current.version, authority.version))
       throw new CollaborationStateError("WORKFLOW_ADJUSTMENT_CONFLICT", "Workflow authority changed during serial persistence; retry the current formal version");
     await assertBindings();
-    if (!isDeepStrictEqual(originalBindings(), bindings))
-      throw new CollaborationStateError("WORKFLOW_ADJUSTMENT_CONFLICT", "Original Session changed during serial persistence; retain it and retry");
-    if (!isDeepStrictEqual(installedConfiguration(), installed))
-      throw new CollaborationStateError("WORKFLOW_ADJUSTMENT_CONFLICT", "Original configuration changed during serial persistence; retain it and retry");
-    assertWorkflowGatewaySnapshots(state.agents);
+    assertInstalled();
   };
   try {
     // Request first, then state: either failure leaves the authoritative
@@ -89,7 +98,7 @@ export async function restoreSerialWorkflowConfiguration(database: Collaboration
       state.orchestration, state.agents, state.skillDefinitions, state.mcpDefinitions, current.version),
       async () => { await assertCurrent(); return true; });
     await assertCurrent();
-    await storage.saveState(state, assertCurrent);
+    await storage.saveState(state, assertInstalled, { beforeWrite: assertCurrent, workflowVersion: current.version });
     await assertCurrent();
   } catch (error) {
     // Roll back only our own installed configuration. A later original owner

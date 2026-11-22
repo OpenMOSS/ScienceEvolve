@@ -352,7 +352,12 @@ describe("scoped Agent PR delivery integration", () => {
   });
 
   it.each(["create", "merge", "sync"] as const)("replays the %s crash boundary without a duplicate provider mutation", async (boundary) => {
-    const { database, git, integrator, input, dbOptions } = await fixture();
+    const { database, git, integrator, input, dbOptions, root, worker } = await fixture({ unreported: true });
+    const identity = { projectId: input.projectId, executionId: worker.id, ownershipEpoch: worker.ownershipEpoch, invocationId: "worker-turn-1" };
+    const runtimePath = join(root, "runtime", identity.invocationId);
+    database.beginScopedAgentTurn({ ...identity, runtimePath, baseCommit: BASE });
+    database.markScopedAgentTurnOpened({ ...identity, nativeProcessOpened: true });
+    database.recordScopedAgentReport({ ...identity, output: "Worker model result", residentTurnCompleted: true, residentStopConfirmed: true });
     git.crashAfter = boundary;
     await expect(integrator.integrate(input)).rejects.toThrow(/crash after/);
     expect(database.scopedArrivals("run-G").find((item) => item.targetNodeId === "G_next")).toBeUndefined();
@@ -363,8 +368,16 @@ describe("scoped Agent PR delivery integration", () => {
     database.close();
     const reopened = CollaborationStateDatabase.open(dbOptions);
     databases.push(reopened);
+    expect(reopened.writerLease().epoch).toBeGreaterThan(lease.epoch);
+    reopened.reconcileScopedAgentTurn({ ...identity, residentStopConfirmed: true, evidence: {
+      protocol: "scoped-supervisor-stop-v1", projectId: identity.projectId, scopeId: worker.id, agentId: worker.agentId,
+      role: "delivery", ownershipEpoch: worker.ownershipEpoch, runtimePath, nativeProcessScanCleared: true
+    } });
     const resumedGit = new StateBackedDeliveryGit(reopened);
     expect(await new ScopedAgentDeliveryIntegrator(reopened, resumedGit).integrate(input)).toMatchObject({ status: "completed" });
+    const replay = await new ScopedAgentDeliveryIntegrator(reopened, resumedGit).integrate(input);
+    expect(replay).toMatchObject({ status: "completed", completion: { replay: true } });
+    expect(reopened.scopedArrivals("run-G").filter(item => item.targetNodeId === "G_next")).toHaveLength(1);
     expect(git.mutations.creates + resumedGit.mutations.creates).toBe(1);
     expect(git.mutations.merges + resumedGit.mutations.merges).toBe(1);
   });

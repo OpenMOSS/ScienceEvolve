@@ -27,7 +27,7 @@ export type { AgentProtocol } from "./agent-runtime.js";
 export { normalizeGatewayTokenUsage } from "./internal/shared/token-usage-ledger.js";
 
 /** Bump whenever route conversion semantics invalidate a cached smoke probe. */
-export const PROTOCOL_ROUTER_COMPATIBILITY_VERSION = "13";
+export const PROTOCOL_ROUTER_COMPATIBILITY_VERSION = "17";
 
 export type NormalizedRole = "system" | "developer" | "user" | "assistant" | "tool";
 
@@ -288,11 +288,18 @@ function anthropicMessages(messages: NormalizedMessage[]): Array<Record<string, 
     });
 }
 
-/** Convert the common subset of provider SSE/JSON events into one stream shape. */
-function normalizeProtocolStreamEventSingle(protocol: AgentProtocol, value: unknown): NormalizedStreamEvent {
-  if (value === "[DONE]") return { type: "completed", raw: value };
-  if (!value || typeof value !== "object") return { type: "unknown", raw: value };
-  const record = value as Record<string, unknown>;
+function unrecognizedStreamEvent(protocol: AgentProtocol, record: Record<string, unknown>): NormalizedStreamEvent {
+  if (record.type === "error" || record.error != null) {
+    return { type: "error", error: providerErrorText(protocol, record) ?? "provider stream failed", raw: record };
+  }
+  return { type: "unknown", raw: record };
+}
+
+const publicResponsesTextDeltas = new Set(["response.output_text.delta", "response.text.delta", "output_text.delta", "text.delta"]);
+
+function normalizeSingleProviderFrame(
+  protocol: Exclude<AgentProtocol, "chat-completions">, record: Record<string, unknown>
+): NormalizedStreamEvent {
   if (protocol === "responses") {
     const type = typeof record.type === "string" ? record.type : "";
     if (type.toLowerCase().includes("reasoning") || type.toLowerCase().includes("thinking")) {
@@ -301,10 +308,10 @@ function normalizeProtocolStreamEventSingle(protocol: AgentProtocol, value: unkn
         text: typeof record.delta === "string"
           ? record.delta
           : typeof record.text === "string" ? record.text : undefined,
-        raw: value
+        raw: record
       };
     }
-    if (type.includes("output_text.delta") || type.endsWith("text.delta")) return { type: "text_delta", text: typeof record.delta === "string" ? record.delta : typeof record.text === "string" ? record.text : "", raw: value };
+    if (publicResponsesTextDeltas.has(type)) return { type: "text_delta", text: typeof record.delta === "string" ? record.delta : typeof record.text === "string" ? record.text : "", raw: record };
     if (type === "response.output_item.added" && record.item && typeof record.item === "object") {
       const item = record.item as Record<string, unknown>;
       if (item.type === "function_call") return {
@@ -316,7 +323,7 @@ function normalizeProtocolStreamEventSingle(protocol: AgentProtocol, value: unkn
         argumentsDelta: typeof item.arguments === "string"
           ? item.arguments
           : item.arguments !== undefined ? JSON.stringify(item.arguments) : "",
-        raw: value
+        raw: record
       };
     }
     if (type === "response.output_item.done" && record.item && typeof record.item === "object") {
@@ -345,23 +352,13 @@ function normalizeProtocolStreamEventSingle(protocol: AgentProtocol, value: unkn
         ? record.delta
         : typeof record.arguments === "string" ? record.arguments : "",
       toolCallFinal: type.endsWith(".done"),
-      raw: value
+      raw: record
     };
     if (type === "response.failed" || type === "response.error") {
-      const response = record.response && typeof record.response === "object" ? record.response as Record<string, unknown> : {};
-      const error = record.error && typeof record.error === "object"
-        ? record.error as Record<string, unknown>
-        : response.error && typeof response.error === "object"
-          ? response.error as Record<string, unknown>
-          : {};
-      const detail = typeof record.error === "string"
-        ? record.error
-        : typeof response.error === "string"
-          ? response.error
-          : typeof error.message === "string" ? error.message : "Responses provider reported a failed response";
-      return { type: "error", error: detail, raw: value };
+      const detail = providerErrorText(protocol, record) ?? "Responses provider reported a failed response";
+      return { type: "error", error: detail, raw: record };
     }
-    if (type === "response.completed" || type === "response.done" || type === "response.incomplete" || type.endsWith("completed")) {
+    if (type === "response.completed" || type === "response.done" || type === "response.incomplete" || type === "completed") {
       const response = record.response && typeof record.response === "object" ? record.response as Record<string, unknown> : {};
       const status = typeof response.status === "string" ? response.status : undefined;
       const incomplete = response.incomplete_details && typeof response.incomplete_details === "object"
@@ -375,48 +372,15 @@ function normalizeProtocolStreamEventSingle(protocol: AgentProtocol, value: unkn
             ? "incomplete"
             : status && status !== "completed" ? status : undefined,
         usage: optionalObjectValue(response.usage ?? record.usage),
-        raw: value
+        raw: record
       };
-    }
-  } else if (protocol === "chat-completions") {
-    const choices = Array.isArray(record.choices) ? record.choices : [];
-    const choice = choices[0] && typeof choices[0] === "object" ? choices[0] as Record<string, unknown> : undefined;
-    const delta = choice?.delta ?? choice?.message;
-    if (delta && typeof delta === "object") {
-      const deltaRecord = delta as Record<string, unknown>;
-      const text = typeof deltaRecord.content === "string"
-        ? deltaRecord.content
-        : Array.isArray(deltaRecord.content)
-          ? contentText(deltaRecord.content)
-          : undefined;
-      const reasoning = chatReasoningText(deltaRecord);
-      const toolCalls = Array.isArray(deltaRecord.tool_calls) ? deltaRecord.tool_calls as unknown[] : [];
-      const tool = toolCalls[0] && typeof toolCalls[0] === "object" ? toolCalls[0] as Record<string, unknown> : undefined;
-      const fn = tool?.function && typeof tool.function === "object" ? tool.function as Record<string, unknown> : undefined;
-      // Some compatible gateways emit a complete JSON object in a stream
-      // chunk. Preserve it without adding bytes to name-only chunks.
-      const argumentsDelta = typeof fn?.arguments === "string"
-        ? fn.arguments
-        : fn?.arguments && typeof fn.arguments === "object"
-          ? JSON.stringify(fn.arguments)
-          : "";
-      if (tool || text || reasoning) return tool
-        ? { type: "tool_call_delta", toolCallId: typeof tool.id === "string" ? tool.id : undefined, toolItemId: typeof tool.id === "string" ? tool.id : undefined, toolName: typeof fn?.name === "string" ? fn.name : undefined, toolIndex: numberValue(tool?.index) ?? numberValue(record.index), argumentsDelta, raw: value }
-        : text
-          ? { type: "text_delta", text, raw: value }
-          : { type: "reasoning_delta", text: reasoning, raw: value };
-    }
-    const finish = choice?.finish_reason;
-    const usage = optionalObjectValue(record.usage);
-    if ((typeof finish === "string" && finish.length > 0) || (usage && Object.keys(usage).length > 0)) {
-      return { type: "completed", stopReason: typeof finish === "string" ? finish : undefined, usage, raw: value };
     }
   } else {
     const type = typeof record.type === "string" ? record.type : "";
     if (type === "content_block_start" && record.content_block && typeof record.content_block === "object") {
       const block = record.content_block as Record<string, unknown>;
       if (block.type === "thinking" || block.type === "redacted_thinking") {
-        return { type: "reasoning_delta", raw: value };
+        return { type: "reasoning_delta", raw: record };
       }
       if (block.type === "tool_use") return {
         type: "tool_call_delta",
@@ -425,44 +389,46 @@ function normalizeProtocolStreamEventSingle(protocol: AgentProtocol, value: unkn
         toolName: typeof block.name === "string" ? block.name : undefined,
         toolIndex: numberValue(record.index),
         argumentsDelta: "",
-        raw: value
+        raw: record
       };
     }
     if (type === "content_block_delta" && record.delta && typeof record.delta === "object") {
       const delta = record.delta as Record<string, unknown>;
-      if (delta.type === "text_delta") return { type: "text_delta", text: typeof delta.text === "string" ? delta.text : "", raw: value };
+      if (delta.type === "text_delta") return { type: "text_delta", text: typeof delta.text === "string" ? delta.text : "", raw: record };
       if (delta.type === "thinking_delta" || delta.type === "signature_delta") {
         return {
           type: "reasoning_delta",
           text: typeof delta.thinking === "string"
             ? delta.thinking
             : typeof delta.text === "string" ? delta.text : undefined,
-          raw: value
+          raw: record
         };
       }
-      if (delta.type === "input_json_delta") return { type: "tool_call_delta", toolIndex: numberValue(record.index), argumentsDelta: typeof delta.partial_json === "string" ? delta.partial_json : "", raw: value };
+      if (delta.type === "input_json_delta") return { type: "tool_call_delta", toolIndex: numberValue(record.index), argumentsDelta: typeof delta.partial_json === "string" ? delta.partial_json : "", raw: record };
     }
     if (type === "message_stop" || type === "message_delta" && record.delta && typeof record.delta === "object" && typeof (record.delta as Record<string, unknown>).stop_reason === "string") {
       const delta = record.delta && typeof record.delta === "object" ? record.delta as Record<string, unknown> : {};
-      return { type: "completed", stopReason: typeof delta.stop_reason === "string" ? delta.stop_reason : undefined, usage: optionalObjectValue(record.usage ?? delta.usage), raw: value };
+      return { type: "completed", stopReason: typeof delta.stop_reason === "string" ? delta.stop_reason : undefined, usage: optionalObjectValue(record.usage ?? delta.usage), raw: record };
     }
     if (type === "message_start" && record.message && typeof record.message === "object") {
       const message = record.message as Record<string, unknown>;
-      return { type: "unknown", usage: optionalObjectValue(message.usage), raw: value };
+      return { type: "unknown", usage: optionalObjectValue(message.usage), raw: record };
     }
   }
-  if (record.error !== undefined) {
-    const detail = typeof record.error === "string"
-      ? record.error
-      : record.error && typeof record.error === "object" && typeof (record.error as Record<string, unknown>).message === "string"
-        ? String((record.error as Record<string, unknown>).message)
-        : "provider stream failed";
-    return { type: "error", error: detail, raw: value };
-  }
-  return { type: "unknown", raw: value };
+  return unrecognizedStreamEvent(protocol, record);
 }
 
-function chatReasoningText(delta: Record<string, unknown>): string | undefined {
+function assistantVisibleText(content: unknown): string {
+  if (!Array.isArray(content)) return typeof content === "string" ? content : "";
+  return content.map(part => {
+    if (typeof part === "string") return part;
+    const block = optionalObjectValue(part);
+    if (!block || (block.type !== undefined && block.type !== "text" && block.type !== "output_text")) return "";
+    return typeof block.text === "string" ? block.text : assistantVisibleText(block.content);
+  }).filter(Boolean).join("\n");
+}
+
+function chatReasoningField(delta: Record<string, unknown>): string | undefined {
   for (const key of ["reasoning_content", "reasoning", "thinking", "thinking_content"]) {
     const value = delta[key];
     if (typeof value === "string" && value.length > 0) return value;
@@ -470,75 +436,110 @@ function chatReasoningText(delta: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-/**
- * Normalize one provider frame into all meaningful common events.  Chat
- * Completions permits several tool calls (and text plus tool deltas) in the
- * same SSE chunk; the public single-event helper remains backwards compatible
- * while the proxy/probe paths consume the complete list.
- */
-export function normalizeProtocolStreamEvents(protocol: AgentProtocol, value: unknown): NormalizedStreamEvent[] {
-  if (protocol !== "chat-completions" || !value || typeof value !== "object") {
-    return [normalizeProtocolStreamEventSingle(protocol, value)];
-  }
-  const record = value as Record<string, unknown>;
-  const choices = Array.isArray(record.choices) ? record.choices : [];
-  const choice = choices[0] && typeof choices[0] === "object" ? choices[0] as Record<string, unknown> : undefined;
-  const delta = choice?.delta ?? choice?.message;
-  if (!delta || typeof delta !== "object") return [normalizeProtocolStreamEventSingle(protocol, value)];
-  const deltaRecord = delta as Record<string, unknown>;
-  const toolCalls = Array.isArray(deltaRecord.tool_calls) ? deltaRecord.tool_calls : [];
-  const reasoning = chatReasoningText(deltaRecord);
-  if (toolCalls.length === 0 && !reasoning) return [normalizeProtocolStreamEventSingle(protocol, value)];
-  const events: NormalizedStreamEvent[] = [];
-  const text = typeof deltaRecord.content === "string"
-    ? deltaRecord.content
-    : Array.isArray(deltaRecord.content) ? contentText(deltaRecord.content) : "";
-  if (text) {
-    const textChoice = { ...choice, delta: { ...deltaRecord, tool_calls: undefined } };
-    events.push(normalizeProtocolStreamEventSingle(protocol, { ...record, choices: [textChoice] }));
-  }
-  if (reasoning) events.push({ type: "reasoning_delta", text: reasoning, raw: value });
-  for (const tool of toolCalls) {
-    const toolChoice = {
-      ...choice,
-      delta: { ...deltaRecord, content: undefined, tool_calls: [tool] },
-      finish_reason: null
-    };
-    events.push(normalizeProtocolStreamEventSingle(protocol, { ...record, choices: [toolChoice] }));
-  }
-  const finishReason = choice?.finish_reason;
+function chatContentReasoning(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const parts = content.map(optionalObjectValue).filter(block => block?.type === "thinking" || block?.type === "reasoning");
+  return parts.map(block => block?.thinking ?? block?.text).filter(part => typeof part === "string").join("") || undefined;
+}
+
+function chatToolCallEvent(tool: Record<string, unknown>, frameIndex: unknown, raw: unknown): NormalizedStreamEvent {
+  const fn = tool.function && typeof tool.function === "object" ? tool.function as Record<string, unknown> : undefined;
+  const id = typeof tool.id === "string" ? tool.id : undefined;
+  return {
+    type: "tool_call_delta",
+    toolCallId: id,
+    toolItemId: id,
+    toolName: typeof fn?.name === "string" ? fn.name : undefined,
+    toolIndex: numberValue(tool.index) ?? numberValue(frameIndex),
+    argumentsDelta: typeof fn?.arguments === "string" ? fn.arguments :
+      fn?.arguments && typeof fn.arguments === "object" ? JSON.stringify(fn.arguments) : "",
+    raw
+  };
+}
+
+function normalizeChatFrame(record: Record<string, unknown>): NormalizedStreamEvent[] {
+  const first: unknown = Array.isArray(record.choices) ? record.choices[0] : undefined;
+  const choice = first && typeof first === "object" ? first as Record<string, unknown> : undefined;
+  const payload = choice?.delta ?? choice?.message;
+  const delta = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const text = assistantVisibleText(delta.content);
+  const fieldReasoning = chatReasoningField(delta);
+  const reasoning = fieldReasoning ?? chatContentReasoning(delta.content);
+  const tools = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+  const stopReason = typeof choice?.finish_reason === "string" ? choice.finish_reason : undefined;
   const usage = optionalObjectValue(record.usage);
-  if ((typeof finishReason === "string" && finishReason.length > 0) || (usage && Object.keys(usage).length > 0)) {
-    events.push(normalizeProtocolStreamEventSingle(protocol, {
-      ...record,
-      choices: [{ ...choice, delta: {}, finish_reason: finishReason }]
-    }));
+  const hasUsage = usage !== undefined && Object.keys(usage).length > 0;
+  const completed = (raw: unknown, reason: string | undefined): NormalizedStreamEvent =>
+    ({ type: "completed", stopReason: reason, usage, raw });
+
+  if (tools.length === 0 && !reasoning) {
+    if (text) return [{ type: "text_delta", text, raw: record }];
+    if (stopReason || hasUsage) return [completed(record, stopReason)];
+    return [unrecognizedStreamEvent("chat-completions", record)];
   }
-  return events.length ? events : [normalizeProtocolStreamEventSingle(protocol, value)];
+
+  const events: NormalizedStreamEvent[] = [];
+  if (text) {
+    const raw = { ...record, choices: [{ ...choice, delta: { ...delta, tool_calls: undefined } }] };
+    events.push({ type: "text_delta", text, raw });
+  }
+  if (reasoning) events.push({ type: "reasoning_delta", text: reasoning, raw: record });
+  for (const tool of tools) {
+    const raw = { ...record, choices: [{ ...choice, delta: { ...delta, content: undefined, tool_calls: [tool] }, finish_reason: null }] };
+    if (tool && typeof tool === "object") events.push(chatToolCallEvent(tool, record.index, raw));
+    else if (fieldReasoning) events.push({ type: "reasoning_delta", text: fieldReasoning, raw });
+    else if (hasUsage) events.push(completed(raw, undefined));
+    else events.push(unrecognizedStreamEvent("chat-completions", raw));
+  }
+  if (stopReason || hasUsage) {
+    const raw = { ...record, choices: [{ ...choice, delta: {}, finish_reason: choice?.finish_reason }] };
+    events.push(completed(raw, stopReason));
+  }
+  return events;
+}
+
+/** A Chat Completions frame can contain several ordered events. */
+export function normalizeProtocolStreamEvents(protocol: AgentProtocol, value: unknown): NormalizedStreamEvent[] {
+  if (value === "[DONE]") return [{ type: "completed", raw: value }];
+  if (!value || typeof value !== "object") return [{ type: "unknown", raw: value }];
+  const record = value as Record<string, unknown>;
+  return protocol === "chat-completions" ? normalizeChatFrame(record) : [normalizeSingleProviderFrame(protocol, record)];
 }
 
 export function normalizeProtocolStreamEvent(protocol: AgentProtocol, value: unknown): NormalizedStreamEvent {
   return normalizeProtocolStreamEvents(protocol, value)[0] ?? { type: "unknown", raw: value };
 }
 
-export function mapProtocolError(protocol: AgentProtocol, status: number, body: unknown): ProtocolRouteError {
-  const detail = body && typeof body === "object" && "error" in body
-    ? (body as { error?: unknown }).error
-    : body;
-  const text = typeof detail === "string" ? detail : detail && typeof detail === "object" && "message" in detail ? String((detail as { message: unknown }).message) : "provider request failed";
-  return new ProtocolRouteError(`${protocol} gateway error (${status}): ${redactTrace(text).slice(0, 500)}`, "gateway");
+function providerErrorText(protocol: AgentProtocol, body: unknown): string | undefined {
+  const record = optionalObjectValue(body);
+  const nested = protocol === "responses" ? optionalObjectValue(record?.response)?.error : undefined;
+  for (const candidate of [record?.error, nested, body]) {
+    const object = optionalObjectValue(candidate);
+    const message = typeof candidate === "string" ? candidate : object?.message;
+    const code = object?.code;
+    const identifier = typeof code === "number" || (typeof code === "string" && code.trim()) ? String(code).slice(0, 120) : undefined;
+    if (typeof message === "string" && message.trim()) return identifier ? identifier + ": " + message : message;
+    if (identifier) return identifier;
+  }
+  return undefined;
+}
+
+function redactGatewayError(message: string, secrets: readonly string[]): string {
+  for (const secret of secrets) if (secret) message = message.replaceAll(secret, "[REDACTED]");
+  return redactTrace(message);
+}
+
+export function mapProtocolError(protocol: AgentProtocol, status: number, body: unknown, secrets: readonly string[] = []): ProtocolRouteError {
+  const message = redactGatewayError(providerErrorText(protocol, body) ?? "provider request failed", secrets);
+  return new ProtocolRouteError(`${protocol} gateway error (${status}): ${message.slice(0, 500)}`, "gateway");
 }
 
 function protocolErrorDetail(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
-  if (record.type !== "error" && record.error === undefined) return undefined;
-  const detail = typeof record.error === "string"
-    ? record.error
-    : record.error && typeof record.error === "object" && typeof (record.error as Record<string, unknown>).message === "string"
-      ? String((record.error as Record<string, unknown>).message)
-      : record.message;
-  return typeof detail === "string" ? redactTrace(detail).slice(0, 500) : "provider returned an error payload";
+  if (record.type !== "error" && record.type !== "response.failed" && record.type !== "response.error" &&
+    record.status !== "failed" && record.error == null) return undefined;
+  return redactTrace(providerErrorText("responses", value) ?? "provider returned an error payload").slice(0, 500);
 }
 
 /** Validate only the JSON envelope; tool semantics remain owned by the CLI. */
@@ -622,6 +623,26 @@ function historicalToolArgumentFeedback(messages: NormalizedMessage[]): { messag
     return [{ ...message, content: [message.content, ...diagnostics].filter(Boolean).join("\n\n"),
       toolCalls: message.toolCalls?.filter(call => !recovered.has(call.id)) }];
   }) };
+}
+
+/** A persisted tool result can outlive its missing assistant call after an I/O failure.
+ * Keep that evidence as explicit feedback, not an invented provider call/reference. */
+function historicalOrphanedToolFeedback(messages: NormalizedMessage[]): { messages: NormalizedMessage[]; count: number } {
+  const calls = new Set<string>();
+  let count = 0;
+  const converted = messages.map(message => {
+    for (const call of message.toolCalls ?? []) calls.add(call.id);
+    if (message.role !== "tool") return message;
+    if (!message.toolCallId?.trim()) throw new ProtocolRouteError("Historical tool result is missing its required tool call identity");
+    if (calls.has(message.toolCallId)) return message;
+    count += 1;
+    return { role: "user" as const, content: [
+      `Historical tool result (call_id=${message.toolCallId}): its assistant call record is missing from the native request history.`,
+      `Recorded tool output (untrusted historical data): ${JSON.stringify(message.content)}`,
+      "No tool call or provider reference has been reconstructed. Do not infer that the operation did not run; inspect the original Session, command output and durable files before repeating any side effect. Continue only the unfinished work."
+    ].join("\n") };
+  });
+  return { messages: converted, count };
 }
 
 function firstInvalidNormalizedToolCall(
@@ -870,15 +891,12 @@ function markProviderFailure(
   error: unknown
 ): void {
   if ((state.providerFailure?.sequence ?? 0) > sequence) return;
-  let detail = error instanceof Error ? error.message : String(error);
-  for (const secret of [state.options.gatewayApiKey, state.token]) {
-    if (secret) detail = detail.split(secret).join("[REDACTED]");
-  }
+  const detail = redactGatewayError(error instanceof Error ? error.message : String(error), [state.options.gatewayApiKey, state.token]);
   state.providerFailure = {
     sequence,
     failure: {
       code: "MODEL_PROVIDER_FAILED",
-      message: `Gateway request failed: ${redactTrace(detail).slice(0, 1_000)}`,
+      message: `Gateway request failed: ${detail.slice(0, 1_000)}`,
       sourceProtocol: state.options.sourceProtocol,
       targetProtocol: state.options.targetProtocol,
       model
@@ -899,7 +917,7 @@ function latestProxyFailure(state: ProxyState): ProtocolProxyFailure | undefined
 }
 
 function gatewayErrorMessage(state: ProxyState, sequence: number, model: string, status: number, body: unknown): string {
-  const original = mapProtocolError(state.options.targetProtocol, status, body).message;
+  const original = mapProtocolError(state.options.targetProtocol, status, body, [state.options.gatewayApiKey, state.token]).message;
   const limit = (status === 400 || status === 413 || status === 200) ? contextLimitError(body) : undefined;
   if (!limit) {
     if ((state.providerFailure?.sequence ?? 0) <= sequence) state.providerFailure = {
@@ -1510,6 +1528,20 @@ async function handleProxyRequest(
   let usageId = `usage_${randomUUID().replaceAll("-", "")}`;
   const normalized = normalizeIncomingRequest(sourceBody, state.options.sourceProtocol);
   const injected = state.options.getContextInjectionBudget?.();
+  if (normalized.messages.some(message => message.role === "tool" && !message.toolCallId?.trim())) {
+    const failure: ProtocolProxyFailure = { code: "MODEL_REQUEST_INVALID", httpStatus: 400,
+      message: "Historical tool result is missing its required tool call identity",
+      sourceProtocol: state.options.sourceProtocol, targetProtocol: state.options.targetProtocol, model: requestModel };
+    markProtocolFailure(state, failure, trace, providerRequestSequence);
+    writeJsonError(response, 400, failure.message, state.options.sourceProtocol, sourceBody.stream === true);
+    return;
+  }
+  const orphanedFeedback = historicalOrphanedToolFeedback(normalized.messages);
+  normalized.messages = orphanedFeedback.messages;
+  if (orphanedFeedback.count) trace("status", "Protocol proxy preserved orphaned tool results as historical diagnostics", {
+    count: orphanedFeedback.count, sourceProtocol: state.options.sourceProtocol,
+    targetProtocol: state.options.targetProtocol, model: requestModel
+  });
   const historicalFeedback = historicalToolArgumentFeedback(normalized.messages);
   normalized.messages = historicalFeedback.messages;
   if (historicalFeedback.count) trace("status", "Protocol proxy preserved historical tool argument feedback for Agent correction", {
@@ -1815,6 +1847,7 @@ async function handleProxyRequest(
       lastProviderActivityAt = Date.now();
       receivedProviderFrame = safeJson(cached.bodyText) !== undefined;
       trace("status", "Protocol proxy received buffered upstream response", {
+        requestId: usageId,
         sourceProtocol: state.options.sourceProtocol,
         targetProtocol: state.options.targetProtocol,
         model: requestModel,
@@ -1955,6 +1988,7 @@ async function handleProxyRequest(
     receivedProviderResponse = true;
     touchActivity();
     trace("status", "Protocol proxy received upstream response", {
+      requestId: usageId,
       sourceProtocol: state.options.sourceProtocol,
       targetProtocol: state.options.targetProtocol,
       model: requestModel,
@@ -1978,7 +2012,7 @@ async function handleProxyRequest(
         writeAnthropicStreamError(response, mapped.message);
       } else if (bufferedChatCompletionId) {
         writeChatStreamError(response, bufferedChatCompletionId, requestModel, mapped.message);
-      } else if (bufferedResponses) {
+      } else if (bufferedResponses || (wantsStream && response.headersSent)) {
         writeProtocolFailureResponse(
           response,
           state.options.sourceProtocol,
@@ -2137,7 +2171,7 @@ async function handleProxyRequest(
           state.options.sourceProtocol,
           requestModel,
           controller.signal,
-          (message, data) => trace("status", message, data),
+          state.options.onTrace ? (message, data) => trace("status", message, { ...data, requestId: usageId }) : undefined,
           (usage) => reportGatewayTokenUsage(
             state,
             usageId,
@@ -2184,12 +2218,9 @@ async function handleProxyRequest(
           Math.min(15_000, Math.max(100, Math.floor(state.timeoutMs / 4))),
           (body) => {
             const message = gatewayErrorMessage(state, providerRequestSequence, requestModel, 200, body);
-            const safeMessage = redactTrace(message
-              .replaceAll(state.options.gatewayApiKey, "[REDACTED]")
-              .replaceAll(state.token, "[REDACTED]")).slice(0, 1_000);
             trace("error", "Protocol proxy received a provider stream error", {
               ...diagnosticData("proxy.provider.stream_error", "MODEL_PROVIDER_STREAM_ERROR", "provider"),
-              error: safeMessage
+              error: message
             });
             return message;
           },
@@ -2613,7 +2644,7 @@ export function normalizeIncomingRequest(body: Record<string, unknown>, protocol
       }) : undefined;
       return [{
         role: normalizedRole(record.role),
-        content: contentText(record.content),
+        content: record.role === "assistant" ? assistantVisibleText(record.content) : contentText(record.content),
         ...(typeof record.name === "string" ? { name: record.name } : {}),
         ...(typeof record.tool_call_id === "string" ? { toolCallId: record.tool_call_id } : {}),
         ...(toolCalls?.length ? { toolCalls } : {})
@@ -3697,6 +3728,56 @@ interface StreamProxyResult {
   completed: boolean;
 }
 
+interface ResponsesTextFieldStats {
+  eventType: string;
+  field: "delta" | "text";
+  frames: number;
+  characters: number;
+  budgetTagClosings: number;
+  firstBudgetTagFrame?: number;
+}
+
+/** Request-local counts. Only a matched prefix length is retained across deltas. */
+function responsesTextFieldTrace() {
+  const closingTag = "</budget:token_budget>";
+  const fields = new Map<string, ResponsesTextFieldStats>();
+  const prefixes = new Map<string, number>();
+  function observe(frame: unknown, frameNumber: number): void {
+    const record = optionalObjectValue(frame);
+    const eventType = record?.type;
+    if (!record || typeof eventType !== "string" || !(publicResponsesTextDeltas.has(eventType) ||
+      eventType === "response.reasoning_text.delta" || eventType === "response.reasoning_summary_text.delta")) return;
+    const field = typeof record.delta === "string" ? "delta" : "text";
+    const text = record[field];
+    if (typeof text !== "string") return;
+    const name = eventType + ":" + field;
+    let stats = fields.get(name);
+    if (!stats) {
+      stats = { eventType, field, frames: 0, characters: 0, budgetTagClosings: 0 };
+      fields.set(name, stats);
+    }
+    stats.frames++;
+    stats.characters += text.length;
+    if (!prefixes.size && !text.includes("<")) return;
+    const item = typeof record.item_id === "string" ? record.item_id : numberValue(record.output_index);
+    const part = numberValue(record.content_index) ?? numberValue(record.summary_index);
+    const key = JSON.stringify([name, item, part]);
+    let matched = prefixes.get(key) ?? 0;
+    for (let index = 0; index < text.length; index++) {
+      const char = text[index];
+      matched = char === closingTag[matched] ? matched + 1 : char === "<" ? 1 : 0;
+      if (matched === closingTag.length) {
+        stats.budgetTagClosings++;
+        stats.firstBudgetTagFrame ??= frameNumber;
+        matched = 0;
+      }
+    }
+    if (matched) prefixes.set(key, matched);
+    else prefixes.delete(key);
+  }
+  return { fields, observe };
+}
+
 async function streamProxyResponse(
   upstream: Response,
   response: ServerResponse,
@@ -3727,14 +3808,16 @@ async function streamProxyResponse(
       // A closed display tap must not interrupt the native tool loop.
     }
   };
-  response.writeHead(200, {
-    "content-type": "text/event-stream",
-    "cache-control": "no-cache",
-    connection: "keep-alive"
-  });
-  const sourceResponseId = `resp_${randomUUID().replaceAll("-", "")}`;
-  const sourceChatCompletionId = `chatcmpl_${randomUUID().replaceAll("-", "")}`;
-  const anthropicMessageId = `msg_${randomUUID().replaceAll("-", "")}`;
+  // The first-output heartbeat may already have opened the downstream stream.
+  if (!response.headersSent) {
+    response.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive"
+    });
+  }
+  const prefix = source === "responses" ? "resp_" : source === "chat-completions" ? "chatcmpl_" : "msg_";
+  const responseId = prefix + randomUUID().replaceAll("-", "");
   let lastDownstreamWriteAt = Date.now();
   const writeFrames = (items: Record<string, unknown>[]) => {
     for (const item of items) {
@@ -3748,7 +3831,7 @@ async function streamProxyResponse(
     writeFrames([{
       type: "response.created",
       response: {
-        id: sourceResponseId,
+        id: responseId,
         object: "response",
         status: "in_progress",
         model,
@@ -3757,7 +3840,7 @@ async function streamProxyResponse(
     }]);
   } else if (source === "chat-completions") {
     writeFrames([{
-      id: sourceChatCompletionId,
+      id: responseId,
       object: "chat.completion.chunk",
       model,
       choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }]
@@ -3780,7 +3863,7 @@ async function streamProxyResponse(
       writeFrames([{
         type: "response.in_progress",
         response: {
-          id: sourceResponseId,
+          id: responseId,
           object: "response",
           status: "in_progress",
           model,
@@ -3789,7 +3872,7 @@ async function streamProxyResponse(
       }]);
     } else if (source === "chat-completions") {
       writeFrames([{
-        id: sourceChatCompletionId,
+        id: responseId,
         object: "chat.completion.chunk",
         model,
         choices: [{ index: 0, delta: {}, finish_reason: null }]
@@ -3807,6 +3890,7 @@ async function streamProxyResponse(
   let completionStopReason: string | undefined;
   let streamFailed = false;
   let providerFrameCount = 0;
+  const responseTextTrace = target === "responses" && trace ? responsesTextFieldTrace() : undefined;
   const normalizedEventKinds: string[] = [];
   const observedToolNames = new Set<string>();
   let anthropicMessageStarted = false;
@@ -3845,7 +3929,7 @@ async function streamProxyResponse(
       writeFrames([{
         type: "message_start",
         message: {
-          id: anthropicMessageId,
+          id: responseId,
           type: "message",
           role: "assistant",
           model,
@@ -4057,9 +4141,68 @@ async function streamProxyResponse(
       } else if (incomingArguments) {
         sourceToolArguments.set(key, `${previousArguments}${incomingArguments}`);
       }
-      return [{ id: sourceChatCompletionId, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { tool_calls: [{ index: key, ...(id ? { id } : {}), type: "function", function: { ...(name ? { name } : {}), arguments: delta } }] }, finish_reason: null }] }];
+      return [{ id: responseId, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { tool_calls: [{ index: key, ...(id ? { id } : {}), type: "function", function: { ...(name ? { name } : {}), arguments: delta } }] }, finish_reason: null }] }];
     }
-    return convertStreamEvent(event, source, model, target);
+    return convertStreamEvent(event, source, model, target, responseId);
+  };
+  const processFrame = async (parsed: unknown) => {
+    sawProviderFrame = true;
+    providerFrameCount += 1;
+    responseTextTrace?.observe(parsed, providerFrameCount);
+    onActivity?.();
+    await observePublicSummary(parsed);
+    for (const normalized of normalizeProtocolStreamEvents(target, parsed)) {
+      if (normalized.type === "error" && onProviderError) normalized.error = onProviderError(parsed);
+      const observedDelta = modelOutputDelta(normalized);
+      if (observedDelta) {
+        await onModelDelta?.(observedDelta.kind, observedDelta.text);
+      }
+      if (normalizedEventKinds.length < 80) {
+        normalizedEventKinds.push(`${normalized.type}${normalized.toolName ? `:${normalized.toolName}` : ""}${normalized.text ? `:${normalized.text.length}` : ""}`);
+      }
+      if (normalized.type === "completed") providerCompleted = true;
+      if (normalized.type === "tool_call_delta" && normalized.toolName) {
+        observedToolNames.add(normalized.toolName);
+      }
+      if (normalized.usage && Object.keys(normalized.usage).length) {
+        completionUsage = mergeUsageRecords(completionUsage, normalized.usage);
+      }
+      if (normalized.stopReason) completionStopReason = normalized.stopReason;
+      const anthropicToolKey = source === "anthropic-messages" &&
+        normalized.type === "tool_call_delta"
+        ? normalized.toolIndex ?? anthropicBlockIndex
+        : undefined;
+      // Responses providers may emit both
+      // `response.function_call_arguments.done` and a later
+      // `response.output_item.done` for the same output index. Anthropic
+      // content blocks cannot be reopened after they were closed, so the
+      // second terminal frame must not create a duplicate tool_use block.
+      if (
+        anthropicToolKey !== undefined &&
+        normalized.toolCallFinal &&
+        sourceToolFinals.has(anthropicToolKey)
+      ) continue;
+      ensureAnthropicBlock(normalized);
+      // Completion is synthesized once below so usage and stop reason from
+      // the provider's terminal frame can be folded into one source-native
+      // event. Keep convertStreamEvent's standalone behavior for callers
+      // that use it directly.
+      const converted = normalized.type === "completed"
+        ? []
+        : convertForSource(normalized);
+      if (converted.length) {
+        if (source === "responses" && normalized.type === "tool_call_delta" &&
+            isClientToolSearch(sourceToolNames.get(normalized.toolIndex ?? 0) ?? "", sourceTools)) {
+          bufferedToolSearchFrames.push(...converted);
+        } else {
+          writeFrames(converted);
+        }
+      }
+      if (anthropicToolKey !== undefined && normalized.toolCallFinal) {
+        sourceToolFinals.add(anthropicToolKey);
+      }
+      if (normalized.type === "error") streamFailed = true;
+    }
   };
   try {
     while (!signal.aborted) {
@@ -4070,116 +4213,16 @@ async function streamProxyResponse(
       for (const event of events.events) {
         const parsed = event.data.trim() === "[DONE]" ? "[DONE]" : safeJson(event.data);
         if (parsed === undefined) continue;
-        sawProviderFrame = true;
-        providerFrameCount += 1;
-        onActivity?.();
-        await observePublicSummary(parsed);
-        for (const normalized of normalizeProtocolStreamEvents(target, parsed)) {
-          if (normalized.type === "error" && onProviderError) normalized.error = onProviderError(parsed);
-          const observedDelta = modelOutputDelta(normalized);
-          if (observedDelta) {
-            await onModelDelta?.(observedDelta.kind, observedDelta.text);
-          }
-          if (normalizedEventKinds.length < 80) {
-            normalizedEventKinds.push(`${normalized.type}${normalized.toolName ? `:${normalized.toolName}` : ""}${normalized.text ? `:${normalized.text.length}` : ""}`);
-          }
-          if (normalized.type === "completed") providerCompleted = true;
-          if (normalized.type === "tool_call_delta" && normalized.toolName) {
-            observedToolNames.add(normalized.toolName);
-          }
-          if (normalized.usage && Object.keys(normalized.usage).length) {
-            completionUsage = mergeUsageRecords(completionUsage, normalized.usage);
-          }
-          if (normalized.stopReason) completionStopReason = normalized.stopReason;
-          const anthropicToolKey = source === "anthropic-messages" &&
-            normalized.type === "tool_call_delta"
-            ? normalized.toolIndex ?? anthropicBlockIndex
-            : undefined;
-          // Responses providers may emit both
-          // `response.function_call_arguments.done` and a later
-          // `response.output_item.done` for the same output index. Anthropic
-          // content blocks cannot be reopened after they were closed, so the
-          // second terminal frame must not create a duplicate tool_use block.
-          if (
-            anthropicToolKey !== undefined &&
-            normalized.toolCallFinal &&
-            sourceToolFinals.has(anthropicToolKey)
-          ) continue;
-          ensureAnthropicBlock(normalized);
-          // Completion is synthesized once below so usage and stop reason from
-          // the provider's terminal frame can be folded into one source-native
-          // event. Keep convertStreamEvent's standalone behavior for callers
-          // that use it directly.
-          const converted = normalized.type === "completed"
-            ? []
-            : convertForSource(normalized);
-          if (converted.length) {
-            if (source === "responses" && normalized.type === "tool_call_delta" &&
-                isClientToolSearch(sourceToolNames.get(normalized.toolIndex ?? 0) ?? "", sourceTools)) {
-              bufferedToolSearchFrames.push(...converted);
-            } else {
-              writeFrames(converted);
-            }
-          }
-          if (anthropicToolKey !== undefined && normalized.toolCallFinal) {
-            sourceToolFinals.add(anthropicToolKey);
-          }
-          if (normalized.type === "error") streamFailed = true;
-        }
+        await processFrame(parsed);
       }
       if (next.done) break;
     }
-    // Providers occasionally omit the final blank line. Process one complete
-    // JSON data frame left in the decoder buffer before synthesizing a
-    // terminal event.
+    // A provider may close the stream without a final SSE separator.
     if (buffer.trim()) {
-      const dataLines = buffer.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim());
-      const rawData = dataLines.join("\n").trim();
-      const parsed = rawData === "[DONE]" ? "[DONE]" : safeJson(rawData || buffer.trim());
-      if (parsed !== undefined) {
-        sawProviderFrame = true;
-        providerFrameCount += 1;
-        onActivity?.();
-        await observePublicSummary(parsed);
-        for (const normalized of normalizeProtocolStreamEvents(target, parsed)) {
-          if (normalized.type === "error" && onProviderError) normalized.error = onProviderError(parsed);
-          const observedDelta = modelOutputDelta(normalized);
-          if (observedDelta) {
-            await onModelDelta?.(observedDelta.kind, observedDelta.text);
-          }
-          if (normalized.type === "completed") providerCompleted = true;
-          if (normalized.type === "tool_call_delta" && normalized.toolName) {
-            observedToolNames.add(normalized.toolName);
-          }
-          if (normalized.usage && Object.keys(normalized.usage).length) {
-            completionUsage = mergeUsageRecords(completionUsage, normalized.usage);
-          }
-          if (normalized.stopReason) completionStopReason = normalized.stopReason;
-          const anthropicToolKey = source === "anthropic-messages" &&
-            normalized.type === "tool_call_delta"
-            ? normalized.toolIndex ?? anthropicBlockIndex
-            : undefined;
-          if (
-            anthropicToolKey !== undefined &&
-            normalized.toolCallFinal &&
-            sourceToolFinals.has(anthropicToolKey)
-          ) continue;
-          ensureAnthropicBlock(normalized);
-          const converted = normalized.type === "completed"
-            ? []
-            : convertForSource(normalized);
-          if (source === "responses" && normalized.type === "tool_call_delta" &&
-              isClientToolSearch(sourceToolNames.get(normalized.toolIndex ?? 0) ?? "", sourceTools)) {
-            bufferedToolSearchFrames.push(...converted);
-          } else {
-            writeFrames(converted);
-          }
-          if (anthropicToolKey !== undefined && normalized.toolCallFinal) {
-            sourceToolFinals.add(anthropicToolKey);
-          }
-          if (normalized.type === "error") streamFailed = true;
-        }
-      }
+      const dataLines = buffer.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim());
+      const data = dataLines.join("\n").trim();
+      const parsed = data === "[DONE]" ? "[DONE]" : safeJson(data || buffer.trim());
+      if (parsed !== undefined) await processFrame(parsed);
     }
     // A JSON body sent in response to a stream request is deliberately not
     // treated as a successful stream. The missing terminal event is surfaced
@@ -4192,12 +4235,14 @@ async function streamProxyResponse(
       sourceProtocol: source,
       targetProtocol: target,
       model,
+      responseId,
       providerFrameCount,
       sawProviderFrame,
       providerCompleted,
-      streamFailed,
+      streamFailed: streamFailed || (!providerCompleted && !signal.aborted),
       aborted: signal.aborted,
-      eventKinds: normalizedEventKinds
+      eventKinds: normalizedEventKinds,
+      ...(responseTextTrace ? { responseTextFields: [...responseTextTrace.fields.values()] } : {})
     });
   }
   if (signal.aborted) {
@@ -4243,7 +4288,7 @@ async function streamProxyResponse(
       writeFrames([{
         type: "message_start",
         message: {
-          id: anthropicMessageId,
+          id: responseId,
           type: "message",
           role: "assistant",
           model,
@@ -4347,7 +4392,7 @@ async function streamProxyResponse(
   if (!streamFailed) {
     const terminalReason = completionStopReason ?? (sourceToolArguments.size ? "tool_calls" : undefined);
     await beforeComplete?.(completionUsage);
-    writeFrames(terminalStreamEvents(source, target, model, completionUsage, terminalReason, source === "responses" ? sourceResponseId : source === "chat-completions" ? sourceChatCompletionId : undefined));
+    writeFrames(terminalStreamEvents(source, target, model, completionUsage, terminalReason, responseId));
   }
   if (source === "chat-completions" && !streamFailed && !response.writableEnded && !response.destroyed) response.write("data: [DONE]\n\n");
   response.end();
@@ -4399,19 +4444,19 @@ function splitSseEvents(value: string): { events: Array<{ data: string }>; rest:
   return { events, rest };
 }
 
-export function convertStreamEvent(event: NormalizedStreamEvent, source: AgentProtocol, model: string, target?: AgentProtocol): Record<string, unknown>[] {
+export function convertStreamEvent(event: NormalizedStreamEvent, source: AgentProtocol, model: string, target?: AgentProtocol, streamId?: string): Record<string, unknown>[] {
   if (event.type === "reasoning_delta" && source === "chat-completions" && (target ?? source) === "chat-completions" && event.text) {
     // Native Chat clients use reasoning chunks to keep their stream idle timers alive.
-    return [{ id: `chatcmpl_${randomUUID()}`, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { reasoning_content: event.text }, finish_reason: null }] }];
+    return [{ id: streamId ?? `chatcmpl_${randomUUID()}`, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { reasoning_content: event.text }, finish_reason: null }] }];
   }
   if (event.type === "text_delta") {
     if (source === "responses") return [{ type: "response.output_text.delta", delta: event.text ?? "" }];
-    if (source === "chat-completions") return [{ id: `chatcmpl_${randomUUID()}`, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { content: event.text ?? "" }, finish_reason: null }] }];
+    if (source === "chat-completions") return [{ id: streamId ?? `chatcmpl_${randomUUID()}`, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { content: event.text ?? "" }, finish_reason: null }] }];
     return [{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: event.text ?? "" } }];
   }
   if (event.type === "tool_call_delta") {
     if (source === "responses") return [{ type: "response.function_call_arguments.delta", item_id: event.toolCallId ?? `call_${randomUUID()}`, delta: event.argumentsDelta ?? "" }];
-    if (source === "chat-completions") return [{ id: `chatcmpl_${randomUUID()}`, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { tool_calls: [{ index: event.toolIndex ?? 0, ...(event.toolCallId ? { id: event.toolCallId } : {}), type: "function", function: { ...(event.toolName ? { name: event.toolName } : {}), arguments: event.argumentsDelta ?? "" } }] }, finish_reason: null }] }];
+    if (source === "chat-completions") return [{ id: streamId ?? `chatcmpl_${randomUUID()}`, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { tool_calls: [{ index: event.toolIndex ?? 0, ...(event.toolCallId ? { id: event.toolCallId } : {}), type: "function", function: { ...(event.toolName ? { name: event.toolName } : {}), arguments: event.argumentsDelta ?? "" } }] }, finish_reason: null }] }];
     return [{ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: event.argumentsDelta ?? "" } }];
   }
   if (event.type === "error" && source === "responses" && contextLimitError(event.error))
@@ -4420,7 +4465,7 @@ export function convertStreamEvent(event: NormalizedStreamEvent, source: AgentPr
     ...(source === "anthropic-messages" && contextLimitError(event.error) ? { type: "invalid_request_error" } : {}),
     message: event.error ?? "provider stream failed"
   } }];
-  if (event.type === "completed") return terminalStreamEvents(source, target ?? source, model, event.usage, event.stopReason);
+  if (event.type === "completed") return terminalStreamEvents(source, target ?? source, model, event.usage, event.stopReason, streamId);
   return [];
 }
 
@@ -4720,12 +4765,15 @@ function extractNormalizedResponse(value: unknown, protocol: AgentProtocol, fall
     for (const item of output) {
       if (!item || typeof item !== "object") continue;
       const row = item as Record<string, unknown>;
-      if (row.type === "message" && Array.isArray(row.content)) textParts.push(contentText(row.content));
+      if (row.type === "message" && Array.isArray(row.content)) {
+        const text = assistantVisibleText(row.content);
+        if (text) textParts.push(text);
+      }
       if (row.type === "function_call") toolCalls.push({ id: typeof row.call_id === "string" ? row.call_id : `call_${randomUUID()}`, name: typeof row.name === "string" ? row.name : "tool", arguments: normalizeToolArguments(typeof row.arguments === "string" ? row.arguments : JSON.stringify(row.arguments ?? {}), typeof row.name === "string" ? row.name : undefined) });
     }
-    if (typeof record.output_text === "string") textParts.push(record.output_text);
+    const text = textParts.length ? textParts.join("\n") : typeof record.output_text === "string" ? record.output_text : "";
     const incomplete = optionalObjectValue(record.incomplete_details);
-    return { id: typeof record.id === "string" ? record.id : `resp_${randomUUID()}`, model: typeof record.model === "string" ? record.model : fallbackModel, text: [...new Set(textParts.filter(Boolean))].join("\n"), toolCalls, usage: optionalObjectValue(record.usage), stopReason: typeof incomplete?.reason === "string" ? incomplete.reason : typeof record.status === "string" && record.status !== "completed" ? record.status : undefined };
+    return { id: typeof record.id === "string" ? record.id : `resp_${randomUUID()}`, model: typeof record.model === "string" ? record.model : fallbackModel, text, toolCalls, usage: optionalObjectValue(record.usage), stopReason: typeof incomplete?.reason === "string" ? incomplete.reason : typeof record.status === "string" && record.status !== "completed" ? record.status : undefined };
   }
   if (protocol === "chat-completions") {
     const choice = Array.isArray(record.choices) && record.choices[0] && typeof record.choices[0] === "object" ? record.choices[0] as Record<string, unknown> : {};
@@ -4736,7 +4784,7 @@ function extractNormalizedResponse(value: unknown, protocol: AgentProtocol, fall
       const fn = objectValue(row.function);
       return [{ id: typeof row.id === "string" ? row.id : `call_${randomUUID()}`, name: typeof fn.name === "string" ? fn.name : "tool", arguments: normalizeToolArguments(typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {}), typeof fn.name === "string" ? fn.name : undefined) }];
     }) : [];
-    return { id: typeof record.id === "string" ? record.id : `chatcmpl_${randomUUID()}`, model: typeof record.model === "string" ? record.model : fallbackModel, text: contentText(message.content), toolCalls, usage: optionalObjectValue(record.usage), stopReason: typeof choice.finish_reason === "string" ? choice.finish_reason : undefined };
+    return { id: typeof record.id === "string" ? record.id : `chatcmpl_${randomUUID()}`, model: typeof record.model === "string" ? record.model : fallbackModel, text: assistantVisibleText(message.content), toolCalls, usage: optionalObjectValue(record.usage), stopReason: typeof choice.finish_reason === "string" ? choice.finish_reason : undefined };
   }
   const content = Array.isArray(record.content) ? record.content : [];
   const textParts: string[] = [];

@@ -1,3 +1,4 @@
+import { gitDeliveryRef } from "./collaboration-git/contracts.js";
 import { requireGateChoice, gateFeedback } from "./workflow-gate.js";
 import { workflowMessagesText, type WorkflowDirectMessage } from "./workflow-input.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -48,8 +49,8 @@ export interface ScopedProjectRuntimeDependencies {
   database: CollaborationStateDatabase;
   state: ProjectState;
   storage: ProjectStorage;
-  git: ScopedWorkflowGit & ScopedAgentExecutionGit & Partial<Pick<CollaborationGitFacade, "observePullRequest" | "observePullRequestForExecution" | "closePullRequest" | "prepareConflictResolution">>;
-  repository: GitHubRepositoryFact;
+  git?: ScopedWorkflowGit & ScopedAgentExecutionGit & Partial<Pick<CollaborationGitFacade, "observePullRequest" | "observePullRequestForExecution" | "closePullRequest" | "prepareConflictResolution">>;
+  repository?: GitHubRepositoryFact;
   launcher: CollaborationResidentLauncher;
   inputBuilder?: CollaborationExecutionInputBuilder;
   signal: AbortSignal;
@@ -93,18 +94,29 @@ export class ScopedProjectRuntime {
   private closingDiscoveryTail: Promise<void> = Promise.resolve();
   private readonly d: ScopedProjectRuntimeDependencies;
 
+  private get git(): NonNullable<ScopedProjectRuntimeDependencies["git"]> {
+    if (!this.d.git) throw new Error("Git tools require an enabled project repository");
+    return this.d.git;
+  }
+
+  private get repository(): GitHubRepositoryFact {
+    if (!this.d.repository) throw new Error("Git delivery requires a bound project repository");
+    return this.d.repository;
+  }
+
   static async create(dependencies: ScopedProjectRuntimeDependencies): Promise<ScopedProjectRuntime> {
     await dependencies.database.initializeScopedConfiguration(dependencies.state.id, { agents: dependencies.state.agents,
       skillDefinitions: dependencies.state.skillDefinitions ?? {}, mcpDefinitions: dependencies.state.mcpDefinitions ?? {} });
-    return new ScopedProjectRuntime(dependencies);
+    const workspace = dependencies.state.git?.enabled ? undefined : await dependencies.storage.roleWorkspace(dependencies.state.id, "main", "inv_workspace");
+    return new ScopedProjectRuntime(dependencies, workspace);
   }
 
-  private constructor(dependencies: ScopedProjectRuntimeDependencies) {
+  private constructor(dependencies: ScopedProjectRuntimeDependencies, workspace?: string) {
     this.d = dependencies;
     const invoker = new ResidentScopedAgentTurnInvoker({ open: async input => this.openAgentResident(input) }, {
       prepare: async (input) => this.prepareAgent(input),
       missingActions: async (input) => {
-        const delivery = await this.agentGitDelivery(input);
+        const delivery = workspace ? { missingActions: [] } : await this.agentGitDelivery(input);
         const weakCandidates = (input.workflow.routes[input.arrival.targetNodeId] ?? [])
           .filter((edge) => edge.kind === "weak").map((edge) => edge.target);
         const retainedRoute = this.capabilities.get(input.invocationId)?.retained?.some((entry) => entry.action.tool === "route_to_agent")
@@ -129,10 +141,11 @@ export class ScopedProjectRuntime {
       },
       retainTurnResult: async (input, result, inputId) => {
         this.retainAgentTurnResult(input, result);
+        if (workspace) return;
         await observeR04PendingFile({ projectTitle: this.d.state.title, projectRoot: this.d.storage.projectDir(this.d.state.id),
           execution: { ...input.execution, purpose: "delivery" }, arrivalRequestId: input.arrival.requestId,
-          groupRunId: input.groupRun.id, base: input.groupRun.groupBranch, repository: this.d.repository,
-          invocationId: input.invocationId, inputId, git: this.d.git });
+          groupRunId: input.groupRun.id, base: gitDeliveryRef(input.groupRun.groupBranch), repository: this.repository,
+          invocationId: input.invocationId, inputId, git: this.git });
       },
       acceptResult: async (input, result) => this.acceptAgent(input, result),
       onHandle: async () => { await this.d.publish(); },
@@ -182,8 +195,9 @@ export class ScopedProjectRuntime {
             false, { sourceOuterNodeRunId: nodeRunId, routeCandidates: [...candidates] });
         },
         completeGroup: async (group) => {
-          await this.manage(group, "complete", undefined,
-            `All required arrivals reached Finish. Decide whether to request explicit final integration from an eligible Agent, or complete the group after an existing final merge proof.\n\n${scopedGroupOutput((await this.d.database.projectState(this.d.state.id)), group.id)}`);
+          await this.manage(group, "complete", undefined, workspace
+            ? `Review the returned workspace handoffs, call finish_task for your round and confirm the group with complete_group.\n${scopedGroupOutput(await this.d.database.projectState(this.d.state.id), group.id)}`
+            : `All required arrivals reached Finish. Decide whether to request explicit final integration from an eligible Agent, or complete the group after an existing final merge proof.\n\n${scopedGroupOutput((await this.d.database.projectState(this.d.state.id)), group.id)}`);
         },
         recoverGroup: async (group, arrivals) => { await this.manage(group, "recover", undefined, `Failed direct/delegated arrivals: ${arrivals.join(", ")}`); },
         recoverGlobal: async (root) => {
@@ -201,7 +215,7 @@ export class ScopedProjectRuntime {
           await this.d.database.continueScopedSkippedArrival(this.d.state.id, group.id, arrival);
           await dependencies.publish();
         }
-      }, { agentOwnsGit: true, beforeAdmission: () => dependencies.applyWaitingWorkflowAdjustments?.() ?? Promise.resolve(),
+      }, { workspace, agentOwnsGit: !workspace, beforeAdmission: () => dependencies.applyWaitingWorkflowAdjustments?.() ?? Promise.resolve(),
         invokeFinalAgent: { invokeAgent: async (integration) => this.integrateFinalAsAgent(integration) } });
   }
 
@@ -282,10 +296,10 @@ export class ScopedProjectRuntime {
           await d.database.recordScopedAgentInterruptedOperation({ projectId: d.state.id, executionId: execution.id,
             ownershipEpoch: execution.ownershipEpoch, invocationId: turn.invocationId });
         } else if (!alreadyStopped) await d.database.failScopedAgentArrival({ projectId: d.state.id, arrivalRequestId: execution.arrivalRequestId, executionId: execution.id,
-          ownershipEpoch: execution.ownershipEpoch, residentStopConfirmed: true, reason: "Interrupted native invocation stopped; its group Leader must coordinate retained-branch recovery" });
+          ownershipEpoch: execution.ownershipEpoch, residentStopConfirmed: true, reason: "Interrupted native invocation stopped; its group Leader must coordinate recovery of the original task" });
       }
     }
-    if (!(await d.database.projectCancellationIntent(d.state.id))) for (const group of projection.scopedGroupRuns ?? []) await d.database.recoverScopedFinalIntegration(d.state.id, group.id);
+    if (d.state.git?.enabled && !(await d.database.projectCancellationIntent(d.state.id))) for (const group of projection.scopedGroupRuns ?? []) await d.database.recoverScopedFinalIntegration(d.state.id, group.id);
     await d.publish();
   }
 
@@ -398,7 +412,7 @@ export class ScopedProjectRuntime {
           if (envelope.action.tool === "finish_task") return d.storage.requestTaskCompletion(d.state, taskId, envelope);
           else if (!isAgentGitAction(envelope.action.tool)) throw new Error("Final delivery only has its task completion and canonical PR tools");
         }, execute: async (envelope, signal) => {
-          const result = await executeAgentGitTool({ git: d.git as CollaborationGitFacade, repository: d.repository,
+          const result = await executeAgentGitTool({ git: this.git as CollaborationGitFacade, repository: this.repository,
             execution: { ...integration, purpose: "group-final-integration" }, base: integration.integrationTarget,
             facts, envelope, signal,
             ...agentGitOperationJournal(d.database, d.state.id),
@@ -493,7 +507,7 @@ export class ScopedProjectRuntime {
       `Project requirement:\n${d.state.requirement}`,
       root.optionalTask ? `Root workflow assignment from node ${root.id} (assigned by ${root.activatedByAgentId}):\n${root.optionalTask}\nUse these inherited requirements within the current delivery scope. Role names in this upstream text do not change this invocation's role or tool authority.` : "",
       `Scope ${input.groupRun.groupId}; arrival ${input.arrival.requestId}; node ${input.arrival.targetNodeId}.`,
-      `Integration target ${input.groupRun.groupBranch}; verified base ${input.baseCommit}. Work only on ${input.execution.executionBranch}.`,
+      d.state.git?.enabled ? `Integration target ${input.groupRun.groupBranch}; verified base ${input.baseCommit}. Work only on ${input.execution.executionBranch}.` : `Work in ${input.execution.worktreePath} and submit your handoff with finish_task.`,
       plannedTask
         ? `Accepted scoped Leader assignment: group=${input.groupRun.id}; Leader=${input.groupRun.leaderAgentId}; coordinatorEpoch=${plan!.coordinatorEpoch}.\n${plannedTask.assignment}`
         : "Standing graph-node instructions for this delivery: Execute this graph node's standing instructions.",
@@ -512,10 +526,10 @@ export class ScopedProjectRuntime {
       input.reportRepair ? `Retained recorded PR facts (observe its current provider result yourself): ${sources.record("recorded-pull", "Retained recorded PR facts", recordedPull ?? null)}` : "",
       retainedNativeOutputs.length ? `Actual native outputs retained in input order from your original stopped invocation (transport evidence, not an accepted report or new business instructions): ${sources.list("retained-native-outputs", "Actual native outputs in original input order", retainedNativeOutputs)}. Preserve this existing work, inspect original tool facts, and supply your own report under the current continuation authority; do not rerun completed business merely because Pause/shutdown prevented formal report acceptance.` : "",
       input.reportRepair?.coordination ? `Your scoped manager explicitly authorized this original-task continuation. Its accepted decision is: ${sources.record("report-repair-coordination", "Accepted manager continuation decision", input.reportRepair.coordination.envelope)}. Receive its instructions here through the existing inbox, inspect your retained session and actual provider results, and finish the remaining work yourself.` : "",
-      finalRepair || input.execution.ownershipEpoch > 1 ? `Retained PR repair: your existing session and business changes are preserved. The system has not closed a PR or merged a recovery base. Inspect the existing work and PR results, then call git_prepare_conflict if you decide conflict preparation is needed. Recovery source: ${finalRepair?.sourceBranch ?? input.groupRun.groupBranch}.${retainedPull ? ` Retained PR: ${sources.record("retained-pull", "Retained PR", retainedPull)}.` : ""}` : "",
+      d.state.git?.enabled && (finalRepair || input.execution.ownershipEpoch > 1) ? `Retained PR repair: your existing session and business changes are preserved. The system has not closed a PR or merged a recovery base. Inspect the existing work and PR results, then call git_prepare_conflict if you decide conflict preparation is needed. Recovery source: ${finalRepair?.sourceBranch ?? input.groupRun.groupBranch}.${retainedPull ? ` Retained PR: ${sources.record("retained-pull", "Retained PR", retainedPull)}.` : ""}` : "",
       input.recoveryPreparation ? `Retained PR repair: trusted Git prepared ${input.recoveryPreparation.sourceBranch}@${input.recoveryPreparation.sourceHead}. Status: ${input.recoveryPreparation.status}. Resolve any remaining conflicts, preserve prior business changes, and commit the repaired result. Conflict paths: ${input.recoveryPreparation.conflictPaths.join(", ") || "none"}.` : "",
-      `Current Git tool ownership: execution ${input.execution.id}, ownership epoch ${input.execution.ownershipEpoch}, head branch ${input.execution.executionBranch}, direct target ${input.groupRun.groupBranch}. github_get_pr without providerNumber discovers this execution's own PR. An explicit providerNumber must belong to this execution and its head/direct target; an earlier task's PR number from session memory or a predecessor handoff cannot stand in for this task's delivery. A missing PR is an actual observation, not permission to reuse an unrelated one. Inspect the real result and choose the remaining Git actions or report a blocker to your scoped manager yourself.`,
-      reportHead
+      d.state.git?.enabled ? `Current Git tool ownership: execution ${input.execution.id}, ownership epoch ${input.execution.ownershipEpoch}, head branch ${input.execution.executionBranch}, direct target ${input.groupRun.groupBranch}. github_get_pr without providerNumber discovers this execution's own PR. An explicit providerNumber must belong to this execution and its head/direct target; an earlier task's PR number from session memory or a predecessor handoff cannot stand in for this task's delivery. A missing PR is an actual observation, not permission to reuse an unrelated one. Inspect the real result and choose the remaining Git actions or report a blocker to your scoped manager yourself.` : "",
+      !d.state.git?.enabled ? "" : reportHead
         ? `Retained work-record path: agent-memory/${input.execution.agentId}/Memory.md; report head ${reportHead}. A bound report head does not prove this file was committed. Inspect its actual committed content and current git_status before deciding what remains. Preserve completed work-record steps; do not append another record or create another commit solely to repeat them. A clean worktree or older merged PR does not supply the missing facts for this head. Keep the report head and any accepted finish_task immutable, and provide this supplement's verified operational facts through your actual handoff. If a pending required file needs authority unavailable under the retained report binding, report that exact blocker to your scoped manager rather than discarding required evidence or replacing the report.`
         : input.missingReportRepair
         ? `Retained work record for this stopped task: agent-memory/${input.execution.agentId}/Memory.md. Preserve the existing file and accepted finish_task summary/memory. Supply this report continuation's verified observations through your actual handoff. Report any unresolved work-record or checkout issue to your scoped manager within this continuation's existing authority.`
@@ -525,9 +539,9 @@ export class ScopedProjectRuntime {
       (() => {
         const weak = (input.workflow.routes[input.arrival.targetNodeId] ?? []).filter((edge) => edge.kind === "weak").map((edge) => edge.target);
         return d.state.agents[input.execution.agentId]?.decisionBy === "agent" && weak.length
-          ? `This Agent owns the current local weak route. After completing the business task and Git delivery, call route_to_agent with exactly one of: ${weak.join(", ")}. A prose handoff is not a formal route receipt.` : "";
+          ? `This Agent owns the current local weak route. After completing this task, call route_to_agent with exactly one of: ${weak.join(", ")}. A prose handoff is not a formal route receipt.` : "";
       })(),
-      `Publish artifacts through MCP. When delivery is required, use the explicit Git/GitHub tools exposed to this turn; the system will return their real provider results.`].filter(Boolean).join("\n\n");
+      d.state.git?.enabled ? "Publish artifacts through MCP and use the Git/GitHub tools to deliver changes." : "Publish workspace artifacts through MCP."].filter(Boolean).join("\n\n");
     sources.record("delivery-reference", "Delivery protocol and retained evidence", background);
     const messages: WorkflowDirectMessage[] = [];
     if (plannedTask) messages.push({ sender: input.groupRun.leaderAgentId, body: plannedTask.assignment });
@@ -566,11 +580,11 @@ export class ScopedProjectRuntime {
       turnRequestFactory: async ({ turn }) => {
         const current = { ...request, project: structuredClone(d.state) };
         const onTrace = d.trace(request.agent, request.invocationId);
-        const gatewayModelFetch = await createR11GatewayFetch({ projectTitle: d.state.title,
+        const gatewayModelFetch = d.state.git?.enabled && await createR11GatewayFetch({ projectTitle: d.state.title,
           projectRoot: d.storage.projectDir(d.state.id), execution: { ...input.execution, purpose: "delivery" },
           arrivalRequestId: input.arrival.requestId, arrivalSequence: input.arrival.sequence,
           targetNodeId: input.arrival.targetNodeId, groupRunId: input.groupRun.id,
-          base: input.groupRun.groupBranch, repository: d.repository,
+          base: gitDeliveryRef(input.groupRun.groupBranch), repository: this.repository,
           invocationId: turn.invocationId, inputId: turn.inputId, config: current.project.agents[current.agent], onTrace });
         return { request: { ...current, ...(gatewayModelFetch ? { gatewayModelFetch } : {}) }, onTrace };
       },
@@ -592,7 +606,7 @@ export class ScopedProjectRuntime {
         stagingPath: path.join(input.runtimePath, "control-turns", createHash("sha256").update(turn.inputId).digest("hex"), "actions.json"),
         stateVersion: input.execution.ownershipEpoch,
         candidates, decisionBy, scopedAgentRouting: true, allowFinishRoute: true, allowUserIntervention: false,
-        canComplete: false, allowAgentGitActions: true, workspacePath: input.execution.worktreePath, requireBridge: true };
+        canComplete: false, allowAgentGitActions: this.d.state.git?.enabled === true, workspacePath: input.execution.worktreePath, requireBridge: true };
       return { control, revalidate: async (envelope) => {
         this.assertReceipt(envelope, input.invocationId, input.execution.agentId, input.execution.ownershipEpoch);
         const native = await this.d.database.scopedAgentTurn(this.d.state.id, input.execution.id, input.execution.ownershipEpoch);
@@ -600,8 +614,14 @@ export class ScopedProjectRuntime {
           native.writerLeaseEpoch !== (await this.d.database.writerLease()).epoch) {
           throw new Error("Scoped Agent tool receipt is outside its exact live native authority");
         }
-        await this.d.database.operationsForProject(this.d.state.id, true).assertExecutionOwnership({ projectId: this.d.state.id,
+        if (input.execution.executionBranch) await this.d.database.operationsForProject(this.d.state.id, true).assertExecutionOwnership({ projectId: this.d.state.id,
           executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch, expectedBranch: input.execution.executionBranch, operation: "provider.mutate" });
+        else {
+          await this.d.database.assertScopedGroupActive(this.d.state.id, input.groupRun.id);
+          const live = await this.d.database.scopedExecution(this.d.state.id, input.execution.id);
+          if (live?.ownershipEpoch !== input.execution.ownershipEpoch || live.status !== "running" || isAgentGitAction(envelope.action.tool))
+            throw new Error("Tool is outside the active workspace task");
+        }
         let completion: TaskCompletionRecord | undefined;
         if (envelope.action.tool === "route_to_agent") {
           const original = retained.find((item) => item.action.tool === "route_to_agent")?.action;
@@ -612,9 +632,9 @@ export class ScopedProjectRuntime {
           if (!candidates.includes(envelope.action.target)) throw new Error("Worker route is outside its Agent-owned local candidates");
           await this.d.database.previewScopedArrivalRoute(this.d.state.id, input.arrival.requestId, envelope.action.target);
         } else if (envelope.action.tool === "finish_task") {
-          await rejectR03InitialFinish({ projectTitle: this.d.state.title, projectRoot: this.d.storage.projectDir(this.d.state.id),
+          if (this.d.state.git?.enabled) await rejectR03InitialFinish({ projectTitle: this.d.state.title, projectRoot: this.d.storage.projectDir(this.d.state.id),
             execution: { ...input.execution, purpose: "delivery" }, arrivalRequestId: input.arrival.requestId,
-            groupRunId: input.groupRun.id, base: input.groupRun.groupBranch, repository: this.d.repository,
+            groupRunId: input.groupRun.id, base: gitDeliveryRef(input.groupRun.groupBranch), repository: this.repository,
             envelope, inputId: turn.inputId, facts: this.agentGitFacts.get(input.invocationId),
             completionAlreadyAccepted: await this.d.database.scopedAgentTaskCompleted(this.d.state.id, input.execution.id,
               input.execution.ownershipEpoch, input.invocationId) });
@@ -625,7 +645,8 @@ export class ScopedProjectRuntime {
           if (envelope.action.replacesPath !== undefined) {
             throw new Error("Pending publication replacement requires standalone execution authority");
           }
-          await this.d.storage.resolveExecutionArtifactCandidate(this.d.state.id, input.execution, envelope.action.path);
+          if (this.d.state.git?.enabled) await this.d.storage.resolveExecutionArtifactCandidate(this.d.state.id, input.execution, envelope.action.path);
+          else await this.d.storage.resolveWorkspaceArtifact(this.d.state.id, input.execution.agentId, envelope.action.path);
         } else if (!isAgentGitAction(envelope.action.tool)) throw new Error("Scoped business turn cannot perform management or global actions");
         const accepted = this.capabilities.get(input.invocationId)!.accepted;
         if (!accepted.some((item) => item.callId === envelope.callId)) accepted.push(structuredClone(envelope));
@@ -655,8 +676,8 @@ export class ScopedProjectRuntime {
       // the common tool so unchanged or unconfirmed pushes stay real tool
       // results. An explicit PR observation can recover its published head;
       // the system must not choose another commit, PR or provider merge.
-      const gitInput = { git: this.d.git, repository: this.d.repository,
-        execution: authority, base: input.groupRun.groupBranch, facts, envelope, signal: input.signal,
+      const gitInput = { git: this.git, repository: this.repository,
+        execution: authority, base: gitDeliveryRef(input.groupRun.groupBranch), facts, envelope, signal: input.signal,
         ...agentGitOperationJournal(this.d.database, this.d.state.id),
         recordedOperation: async (id: string) => await this.d.database.recordedGitOperation(this.d.state.id, id),
         recordedSynchronization: async (query: Parameters<CollaborationStateDatabase["scopedMergedSynchronization"]>[0]) => await this.d.database.scopedMergedSynchronization(query),
@@ -675,27 +696,27 @@ export class ScopedProjectRuntime {
       }
       await withholdR12MergeResponse({ projectTitle: this.d.state.title, projectRoot: this.d.storage.projectDir(this.d.state.id),
         execution: authority, arrivalRequestId: input.arrival.requestId, groupRunId: input.groupRun.id,
-        base: input.groupRun.groupBranch, repository: this.d.repository, envelope, result,
+        base: gitDeliveryRef(input.groupRun.groupBranch), repository: this.repository, envelope, result,
         operation: mergeOperation });
       return requestR04PendingFile({ projectTitle: this.d.state.title, projectRoot: this.d.storage.projectDir(this.d.state.id),
         execution: authority, arrivalRequestId: input.arrival.requestId, groupRunId: input.groupRun.id,
-        base: input.groupRun.groupBranch, repository: this.d.repository, inputId, envelope, result,
+        base: gitDeliveryRef(input.groupRun.groupBranch), repository: this.repository, inputId, envelope, result,
         operation: mergeOperation });
     }
     const group = input.groupRun;
     if (action.tool === "git_prepare_conflict") {
-      if (!this.d.git.prepareConflictResolution) throw new Error("Conflict preparation is unavailable for this Git facade");
+      if (!this.git.prepareConflictResolution) throw new Error("Conflict preparation is unavailable for this Git facade");
       // Recovery only wakes the original Agent. The Agent chooses this tool;
       // the runtime must not merge a base into its retained worktree on launch.
       const finalRepair = await this.d.database.scopedFinalRepairForArrival(this.d.state.id, input.arrival.requestId);
-      const sourceBranch = finalRepair?.sourceBranch ?? group.groupBranch;
-      const base = this.d.git.refreshRecoveryBase
-        ? await this.d.git.refreshRecoveryBase(this.d.repository, authority, input.execution.ownershipEpoch, sourceBranch, input.signal)
-        : await this.d.git.observeRemoteRef(this.d.repository, sourceBranch, input.signal);
+      const sourceBranch = finalRepair?.sourceBranch ?? gitDeliveryRef(group.groupBranch);
+      const base = this.git.refreshRecoveryBase
+        ? await this.git.refreshRecoveryBase(this.repository, authority, input.execution.ownershipEpoch, sourceBranch, input.signal)
+        : await this.git.observeRemoteRef(this.repository, sourceBranch, input.signal);
       if (base.status !== "present" || !/^[0-9a-f]{40}$/i.test(base.sha ?? "") || base.ref !== sourceBranch ||
-        base.owner !== this.d.repository.owner || base.repository !== this.d.repository.name)
+        base.owner !== this.repository.owner || base.repository !== this.repository.name)
         throw new Error("Recovery base is unavailable for conflict preparation");
-      const prepared = await this.d.git.prepareConflictResolution(authority, input.execution.ownershipEpoch,
+      const prepared = await this.git.prepareConflictResolution(authority, input.execution.ownershipEpoch,
         sourceBranch === "main" ? { kind: "main", expectedHead: base.sha! }
           : { kind: "group", groupRunId: sourceBranch.slice("groups/".length), expectedHead: base.sha! }, input.signal);
       return prepared;
@@ -719,7 +740,7 @@ export class ScopedProjectRuntime {
         expectedHead: headSha!, expectedBase: pull.base, expectedMergeCommitSha: pull.mergeCommitSha })));
     return agentGitDeliveryStatus({ executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, headSha, pull, synchronized,
       operations: (await database.projectState(this.d.state.id)).operations,
-      worktreeMissingActions: await executionWorktreeClosingActions(this.d.git, { ...execution, purpose: "delivery" }, input.signal) });
+      worktreeMissingActions: await executionWorktreeClosingActions(this.git, { ...execution, purpose: "delivery" }, input.signal) });
   }
 
   private retainAgentTurnResult(input: ScopedAgentTurnInput, result: AgentRunResult): void {
@@ -750,14 +771,14 @@ export class ScopedProjectRuntime {
     if (retained?.status !== "merged") return undefined;
     const observations = [...(this.agentObservedPulls.get(input.invocationId)?.values() ?? [])];
     if (!observations.length) return undefined;
-    const checkout = await this.d.git.observeRetainedExecution({ ...input.execution, purpose: "delivery" },
+    const checkout = await this.git.observeRetainedExecution({ ...input.execution, purpose: "delivery" },
       input.execution.ownershipEpoch, input.signal);
     if (checkout.projectId !== this.d.state.id || checkout.executionId !== input.execution.id ||
       checkout.ownershipEpoch !== input.execution.ownershipEpoch || checkout.branch !== input.execution.executionBranch ||
       checkout.worktreePath !== input.execution.worktreePath) throw new Error("Retained report observation changed its exact checkout identity");
     const matching = observations.filter(pull => pull.status === "merged" && pull.headSha === checkout.head &&
       pull.ownerExecutionId === input.execution.id && pull.head === input.execution.executionBranch &&
-      pull.owner === this.d.repository.owner && pull.repository === this.d.repository.name &&
+      pull.owner === this.repository.owner && pull.repository === this.repository.name &&
       pull.base === input.groupRun.groupBranch && /^[0-9a-f]{40}$/i.test(pull.headSha ?? "") &&
       /^[0-9a-f]{40}$/i.test(pull.mergeCommitSha ?? ""));
     if (matching.length !== 1) return undefined;
@@ -776,12 +797,12 @@ export class ScopedProjectRuntime {
         operation.expectedHead === checkout.head && operation.expectedBase === input.execution.executionBranch &&
         operation.remoteFact?.status === "present" && operation.remoteFact.sha === checkout.head &&
         operation.remoteFact.ref === input.execution.executionBranch &&
-        operation.remoteFact.owner === this.d.repository.owner && operation.remoteFact.repository === this.d.repository.name);
+        operation.remoteFact.owner === this.repository.owner && operation.remoteFact.repository === this.repository.name);
       if (!pushed) return undefined;
     }
     const synchronization = await this.d.database.scopedMergedSynchronization({ projectId: this.d.state.id,
       executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch, providerNumber: observed.providerNumber,
-      expectedHead: observed.headSha!, expectedBase: input.groupRun.groupBranch, expectedMergeCommitSha: observed.mergeCommitSha! });
+      expectedHead: observed.headSha!, expectedBase: gitDeliveryRef(input.groupRun.groupBranch), expectedMergeCommitSha: observed.mergeCommitSha! });
     if (!original && !synchronization) return undefined;
     return { headSha: observed.headSha!, synchronized: Boolean(synchronization), pullRequest: observed };
   }
@@ -798,7 +819,12 @@ export class ScopedProjectRuntime {
         selectedWeakTarget = envelope.action.target;
       }
       else if (envelope.action.tool === "finish_task") await this.recordAgentTaskCompletion(input, envelope);
-      else if (envelope.action.tool === "publish_artifact") await d.database.appendEvent({ projectId: d.state.id,
+      else if (envelope.action.tool === "publish_artifact" && !d.state.git?.enabled) {
+        const artifact = await d.storage.registerWorkspaceArtifact(d.state, envelope);
+        await d.database.appendEvent({ projectId: d.state.id, requestId: `workspace-artifact:${input.execution.id}:${envelope.callId}`,
+          agentId: envelope.agent, invocationId: envelope.invocationId, type: "artifact.published", payload: { artifact } });
+        await d.storage.saveState(d.state);
+      } else if (envelope.action.tool === "publish_artifact") await d.database.appendEvent({ projectId: d.state.id,
         requestId: `scoped-artifact-intent:${input.execution.id}:${input.execution.ownershipEpoch}:${envelope.callId}`,
         workflowRevision: input.groupRun.workflowRevision, agentId: input.execution.agentId, invocationId: input.invocationId,
         type: "scoped.artifact.staged", payload: { executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch,
@@ -822,6 +848,7 @@ export class ScopedProjectRuntime {
     if (weak.length && !selectedWeakTarget && !gateDecisionPending) throw new Error("Scoped weak route requires a formal current local decision");
     try { await d.storage.writeHandoff(d.state, input.execution.agentId, input.invocationId, output || "Business turn completed."); }
     catch (error) { console.warn(`Returned Agent handoff view unavailable (${input.execution.id}): ${supervisionError(error)}`); }
+    if (!d.state.git?.enabled) return { output, selectedWeakTarget };
     const facts = this.agentGitFacts.get(input.invocationId);
     let reportHeadSha = facts?.pushedHeadSha ?? (await this.observedRetainedReportDelivery(input))?.headSha;
     if (input.reportRepair) {
@@ -836,7 +863,7 @@ export class ScopedProjectRuntime {
     }
     const omitHead = await withholdR14ReportHead({ projectTitle: d.state.title, projectRoot: d.storage.projectDir(d.state.id),
       execution: { ...input.execution, purpose: "delivery" }, arrivalRequestId: input.arrival.requestId,
-      groupRunId: input.groupRun.id, base: input.groupRun.groupBranch, repository: d.repository,
+      groupRunId: input.groupRun.id, base: gitDeliveryRef(input.groupRun.groupBranch), repository: this.repository,
       invocationId: input.invocationId, nativeTurn: await d.database.scopedAgentTurn(d.state.id, input.execution.id, input.execution.ownershipEpoch),
       output, selectedWeakTarget, facts, repair: Boolean(input.reportRepair || input.missingReportRepair) });
     this.agentGitFacts.delete(input.invocationId);
@@ -1003,7 +1030,7 @@ export class ScopedProjectRuntime {
         `Context:\n${sources.record("management-source-context", "Source task and handoff context", context)}`,
         globalMain ? "Do not execute business work. This is the global recovery control turn, not a local Leader turn. Preserve every Agent identity/session/cwd."
           : purpose === "complete"
-            ? "This is a group completion control turn. Record your management handoff with finish_task. After the final integration task returns, call complete_group and describe its actual delivery facts; otherwise call request_group_integration with an eligible non-leader Agent. Report any remaining process omissions without inventing delivery. Do not perform business Git work yourself."
+            ? !d.state.git?.enabled ? "Review the actual member handoffs. Call finish_task for your management turn and complete_group for this group run." : "This is a group completion control turn. Record your management handoff with finish_task. After the final integration task returns, call complete_group and describe its actual delivery facts; otherwise call request_group_integration with an eligible non-leader Agent. Report any remaining process omissions without inventing delivery. Do not perform business Git work yourself."
             : purpose === "recover"
               ? "This is a recovery control turn for existing retained failures. Use coordinate_group_task for the distinct recovery actions described below. assign_group_tasks produces a plan and does not resolve these failures. Do not perform business work or dispatch outside this scope."
           : purpose === "route" || purpose === "root-route"
@@ -1012,7 +1039,8 @@ export class ScopedProjectRuntime {
         "Call finish_task for this management round and include any durable Agent-authored memory there. It keeps your channel open for separate authorized group/control actions; a previous round's completion does not finish this one.",
         source ? `Choose exactly one local weak route for ${source.requestId}: ${routeCandidates.join(", ")}.` : purpose === "root-route" ? `Choose exactly one weak outer route for ${group.groupId}: ${routeCandidates.join(", ")}.` : "",
         ordinaryFailureIds.length ? `Use coordinate_group_task for these retained failures: ${ordinaryFailureIds.join(", ")}. Choose only an operation listed for that exact arrival in recoveryOptions. ${globalMain ? userEscalationGuidance : "You cannot skip tasks."}` : "",
-        recoveryOptions.length ? `Current recoveryOptions: ${sources.list("recovery-options", "Current recoveryOptions", recoveryOptions)}. blockedOperations explains prerequisites to resolve; repeating a blocked skip does not settle Git. Retry retains the original Agent/session; repairNodeIds are exact eligible graph nodes for final-conflict retry only. Omit repairNodeId for ordinary retries. After recording your decisions, use finish_task and finish this management turn so the system can apply them.` : "",
+        recoveryOptions.length && !d.state.git?.enabled ? `Available decisions: ${sources.list("recovery-options", "Available decisions", recoveryOptions)}. Choose an available action for the failed arrival and finish this management turn.`
+          : recoveryOptions.length ? `Current recoveryOptions: ${sources.list("recovery-options", "Current recoveryOptions", recoveryOptions)}. blockedOperations explains prerequisites to resolve; repeating a blocked skip does not settle Git. Retry retains the original Agent/session; repairNodeIds are exact eligible graph nodes for final-conflict retry only. Omit repairNodeId for ordinary retries. After recording your decisions, use finish_task and finish this management turn so the system can apply them.` : "",
         failedArrivalRequestIds.length > 1 ? "You may coordinate multiple independent failed arrivals in this same turn, with one immutable choice per arrival and a distinct callId per action. Repeating an identical choice keeps its original receipt. These choices take effect only after this management call stops; the system does not choose for you." + (worktreeClosingOnly ? "" : " Global workflow, planning, routing or user-request transitions remain alternatives to the recovery batch.") : "",
         `Retained failures: ${sources.list("recovery-candidates", "Retained failures", recoveryCandidates)}`,
         closingCandidates.length ? `Identified original-task worktree closing issues: ${sources.list("closing-candidates", "Identified original-task worktree closing issues", closingCandidates)}. Original completed/failed status, report A, finish, business PR and newer reservations remain immutable. These are not ordinary business retries. ${globalMain
@@ -1024,8 +1052,8 @@ export class ScopedProjectRuntime {
           terminalPushObservations: terminalFacts.terminalPushObservations?.filter(turn => terminalCandidates.some(candidate => candidate.executionId === turn.executionId)),
           terminalPushObservationIssues: terminalFacts.terminalPushObservationIssues?.filter(issue => terminalCandidates.some(candidate => candidate.executionId === issue.executionId))
         })}\nA terminal-push incident preserves an already successful business task. Its turn.operation is the immutable reservation snapshot; terminalPushObservationOperations carries the current S journal and recorded provider proof. Use the actual Agent handoff and output. An explicit retry authorizes one read-only original-session receipt turn after you stop; it cannot push, replay business or reset automatic repairs. Escalate to your direct parent if you cannot resolve it. ${userEscalationGuidance} The system only transports these facts and your instructions.` : "",
-        !worktreeClosingOnly ? `A mechanism incident retains the exact stopped original Agent's task, epoch, branch, PR and unsettled operations. Retry authorizes that Agent to continue once in its original session; it does not replenish automatic supplements. GLOBAL Main may explicitly skip this failed Worker after its original Git operations are settled and its native process has stopped; a skip excludes its report from successful evidence and preserves Git history, including any already merged PR. Group/final-integration incidents cannot be skipped as Workers. Unsettled operations require the original Agent's exact reconciliation, not deletion or a new push ID. Escalate through the direct parent if you cannot resolve it. ${userEscalationGuidance} Supply your factual instructions in the coordination rationale; do not perform the Agent's business or Git work yourself.` : "",
-        !worktreeClosingOnly ? `For a final PR conflict, choose repairNodeId from an actual Agent node of the original group. This creates only a repair-only arrival and preserves completed paths; the repaired PR must still merge into that group before its next canonical final PR. Leaders never write business code. A retry without repairNodeId requests Git-only reconciliation; parent managers may delegate selection back to the original Leader. Group-level incidents cannot be marked successful by skip.` : "",
+        d.state.git?.enabled && !worktreeClosingOnly ? `A mechanism incident retains the exact stopped original Agent's task, epoch, branch, PR and unsettled operations. Retry authorizes that Agent to continue once in its original session; it does not replenish automatic supplements. GLOBAL Main may explicitly skip this failed Worker after its original Git operations are settled and its native process has stopped; a skip excludes its report from successful evidence and preserves Git history, including any already merged PR. Group/final-integration incidents cannot be skipped as Workers. Unsettled operations require the original Agent's exact reconciliation, not deletion or a new push ID. Escalate through the direct parent if you cannot resolve it. ${userEscalationGuidance} Supply your factual instructions in the coordination rationale; do not perform the Agent's business or Git work yourself.` : "",
+        d.state.git?.enabled && !worktreeClosingOnly ? `For a final PR conflict, choose repairNodeId from an actual Agent node of the original group. This creates only a repair-only arrival and preserves completed paths; the repaired PR must still merge into that group before its next canonical final PR. Leaders never write business code. A retry without repairNodeId requests Git-only reconciliation; parent managers may delegate selection back to the original Leader. Group-level incidents cannot be marked successful by skip.` : "",
         d.state.userIntervention?.status === "answered" ? `User response: ${d.state.userIntervention.response}` : "",
         allowEdit ? `You may formally edit ${globalMain ? "the global workflow" : "this group's graph and local shared Agent configuration"}; locked fields and necessary active nodes remain protected.` : "Workflow reconfiguration is disabled."].filter(Boolean).join("\n\n");
       sources.record("management-reference", "Management facts and protocol reference", background);
@@ -1206,7 +1234,7 @@ export class ScopedProjectRuntime {
         : (openAndRegister()));
       if (!handle) throw new Error("Scoped management resident did not open");
       const formalTools = worktreeClosingOnly ? ["coordinate_group_task"] : purpose === "recover" ? ["coordinate_group_task", ...(canRequestUser ? ["request_user"] : []), "apply_workflow"]
-        : purpose === "complete" ? ["request_group_integration", "complete_group"]
+        : purpose === "complete" ? (d.state.git?.enabled ? ["request_group_integration", "complete_group"] : ["complete_group"])
         : purpose === "route" || purpose === "root-route" ? ["route_to_agent", "apply_workflow"] : ["assign_group_tasks", "apply_workflow"];
       const stateRequests = async () => purpose === "recover" && !globalMain
         ? (await d.database.projectStateMainCoordinationRequests(d.state.id, invocationId)) : [];
@@ -1274,7 +1302,7 @@ export class ScopedProjectRuntime {
             ...(routeContext.sourceOuterNodeRunId ? { sourceOuterNodeRunId: routeContext.sourceOuterNodeRunId } : {}),
             ...proposalCache.get(envelope.callId), residentStopConfirmed: stopped }, d.state);
           if (acceptance.workflowAdjustment) workflowAdjustments.push(acceptance.workflowAdjustment);
-          if (envelope.action.tool === "complete_group") {
+          if (d.state.git?.enabled && envelope.action.tool === "complete_group") {
             await d.database.completeScopedGroupAfterLeaderDecision({ projectId: d.state.id, groupRunId: group.id,
               agentId, invocationId, coordinatorEpoch: claim!.coordinatorEpoch, output: envelope.action.output,
               requestId: `scoped-group-complete:${group.id}:${envelope.callId}` });
@@ -1355,15 +1383,15 @@ export class ScopedProjectRuntime {
     const group = (await d.database.scopedGroupRun(d.state.id, issue.groupRunId))!;
     const owner = await d.database.scopedFinalIntegration(d.state.id, group.id);
     if (owner) {
-      if (!d.git.observePullRequestForExecution) throw new Error("Final recovery requires authoritative canonical PR discovery");
+      if (!this.git.observePullRequestForExecution) throw new Error("Final recovery requires authoritative canonical PR discovery");
       const execution = { ...owner, purpose: "group-final-integration" as const };
-      const pull = await d.git.observePullRequestForExecution({ repository: d.repository, execution, expectedBase: owner.integrationTarget, signal: d.signal });
+      const pull = await this.git.observePullRequestForExecution({ repository: this.repository, execution, expectedBase: owner.integrationTarget, signal: d.signal });
       // A formal retry authorizes retained execution recovery, not GitHub
       // cleanup. Keep the actual PR and let an authorized Agent act on it.
       await d.database.recordScopedFinalRecoveryPull(d.state.id, group.id, pull);
     }
-    const source = await d.git.observeRemoteRef(d.repository, group.integrationTarget, d.signal);
-    if (source.status !== "present" || !/^[0-9a-f]{40}$/i.test(source.sha ?? "") || source.ref !== group.integrationTarget || source.owner !== d.repository.owner || source.repository !== d.repository.name)
+    const source = await this.git.observeRemoteRef(this.repository, gitDeliveryRef(group.integrationTarget), d.signal);
+    if (source.status !== "present" || !/^[0-9a-f]{40}$/i.test(source.sha ?? "") || source.ref !== group.integrationTarget || source.owner !== this.repository.owner || source.repository !== this.repository.name)
       throw new Error("Final repair lost its canonical direct parent base");
     await d.database.startScopedFinalRepair({ projectId: d.state.id, incidentId, envelope, sourceHead: source.sha! });
   }
@@ -1379,7 +1407,7 @@ export class ScopedProjectRuntime {
       // Several successive PRs on one branch can deliver the business result
       // and its later Memory commit. Use this stopped checkout's exact head
       // (or its immutable report head), never the newest PR in a branch list.
-      const local = await d.git.observeRetainedExecution(authority, execution.ownershipEpoch, d.signal);
+      const local = await this.git.observeRetainedExecution(authority, execution.ownershipEpoch, d.signal);
       if (local.projectId !== d.state.id || local.executionId !== execution.id || local.ownershipEpoch !== execution.ownershipEpoch ||
         local.branch !== execution.executionBranch || local.worktreePath !== execution.worktreePath || !/^[0-9a-f]{40}$/i.test(local.head)) {
         throw new Error("Scoped recovery lost its exact retained execution checkout");
@@ -1388,11 +1416,11 @@ export class ScopedProjectRuntime {
       const recorded = await d.database.scopedAgentRecordedDeliveryPull(d.state.id, execution.id, execution.ownershipEpoch,
         head, { requireUniqueProvider: true });
       if (recorded) {
-        if (!d.git.observePullRequest) throw new Error("Scoped recovery requires authoritative journaled-PR observation");
-        const observed = await d.git.observePullRequest({ repository: d.repository, providerNumber: recorded.providerNumber,
+        if (!this.git.observePullRequest) throw new Error("Scoped recovery requires authoritative journaled-PR observation");
+        const observed = await this.git.observePullRequest({ repository: this.repository, providerNumber: recorded.providerNumber,
           ownerExecutionId: execution.id, signal: d.signal });
-        if (!observed || observed.providerNumber !== recorded.providerNumber || observed.owner !== d.repository.owner ||
-          observed.repository !== d.repository.name || observed.ownerExecutionId !== execution.id ||
+        if (!observed || observed.providerNumber !== recorded.providerNumber || observed.owner !== this.repository.owner ||
+          observed.repository !== this.repository.name || observed.ownerExecutionId !== execution.id ||
           observed.head !== execution.executionBranch || observed.base !== base || observed.headSha !== recorded.headSha ||
           recorded.status === "merged" && (observed.status !== "merged" || observed.mergeCommitSha !== recorded.mergeCommitSha)) {
           throw new Error("Journaled recovery PR is missing or differs from its exact retained delivery identity");
@@ -1401,8 +1429,8 @@ export class ScopedProjectRuntime {
       }
     }
     if (bound) {
-      if (!d.git.observePullRequest) throw new Error("Scoped recovery requires authoritative retained-PR observation");
-      const observed = await d.git.observePullRequest({ repository: d.repository, providerNumber: bound.providerNumber,
+      if (!this.git.observePullRequest) throw new Error("Scoped recovery requires authoritative retained-PR observation");
+      const observed = await this.git.observePullRequest({ repository: this.repository, providerNumber: bound.providerNumber,
         ownerExecutionId: execution.id, signal: d.signal });
       if (!observed || observed.providerNumber !== bound.providerNumber || bound.status === "merged" &&
         (observed.status !== "merged" || observed.headSha !== bound.headSha || observed.base !== bound.base ||
@@ -1411,8 +1439,8 @@ export class ScopedProjectRuntime {
       }
       return observed;
     }
-    if (!d.git.observePullRequestForExecution) throw new Error("Scoped recovery requires authoritative owned-PR discovery");
-    return d.git.observePullRequestForExecution({ repository: d.repository, execution: authority, expectedBase: base, signal: d.signal });
+    if (!this.git.observePullRequestForExecution) throw new Error("Scoped recovery requires authoritative owned-PR discovery");
+    return this.git.observePullRequestForExecution({ repository: this.repository, execution: authority, expectedBase: gitDeliveryRef(base), signal: d.signal });
   }
 
   private async performAcceptedRecoveries(): Promise<void> {
@@ -1449,7 +1477,13 @@ export class ScopedProjectRuntime {
               if (action.operation === "skip" && receipt.globalMain && receipt.executionId) {
                 const execution = await d.database.scopedExecution(d.state.id, receipt.executionId);
                 if (!execution || execution.ownershipEpoch !== receipt.failedOwnershipEpoch) continue;
-                const pull = await this.observeScopedRecoveryPull(execution);
+                if (!execution.executionBranch) {
+              if (action.operation === "skip") await d.database.applyScopedMainSkip(d.state.id, execution.id, execution.ownershipEpoch, null);
+              else await d.database.retryScopedAgentArrival({ projectId: d.state.id, executionId: execution.id,
+                arrivalRequestId: execution.arrivalRequestId, failedOwnershipEpoch: receipt.failedOwnershipEpoch });
+              continue;
+            }
+            const pull = await this.observeScopedRecoveryPull(execution);
                 await d.database.applyScopedMainSkip(d.state.id, execution.id, execution.ownershipEpoch, pull ?? null);
                 continue;
               }
@@ -1572,6 +1606,7 @@ export class ScopedProjectRuntime {
   }
 
   private async publishArtifacts(): Promise<void> {
+    if (!this.d.state.git?.enabled) return;
     // Publications are derived solely from accepted scoped control intents and
     // immutable PR+sync facts; never from an open PR or a mutable checkout.
     const d = this.d;

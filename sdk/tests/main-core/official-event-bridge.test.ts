@@ -309,6 +309,24 @@ describe("OfficialEventBridge", () => {
     expect(events.every(event => !event.kind.startsWith("tool."))).toBe(true);
   });
 
+  it.each(["codex", "pi", "dsh"] as const)("confirms a user chat block beyond the %s tool display preview", async harness => {
+    const notice = "User message chat_1\n" + "完整问题".repeat(3000) + "\nEnd of user message chat_1";
+    const content = [{ type: "text", text: "original tool result".repeat(3000) }, { type: "text", text: notice }];
+    const frame = harness === "codex"
+      ? { type: "item.completed", item: { type: "mcpToolCall", id: "tool-1", tool: "state_get", result: { content } } }
+      : harness === "pi" ? { type: "tool_execution_end", toolCallId: "tool-1", toolName: "state_get", result: { content } }
+      : { method: "session.event", params: { sessionId: "fixture-session", event: { type: "tool/result", seq: 7, surfaceOp: "append",
+          data: { message: { source: { callId: "tool-1" }, toolName: "state_get", content: [{ type: "tool-result", content }] } } } } };
+    const events: HarnessEvent[] = [], privateInputs: HarnessEvent[] = [];
+    const bridge = new OfficialEventBridge({ descriptor: BUILTIN_HARNESS_DESCRIPTORS.find(row => row.id === harness)!,
+      invocationId: "chat-turn", mapEvent: fixtureMappers[harness], onEvent: event => { events.push(event); },
+      onNativeUserInput: event => { privateInputs.push(event); } });
+    await bridge.accept(frame);
+    expect(events).toMatchObject([{ kind: "tool.completed", tool: { truncated: true } }]);
+    expect(JSON.stringify(events)).not.toContain("完整问题");
+    expect(privateInputs).toMatchObject([{ eventId: events[0].eventId, kind: "tool.completed", tool: { truncated: false, outputPreview: notice } }]);
+  });
+
   it.each(["codex", "pi", "dsh"] as const)("retains %s actual normal input separately from queued acknowledgements", async harness => {
     const message = "Final result for the original call. ".repeat(1_500) +
       "Authorization: Bearer private-native-input-secret\noriginal-result-tail-sentinel";

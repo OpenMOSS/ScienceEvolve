@@ -1,3 +1,4 @@
+import { gitDeliveryRef } from "./contracts.js";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import type { ControlAction, OperationRecord } from "../types.js";
@@ -100,7 +101,7 @@ function markerMatches(c: RevertContext, marker: RevertMarker, op: OperationReco
 
 function revertPayload(c: RevertContext, request: StartRequest, source?: HistoricalPullSource) {
   return { projectId: c.projectId, executionId: c.execution.id, ownershipEpoch: c.execution.ownershipEpoch,
-    branch: c.execution.executionBranch, target: request.target.toLowerCase(), expectedHead: request.expectedHead.toLowerCase(),
+    branch: gitDeliveryRef(c.execution.executionBranch), target: request.target.toLowerCase(), expectedHead: request.expectedHead.toLowerCase(),
     mainline: request.mainline, source };
 }
 
@@ -224,7 +225,7 @@ export async function revertGit(c: RevertContext): Promise<Record<string, unknow
     let op = await prepareOperation(c.store, { id: c.attemptId, kind: "git.revert", ownerExecutionId: c.execution.id,
       ownershipEpoch: c.execution.ownershipEpoch, expectedHead: head, expectedBase: c.execution.executionBranch }, revertPayload(c, request, c.source));
     marker = { schemaVersion: 1, operationId: op.id, payloadHash: op.payloadHash, projectId: c.projectId,
-      executionId: c.execution.id, ownershipEpoch: c.execution.ownershipEpoch, branch: c.execution.executionBranch,
+      executionId: c.execution.id, ownershipEpoch: c.execution.ownershipEpoch, branch: gitDeliveryRef(c.execution.executionBranch),
       request: { ...request, target, expectedHead: head }, parent, files, lastAttemptId: c.attemptId, lastAttemptMode: "apply",
       ...(c.source ? { source: c.source } : {}) };
     await writeMarker(c.markerPath, marker, true);

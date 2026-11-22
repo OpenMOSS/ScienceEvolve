@@ -39,7 +39,10 @@ export function restoreAgentConfiguration(configuration: ScopedAgentConfiguratio
     const before = current[id];
     const sameRoute = before && before.model === config.model && before.gatewayId === config.gatewayId && before.nativeCodexProfileId === config.nativeCodexProfileId &&
       (before.harness ?? DEFAULT_HARNESS_ID) === (config.harness ?? DEFAULT_HARNESS_ID) && before.gatewayReasoningOption === config.gatewayReasoningOption;
-    return [id, { ...structuredClone(activeConfig), ...(sameRoute && before.gatewaySnapshot ? { gatewaySnapshot: structuredClone(before.gatewaySnapshot) } : {}) }];
+    const snapshot = before?.gatewaySnapshot;
+    const matchingSnapshot = sameRoute && snapshot && (!config.gatewayId ||
+      snapshot.id === config.gatewayId && snapshot.models.includes(config.model));
+    return [id, { ...structuredClone(activeConfig), ...(matchingSnapshot ? { gatewaySnapshot: structuredClone(snapshot) } : {}) }];
   }));
 }
 

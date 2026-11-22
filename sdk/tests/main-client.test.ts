@@ -50,6 +50,38 @@ async function fixture(run?: AgentRunner["run"], gatewayOptions: GatewayStoreOpt
   return { sdk, runtime, root, gateway };
 }
 describe("explicit main SDK facade (no real model/GitHub)", () => {
+  it("sends chat to the running Main, retains the answer on SDK snapshots and keeps wait explicit", async () => {
+    let active: AgentRunRequest | undefined, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const session = { schemaVersion: 1 as const, harnessId: "codex", adapterVersion: "1", nativeId: "sdk-main",
+      generation: 0, durable: true, createdAt: "2026-11-16T00:00:00Z" };
+    const { sdk, runtime, gateway } = await fixture(async request => {
+      active = request; await request.onDurableSessionStarted!(session, session.nativeId); await gate;
+      return { handoff: "Completed the original task", controlActions: [{ projectId: request.project.id, agent: request.agent,
+        invocationId: request.invocationId, callId: request.invocationId + "-complete", stateVersion: request.control!.stateVersion,
+        capabilityHash: request.control!.capabilityHash, receivedAt: new Date().toISOString(),
+        action: { tool: "complete_project", rationale: "Checked results" } }] };
+    });
+    const run = await sdk.start({ title: "Chat", requirement: "Verify the original task", workflow: mainOnly(), gatewayBindings: { defaultGatewayId: gateway.id } });
+    const submit = vi.spyOn(runtime.orchestrator, "addProjectUserInput");
+    try {
+      await vi.waitFor(() => expect(active?.onReplyToUser).toBeDefined());
+      const saved = await run.addInput("Current result?", { mode: "chat", requestId: "user-1" });
+      const message = saved.mainConversation![0]; expect(message.status).toBe("queued");
+      const request = active!;
+      const text = await request.onPendingMainAssistance!("native-boundary", session);
+      await request.onNativeUserInput!({ kind: "user.message", eventId: "native-user", invocationId: request.invocationId,
+        harnessId: session.harnessId, message: text }, session);
+      await request.onReplyToUser!(message.id, "Still running", "reply");
+      expect((await run.snapshot()).mainConversation).toMatchObject([{ id: message.id, status: "replied", reply: "Still running" }]);
+      const wait = await run.addInput("Formal follow-up", { mode: "wait", requestId: "wait-1" });
+      expect(submit).toHaveBeenCalledWith(run.id, "Formal follow-up", "wait", "wait-1");
+      expect(wait.mainConversation).toHaveLength(1);
+    } finally { release(); }
+    await run.wait();
+    await expect(run.addInput("New chat", { mode: "chat", requestId: "ended" })).rejects.toThrow(/running/);
+  });
+
   it("creates and queries the optional Git-backed search tree without a Web server", async () => {
     const { sdk, gateway } = await fixture();
     const workflow = { ...mainOnly(), searchTree: { root: { name: "Root" }, directions: [] } };

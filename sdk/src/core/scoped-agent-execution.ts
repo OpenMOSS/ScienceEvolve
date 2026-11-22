@@ -1,3 +1,4 @@
+import { gitDeliveryRef } from "./collaboration-git/contracts.js";
 import { MAX_TASK_REPAIR_WAKEUPS, superviseTask, supervisionHandoff } from "./task-supervision.js";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -23,7 +24,7 @@ export interface ScopedAgentTurnInput {
   workflow: ScopedWorkflow;
   invocationId: string;
   runtimePath: string;
-  baseCommit: string;
+  baseCommit?: string;
   recoveryPreparation?: OwnerResolutionFact;
   /** Same logical execution/report, separate physical native repair turn. */
   reportRepair?: { report: ScopedAgentReportRecord; attempt: number; missing: string[];
@@ -104,7 +105,7 @@ export class ScopedAgentExecutionRunner {
   private readonly inFlight = new Set<string>();
 
   constructor(private readonly database: CollaborationStateDatabase,
-    private readonly git: ScopedAgentExecutionGit, private readonly invoker: ScopedAgentTurnInvoker,
+    private readonly gitService: ScopedAgentExecutionGit | undefined, private readonly invoker: ScopedAgentTurnInvoker,
     private readonly projectPath: (projectId: string) => string,
     private readonly options: { automaticCheckpoint?: boolean;
       /** Production Agent-owned delivery must verify PR and sync facts too;
@@ -113,6 +114,46 @@ export class ScopedAgentExecutionRunner {
       /** Optional isolated acceptance boundary, after reservation and before
        * first checkout. Throwing follows the ordinary unopened-failure path. */
       beforeInitialWorktreePreparation?(input: ScopedInitialPreparation): Promise<void> } = {}) {}
+
+  private get git(): ScopedAgentExecutionGit {
+    if (!this.gitService) throw new OperationStoreViolationError("Git delivery requires the project Git service");
+    return this.gitService;
+  }
+
+  async prepareWorkspaceDelivery(input: Omit<PrepareScopedAgentDeliveryInput, "repository">, workspace: string): Promise<PreparedScopedAgentDelivery> {
+    input.signal?.throwIfAborted();
+    const execution = await this.database.scopedExecution(input.projectId, input.executionId);
+    if (!execution || execution.executionBranch || execution.worktreePath !== workspace || execution.ownershipEpoch !== input.ownershipEpoch)
+      throw new OperationStoreViolationError("Workspace delivery lost its original directory or execution");
+    let report = await this.database.scopedAgentReport(input.projectId, execution.id, execution.ownershipEpoch);
+    if (!report) {
+      const group = await this.database.scopedGroupRun(input.projectId, execution.groupRunId);
+      const arrival = (await this.database.scopedArrivals(execution.groupRunId)).find(item => item.requestId === execution.arrivalRequestId);
+      if (!group || !arrival || group.groupBranch) throw new OperationStoreViolationError("Workspace delivery lost its group arrival");
+      const workflow = await this.database.scopedGroupWorkflow(input.projectId, group.id);
+      const invocationId = `inv_${createHash("sha256").update(JSON.stringify([execution.id, execution.ownershipEpoch])).digest("hex").slice(0, 32)}`;
+      const runtimePath = path.join(this.projectPath(input.projectId), "runtime", invocationId);
+      const identity = { projectId: input.projectId, executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, invocationId };
+      const reserved = await this.database.beginScopedAgentTurn({ ...identity, runtimePath });
+      if (reserved.replay) throw new ScopedAgentTurnRecoveryRequired(execution.id);
+      let result: ScopedAgentTurnResult;
+      try {
+        result = await this.invoker.invoke({ execution, arrival, groupRun: group, workflow, invocationId, runtimePath, signal: input.signal,
+          onOpened: () => this.database.markScopedAgentTurnOpened({ ...identity, nativeProcessOpened: true }) });
+      } catch (error) {
+        if (error instanceof ScopedAgentTurnFailure && error.residentStopConfirmed) await this.failStoppedTurn(input, execution, invocationId, error);
+        throw error;
+      }
+      try {
+        report = (await this.database.recordScopedAgentReport({ ...identity, output: result.output, selectedWeakTarget: result.selectedWeakTarget,
+          residentTurnCompleted: true, residentStopConfirmed: result.residentStopConfirmed })).report;
+      } catch (error) {
+        if (result.residentStopConfirmed) await this.failStoppedTurn(input, execution, invocationId, error);
+        throw error;
+      }
+    }
+    return { executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, selectedWeakTarget: report.selectedWeakTarget, output: report.output };
+  }
 
   async prepareDelivery(input: PrepareScopedAgentDeliveryInput): Promise<PreparedScopedAgentDelivery> {
     const key = JSON.stringify([input.projectId, input.executionId]);
@@ -125,7 +166,7 @@ export class ScopedAgentExecutionRunner {
   private async perform(input: PrepareScopedAgentDeliveryInput): Promise<PreparedScopedAgentDelivery> {
     input.signal?.throwIfAborted();
     const execution = await this.database.scopedExecution(input.projectId, input.executionId);
-    if (!execution || execution.ownershipEpoch !== input.ownershipEpoch) {
+    if (!execution?.executionBranch || execution.ownershipEpoch !== input.ownershipEpoch) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped Agent execution ownership is stale or missing");
     }
     const projection = await this.database.projectState(input.projectId);
@@ -163,7 +204,7 @@ export class ScopedAgentExecutionRunner {
       this.database.scopedAgentTurn(input.projectId, execution.id, index + 1)))).filter((turn): turn is NonNullable<typeof turn> => Boolean(turn));
     const prepareRetained = async (currentBase?: string): Promise<LocalWorktreeFact> => {
       if (priorTurns.some((turn) => turn.status !== "stopped")) throw new ScopedAgentTurnRecoveryRequired(execution.id);
-      const bases = priorTurns.filter((turn) => turn.openedAt).map((turn) => turn.baseCommit);
+      const bases = priorTurns.filter((turn) => turn.openedAt).map((turn) => gitDeliveryRef(turn.baseCommit));
       if (currentBase) bases.push(currentBase);
       if (!bases.length) throw new OperationStoreViolationError("Retained scoped delivery has no trusted opened turn base");
       // Infrastructure only: restore missing metadata from the original
@@ -203,15 +244,15 @@ export class ScopedAgentExecutionRunner {
         // checkout. The native front door verifies the old process
         // and resumes its exact persistent session before this turn opens.
         await this.database.assertScopedAgentMissingReportRepairLaunch({ ...input, agentId: execution.agentId, invocationId, runtimePath });
-        baseCommit = retainedTurn!.baseCommit;
+        baseCommit = gitDeliveryRef(retainedTurn?.baseCommit);
         await prepareRetained(baseCommit);
       } else {
         const prepare = async () => {
           let retained: LocalWorktreeFact | undefined;
           let baseCommit: string;
           const currentGroupBase = async () => {
-            const base = await this.git.observeRemoteRef(input.repository, group.groupBranch, input.signal);
-            if (base.status !== "present" || base.ref !== group.groupBranch || !/^[0-9a-f]{40}$/i.test(base.sha ?? "") ||
+            const base = await this.git.observeRemoteRef(input.repository, gitDeliveryRef(group.groupBranch), input.signal);
+            if (base.status !== "present" || base.ref !== gitDeliveryRef(group.groupBranch) || !/^[0-9a-f]{40}$/i.test(base.sha ?? "") ||
               base.owner !== input.repository.owner || base.repository !== input.repository.name) {
               throw new OperationStoreViolationError("Scoped invocation requires the current canonical group head");
             }
@@ -219,7 +260,7 @@ export class ScopedAgentExecutionRunner {
           };
           if (execution.ownershipEpoch > 1) {
             if (priorTurns.some((turn) => turn.status !== "stopped")) throw new ScopedAgentTurnRecoveryRequired(execution.id);
-            const openedBases = priorTurns.filter((turn) => turn.openedAt).map((turn) => turn.baseCommit);
+            const openedBases = priorTurns.filter((turn) => turn.openedAt).map((turn) => gitDeliveryRef(turn.baseCommit));
             if (openedBases.length) {
               // A retry after a real native turn retains its original
               // branch/history/evidence. Only a new execution branches from
@@ -266,7 +307,7 @@ export class ScopedAgentExecutionRunner {
             // scheduler retry does not authorize a merge into business files.
             if (this.options.automaticCheckpoint !== false && (finalRepair || execution.ownershipEpoch > 1 && (await this.database.scopedAgentReport(input.projectId, execution.id, execution.ownershipEpoch - 1))?.headSha)) {
               if (!this.git.prepareConflictResolution) throw new OperationStoreViolationError("Retained PR repair requires trusted Git conflict preparation");
-              const sourceBranch = finalRepair?.sourceBranch ?? group.groupBranch;
+              const sourceBranch = finalRepair?.sourceBranch ?? gitDeliveryRef(group.groupBranch);
               const target = this.git.refreshRecoveryBase
                 ? await this.git.refreshRecoveryBase(input.repository, authority, execution.ownershipEpoch, sourceBranch, input.signal)
                 : await this.git.observeRemoteRef(input.repository, sourceBranch, input.signal);
@@ -286,7 +327,7 @@ export class ScopedAgentExecutionRunner {
           }
           return baseCommit;
         };
-        baseCommit = input.withGroupBase ? await input.withGroupBase(group.groupBranch, prepare) : await prepare();
+        baseCommit = input.withGroupBase ? await input.withGroupBase(gitDeliveryRef(group.groupBranch), prepare) : await prepare();
       }
       let result: ScopedAgentTurnResult;
       try {
@@ -423,7 +464,7 @@ export class ScopedAgentExecutionRunner {
       expectedHeadSha: report.headSha!, selectedWeakTarget: report.selectedWeakTarget, output: report.output };
   }
 
-  private async failStoppedTurn(input: PrepareScopedAgentDeliveryInput, execution: ScopedExecutionRecord, invocationId: string, error: unknown,
+  private async failStoppedTurn(input: Omit<PrepareScopedAgentDeliveryInput, "repository">, execution: ScopedExecutionRecord, invocationId: string, error: unknown,
     preparationStoppedBeforeNativeOpen = false): Promise<void> {
     let turn = await this.database.scopedAgentTurn(input.projectId, execution.id, execution.ownershipEpoch);
     // A recovered writer may be reporting a missing delivery fact after the

@@ -198,6 +198,7 @@ export type HarnessAdapterRequest = Omit<
   | "gatewayModelFetch"
   | "onDurableSessionStarted"
   | "onControlResult"
+  | "onReplyToUser"
   | "onMainAssistanceRequest"
   | "onPendingMainAssistance"
   | "onMainAssistanceDeliveryFailed"
@@ -370,7 +371,7 @@ export interface HarnessAdapterContext {
   /** Report an official native identity; the Facade validates and persists it. */
   onSessionStarted?: (session: SessionRef) => Promise<void>;
   onEvent: (event: HarnessEvent) => Promise<void> | void;
-  /** Private observation of a complete native user input before display bounds. */
+  /** Private receipt for native user input, including complete user-message blocks in tool results. */
   onNativeUserInput?: (event: HarnessEvent) => Promise<void> | void;
   /** Trusted input-boundary callback owned by the Facade, never serialized
    * into an Adapter request or exposed as a model tool. */

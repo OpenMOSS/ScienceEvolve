@@ -15,7 +15,7 @@ export type WorkflowAdjustmentSource = { kind: "user" } | (WorkflowMainSource & 
   nodeRunId: string; routeEpoch: number;
   scope?: { kind: "scoped"; groupRunId: string; coordinatorEpoch: number };
 }) | (WorkflowMainSource & {
-  scope: { kind: "serial"; agentExecutionId: string; mainInvocationSeq: number };
+  scope: { kind: "serial"; agentExecutionId: string; mainInvocationSeq: number } | { kind: "conversation"; messageId: string };
   nodeRunId?: never; routeEpoch?: never;
 }) | {
   kind: "scoped_leader"; agentId: string; acceptedRequestId: string; acceptedEventId: string;

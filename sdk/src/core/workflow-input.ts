@@ -20,6 +20,18 @@ export function minimalWorkflowInput(input: MinimalWorkflowInput): string {
   return `项目入口：${input.projectEntry}\n\n本轮直接消息：\n${workflowMessagesText(input.messages)}`;
 }
 
+/** These sources explicitly report an unfinished invocation, not a successful handoff. */
+export function serialMainSourceIsDiagnostic(state: ProjectState): boolean {
+  const pending = state.pendingMainDecision;
+  if (!pending) return false;
+  if (state.userIntervention?.status === "answered" && pending.sourceInvocationId === state.userIntervention.id) return true;
+  return Boolean(pending.diagnostic && (
+    pending.reason === "workflow-reconfiguration-rejected" ||
+    (pending.reason === "user" && state.interruptionSnapshot?.invocationId === pending.sourceInvocationId) ||
+    state.agentFailureHistory?.[pending.sourceAgent]?.some(failure => failure.invocationId === pending.sourceInvocationId)
+  ));
+}
+
 /** Resolve from authoritative fields, never split an old assembled Markdown. */
 export function serialWorkflowMessages(state: ProjectState, agent: string,
   userInputs: readonly ProjectUserInput[] = []): WorkflowDirectMessage[] {
@@ -28,9 +40,14 @@ export function serialWorkflowMessages(state: ProjectState, agent: string,
   const assignment = state.latestAssignment?.target === agent ? state.latestAssignment : undefined;
   const resumedByUser = agent === "main" && userInputs.length > 0 && (state.runCounts.main ?? 0) > 0;
   if (pending) {
-    if (state.latestHandoff?.invocationId === pending.sourceInvocationId)
-      messages.push({ sender: pending.sourceAgent, body: state.latestHandoff.body ?? state.latestHandoff.markdown });
-    if (pending.diagnostic) messages.push({ sender: "OpenFARS", body: pending.diagnostic });
+    if (state.latestHandoff?.invocationId === pending.sourceInvocationId && state.latestHandoff.agent === pending.sourceAgent) {
+      const body = state.latestHandoff.body ?? state.latestHandoff.markdown;
+      if (!body.trim()) throw new Error(`Pending Main source ${pending.sourceInvocationId} has an empty handoff`);
+      messages.push({ sender: pending.sourceAgent, body });
+    } else if (!serialMainSourceIsDiagnostic(state)) {
+      throw new Error(`Pending Main source handoff is missing: ${pending.sourceAgent}/${pending.sourceInvocationId}`);
+    }
+    if (pending.diagnostic) messages.push({ sender: "ScienceEvolve", body: pending.diagnostic });
   } else if (state.latestHandoff?.gate?.target === agent) {
     messages.push({ sender: `${state.latestHandoff.agent} / Gate ${state.latestHandoff.gate.nodeId}`,
       body: state.latestHandoff.body ?? state.latestHandoff.markdown });

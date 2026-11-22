@@ -397,6 +397,7 @@ export class ControlActionService {
         const accepted = async (canonical: ControlActionEnvelope) => {
           await this.options.onStaged?.(structuredClone(canonical));
           if (completion !== undefined) this.results.set(callId, completion);
+          if (action.tool === "apply_workflow" && validated !== undefined) this.results.set(callId, validated);
           return canonical;
         };
         if (existing) return await accepted(existing);

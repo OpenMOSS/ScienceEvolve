@@ -1,6 +1,7 @@
 import type { HarnessEventKind } from "../contracts.js";
 import {
   boundedPreview,
+  nativeUserNoticeFromResult,
   contentText,
   diagnosticEvent,
   eventRecord,
@@ -79,6 +80,7 @@ export const mapCodexOfficialEvent: OfficialEventMapper = (event) => {
     const input = item.command ?? item.arguments ?? item.input;
     const bounded = output === undefined ? undefined : boundedPreview(output);
     return [{
+      ...(status === "completed" && bounded?.truncated && codexToolType(eventString(item.type)) === "mcp" ? nativeUserNoticeFromResult(output) : {}),
       kind: `tool.${status}` as HarnessEventKind,
       sourceType: type,
       message: name,

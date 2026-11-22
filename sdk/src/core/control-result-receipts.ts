@@ -104,6 +104,9 @@ export function controlResultDisplayText(envelope: ControlActionEnvelope, result
     if (receiptId && !/^[a-f0-9]{64}$/.test(receiptId)) throw new Error("Invalid control result receipt identity");
     return `${receiptId ? `${controlResultMarker(receiptId)}\n` : ""}${taskCompletionResultText(result, envelope)}`;
   }
+  if (envelope.action.tool === "apply_workflow" && result !== undefined) {
+    return `${receiptId ? `${controlResultMarker(receiptId)}\n` : ""}Workflow adjustment: ${JSON.stringify(result)}`;
+  }
   const summary = agentGitResultText(envelope.action.tool, result);
   return `${summary}${summary ? "\n" : ""}${controlResultText(envelope, result, receiptId)}\nControl-action staging and atomic invocation commit refer to internal control records, not Git staging, automatic Git commits, or successful business operations. Inspect the actual provider result for the Git outcome.`;
 }

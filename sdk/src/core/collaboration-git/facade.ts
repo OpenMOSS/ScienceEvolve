@@ -1,3 +1,4 @@
+import { gitDeliveryRef } from "./contracts.js";
 import type {
   AgentId,
   ExecutionId,
@@ -205,6 +206,7 @@ export class CollaborationGitFacade {
     invocationId?: string;
     signal?: AbortSignal;
   }): Promise<PushOperationReconciliation> {
+    const executionBranch = gitDeliveryRef(request.execution.executionBranch);
     const read = this.options.operationStore.recordedOperation;
     if (!read) throw new OperationStoreViolationError("Retained push journal lookup is unavailable");
     if (!request.operationId.trim() || request.operationId.length > 1_024) {
@@ -219,7 +221,7 @@ export class CollaborationGitFacade {
       }
       if (request.execution.ownershipEpoch !== request.ownershipEpoch) throw new GitInputError("Historical push caller epoch is stale");
       const observation = { projectId: this.options.localGit.projectId, executionId: request.execution.id,
-        ownershipEpoch: request.ownershipEpoch, expectedBranch: request.execution.executionBranch,
+        ownershipEpoch: request.ownershipEpoch, expectedBranch: executionBranch,
         operationId: request.operationId, payloadHash: original.payloadHash,
         ...(request.invocationId ? { invocationId: request.invocationId } : {}) };
       const historicalOwner = await store.assertRetainedPushObservation(observation);
@@ -260,7 +262,7 @@ export class CollaborationGitFacade {
     const valid = (operation: OperationRecord | undefined): operation is OperationRecord => Boolean(operation &&
       operation.id === request.operationId && operation.kind === "git.push" &&
       operation.ownerExecutionId === request.execution.id && operation.ownershipEpoch === request.ownershipEpoch &&
-      operation.expectedBase === request.execution.executionBranch && /^[0-9a-f]{40}$/i.test(operation.expectedHead ?? ""));
+      operation.expectedBase === executionBranch && /^[0-9a-f]{40}$/i.test(operation.expectedHead ?? ""));
     if (!valid(original)) throw new GitInputError("Retained push record differs from this Agent's exact execution and branch");
     const readCurrent = async () => {
       const current = await read.call(this.options.operationStore, request.operationId);
@@ -269,15 +271,15 @@ export class CollaborationGitFacade {
       }
       return current;
     };
-    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, request.execution.executionBranch);
+    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, executionBranch);
     if (original.status === "failed") return { status: "failed", operation: original };
     if (original.status === "superseded") {
       pushSupersessionProof(original, request.repository);
       return { status: "superseded", operation: original };
     }
-    let remote = await this.observeRemoteRef(request.repository, request.execution.executionBranch, request.signal);
+    let remote = await this.observeRemoteRef(request.repository, executionBranch, request.signal);
     if (remote.owner !== request.repository.owner || remote.repository !== request.repository.name ||
-      remote.ref !== request.execution.executionBranch) throw new GitInputError("Observed push ref differs from its bound repository and branch");
+      remote.ref !== executionBranch) throw new GitInputError("Observed push ref differs from its bound repository and branch");
     let current = await readCurrent();
     if (current.status === "failed") return { status: "failed", operation: current, remote };
     if (current.status === "superseded") {
@@ -290,17 +292,17 @@ export class CollaborationGitFacade {
     if (["prepared", "observed", "uncertain"].includes(current.status) && remote.status === "present" &&
       remote.sha !== current.expectedHead && store.confirmedPushPublication && store.recordPushSupersession && request.invocationId) {
       const input = { projectId: this.options.localGit.projectId, executionId: request.execution.id,
-        ownershipEpoch: request.ownershipEpoch, expectedBranch: request.execution.executionBranch,
+        ownershipEpoch: request.ownershipEpoch, expectedBranch: executionBranch,
         operationId: current.id, payloadHash: current.payloadHash, invocationId: request.invocationId, remote };
       const publication = await store.confirmedPushPublication(input);
       if (publication && await this.options.localGit.canFastForward(current.expectedHead!, remote.sha!, request.signal)) {
-        const fresh = await this.observeRemoteRef(request.repository, request.execution.executionBranch, request.signal);
+        const fresh = await this.observeRemoteRef(request.repository, executionBranch, request.signal);
         if (fresh.owner !== remote.owner || fresh.repository !== remote.repository || fresh.ref !== remote.ref ||
           fresh.status !== "present" || fresh.sha !== remote.sha) {
           throw new OperationStoreViolationError("Remote changed during push inclusion observation");
         }
         request.signal?.throwIfAborted();
-        await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, request.execution.executionBranch);
+        await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, executionBranch);
         await readCurrent();
         const operation = await store.recordPushSupersession({ ...input, remote: fresh,
           publicationOperationId: publication.id, publicationPayloadHash: publication.payloadHash });
@@ -313,7 +315,7 @@ export class CollaborationGitFacade {
       (remote.status === "missing" || remote.status === "present" && remote.sha !== original.expectedHead)) {
       // This branch is entered only by the Agent's explicit tool argument.
       // No new journal, commit or system-selected work is introduced.
-      await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, request.execution.executionBranch);
+      await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, executionBranch);
       if (remote.status === "present" &&
         !await this.options.localGit.canFastForward(remote.sha!, original.expectedHead!, request.signal)) {
         throw new GitInputError("Retained push cannot overwrite a moved remote branch");
@@ -326,20 +328,20 @@ export class CollaborationGitFacade {
         const status = gitPushAuthorizationStatus(error);
         if (status) throw new GitHubAuthorizationError(status, "GitHub rejected the Agent's retained push request");
         if (!(error instanceof GitCommandError)) throw error;
-        await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, request.execution.executionBranch);
+        await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, executionBranch);
         await transitionOperation(this.options.operationStore, original, { status: "uncertain", remoteFact: {
-          provider: "github", ref: request.execution.executionBranch, expectedHead: original.expectedHead,
+          provider: "github", ref: executionBranch, expectedHead: original.expectedHead,
           reconcileRequired: true
         } });
         pushOutcome = "uncertain";
       }
-      remote = await this.observeRemoteRef(request.repository, request.execution.executionBranch, request.signal);
+      remote = await this.observeRemoteRef(request.repository, executionBranch, request.signal);
       if (remote.owner !== request.repository.owner || remote.repository !== request.repository.name ||
-        remote.ref !== request.execution.executionBranch) throw new GitInputError("Retried push observation differs from its bound repository and branch");
+        remote.ref !== executionBranch) throw new GitInputError("Retried push observation differs from its bound repository and branch");
     }
     // User Stop or a new ownership epoch can arrive during provider I/O. The
     // observation does not confer authority to finalize an old journal.
-    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, request.execution.executionBranch);
+    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, executionBranch);
     current = await readCurrent();
     if (current.status === "failed") return { status: "failed", operation: current, remote, ...(pushOutcome ? { pushOutcome } : {}) };
     if (current.status === "superseded") {
@@ -364,7 +366,7 @@ export class CollaborationGitFacade {
     return this.options.provider.observePullRequestForExecution(
       request.repository.owner,
       request.repository.name,
-      request.execution.executionBranch,
+      gitDeliveryRef(request.execution.executionBranch),
       request.expectedBase,
       request.execution.id,
       request.signal,
@@ -597,7 +599,7 @@ export class CollaborationGitFacade {
     directBase: string; sourceOperationId: string; providerNumber?: number; signal?: AbortSignal }) {
     const { execution, repository, signal } = request;
     if (execution.purpose !== "delivery" || execution.restrictedClosing) throw new GitInputError("Historical sources require a new current business task");
-    await this.assertRemoteAuthority(execution, execution.ownershipEpoch, execution.executionBranch);
+    await this.assertRemoteAuthority(execution, execution.ownershipEpoch, gitDeliveryRef(execution.executionBranch));
     const operation = await this.options.operationStore.recordedOperation?.(request.sourceOperationId);
     const recorded = operation?.remoteFact;
     if (!operation || operation.kind !== "pull.merge" || !["observed", "finalized", "uncertain"].includes(operation.status) ||
@@ -613,7 +615,7 @@ export class CollaborationGitFacade {
     const history = await this.options.localGit.inspectExecution(execution, execution.ownershipEpoch, request.directBase,
       { tool: "git_log", revision: pull.mergeCommitSha, limit: 1 }, signal);
     if (!("commits" in history) || history.commits[0]?.sha !== pull.mergeCommitSha) throw new GitInputError("Merged source is outside the current repair branch history");
-    await this.assertRemoteAuthority(execution, execution.ownershipEpoch, execution.executionBranch);
+    await this.assertRemoteAuthority(execution, execution.ownershipEpoch, gitDeliveryRef(execution.executionBranch));
     const source: HistoricalPullSource = { sourceOperationId: operation.id, providerNumber: pull.providerNumber,
       ownerExecutionId: operation.ownerExecutionId, headSha: pull.headSha!, base: pull.base, mergeCommitSha: pull.mergeCommitSha! };
     return { status: "historical_source", source, pullRequest: pull, parents: history.commits[0].parents,
@@ -705,19 +707,19 @@ export class CollaborationGitFacade {
     );
     if (!checkpoint.changed) {
       if (request.execution.purpose === "final-integration" && request.execution.groupRunId &&
-        request.execution.executionBranch === `groups/${request.execution.groupRunId}`) {
+        gitDeliveryRef(request.execution.executionBranch) === `groups/${request.execution.groupRunId}`) {
         // The owning Agent explicitly requested this tool. Canonical delivery
         // publishes the members' existing group head; observe its remote fact
         // without manufacturing a business commit or another push operation.
         const remote = await this.options.provider.observeRef(
           request.repository.owner, request.repository.name,
-          request.execution.executionBranch, request.signal
+          gitDeliveryRef(request.execution.executionBranch), request.signal
         );
         return { checkpoint, remote };
       }
       return { checkpoint };
     }
-    const branch = request.execution.executionBranch;
+    const branch = gitDeliveryRef(request.execution.executionBranch);
     await this.assertRemoteAuthority(
       request.execution,
       request.ownershipEpoch,
@@ -771,7 +773,7 @@ export class CollaborationGitFacade {
     }
     try {
       const pushed = request.execution.purpose === "final-integration" &&
-        request.execution.executionBranch.startsWith("groups/")
+        gitDeliveryRef(request.execution.executionBranch).startsWith("groups/")
         ? await this.options.localGit.pushGroup(
             request.execution.groupRunId ?? (() => {
               throw new GitInputError("Final integration execution requires groupRunId");
@@ -863,12 +865,12 @@ export class CollaborationGitFacade {
     await this.assertRemoteAuthority(
       request.execution,
       request.ownershipEpoch,
-      request.execution.executionBranch
+      gitDeliveryRef(request.execution.executionBranch)
     );
     return this.options.provider.openPullRequest({
       owner: request.repository.owner,
       repository: request.repository.name,
-      head: request.execution.executionBranch,
+      head: gitDeliveryRef(request.execution.executionBranch),
       base: request.base,
       title: request.title,
       body: request.body,
@@ -903,14 +905,14 @@ export class CollaborationGitFacade {
     await this.assertRemoteAuthority(
       request.execution,
       request.ownershipEpoch,
-      request.execution.executionBranch
+      gitDeliveryRef(request.execution.executionBranch)
     );
     return this.mergePullRequestAuthorized(request);
   }
 
   async mergeGroupFinalPullRequest(request: MergeGroupFinalPullRequestRequest): Promise<SynchronizedPullRequestFact> {
     this.assertCanonicalFinalAuthority(request.execution);
-    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, request.execution.executionBranch);
+    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, gitDeliveryRef(request.execution.executionBranch));
     return this.mergePullRequestAuthorized(request);
   }
 
@@ -941,7 +943,7 @@ export class CollaborationGitFacade {
     await this.assertRemoteAuthority(
       request.execution,
       request.ownershipEpoch,
-      request.execution.executionBranch,
+      gitDeliveryRef(request.execution.executionBranch),
       "provider.reconcile_merged",
       {
         providerNumber: request.providerNumber,
@@ -964,7 +966,7 @@ export class CollaborationGitFacade {
       request.signal
     );
     if (!pullRequest || pullRequest.status !== "merged" ||
-      pullRequest.head !== request.execution.executionBranch ||
+      pullRequest.head !== gitDeliveryRef(request.execution.executionBranch) ||
       pullRequest.headSha !== request.expectedHead ||
       pullRequest.base !== request.expectedBase ||
       pullRequest.mergeCommitSha !== request.expectedMergeCommitSha) {
@@ -1089,7 +1091,7 @@ export class CollaborationGitFacade {
       throw new GitInputError("Remote mutation ownership epoch is stale");
     }
     await this.assertClosingPublication(request.execution, request.ownershipEpoch, request.expectedHead, request.signal);
-    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, request.execution.executionBranch, "provider.mutate");
+    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, gitDeliveryRef(request.execution.executionBranch), "provider.mutate");
     return this.options.provider.updatePullRequest({
       owner: request.repository.owner,
       repository: request.repository.name,
@@ -1121,7 +1123,7 @@ export class CollaborationGitFacade {
       throw new GitInputError("Remote mutation ownership epoch is stale");
     }
     await this.assertClosingPublication(request.execution, request.ownershipEpoch, request.expectedHead, request.signal);
-    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, request.execution.executionBranch, "provider.close_terminal");
+    await this.assertRemoteAuthority(request.execution, request.ownershipEpoch, gitDeliveryRef(request.execution.executionBranch), "provider.close_terminal");
     return this.options.provider.closePullRequest({
       owner: request.repository.owner,
       repository: request.repository.name,
@@ -1158,12 +1160,12 @@ export class CollaborationGitFacade {
    * non-resetting fetch/CAS fast-forward without publishing a fake merge. */
   async refreshRecoveryBase(repository: GitHubRepositoryFact, execution: GitExecutionAuthority,
     epoch: number, branch: string, signal?: AbortSignal): Promise<GitHubRefFact> {
-    await this.assertRemoteAuthority(execution, epoch, execution.executionBranch, "merge.prepare");
+    await this.assertRemoteAuthority(execution, epoch, gitDeliveryRef(execution.executionBranch), "merge.prepare");
     const ref = await this.options.provider.observeRef(repository.owner, repository.name, branch, signal);
     if (ref.status !== "present" || !ref.sha) throw new GitInputError("Recovery integration base is absent");
     await this.options.localGit.synchronizeMergedPullRequest({ operationId: `recovery-base-${execution.id}-${epoch}-${ref.sha}`,
       targetBranch: branch, expectedSourceHead: ref.sha, expectedMergeCommit: ref.sha, expectedRemoteHead: ref.sha, signal });
-    await this.assertRemoteAuthority(execution, epoch, execution.executionBranch, "merge.prepare");
+    await this.assertRemoteAuthority(execution, epoch, gitDeliveryRef(execution.executionBranch), "merge.prepare");
     return ref;
   }
 
@@ -1284,7 +1286,7 @@ export class CollaborationGitFacade {
   private assertCanonicalFinalAuthority(execution: GitGroupFinalAuthority): void {
     if (execution.purpose !== "group-final-integration" ||
       execution.id !== `group-final-${execution.groupRunId}` ||
-      execution.executionBranch !== `groups/${execution.groupRunId}`) {
+      gitDeliveryRef(execution.executionBranch) !== `groups/${execution.groupRunId}`) {
       throw new GitInputError("Final group PR authority must own its canonical group branch");
     }
   }

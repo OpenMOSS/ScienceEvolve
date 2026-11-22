@@ -2213,6 +2213,26 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     })).rejects.toThrow(/validate staged purpose inputs/);
   });
 
+  it.each(["project-workspace", "external-workspace"] as const)("opens a scoped Leader in its host-bound %s with Git disabled", async location => {
+    const fixture = await createFixture("pi", configuredAdapter("pi", "unused"), "leader", "workspace", location);
+    const input = await highLevelInput(fixture, async () => undefined);
+    const inputs = fixture.launch.spec.inputs;
+    input.request = { ...input.request, project: { ...input.request.project, git: { enabled: false, status: "disabled" } },
+      inboxPath: inputs.inboxPath, runtimePath: inputs.runtimePath };
+    input.inputs = inputs;
+    const facade = new HarnessRuntimeFacade({
+      adapters: [new CodexAdapter(), configuredAdapter("pi", fixture.launch.executable)],
+      ...(location === "external-workspace" ? { resolveProjectWorkspace: async () => fixture.workspace } : {})
+    });
+    const prepared = await facade.prepareResidentScope(input);
+    expect(prepared.filesystemAuthority).toMatchObject({ writeRoots: [], gitCapability: "none" });
+    expect(prepared.projectWorkspace).toBe(fixture.workspace);
+    const opened = await facade.openResidentScope(prepared);
+    try { expect(opened.evidence.cwd).toBe(fixture.workspace); }
+    finally { await facade.closeResident({ executionId: opened.lease.executionId, harnessId: "pi",
+      ownershipEpoch: opened.lease.ownershipEpoch, controlSeq: 1 }); }
+  });
+
   it.each(["codex", "pi", "dsh"])("opens the %s management Harness with its exact retained proposal through the public facade", async (harnessId) => {
     const configured = configuredAdapter(harnessId, "unused");
     const fixture = await createFixture(harnessId, configured, "leader", "workspace", true);
@@ -3297,6 +3317,61 @@ describe.runIf(process.platform === "linux")("openBuiltinResidentAdapter", () =>
     await handle.close();
   }, 30_000);
 
+  it.each([false, true])("opens the original Main conversation workspace with its project workflow grant (%s)", async editable => {
+    const fixture = await createFixture("pi", new PiAdapter(), "leader");
+    const prepared = await highLevelInput(fixture, async () => undefined);
+    const { request } = prepared, { projectPath, invocationId, runtimePath } = request;
+    const projectId = request.project.id, routeScopeId = `main-assistance-${projectId}`;
+    const workspacePath = path.join(projectPath, "runtime", "main-assistance", "main-assistance-workspace");
+    const snapshot = path.join(workspacePath, ".scienceevolve", "management", invocationId);
+    const inboxPath = path.join(snapshot, `${invocationId}-Inbox.md`), memoryPath = path.join(snapshot, "Memory.md");
+    await fs.mkdir(snapshot, { recursive: true });
+    await Promise.all([fs.writeFile(inboxPath, "Review the next step."), fs.writeFile(memoryPath, "Project memory.")]);
+    const draft = path.join(projectPath, "agent-inputs", "main", "management", invocationId, "proposal", "workflow.json");
+    if (editable) { await fs.mkdir(path.dirname(draft), { recursive: true }); await fs.writeFile(draft, "{}"); }
+    request.project.orchestration = { ...cloneAgentOrchestrationTemplate(), allowMainReconfiguration: editable };
+    request.project.agents.main = request.project.agents.writer!;
+    Object.assign(request, { agent: "main", kind: "main", workspacePath, inboxPath, onReplyToUser: async () => {},
+      executionContext: { role: "leader", nodeRunId: projectId, routeScopeId, coordinatorEpoch: 1 } });
+    const pi = configuredAdapter("pi", fixture.launch.executable);
+    const facade = new HarnessRuntimeFacade({ adapters: [new CodexAdapter(), pi] });
+    const prepare = vi.spyOn(facade, "prepareResidentScope"), submit = vi.spyOn(facade, "submitResidentTurn");
+    const adapter = new HarnessRuntimeResidentAdapter({ runtime: facade, routeFactory: () => openTestInvocationRoute(pi.descriptor.nativeProtocol, "chat-workflow") });
+    let rpc: Awaited<ReturnType<typeof openStdioRpc>> | undefined;
+    const publication = { requestId: "edit-review", status: "pending", reason: "The original task is active" };
+    const revalidate = vi.fn(async () => publication);
+    const launcher = createProductionCollaborationResidentLauncher(facade, adapter);
+    const capability = "user-conversation-capability";
+    const handle = await launcher.open({ request, executionRuntimePath: runtimePath, signal: prepared.signal, onTrace: async () => {},
+      inputs: { projectPath, workspacePath, runtimePath, inboxPath, memoryPath, inboxSha256: "fixture",
+        ...(editable ? { workflowAuthoringPath: draft, workflowAuthoringInvocationId: invocationId } : {}) },
+      filesystemAuthorityInput: { serviceUserRoot: fixture.root, protectedRoots: [path.join(projectPath, "runtime")] },
+      controlScope: { role: "main-assistance", projectId, nodeRunId: projectId, routeScopeId, leaderAgentId: "main", coordinatorEpoch: 1 },
+      turnRequestFactory: async () => ({ request, onTrace: async (_kind, message) => {
+        if (message !== "Resident turn authority activated") return;
+        const response = await rpc!.request("tools/call", { name: "apply_workflow", arguments: {
+          path: "workflow.json", callId: "edit-review", rationale: "Review the next step" } });
+        expect(response.result).toMatchObject(editable ? { structuredContent: publication } : { isError: true });
+      } }),
+      controlAuthorityFactory: async () => ({ control: { capability, capabilityHash: createHash("sha256").update(capability).digest("hex"),
+        stagingPath: path.join(runtimePath, "assistance-control.json"), candidates: [], stateVersion: 1, decisionBy: "main",
+        allowUserIntervention: false, canComplete: false, mainConversation: "turn", requireBridge: true,
+        ...(editable ? { allowWorkflowReconfiguration: true, workflowAuthoringPath: draft } : {}) }, revalidate }) });
+    try {
+      const scope = await prepare.mock.results[0].value;
+      expect(scope.filesystemAuthority.writeRoots).toEqual(editable ? [path.dirname(draft)] : []);
+      const row = prepare.mock.calls[0][0].controlMcp!.row;
+      if (row.transport !== "stdio") throw new Error("Expected the resident control stdio bridge");
+      rpc = await openStdioRpc(row.command, row.args);
+      const list = await rpc.request("tools/list");
+      expect((list.result as { tools: Array<{ name: string }> }).tools.map(tool => tool.name)).toEqual(editable ? ["reply_to_user", "apply_workflow"] : ["reply_to_user"]);
+      const result = await handle.submit({ inputId: "original-user-message", invocationId, prompt: "Review the next step." });
+      expect(result.handoff).toBe("pi-1");
+      expect(revalidate).toHaveBeenCalledTimes(editable ? 1 : 0);
+      if (editable) expect(submit.mock.calls[0][1].prompt).toContain(draft);
+    } finally { await rpc?.close(); await handle.close(); }
+  }, 30_000);
+
   it("compiles a system Main route as ordinary Main control, not group-leader control", async () => {
     const fixture = await createFixture("pi", new PiAdapter(), "leader");
     const inboxPath = path.join(fixture.workspace, "turn-one-Inbox.md");
@@ -3803,14 +3878,16 @@ async function createFixture(
   adapter: HarnessAdapter,
   role: "leader" | "delivery" = "delivery",
   permission: AgentPermission = "workspace",
-  fixedManagement = false,
+  fixedManagement: boolean | "project-workspace" | "external-workspace" = false,
   projectId = "prj_fixture"
 ) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "openfars-resident-launch-"));
   roots.push(root);
   const projectPath = path.join(root, projectId);
   const executionRuntime = path.join(projectPath, "runtime", "resident", "exec-fixture");
-  const workspace = fixedManagement ? path.join(projectPath, "git-worktrees", "agents", "writer")
+  const workspace = fixedManagement === "project-workspace" ? path.join(projectPath, "workspaces")
+    : fixedManagement === "external-workspace" ? path.join(root, "selected-workspace")
+    : fixedManagement ? path.join(projectPath, "git-worktrees", "agents", "writer")
     : role === "leader" ? path.join(executionRuntime, "management-workspace") : path.join(projectPath, "worktrees", "execution");
   await Promise.all([
     fs.mkdir(workspace, { recursive: true }),

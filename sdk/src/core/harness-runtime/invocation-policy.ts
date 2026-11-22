@@ -82,13 +82,19 @@ export function compileWorkflowPrompt(
   policy: InvocationPolicy,
   options: { inlineInbox?: string; recoveryNote?: string } = {}
 ): string {
+  if (request.kind === "main" && request.resumeThreadId && request.terminalControlRepair) {
+    const rejection = request.terminalControlRepair.rejectedAction;
+    const targets = request.control?.mainCapabilities?.routeCandidates ?? request.control?.candidates;
+    if (rejection) return `上一轮的流程工具调用未成功。${rejection}。请更正后重新提交决定。${targets?.length ? "本轮可选路由目标为 " + targets.join("、") + "。" : ""}`;
+    return "上一轮还没有提交下一步决定。请根据刚才的判断，用本轮可用的流程工具提交决定。";
+  }
   const mechanismTurn = Boolean(request.terminalPushObservation || request.terminalPushCoordination || request.worktreeClosing);
   const mandate = mechanismTurn ? "" : normalizeNativeToolGuidance(request.project.agents[request.agent].instructions);
   const task = options.inlineInbox ?? "";
   const recovery = [
     options.recoveryNote,
     request.terminalControlRepair
-      ? `Supply the missing formal completion/control action after validating this original handoff:\n${request.terminalControlRepair.originalHandoff}`
+      ? `Supply the missing formal completion/control action for this original task after checking the actual evidence. Do not repeat completed work. A finish_task receipt does not replace a routing decision. The previous handoff is retained${request.terminalControlRepair.handoffPath ? ` at ${request.terminalControlRepair.handoffPath}` : " in the terminal-control-repair context record"}; read it if needed rather than reproducing it as another summary.`
       : undefined,
     !mechanismTurn ? request.siiResumePrompt : undefined
   ].filter(Boolean).join("\n\n");

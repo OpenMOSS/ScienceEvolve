@@ -4,7 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { CollaborationStateDatabase } from "../../src/core/collaboration-state/index.js";
 import { enqueueMainAssistance, assistanceUpdate, type MainAssistanceJournal, type MainAssistanceOrigin } from "../../src/core/main-assistance.js";
-import type { ProjectState } from "../../src/core/types.js";
+import type { AgentRunRequest, ProjectState } from "../../src/core/types.js";
+import { prepareConversationSession } from "../../src/core/main-conversation-binding.js";
+import { collaborationSessionKey } from "../../src/core/internal/shared/collaboration-session-key.js";
 const roots: string[] = [], databases: CollaborationStateDatabase[] = [];
 afterEach(async () => { databases.splice(0).forEach(db => db.close()); await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
 async function fixture() {
@@ -38,6 +40,44 @@ async function fixture() {
       db = CollaborationStateDatabase.open(options); databases.push(db); } };
 }
 describe("Main assistance durable task binding", () => {
+  it("uses the last native Main binding for a legacy Git conversation when the checkpoint has no session", async () => {
+    const f = await fixture();
+    const context = { role: "leader" as const, routeScopeId: "original-route", nodeRunId: "node", coordinatorEpoch: 2 };
+    const state = { id: "p", git: { enabled: true }, orchestration: { schemaVersion: 2 } } as ProjectState;
+    const request = { project: structuredClone(state), executionContext: { ...context, routeScopeId: "main-assistance-p" } } as AgentRunRequest;
+    const binding = { projectId: "p", agentId: "main", invocationId: "inv-original", worktreePath: "/original", runtimePath: "/runtime",
+      executionContext: context, session: f.session };
+    const database = { latestAgentNativeSessionBinding: async () => binding };
+    const key = await prepareConversationSession(state, request, database);
+    expect(key).toBe(collaborationSessionKey("main", context));
+    expect(request.project.agentSessions?.main).toEqual(f.session);
+    expect(request.project.agentSessions?.[collaborationSessionKey("main", request.executionContext)]).toEqual(f.session);
+    expect(state.agentSessions).toBeUndefined();
+    state.agentSessions = { [key]: { ...f.session, nativeId: "different" } };
+    await expect(prepareConversationSession(state, request, database)).rejects.toThrow(/disagrees/);
+  });
+
+  it("retains the true user delivery state after pause and restart without replaying the message", async () => {
+    const f = await fixture();
+    const first = f.db.enqueueMainConversation("p", "Did the task run?", "one", true);
+    const later = f.db.enqueueMainConversation("p", "And its result?", "two", true);
+    const claimed = f.db.claimMainAssistance("p", first.id)!.main!;
+    expect(f.db.claimMainAssistance("p", later.id)).toBeUndefined();
+    const frame = { invocationId: claimed.invocationId, harnessId: f.session.harnessId, eventId: "native-input", kind: "user.message", message: claimed.text };
+    f.db.observeMainConversationInput("p", claimed.invocationId, f.session, { ...frame, invocationId: "wrong" });
+    f.db.observeMainConversationInput("p", claimed.invocationId, f.session, { ...frame, kind: "tool.completed", tool: { outputPreview: claimed.text } });
+    expect(f.db.mainConversation("p")[0].main?.receivedAt).toBeUndefined();
+    f.db.observeMainConversationInput("p", claimed.invocationId, f.session, frame);
+    f.checkpoint(f.origin.taskId, "paused"); f.reopen();
+    expect(f.db.mainConversation("p")).toMatchObject([{ id: first.id, status: "unknown", main: { receivedAt: expect.any(String) } },
+      { id: later.id, status: "failed" }]);
+    expect(() => f.db.replyToProjectUser("p", first.id, claimed.invocationId, "from stale turn", "reply")).toThrow();
+    f.db.releaseMainAssistance("p", first.id, claimed.invocationId);
+    f.checkpoint(f.origin.taskId);
+    expect(f.db.enqueueMainConversation("p", first.question, "one", true)).toMatchObject({ id: first.id, status: "unknown" });
+    expect(f.db.claimMainAssistance("p", later.id)).toBeUndefined();
+  });
+
   it("MA-03/04 deduplicates requests only within the same task and refuses changed questions or Sessions", async () => {
     const f = await fixture(), first = await f.enqueue();
     expect(first.callId).toBe("actual-mcp-call");

@@ -1,3 +1,6 @@
+import { usesCollaborationScheduler } from "./types.js";
+import { dispatchMainInboxRequest } from "./main-assistance.js";
+import { projectListSummary, type ProjectListItem } from "./project-list-summary.js";
 import { gateRunId, prepareGateRun, requireGateChoice, gateFeedback, type GateRun } from "./workflow-gate.js";
 import { SearchTreeStore, searchTreeRequestSchema } from "./search-tree.js";
 import { summarizeFailureAttempts } from "./internal/shared/failure-attempt-history.js";
@@ -50,6 +53,7 @@ import type {
   AgentRunResult,
   FailureAttempt,
   InterruptionSnapshot,
+  InvocationPerformance,
   CurrentAssignment,
   MainDecision,
   AgentOrchestrationTemplate,
@@ -87,6 +91,8 @@ import {
 } from "./internal/shared/token-usage-ledger.js";
 import { cancellationLabel, type CancellationRequest } from "./cancellation.js";
 import { scanWorkspace, type WorkspaceFileStamp } from "./workspace-checkpoint.js";
+import { serialTaskRecoveryMessage } from "./serial-task-recovery.js";
+import { serialMainSourceIsDiagnostic } from "./workflow-input.js";
 import {
   DEFAULT_HARNESS_ID,
   type AgentProtocol
@@ -159,6 +165,7 @@ import {
   normalizeNewGitOrchestration,
   normalizedAgentMcpServers,
   normalizedAgentSkills,
+  projectUserInputSchema,
   publicAgentConfigs
 } from "./validation.js";
 import {
@@ -253,6 +260,9 @@ function harnessFailureMetadata(error: Error): {
   errorSource?: HarnessRuntimeError["source"];
   retryable?: boolean;
 } {
+  if (error instanceof MissingMainTerminalActionError && error.cause instanceof HarnessRuntimeError) {
+    return { errorCode: error.cause.code, errorSource: error.cause.source };
+  }
   if (!(error instanceof HarnessRuntimeError)) return {};
   return {
     errorCode: error.code,
@@ -350,6 +360,9 @@ export class Orchestrator {
       validateNativeCodexProfile?: (config: AgentConfig) => Promise<void>;
     }
   ) {
+    this.collaborationRuntime?.bindSerialWorkflowPublisher?.(async projectId => {
+      await this.applyWaitingSerialWorkflowAdjustments(await this.requireRuntime(projectId));
+    });
     this.scheduler = new AgentScheduler(
       config.agentConcurrency ?? DEFAULT_AGENT_KIND_CAPACITY
     );
@@ -387,7 +400,7 @@ export class Orchestrator {
     }
     const resumable: RuntimeProject[] = [];
     for (const state of states) {
-      const serialWorkflow = !state.git?.enabled
+      const serialWorkflow = !usesCollaborationScheduler(state)
         ? await this.collaborationRuntime?.recoverSerialWorkflowConfiguration?.(state) : undefined;
       let stateShapeRepaired = serialWorkflow?.changed ?? false;
       if (!state.orchestration) {
@@ -593,7 +606,7 @@ export class Orchestrator {
         interruptWaiters: new Map()
       };
       this.runtimes.set(state.id, runtime);
-      if (!state.git?.enabled) await this.collaborationRuntime?.prepareSerialWorkflowAdjustments?.(state);
+      if (!usesCollaborationScheduler(state)) await this.collaborationRuntime?.prepareSerialWorkflowAdjustments?.(state);
       if (["paused", "pausing"].includes(state.status) && !hasUserWorkflowPause(state)) {
         state.status = "retrying";
         checkpointWorkflowRecovery(state);
@@ -608,7 +621,7 @@ export class Orchestrator {
         state.status === "completed" ||
         state.status === "cancelled" ||
         state.status === "paused" ||
-        state.status === "interrupted" && state.phase === "harness-recovery-required"
+        state.status === "interrupted" && ["harness-recovery-required", "main-decision-required"].includes(state.phase)
       ) {
         continue;
       }
@@ -752,7 +765,7 @@ export class Orchestrator {
     const states = [...this.runtimes.values()].map(runtime => runtime.state);
     const formal: ProjectAgentQueueSource[] = [];
     for (const state of states) {
-      if (!state.git?.enabled || state.archivedAt || ["completed", "cancelled"].includes(state.status)) continue;
+      if (!usesCollaborationScheduler(state) || state.archivedAt || ["completed", "cancelled"].includes(state.status)) continue;
       const source = await this.collaborationRuntime?.queueReadModel?.(state);
       if (source) formal.push(source);
     }
@@ -906,15 +919,29 @@ export class Orchestrator {
     state.queueOrder = undefined;
   }
 
-  private async projectView(state: ProjectState): Promise<ProjectView> {
+  private async projectView(state: ProjectState, summaryOnly = false): Promise<ProjectView> {
     const liveState = (await this.collaborationRuntime?.projectReadModel?.(state)) ?? state;
     const project = structuredClone(liveState) as ProjectView;
-    const assistance = await this.collaborationRuntime?.mainAssistanceRecords?.(state.id);
-    if (assistance?.length) project.mainAssistance = assistance;
-    if (liveState.orchestration.gates?.length) project.workflowGates = await this.collaborationRuntime?.workflowGateRuns?.(state.id);
-    // Main is a public first-class Agent. Clone all configurations before
-    // exposing the read model so callers cannot mutate runtime state.
+    if (!summaryOnly) {
+      const assistance = await this.collaborationRuntime?.mainAssistanceRecords?.(state.id);
+      if (assistance?.length) project.mainAssistance = assistance;
+      const conversation = await this.collaborationRuntime?.mainConversationRecords?.(state.id);
+      if (conversation?.length) project.mainConversation = conversation;
+      if (liveState.orchestration.gates?.length) project.workflowGates = await this.collaborationRuntime?.workflowGateRuns?.(state.id);
+    }
     project.agents = publicAgentConfigs(project.agents);
+    return Object.assign(project, this.projectProgress(liveState));
+  }
+
+  private async projectSummary(state: ProjectState): Promise<ProjectListItem> {
+    const checkpoint = await this.collaborationRuntime?.serialProjectSummaryCheckpoint?.(state);
+    if (!checkpoint) return projectListSummary(await this.projectView(state, true));
+    const liveState = { ...state, ...checkpoint.lifecycle };
+    return structuredClone(projectListSummary({ ...liveState, ...this.projectProgress(liveState),
+      collaboration: { stateRevision: checkpoint.stateRevision } }));
+  }
+
+  private projectProgress(liveState: ProjectState) {
     const queue =
       liveState.queuedAgent && !liveState.currentAgent
         ? this.scheduler.position(
@@ -922,18 +949,14 @@ export class Orchestrator {
             liveState.id
           )
         : undefined;
-    if (queue) {
-      project.queuePosition = queue.position;
-    }
-    project.queueDepth = queue?.depth ?? 0;
-    project.agentProgress = Object.fromEntries(
+    const agentProgress = Object.fromEntries(
       orchestrationFor(liveState).agents.map((definition) => [
         definition.name,
         this.agentProgress(liveState, definition.name, queue)
       ])
     ) as Record<AgentName, AgentProgress>;
-    project.overallProgress = overallProgress(liveState);
-    return project;
+    return { ...(queue ? { queuePosition: queue.position } : {}), queueDepth: queue?.depth ?? 0,
+      agentProgress, overallProgress: overallProgress(liveState) };
   }
 
   private agentProgress(
@@ -985,10 +1008,11 @@ export class Orchestrator {
     const selectedGitHubAccount = parsed.git.enabled && this.githubAccounts
       ? await this.githubAccounts.requireReady(parsed.git.accountId ?? "")
       : undefined;
-    const orchestration = parsed.git.enabled && this.collaborationRuntime
+    const orchestration = (parsed.git.enabled && this.collaborationRuntime || parsed.orchestration.collaborations.length > 0)
       ? normalizeNewGitOrchestration(parsed.orchestration) : normalizeAgentOrchestrationTemplate(parsed.orchestration);
-    if (orchestration.schemaVersion === 3 && (!parsed.git.enabled || !this.collaborationRuntime)) {
-      throw new Error("组内 Workflow/v3 项目要求启用 Git collaboration 和可信递归运行时，不能使用旧串行调度器");
+    const managed = parsed.git.enabled || orchestration.schemaVersion === 3;
+    if (orchestration.schemaVersion === 3 && !this.collaborationRuntime) {
+      throw new Error("组内 Workflow/v3 项目需要协作调度器");
     }
     const agents = mergeAgentConfigs(parsed.agents, orchestration);
     const projectId = newId("prj");
@@ -1058,10 +1082,10 @@ export class Orchestrator {
       inputFiles: host?.initialInputs?.files ?? [],
       inputDescription: parsed.inputDescription ?? "",
       status: "queued",
-      phase: parsed.git.enabled ? "git:initializing" : `${firstAgent}:queued`,
+      phase: parsed.git.enabled ? "git:initializing" : managed ? "collaboration:ready" : `${firstAgent}:queued`,
       createdAt: timestamp,
       updatedAt: timestamp,
-      ...(parsed.git.enabled ? {} : {
+      ...(managed ? {} : {
         queuedAgent: firstAgent,
         queueEnteredAt: timestamp,
         queueOrder: this.allocateQueueOrder()
@@ -1104,7 +1128,7 @@ export class Orchestrator {
       executionCounts: Object.fromEntries(
         orchestration.agents.map((definition) => [definition.name, 0])
       ),
-      ...(parsed.git.enabled ? {} : {
+      ...(managed ? {} : {
         activeAgentExecution: {
           id: newId("exec"),
           agent: firstAgent,
@@ -1164,11 +1188,11 @@ export class Orchestrator {
       message: "Project configuration snapshot locked at creation",
       data: { lockedAt: timestamp, configurationLocked: true }
     });
-    if (parsed.git.enabled) {
+    if (managed) {
       if (!this.collaborationRuntime) {
         state.status = "retrying";
         state.phase = "collaboration:runtime-unavailable";
-        state.lastError = "Git collaboration runtime is unavailable";
+        state.lastError = "Collaboration runtime is unavailable";
         await this.storage.saveState(state);
       } else {
         await this.collaborationRuntime.createProject(state, parsed.git);
@@ -1549,7 +1573,7 @@ export class Orchestrator {
     state: ProjectState,
     baseVersion?: WorkflowConfigurationVersion
   ): Promise<AgentOrchestrationProposal> {
-    baseVersion ??= !state.git?.enabled ? (await this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment?.(state))?.version : undefined;
+    baseVersion ??= !usesCollaborationScheduler(state) ? (await this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment?.(state))?.version : undefined;
     if (!state.activeInvocationId) throw new Error("Workflow proposal requires the active invocation");
     const raw = await this.storage.readMainAgentOrchestrationSnapshot(
       state.id,
@@ -1613,7 +1637,7 @@ export class Orchestrator {
 
   async getWorkflowAdjustments(projectId: string) {
     const runtime = await this.requireRuntime(projectId);
-    if (!this.collaborationRuntime?.getWorkflowAdjustments || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
+    if (!this.collaborationRuntime?.getWorkflowAdjustments || (!usesCollaborationScheduler(runtime.state) && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow adjustments require the project runtime");
     const committed = await this.collaborationRuntime.committedProjectState?.(runtime.state);
     if (committed) return await this.collaborationRuntime.getWorkflowAdjustments(committed);
@@ -1622,7 +1646,7 @@ export class Orchestrator {
 
   async queryWorkflowAdjustments(projectId: string, ifNoneMatch?: string) {
     const runtime = await this.requireRuntime(projectId);
-    if (!this.collaborationRuntime?.getWorkflowAdjustments || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
+    if (!this.collaborationRuntime?.getWorkflowAdjustments || (!usesCollaborationScheduler(runtime.state) && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow adjustments require the project runtime");
     const committed = await this.collaborationRuntime.committedProjectState?.(runtime.state);
     if (committed) return this.collaborationRuntime.queryWorkflowAdjustments
@@ -1635,7 +1659,7 @@ export class Orchestrator {
 
   async getWorkflowAdjustmentPage(projectId: string, input: WorkflowAdjustmentPageInput, ifNoneMatch?: string) {
     const runtime = await this.requireRuntime(projectId);
-    if (!this.collaborationRuntime?.getWorkflowAdjustmentPage || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
+    if (!this.collaborationRuntime?.getWorkflowAdjustmentPage || (!usesCollaborationScheduler(runtime.state) && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow history requires the project runtime");
     const committed = await this.collaborationRuntime.committedProjectState?.(runtime.state);
     if (committed) return await this.collaborationRuntime.getWorkflowAdjustmentPage(committed, input, ifNoneMatch);
@@ -1644,7 +1668,7 @@ export class Orchestrator {
 
   async getWorkflowAdjustmentDetail(projectId: string, requestId: string, expectedVersion?: string) {
     const runtime = await this.requireRuntime(projectId);
-    if (!this.collaborationRuntime?.getWorkflowAdjustmentDetail || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
+    if (!this.collaborationRuntime?.getWorkflowAdjustmentDetail || (!usesCollaborationScheduler(runtime.state) && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow history requires the project runtime");
     const committed = await this.collaborationRuntime.committedProjectState?.(runtime.state);
     if (committed) return await this.collaborationRuntime.getWorkflowAdjustmentDetail(committed, requestId, expectedVersion);
@@ -1653,12 +1677,12 @@ export class Orchestrator {
 
   async submitWorkflowAdjustment(projectId: string, input: unknown) {
     const runtime = await this.requireRuntime(projectId);
-    if (!this.collaborationRuntime?.submitWorkflowAdjustment || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
+    if (!this.collaborationRuntime?.submitWorkflowAdjustment || (!usesCollaborationScheduler(runtime.state) && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow adjustments require the project runtime");
     // Git admission is already fenced by S's transaction and publication
     // queue. Holding the native-event queue here would prevent its reserved
     // events from clearing the stable read needed by projection publication.
-    if (runtime.state.git?.enabled) return this.collaborationRuntime.submitWorkflowAdjustment(runtime.state, input);
+    if (usesCollaborationScheduler(runtime.state)) return this.collaborationRuntime.submitWorkflowAdjustment(runtime.state, input);
     // The serial scheduler still owns its file-state write lane.
     const result = await this.serializeProjectWrite(runtime, async () => this.collaborationRuntime!.submitWorkflowAdjustment!(runtime.state, input));
     try {
@@ -1671,16 +1695,16 @@ export class Orchestrator {
 
   async withdrawWorkflowAdjustment(projectId: string, input: unknown) {
     const runtime = await this.requireRuntime(projectId);
-    if (!this.collaborationRuntime?.withdrawWorkflowAdjustment || (!runtime.state.git?.enabled && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
+    if (!this.collaborationRuntime?.withdrawWorkflowAdjustment || (!usesCollaborationScheduler(runtime.state) && !this.collaborationRuntime.prepareSerialWorkflowAdjustments))
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Workflow adjustments require the project runtime");
-    if (runtime.state.git?.enabled) return this.collaborationRuntime.withdrawWorkflowAdjustment(runtime.state, input);
+    if (usesCollaborationScheduler(runtime.state)) return this.collaborationRuntime.withdrawWorkflowAdjustment(runtime.state, input);
     const result = await this.serializeProjectWrite(runtime, async () => {
       const result = await this.collaborationRuntime!.withdrawWorkflowAdjustment!(runtime.state, input);
-      if (!runtime.state.git?.enabled && this.refreshSerialWorkflowMainDecision(runtime.state, result.record))
+      if (!usesCollaborationScheduler(runtime.state) && this.refreshSerialWorkflowMainDecision(runtime.state, result.record))
         await this.storage.saveState(runtime.state);
       return result;
     });
-    if (!runtime.state.git?.enabled) {
+    if (!usesCollaborationScheduler(runtime.state)) {
       try {
         await this.applyWaitingSerialWorkflowAdjustments(runtime);
       } catch (error) {
@@ -1690,52 +1714,64 @@ export class Orchestrator {
     return result;
   }
 
-  async getProject(projectId: string): Promise<ProjectView | undefined> {
+  async hasProject(projectId: string): Promise<boolean> {
+    return this.runtimes.has(projectId) || (await this.storage.tryLoadState(projectId)) !== undefined;
+  }
+
+  async getProject(projectId: string, summaryOnly = false): Promise<ProjectView | undefined> {
+    return this.readProject(projectId, state => this.projectView(state, summaryOnly));
+  }
+
+  async getProjectSummary(projectId: string, signal?: AbortSignal): Promise<ProjectListItem | undefined> {
+    return this.readProject(projectId, state => this.projectSummary(state), signal);
+  }
+
+  private async readProject<T>(projectId: string, read: (state: ProjectState) => Promise<T>, signal?: AbortSignal): Promise<T | undefined> {
     const runtime = this.runtimes.get(projectId);
-    if (runtime) {
-      if (runtime.state.phase === "storage-recovery-required") {
-        return await this.projectView(runtime.state);
-      }
-      const committed = await this.collaborationRuntime?.committedProjectState?.(runtime.state);
-      if (committed) return await this.projectView(committed);
-      return this.storage.withStableProjectSnapshot(projectId, async () =>
-        await this.projectView(runtime.state)
-      );
-    }
+    if (runtime) return this.readRegisteredProject(runtime, read, signal);
     const state = await this.storage.tryLoadState(projectId);
-    return state ? (await this.projectView(state)) : undefined;
+    signal?.throwIfAborted();
+    return state ? read(state) : undefined;
   }
 
-  async listProjects(includeArchived = false): Promise<ProjectView[]> {
-    // Each row needs its own committed snapshot. Independent projects need
-    // not reach a shared idle instant before an already captured row can return.
-    const projects = await Promise.all(
-      [...this.runtimes.values()].map(async (runtime) =>
-        this.listingProjectView(runtime)
-      )
-    );
-    return projects
-      .filter((project) => includeArchived || !project.archivedAt)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  private async readRegisteredProject<T>(runtime: RuntimeProject, read: (state: ProjectState) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted();
+    if (runtime.state.phase === "storage-recovery-required") return read(runtime.state);
+    const committed = await this.collaborationRuntime?.committedProjectState?.(runtime.state);
+    signal?.throwIfAborted();
+    if (committed) return read(committed);
+    return this.storage.withStableProjectSnapshot(runtime.state.id, () => read(runtime.state), signal);
   }
 
-  private async listingProjectView(runtime: RuntimeProject): Promise<ProjectView> {
-    // Wait for each project's own writer independently. Queue the expensive
-    // projection after that barrier: several barriers can clear together,
-    // and must not release a burst of synchronous reads into one microtask turn.
-    if (runtime.state.phase === "storage-recovery-required") return this.captureListingProjectView(runtime);
-    if ((await this.collaborationRuntime?.committedProjectState?.(runtime.state))) return this.captureListingProjectView(runtime);
-    return this.storage.withStableProjectSnapshot(runtime.state.id, () => this.captureListingProjectView(runtime));
+  async listProjects(includeArchived = false, summaryOnly = false): Promise<ProjectView[]> {
+    return this.listProjectRows(includeArchived, state => this.projectView(state, summaryOnly));
   }
 
-  private captureListingProjectView(runtime: RuntimeProject): Promise<ProjectView> {
-    return new Promise<ProjectView>((resolve, reject) => {
+  async listProjectSummaries(includeArchived = false, onProject?: (project: ProjectListItem) => Promise<void>, signal?: AbortSignal) {
+    return this.listProjectRows(includeArchived, state => this.projectSummary(state), onProject, signal);
+  }
+
+  private async listProjectRows<T extends { updatedAt: string; archivedAt?: string }>(includeArchived: boolean,
+    read: (state: ProjectState) => Promise<T>, onProject?: (project: T) => Promise<void>, signal?: AbortSignal): Promise<T[]> {
+    const rows = await Promise.all([...this.runtimes.values()].map(async runtime => {
+      const row = await this.readRegisteredProject(runtime, state => this.captureListingProjectView(() => {
+        signal?.throwIfAborted();
+        return read(state);
+      }), signal);
+      signal?.throwIfAborted();
+      if (includeArchived || !row.archivedAt) await onProject?.(row);
+      return row;
+    }));
+    return rows.filter(row => includeArchived || !row.archivedAt).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  // Yield between projection starts without making independent projects wait for each other's I/O.
+  private captureListingProjectView<T>(read: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
       const start = this.listingViewTail.then(() => new Promise<void>(release => {
-        setImmediate(async () => {
-          try {
-            resolve((await this.projectView((await this.collaborationRuntime?.committedProjectState?.(runtime.state)) ?? runtime.state)));
-          } catch (error) { reject(error); }
-          finally { release(); }
+        setImmediate(() => {
+          try { resolve(read()); } catch (error) { reject(error); }
+          release();
         });
       }));
       this.listingViewTail = start.catch(error => { reject(error); });
@@ -1745,8 +1781,8 @@ export class Orchestrator {
   async pause(projectId: string): Promise<ProjectView> {
     const runtime = await this.requireRuntime(projectId);
     const { state } = runtime;
-    if (state.git?.enabled) {
-      if (!this.collaborationRuntime) throw new Error("Git collaboration runtime is unavailable");
+    if (usesCollaborationScheduler(state)) {
+      if (!this.collaborationRuntime) throw new Error("Collaboration runtime is unavailable");
       await this.collaborationRuntime.pauseProject(state);
       return await this.projectView(state);
     }
@@ -1787,8 +1823,8 @@ export class Orchestrator {
     const runtime = await this.requireRuntime(projectId);
     const { state } = runtime;
     if (state.archivedAt) throw new Error("Cannot resume an archived project; unarchive it first");
-    if (state.git?.enabled) {
-      if (!this.collaborationRuntime) throw new Error("Git collaboration runtime is unavailable");
+    if (usesCollaborationScheduler(state)) {
+      if (!this.collaborationRuntime) throw new Error("Collaboration runtime is unavailable");
       if (options?.preserveRecoveryBudget) await this.collaborationRuntime.resumeProject(state, options);
       else await this.collaborationRuntime.resumeProject(state);
       return await this.projectView(state);
@@ -1931,7 +1967,7 @@ export class Orchestrator {
     const runtime = await this.requireRuntime(projectId);
     const response = message.trim();
     if (!response) throw new Error("User intervention response cannot be empty");
-    if (runtime.state.git?.enabled) {
+    if (usesCollaborationScheduler(runtime.state)) {
       const respond = this.collaborationRuntime?.respondToUserIntervention;
       if (!respond) {
         throw new Error(
@@ -2049,7 +2085,7 @@ export class Orchestrator {
   async addProjectUserInput(
     projectId: string,
     message: string,
-    mode: "wait" | "interrupt" = "wait",
+    mode: "chat" | "wait" | "interrupt" = "wait",
     requestId?: string
   ): Promise<ProjectView> {
     const runtime = await this.requireRuntime(projectId);
@@ -2057,7 +2093,13 @@ export class Orchestrator {
     if (!text) throw new Error("Project user input cannot be empty");
 
     const normalizedRequestId = requestId?.trim() || undefined;
-    if (runtime.state.git?.enabled) {
+    if (mode === "chat") {
+      if (!this.collaborationRuntime?.addMainConversation) throw new Error("Main conversation requires the project runtime");
+      const input = projectUserInputSchema.parse({ message: text, requestId, mode });
+      await this.collaborationRuntime.addMainConversation(runtime.state, input.message, input.requestId);
+      return this.projectView(runtime.state);
+    }
+    if (usesCollaborationScheduler(runtime.state)) {
       const addInput = this.collaborationRuntime?.addProjectUserInput;
       if (!addInput) {
         throw new Error(
@@ -2639,11 +2681,11 @@ export class Orchestrator {
         }
   ): Promise<ProjectView> {
     const runtime = await this.requireRuntime(projectId);
-    if (!runtime.state.git?.enabled) {
-      throw new Error("Collaboration groups require Git collaboration");
+    if (!usesCollaborationScheduler(runtime.state)) {
+      throw new Error("Collaboration group edits require a project using the collaboration scheduler");
     }
     if (!this.collaborationRuntime) {
-      throw new Error("Git collaboration runtime is unavailable");
+      throw new Error("Collaboration runtime is unavailable");
     }
     const collaborationRuntime = this.collaborationRuntime;
     const releaseMutation = this.storage.reserveProjectMutation(projectId);
@@ -3073,8 +3115,8 @@ export class Orchestrator {
   async cancel(projectId: string, input: CancellationRequest = {}): Promise<ProjectView> {
     const runtime = await this.requireRuntime(projectId);
     const { state } = runtime;
-    if (state.git?.enabled) {
-      if (!this.collaborationRuntime) throw new Error("Git collaboration runtime is unavailable");
+    if (usesCollaborationScheduler(state)) {
+      if (!this.collaborationRuntime) throw new Error("Collaboration runtime is unavailable");
       await this.collaborationRuntime.cancelProject(state, input);
       return await this.projectView(state);
     }
@@ -3115,7 +3157,7 @@ export class Orchestrator {
     const runtime = await this.requireRuntime(projectId);
     const { state } = runtime;
     if (state.archivedAt) return await this.projectView(state);
-    if (state.git?.enabled && this.collaborationRuntime?.archiveProject) {
+    if (usesCollaborationScheduler(state) && this.collaborationRuntime?.archiveProject) {
       await this.collaborationRuntime.archiveProject(state);
       return await this.projectView(state);
     }
@@ -3202,7 +3244,7 @@ export class Orchestrator {
     // Git collaboration has a separate authoritative scheduler. This guard is
     // intentionally centralized so a new or overlooked legacy call site can
     // never start AgentRunner for a Git-enabled project.
-    if (runtime.state.git?.enabled) return;
+    if (usesCollaborationScheduler(runtime.state)) return;
     if (runtime.loop || this.shuttingDown) return;
     let canContinue = false;
     const loop = this.runLoop(runtime)
@@ -3518,6 +3560,95 @@ export class Orchestrator {
     });
   }
 
+  private async serialTaskInputState(state: ProjectState, agent: AgentName): Promise<ProjectState> {
+    let pending = agent === SYSTEM_CONTROLLER_AGENT ? state.pendingMainDecision : undefined;
+    if (!pending) return state;
+    let markdown: string;
+    try {
+      if (state.latestHandoff?.invocationId === pending.sourceInvocationId && state.latestHandoff.agent === pending.sourceAgent) {
+        if (!(state.latestHandoff.body ?? state.latestHandoff.markdown).trim()) throw new Error("Pending source handoff is empty");
+        return state;
+      }
+      // Exception decisions may have only an explicit failure/interruption diagnostic.
+      if (serialMainSourceIsDiagnostic(state)) return state;
+      if (pending.sourceAgent !== SYSTEM_CONTROLLER_AGENT &&
+        ["deterministic-route", "termination"].includes(pending.reason ?? "")) {
+        const original = pending;
+        const sources: Array<{ agent: AgentName; invocationId: string }> = [];
+        let committed = false;
+        // An earlier Main-to-Main route can retain the upstream Agent with the
+        // routing Main's invocation. Only committed routing evidence may resolve it.
+        await this.storage.replayEvents(state.id, 0, event => {
+          const data = event.data;
+          if (data?.invocationId !== original.sourceInvocationId || event.agent !== SYSTEM_CONTROLLER_AGENT) return;
+          if (event.type === "invocation.completed") committed = true;
+          if (event.type === "main.assignment.committed" &&
+            [SYSTEM_CONTROLLER_AGENT, "finish"].includes(String(data.nextAgent)) &&
+            data.decisionSourceAgent === original.sourceAgent && typeof data.decisionSourceInvocationId === "string") {
+            sources.push({ agent: original.sourceAgent, invocationId: data.decisionSourceInvocationId });
+          }
+        });
+        if (committed && sources.length === 1 && sources[0].invocationId !== original.sourceInvocationId) {
+          pending = { ...original, sourceInvocationId: sources[0].invocationId };
+        }
+      }
+      markdown = await this.storage.readHandoff(state.id, pending.sourceInvocationId, pending.sourceAgent);
+      if (!markdown.trim()) throw new Error("Saved source handoff is empty");
+    } catch (cause) {
+      throw new HarnessRuntimeError("INVOCATION_INPUT_STAGING_FAILED",
+        `Cannot recover pending Main source ${pending.sourceAgent}/${pending.sourceInvocationId}: ${redactTrace(String(cause))}`,
+        { agent, sourceAgent: pending.sourceAgent, sourceInvocationId: pending.sourceInvocationId },
+        { source: "inputs", retryable: false, cause });
+    }
+    // The invocation reads the exact retained source; do not rewrite historical latest output.
+    return { ...state, pendingMainDecision: pending, latestHandoff: { agent: pending.sourceAgent, invocationId: pending.sourceInvocationId,
+      markdown, body: markdown, excerpt: handoffExcerpt(markdown), updatedAt: pending.requestedAt } };
+  }
+
+  private async restoreMainTerminalCorrection(state: ProjectState, previousInvocationId?: string): Promise<void> {
+    const task = state.activeAgentExecution;
+    if (!previousInvocationId || task?.agent !== SYSTEM_CONTROLLER_AGENT || task.terminalControlRecovery) return;
+    const invocations = new Set<string>();
+    const decisions = new Set<string>();
+    let correction: NonNullable<ActiveAgentExecution["terminalControlRecovery"]> | undefined;
+    await this.storage.replayEvents(state.id, 0, event => {
+      const invocationId = event.data?.invocationId;
+      if (typeof invocationId !== "string") return;
+      if (invocationId === state.activeInvocationId) return false;
+      if (event.type === "invocation.started" && event.data?.executionId === task.id) invocations.add(invocationId);
+      if (!invocations.has(invocationId)) return;
+      if (event.type === "control.action.committed" && ["route_to_agent", "request_user", "apply_workflow", "complete_project"].includes(String(event.data?.tool))) decisions.add(invocationId);
+      if (event.data?.terminalControlRepair === true ||
+        event.type === "invocation.completed" && event.data?.executionId === task.id && !decisions.has(invocationId)) {
+        correction = { attempts: 1, invocationId, reason: "The original Main task already used its automatic terminal correction; retained events are the evidence" };
+        return false;
+      }
+    });
+    if (correction) { task.terminalControlRecovery = correction; await this.storage.saveState(state); }
+  }
+
+  private takeMainTerminalCorrection(state: ProjectState, invocationId: string): boolean {
+    const task = state.activeAgentExecution;
+    if (!task || task.agent !== SYSTEM_CONTROLLER_AGENT) throw new Error("Terminal correction requires the original Main task");
+    const attempts = task.terminalControlRecovery?.attempts ?? 0;
+    if (!Number.isSafeInteger(attempts) || attempts < 0 || attempts > 1) throw new Error("Invalid original-task terminal correction count");
+    task.terminalControlRecovery = { attempts: 1, invocationId,
+      reason: "Main returned without an authorized routing decision for the original task" };
+    return attempts === 0;
+  }
+
+  private interruptMainDecision(state: ProjectState, reason: string): void {
+    state.lastError = redactTrace(reason).slice(0, 4_000);
+    state.currentAgent = undefined;
+    state.activeInvocationId = undefined;
+    state.queuedAgent = SYSTEM_CONTROLLER_AGENT;
+    state.status = "interrupted";
+    state.phase = "main-decision-required";
+    state.interruptedAt = nowIso();
+    finishWorkflowRecovery(state);
+    this.clearQueueEntry(state);
+  }
+
   private async invokeAgent(
     runtime: RuntimeProject,
     agent: AgentName,
@@ -3537,6 +3668,8 @@ export class Orchestrator {
     state.queuedAgent = undefined;
     this.clearQueueEntry(state);
     state.activeInvocationId = invocationId;
+    const previousInvocationId = state.activeAgentExecution?.agent === agent
+      ? state.activeAgentExecution.latestInvocationId : undefined;
     const agentExecution = await this.beginAgentExecution(
       runtime,
       agent,
@@ -3588,6 +3721,10 @@ export class Orchestrator {
     let agentWatchdogFailure: Error | undefined;
     let controlStagingPath: string | undefined;
     let controlCapabilityPath: string | undefined;
+    const removeControlFiles = async () => {
+      if (controlStagingPath) await fs.rm(controlStagingPath, { force: true });
+      if (controlCapabilityPath) await fs.rm(controlCapabilityPath, { force: true });
+    };
     let projectMcps: ProjectMcpLease | undefined;
     let projectMcpFailure: Error | undefined;
     let controlBridge: ControlActionBridge | undefined;
@@ -3599,7 +3736,7 @@ export class Orchestrator {
     let returnedHandoff: string | undefined;
     let controlStateVersion: number | undefined;
     let controlCapabilityHash: string | undefined;
-    const serialWorkflow = kind === "main" && !state.git?.enabled && this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment &&
+    const serialWorkflow = kind === "main" && !usesCollaborationScheduler(state) && this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment &&
       this.collaborationRuntime.getSerialMainWorkflowAdjustment && this.collaborationRuntime.stageSerialMainWorkflowAdjustment &&
       this.collaborationRuntime.publishSerialMainWorkflowAdjustment && this.collaborationRuntime.recordSerialMainWorkflowBoundary;
     const serialProposals = new Map<string, { base: WorkflowConfigurationVersion; proposal: WorkflowAdjustmentSnapshot }>();
@@ -3689,8 +3826,21 @@ export class Orchestrator {
         message: `${agent} invocation started`,
         data: { invocationId, kind, ...agentExecution }
       });
+      await this.restoreMainTerminalCorrection(state, previousInvocationId);
+      const resolvedInput = await this.serialTaskInputState(state, agent);
+      const inputState = (): ProjectState => ({ ...state, latestHandoff: resolvedInput.latestHandoff,
+        pendingMainDecision: resolvedInput.pendingMainDecision });
+      if (resolvedInput.pendingMainDecision?.sourceInvocationId !== state.pendingMainDecision?.sourceInvocationId) {
+        await onTrace("status", "Pending Main input source resolved from its committed routing receipt; stored task history remains unchanged", {
+          invocationId, executionId: agentExecution.executionId,
+          recordedSourceInvocationId: state.pendingMainDecision?.sourceInvocationId,
+          resolvedSourceInvocationId: resolvedInput.pendingMainDecision?.sourceInvocationId,
+          sourceAgent: resolvedInput.pendingMainDecision?.sourceAgent
+        });
+      }
+      const recoveryMessage = serialTaskRecoveryMessage(state, agent, previousInvocationId);
       const dispatch = buildAgentDispatchSummary(
-        state,
+        inputState(),
         agent,
         projectUserInputs
       );
@@ -3770,7 +3920,7 @@ export class Orchestrator {
         kind === "main" &&
         mainCanReconfigure(state)
       ) {
-        const baseVersion = !state.git?.enabled ? (await this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment?.(state))?.version : undefined;
+        const baseVersion = !usesCollaborationScheduler(state) ? (await this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment?.(state))?.version : undefined;
         const proposalPath = await this.storage.writeMainAgentOrchestrationSnapshot(
           state.id,
           MAIN_AGENT_ORCHESTRATION_FILE,
@@ -3814,11 +3964,11 @@ export class Orchestrator {
       );
       const context = contextPackage.text;
       if (kind === "main") {
-        state.mainInvocationContext = buildMainInvocationContext(state) as unknown as Record<string, unknown>;
+        state.mainInvocationContext = buildMainInvocationContext(inputState()) as unknown as Record<string, unknown>;
         await this.storage.saveState(state);
       }
-      const inbox = buildInboxMarkdown(
-        state,
+      const inbox = (recoveryMessage ? `来源：ScienceEvolve\n内容：${recoveryMessage}\n\n` : "") + buildInboxMarkdown(
+        inputState(),
         agent,
         invocationId,
         context,
@@ -3834,6 +3984,15 @@ export class Orchestrator {
         invocationId,
         inbox
       );
+      const recoveryInput = recoveryMessage ? {
+        executionId: agentExecution.executionId,
+        previousInvocationId,
+        inputSha256: createHash("sha256").update(recoveryMessage).digest("hex")
+      } : undefined;
+      if (recoveryInput) await onTrace("status", "Original-task recovery facts staged in the authoritative Inbox; native receipt is not yet confirmed", {
+        ...recoveryInput, recoveryInput: "staged", inboxPath
+      });
+      let recoveryReceipt: Promise<void> | undefined;
       const runtimePath = await this.storage.invocationRuntimePath(
         state.id,
         invocationId
@@ -3890,13 +4049,15 @@ export class Orchestrator {
       if (state.searchTree) control.searchTree = true;
       if (state.orchestration.gates?.length) control.workflowGate = true;
       if (agent !== "main" && this.collaborationRuntime) control.mainAssistance = "request";
+      if (agent === "main" && this.collaborationRuntime?.addMainConversation) control.mainConversation = "inbox";
       controlStateVersion = control.stateVersion;
       controlCapabilityHash = control.capabilityHash;
+      let rejectedTerminalAction: string | undefined;
       const controlService = new ControlActionService({
-        ...(agent !== "main" && this.collaborationRuntime ? { mainAssistanceNotice: async (inputId: string) => await baseRunRequest.onPendingMainAssistance?.(inputId) ?? "", mainAssistance: async (value: unknown, callId: string) => {
-          if (!baseRunRequest.onMainAssistanceRequest) throw new Error("Main assistance is unavailable in this task");
-          return baseRunRequest.onMainAssistanceRequest(value, callId);
-        } } : {}),
+        ...(control.mainAssistance || control.mainConversation ? {
+          mainAssistanceNotice: async (inputId: string) => await baseRunRequest.onPendingMainAssistance?.(inputId) ?? "",
+          mainAssistance: (value: unknown, callId: string) => dispatchMainInboxRequest(baseRunRequest, value, callId)
+        } : {}),
         ...(state.orchestration.gates?.length ? { workflowGate: async (value: unknown, callId: string) => {
           if (!baseRunRequest.onWorkflowGateRequest) throw new Error("No Gate is available in this invocation's configured path");
           return baseRunRequest.onWorkflowGateRequest(value, callId);
@@ -3973,6 +4134,10 @@ export class Orchestrator {
           });
         },
         onRejected: async (envelope, error) => {
+          if (envelope && ["route_to_agent", "request_user", "apply_workflow", "complete_project"].includes(envelope.action.tool)) {
+            const field = envelope.action.tool === "route_to_agent" ? " target=" + redactTrace(JSON.stringify(envelope.action.target)).slice(0, 130) : "";
+            rejectedTerminalAction = envelope.action.tool + field + ": " + redactTrace(error.message).slice(0, 500);
+          }
           await this.emit(runtime, {
             type: "control.action.rejected",
             level: "warning",
@@ -4049,7 +4214,7 @@ export class Orchestrator {
         }
       });
       const invocationProject = projectSnapshotForAgent(
-        state,
+        inputState(),
         agent,
         projectUserInputs.map((input) => input.id)
       );
@@ -4081,6 +4246,19 @@ export class Orchestrator {
           ? { toolCatalog: buildAgentToolCatalog(allSkills, state.skillDefinitions, state.mcpDefinitions) }
           : {}),
         taskSessionId,
+        onNativeUserInput: async (event, session) => {
+          if (!recoveryMessage || !recoveryInput || event.kind !== "user.message" || event.invocationId !== invocationId ||
+            typeof event.message !== "string" || !event.message.includes(recoveryMessage) ||
+            !session || session.nativeId.startsWith("pending:")) return;
+          const retained = state.taskSessionRefs?.[taskSessionId];
+          if (!retained || retained.nativeId !== session.nativeId || retained.harnessId !== session.harnessId ||
+            retained.generation !== session.generation) return;
+          recoveryReceipt ??= Promise.resolve(onTrace("status", "Original-task recovery facts confirmed in native user input", {
+            ...recoveryInput, recoveryInput: "received", harnessId: session.harnessId,
+            nativeSessionId: session.nativeId, sessionGeneration: session.generation
+          }));
+          await recoveryReceipt;
+        },
         onExperimentWait: async (waiting) => {
           if (waiting) {
             state.phase = `${agent}:awaiting-experiment-result`;
@@ -4159,8 +4337,15 @@ export class Orchestrator {
           });
         },
         onModelStreamEvent: (event) => performanceTracker.observe(event),
-        onLiveHarnessEvent: (event) =>
-          this.publishLiveHarnessEvent(state.id, agent, event),
+        onLiveHarnessEvent: (event) => {
+          const tool = event.tool;
+          if (kind === "main" && (event.kind === "tool.failed" || tool?.isError) &&
+            tool && /(?:^|[.:/]|__)route_to_agent$/.test(tool.name) &&
+            tool.outputPreview?.includes("target is not a current route candidate")) {
+            rejectedTerminalAction = "route_to_agent 的 target 不在本轮可选目标中";
+          }
+          this.publishLiveHarnessEvent(state.id, agent, event);
+        },
         onHarnessAttemptReset: async (attempt) => {
           const replacedAttemptPerformance = performanceTracker.finish("incomplete");
           recordTerminalPerformance(state, replacedAttemptPerformance, false);
@@ -4255,7 +4440,8 @@ export class Orchestrator {
           const repairResult = await runTurn({
             ...baseRunRequest,
             resumeThreadId: result.threadId ?? state.taskSessionIds?.[agentExecution.executionId] ?? state.agentSessionIds?.[agent] ?? resumeThreadId,
-            terminalControlRepair: { originalHandoff: returnedHandoff }
+            terminalControlRepair: { originalHandoff: returnedHandoff,
+              handoffPath: await this.storage.writeTerminalRepairHandoff(state.id, invocationId, returnedHandoff) }
           });
           await traceQueue;
           ensureInvocationCanContinue();
@@ -4271,6 +4457,10 @@ export class Orchestrator {
       }
       if (kind === "main" && !terminalControlAction(receivedControlActions)) {
         terminalRepairActive = true;
+        if (!this.takeMainTerminalCorrection(state, invocationId)) {
+          throw new MissingMainTerminalActionError("Original Main task exhausted its automatic terminal correction allowance; an explicit decision or concrete user guidance is required");
+        }
+        await this.storage.saveState(state);
         const repairSessionId = result.threadId ??
           state.taskSessionIds?.[agentExecution.executionId] ??
           state.agentSessionIds?.[agent] ??
@@ -4286,13 +4476,15 @@ export class Orchestrator {
           diagnostic: true,
           terminalControlRepair: true,
           invocationId,
+          executionId: agentExecution.executionId,
+          taskCorrectionAttempt: state.activeAgentExecution!.terminalControlRecovery!.attempts,
           sessionId: repairSessionId
         });
         await traceQueue;
         let repairResult: AgentRunResult;
         try {
           const repairProject = projectSnapshotForAgent(
-            state,
+            inputState(),
             agent,
             projectUserInputs.map((input) => input.id)
           );
@@ -4302,15 +4494,16 @@ export class Orchestrator {
             project: repairProject,
             resumeThreadId: repairSessionId,
             terminalControlRepair: {
-              originalHandoff: returnedHandoff
+              originalHandoff: returnedHandoff,
+              rejectedAction: rejectedTerminalAction,
+              handoffPath: await this.storage.writeTerminalRepairHandoff(state.id, invocationId, returnedHandoff)
             }
           });
         } catch (repairError) {
           ensureInvocationCanContinue();
+          const cause = repairError instanceof Error ? repairError : new Error(String(repairError));
           throw new MissingMainTerminalActionError(
-            `Main terminal-action repair failed: ${redactTrace(
-              repairError instanceof Error ? repairError.message : String(repairError)
-            ).slice(0, 2_000)}`
+            `Main terminal-action repair failed: ${formatHarnessError(cause)}`, { cause }
           );
         }
         await traceQueue;
@@ -4321,7 +4514,7 @@ export class Orchestrator {
         );
         if (!terminalControlAction(receivedControlActions)) {
           throw new MissingMainTerminalActionError(
-            "Main terminal-action repair returned without route_to_agent, request_user, apply_workflow, or complete_project"
+            "Main terminal-action repair returned without a formal completion/control action; the original task and its pending routing responsibility remain unfinished"
           );
         }
         result = {
@@ -4340,22 +4533,7 @@ export class Orchestrator {
       // A signalled process keeps the slot until its runner promise settles.
       releaseLease();
       await traceQueue;
-      await this.serializeProjectWrite(runtime, async () => {
-        if (runtime.mainInputRefresh) {
-          throw new AgentInterruptedError(
-            "Agent invocation was superseded before commit by user input for Main"
-          );
-        }
-        if (state.interruptRequest?.invocationId === invocationId) {
-          throw new AgentInterruptedError(
-            "Agent invocation was interrupted before its result could be committed"
-          );
-        }
-        return this.storage.beginInvocationCommit(
-          state,
-          invocationId
-        );
-      });
+      const continueMainWithoutDecision = await this.beginAgentResultCommit(runtime, kind, invocationId, receivedControlActions);
       commitStarted = true;
       await this.commitAgentResult(
         runtime,
@@ -4366,42 +4544,18 @@ export class Orchestrator {
         result.handoff,
         receivedControlActions,
         control.capabilityHash,
-        controlStateVersion
+        controlStateVersion,
+        continueMainWithoutDecision
       );
-      const completedPerformance = performanceTracker.finish("completed");
-      recordTerminalPerformance(state, completedPerformance, true);
-      const completion = await this.emit(runtime, {
-        type: "invocation.completed",
-        agent,
-        message: `${agent} invocation committed`,
-        data: {
-          invocationId,
-          executionId: agentExecution.executionId,
-          ...(kind === "main" ? { mainInvocationSeq: state.mainInvocationSeq } : {}),
-          kind,
-          phase: state.phase,
-          status: state.status,
-          performance: completedPerformance
-        }
-      });
-      this.storage.hub.finishInvocation(state.id, invocationId, "completed");
-      if (isCancelling(state)) {
-        await this.serializeProjectWrite(runtime, async () =>
-          this.storage.rollbackInvocationCommit(state, invocationId)
-        );
-        commitStarted = false;
+      const completion = await this.finishAgentResultCommit(
+        runtime, kind, agentExecution.executionId, performanceTracker.finish("completed")
+      );
+      commitStarted = false;
+      if (completion === undefined) {
         await this.finishCancellation(runtime);
         this.clearLiveInvocationSoon(state.id, invocationId);
         return;
       }
-      await this.serializeProjectWrite(runtime, async () =>
-        this.storage.commitInvocationCommit(state, invocationId, {
-          abortOnControl:
-            state.status === "completed" ||
-            (kind === "main" && state.latestAssignment?.target === "finish")
-        })
-      );
-      commitStarted = false;
       const workflowAction = receivedControlActions.find(action => action.action.tool === "apply_workflow");
       if (serialWorkflow && workflowAction) {
         const record = await this.collaborationRuntime!.getSerialMainWorkflowAdjustment!(state, invocationId, workflowAction.callId);
@@ -4417,20 +4571,19 @@ export class Orchestrator {
         }
       }
       this.clearLiveInvocationSoon(state.id, invocationId);
-      if (controlStagingPath) await fs.rm(controlStagingPath, { force: true });
-      if (controlCapabilityPath) await fs.rm(controlCapabilityPath, { force: true });
+      await removeControlFiles();
     } catch (error) {
       revokeControlCapability?.();
       await drainControlActions?.();
       const invocationError = projectMcpFailure ?? agentWatchdogFailure ?? (
         error instanceof Error ? error : new Error(String(error))
       );
-      const invocationErrorMessage = redactTrace(invocationError.message).slice(0, 4_000);
+      const invocationErrorMessage = invocationError instanceof HarnessRuntimeError
+        ? formatHarnessError(invocationError) : redactTrace(invocationError.message).slice(0, 4_000);
       const incompletePerformance = performanceTracker.finish("incomplete");
       releaseLease();
       await traceQueue;
-      if (controlStagingPath) await fs.rm(controlStagingPath, { force: true });
-      if (controlCapabilityPath) await fs.rm(controlCapabilityPath, { force: true });
+      await removeControlFiles();
       const workerControlRecovery =
         kind === "worker" && invocationError instanceof ControlProtocolError;
       const mainTerminalRepairRecovery =
@@ -4465,8 +4618,7 @@ export class Orchestrator {
             this.storage.rollbackInvocationCommit(state, invocationId)
           );
           commitStarted = false;
-          if (controlStagingPath) await fs.rm(controlStagingPath, { force: true });
-          if (controlCapabilityPath) await fs.rm(controlCapabilityPath, { force: true });
+          await removeControlFiles();
         } catch (rollbackError) {
           state.status = "retrying";
           state.phase = "storage-recovery-required";
@@ -4630,6 +4782,7 @@ export class Orchestrator {
       await stopAgentWatchdog();
       await controlBridge?.close();
       releaseLease();
+      if (agent === "main") await this.collaborationRuntime?.finishMainConversationTurn?.(state, invocationId);
       if (!this.storage.hasActiveInvocationCommit(state.id)) {
         try {
           const checkpoint = await this.storage.writeWorkspaceCheckpoint(state, agent, invocationId, state.status, workspaceBaseline);
@@ -4803,14 +4956,7 @@ export class Orchestrator {
         invocationId,
         handoff
       );
-      state.latestHandoff = {
-        agent,
-        invocationId,
-        markdown: handoffText,
-        body: handoff ?? "The Agent completed without a textual handoff.",
-        excerpt: handoffExcerpt(handoff),
-        updatedAt: nowIso()
-      };
+      // Save Main's own output without replacing the upstream task source.
       const handoffPath = await this.storage.writeHandoff(
         state,
         agent,
@@ -4829,23 +4975,22 @@ export class Orchestrator {
       });
     }
 
-    state.lastError = safeError;
-    state.retryAt = undefined;
-    state.currentAgent = undefined;
-    state.activeInvocationId = undefined;
-    state.queuedAgent = agent;
-    state.status = "retrying";
-    state.phase = "missing-terminal-action";
-    this.clearQueueEntry(state);
+    const task = state.activeAgentExecution;
+    if (!task || task.agent !== agent) throw new Error("Main terminal recovery lost its original task");
+    task.terminalControlRecovery = { attempts: task.terminalControlRecovery?.attempts ?? 0,
+      invocationId, reason: safeError.slice(0, 4_000) };
+    this.interruptMainDecision(state, safeError);
     await this.emit(runtime, {
       type: "project.status",
       level: "warning",
       agent,
-      message: "Main did not commit a terminal decision after one same-Session repair; the original task is scheduled for automatic recovery",
+      message: "Main has no committed routing decision after its bounded correction; the original task and Session are retained for explicit continuation",
       data: {
         invocationId,
+        executionId: task.id,
         recoverable: true,
-        repairAttempted: true,
+        automaticRetry: false,
+        taskCorrectionAttempts: task.terminalControlRecovery.attempts,
         sessionId: state.agentSessionIds?.[agent]
       }
     });
@@ -4978,7 +5123,7 @@ export class Orchestrator {
 
   private async applyWaitingSerialWorkflowAdjustments(runtime: RuntimeProject): Promise<void> {
     const coordinator = this.collaborationRuntime, { state } = runtime;
-    if (state.git?.enabled || !coordinator?.pendingSerialMainWorkflowAdjustments || !coordinator.publishSerialMainWorkflowAdjustment) return;
+    if (usesCollaborationScheduler(state) || !coordinator?.pendingSerialMainWorkflowAdjustments || !coordinator.publishSerialMainWorkflowAdjustment) return;
     if (this.storage.hasActiveInvocationCommit(state.id)) return;
     // Read only surviving committed original results before reserving the
     // write barrier used for configuration projection and publication.
@@ -5089,12 +5234,12 @@ export class Orchestrator {
     proposal: AgentOrchestrationProposal
   ): Promise<void> {
     const { state } = runtime;
-    if (proposal.orchestration.schemaVersion === 3 && (!state.git?.enabled || !this.collaborationRuntime)) {
+    if (proposal.orchestration.schemaVersion === 3 && (!usesCollaborationScheduler(state) || !this.collaborationRuntime)) {
       throw new Error("组内 Workflow 重配置要求 Git collaboration 和可信递归运行时");
     }
     const previousOrchestration = state.orchestration;
     const affectedGroupIds = affectedCollaborationGroupIds(previousOrchestration, proposal.orchestration);
-    if (state.git?.enabled && affectedGroupIds.length) {
+    if (usesCollaborationScheduler(state) && affectedGroupIds.length) {
       await this.collaborationRuntime?.assertWorkflowRevisionEditable(state, affectedGroupIds);
     }
     const previousNames = new Set(
@@ -5325,9 +5470,9 @@ export class Orchestrator {
       }
     );
 
-    if (state.git?.enabled) {
+    if (usesCollaborationScheduler(state)) {
       if (!this.collaborationRuntime) {
-        throw new Error("Git collaboration runtime is unavailable");
+        throw new Error("Collaboration runtime is unavailable");
       }
       // Persist only after the complete in-memory proposal (topology, Agent
       // registry, sessions, counters and next Main assignment) is coherent.
@@ -5401,6 +5546,70 @@ export class Orchestrator {
     });
   }
 
+  private beginAgentResultCommit(
+    runtime: RuntimeProject, kind: AgentKind, invocationId: string, controlActions: ControlActionEnvelope[]
+  ): Promise<boolean | undefined> {
+    const { state } = runtime;
+    return this.serializeProjectWrite(runtime, async () => {
+      let continueMainWithoutDecision: boolean | undefined;
+      if (runtime.mainInputRefresh) {
+        throw new AgentInterruptedError(
+          "Agent invocation was superseded before commit by user input for Main"
+        );
+      }
+      if (state.interruptRequest?.invocationId === invocationId) {
+        throw new AgentInterruptedError(
+          "Agent invocation was interrupted before its result could be committed"
+        );
+      }
+      if (kind === "main" && !state.activeWorkflowGate &&
+        terminalControlAction(controlActions)?.action.tool === "finish_task") {
+        continueMainWithoutDecision = this.takeMainTerminalCorrection(state, invocationId);
+        // A failed publication must not grant another automatic correction.
+        await this.storage.saveState(state);
+      }
+      await this.storage.beginInvocationCommit(state, invocationId);
+      return continueMainWithoutDecision;
+    });
+  }
+
+  private async finishAgentResultCommit(
+    runtime: RuntimeProject, kind: AgentKind, executionId: string, performance: InvocationPerformance
+  ): Promise<TimelineEvent | undefined> {
+    const { state } = runtime;
+    const { agent, invocationId } = performance;
+    recordTerminalPerformance(state, performance, true);
+    const completion = await this.emit(runtime, {
+      type: "invocation.completed",
+      agent,
+      message: `${agent} invocation committed`,
+      data: {
+        invocationId,
+        executionId,
+        ...(kind === "main" ? { mainInvocationSeq: state.mainInvocationSeq } : {}),
+        kind,
+        phase: state.phase,
+        status: state.status,
+        performance
+      }
+    });
+    this.storage.hub.finishInvocation(state.id, invocationId, "completed");
+    if (isCancelling(state)) {
+      await this.serializeProjectWrite(runtime, async () =>
+        this.storage.rollbackInvocationCommit(state, invocationId)
+      );
+      return undefined;
+    }
+    await this.serializeProjectWrite(runtime, async () =>
+      this.storage.commitInvocationCommit(state, invocationId, {
+        abortOnControl:
+          state.status === "completed" ||
+          (kind === "main" && state.latestAssignment?.target === "finish")
+      })
+    );
+    return completion;
+  }
+
   private async commitAgentResult(
     runtime: RuntimeProject,
     agent: AgentName,
@@ -5410,7 +5619,8 @@ export class Orchestrator {
     handoff?: string,
     controlActions: ControlActionEnvelope[] = [],
     capabilityHash?: string,
-    expectedStateVersion?: number
+    expectedStateVersion?: number,
+    continueMainWithoutDecision?: boolean
   ): Promise<void> {
     const { state } = runtime;
     const definition = agentDefinitionFor(orchestrationFor(state), agent);
@@ -5433,7 +5643,7 @@ export class Orchestrator {
     if (kind === "worker" && state.routeRecovery?.invocationId === invocationId && routingTerminal?.action.tool === "route_to_agent") {
       state.routeRecovery.status = "repaired";
     }
-    const serialMainCall = kind === "main" && !state.git?.enabled && routingTerminal?.action.tool === "apply_workflow" &&
+    const serialMainCall = kind === "main" && !usesCollaborationScheduler(state) && routingTerminal?.action.tool === "apply_workflow" &&
       this.collaborationRuntime?.prepareSerialMainWorkflowAdjustment && this.collaborationRuntime.getSerialMainWorkflowAdjustment &&
       this.collaborationRuntime.stageSerialMainWorkflowAdjustment && this.collaborationRuntime.publishSerialMainWorkflowAdjustment &&
       this.collaborationRuntime.recordSerialMainWorkflowBoundary;
@@ -5567,14 +5777,7 @@ export class Orchestrator {
           invocationId,
           handoff ?? "Main completed this native Harness turn without recording an orchestration decision."
         );
-        state.latestHandoff = {
-          agent,
-          invocationId,
-          markdown: mainHandoff,
-        body: handoff ?? "Main completed without recording an orchestration decision.",
-          excerpt: handoffExcerpt(handoff ?? mainHandoff),
-          updatedAt: nowIso()
-        };
+        // A native-turn receipt is not a replacement for the pending source handoff.
         const mainHandoffPath = await this.storage.writeHandoff(
           state,
           agent,
@@ -5612,19 +5815,26 @@ export class Orchestrator {
         });
         if (isCancelling(state)) return;
 
-        // Preserve the exact pending capability snapshot. Candidate derivation
-        // belongs to the Main control-mode implementation, not this lifecycle
-        // continuation.
+        // finish_task commits truthfully, but cannot renew a task's correction allowance.
+        if (continueMainWithoutDecision === undefined) throw new Error("Main continuation lacks its persisted original-task correction decision");
         state.currentAgent = undefined;
         state.activeInvocationId = undefined;
         state.queuedAgent = SYSTEM_CONTROLLER_AGENT;
         if (isPauseRequested(state)) {
           this.clearQueueEntry(state);
-        } else {
+          state.phase = `${SYSTEM_CONTROLLER_AGENT}:queued`;
+        } else if (continueMainWithoutDecision) {
           state.status = "queued";
+          state.phase = `${SYSTEM_CONTROLLER_AGENT}:queued`;
           this.enterQueue(state);
+        } else {
+          this.interruptMainDecision(state, "Main committed finish_task but did not resolve the original routing responsibility; automatic task correction is exhausted");
+          await this.emit(runtime, { type: "project.status", level: "warning", agent,
+            message: "Main native-turn completion is committed; original routing task remains unresolved and awaits explicit continuation",
+            data: { invocationId, executionId: state.activeAgentExecution!.id, decisionRecorded: false,
+              automaticRetry: false, taskCorrectionAttempts: state.activeAgentExecution!.terminalControlRecovery!.attempts } });
+          return;
         }
-        state.phase = `${SYSTEM_CONTROLLER_AGENT}:queued`;
         await this.emit(runtime, {
           type: "main.assignment.queued",
           level: "warning",
@@ -5763,7 +5973,7 @@ export class Orchestrator {
         await this.queueMainDecision(
           runtime,
           pendingDecision?.sourceAgent ?? SYSTEM_CONTROLLER_AGENT,
-          invocationId,
+          pendingDecision?.sourceInvocationId ?? invocationId,
           "termination",
           ["finish"],
           true,
@@ -5778,7 +5988,7 @@ export class Orchestrator {
         await this.queueMainDecision(
           runtime,
           pendingDecision?.sourceAgent ?? SYSTEM_CONTROLLER_AGENT,
-          invocationId,
+          pendingDecision?.sourceInvocationId ?? invocationId,
           "deterministic-route",
           [],
           true,
@@ -6163,37 +6373,11 @@ export class Orchestrator {
         continue;
       }
       if (action.tool === "publish_artifact") {
-        const source = await this.storage.resolveWorkspaceArtifact(
-          state.id,
-          agent,
-          action.path
-        );
-        const sha256 = createHash("sha256")
-          .update(await fs.readFile(source.sourcePath))
-          .digest("hex");
-        const record: ArtifactRecord = {
-          id: `${agent}:${source.relativePath}`,
-          agent,
-          invocationId,
-          path: source.relativePath,
-          title: action.title,
-          kind: action.kind,
-          description: action.description,
-          size: source.size,
-          mediaType: source.mediaType,
-          sha256,
-          modifiedAt: new Date(source.mtimeMs).toISOString(),
-          registeredAt: nowIso(),
-          updatedAt: new Date(source.mtimeMs).toISOString()
-        };
-        state.artifacts = [
-          ...(state.artifacts ?? []).filter((item) => item.path !== record.path),
-          record
-        ];
+        const record = await this.storage.registerWorkspaceArtifact(state, envelope);
         await this.emit(runtime, {
           type: "artifact.published",
           agent,
-          message: `Artifact published: ${source.relativePath}`,
+          message: `Artifact published: ${record.path}`,
           data: {
             invocationId,
             action: "publish_artifact",

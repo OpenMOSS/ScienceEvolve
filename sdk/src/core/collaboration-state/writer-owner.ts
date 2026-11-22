@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { tryLock } from "fs-native-extensions";
+import { COLLABORATION_STATE_SCHEMA_VERSION } from "./contracts.js";
 import { CollaborationStateError } from "./errors.js";
 
 interface FileIdentity { device: string; inode: string }
@@ -120,8 +121,9 @@ export class WriterOwner {
       const reader = new DatabaseSync(canonical, { readOnly: true });
       try {
         const meta = reader.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton=1").get();
-        if (!meta || typeof meta.schema_version !== "number" || !Number.isSafeInteger(meta.schema_version) || meta.schema_version < 1 || meta.schema_version > 29)
-          throw invalid("Offline upgrade requires a legacy schema 1–29 database");
+        if (!meta || typeof meta.schema_version !== "number" || !Number.isSafeInteger(meta.schema_version) || meta.schema_version < 1 || meta.schema_version >= COLLABORATION_STATE_SCHEMA_VERSION)
+          throw invalid("Offline upgrade requires a schema 1–30 database");
+        if (meta.schema_version === 30 && !existingLock) throw invalid("Schema 30 requires its original writer lock");
       } finally { reader.close(); }
     }
     const parentStat = lstatSync(parent, { bigint: true });
@@ -163,9 +165,9 @@ export class WriterOwner {
           const version = metadata?.schema_version;
           if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1)
             throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", "Collaboration database has missing or invalid schema authority metadata");
-          if (version > 30) throw invalid(`Unsupported collaboration state schema ${version}`);
-          if (version < 30 && !options.offlineUpgrade) throw new CollaborationStateError("WRITER_UPGRADE_REQUIRED", "Collaboration database requires an offline writer protocol upgrade");
-          if (version === 30) {
+          if (version > COLLABORATION_STATE_SCHEMA_VERSION) throw invalid(`Unsupported collaboration state schema ${version}`);
+          if (version < COLLABORATION_STATE_SCHEMA_VERSION && !options.offlineUpgrade) throw new CollaborationStateError("WRITER_UPGRADE_REQUIRED", "Collaboration database requires an offline writer protocol upgrade");
+          if (version >= 30) {
             const row = reader.prepare("SELECT identity_json FROM writer_service_owner WHERE singleton=1").get();
             if (!row || typeof row.identity_json !== "string") throw invalid("Writer ownership metadata is missing");
             if (!isDeepStrictEqual(binding, decodeWriterOwnerBinding(JSON.parse(row.identity_json))))

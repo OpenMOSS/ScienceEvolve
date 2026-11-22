@@ -1,3 +1,17 @@
+interface SchedulerProject {
+  git?: { enabled: boolean };
+  orchestration?: { schemaVersion?: number };
+}
+
+export function projectScheduler(project: SchedulerProject): "git" | "scoped" | "serial" {
+  if (project.git?.enabled) return "git";
+  return project.orchestration?.schemaVersion === 3 ? "scoped" : "serial";
+}
+
+export function usesCollaborationScheduler(project: SchedulerProject): boolean {
+  return projectScheduler(project) !== "serial";
+}
+
 /** Browser/server shared read-only projection. No runtime or database dependencies. */
 interface AuthorizationAttempt {
   status: string;

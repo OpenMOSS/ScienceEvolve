@@ -26,7 +26,7 @@ afterEach(async () => {
 
 async function fakePiExecutable(
   root: string,
-  behavior: "normal" | "malformed-hang" | "resume-mismatch" | "work-before-session" = "normal"
+  behavior: "normal" | "malformed-hang" | "resume-mismatch" | "work-before-session" | "blank-once" | "blank-twice" | "native-error" = "normal"
 ): Promise<{ executable: string; capture: string; terminated: string; later: string }> {
   const executable = path.join(root, "fake-pi.mjs");
   const capture = path.join(root, "pi-capture.jsonl");
@@ -111,6 +111,12 @@ if (behavior === "malformed-hang") {
     } }));
   }, 250);
   setTimeout(() => process.exit(0), 1000);
+} else if (["blank-once", "blank-twice", "native-error"].includes(behavior)) {
+  if (!resumedHeader) emitWork();
+  const text = behavior === "blank-once" && resumedHeader ? "Corrected handoff." : " ";
+  console.log(JSON.stringify({type: "message_end", message: {role: "assistant", content: [{type: "text", text}],
+    stopReason: behavior === "native-error" ? "error" : "stop",
+    ...(behavior === "native-error" ? {errorMessage: "Provider stream closed, api_key=sk-testfixture123456789"} : {})}}));
 } else if (behavior !== "work-before-session") emitWork();
 `, { encoding: "utf8", mode: 0o700 });
   return { executable, capture, terminated, later };
@@ -1265,6 +1271,34 @@ child.on("exit", code => process.exit(code ?? 1));
         source: "wrapper"
       })
     ]));
+  });
+
+  it.each(["blank-once", "blank-twice", "native-error"] as const)("uses the final Pi handoff and its native stop reason (%s)", async behavior => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-pi-handoff-"));
+    roots.push(root);
+    const fake = await fakePiExecutable(root, behavior);
+    const facade = new HarnessRuntimeFacade({ harnessExecutables: { pi: fake.executable },
+      protocolProxyFactory: async () => ({ baseUrl: "http://127.0.0.1:43198/v1", token: "invocation-token", close: async () => undefined }) });
+    const request = await workflowRequest(root, "main", "inv_pi_final_handoff", "pi");
+    const events = vi.fn();
+    request.onOfficialHarnessEvent = events;
+    const run = facade.run(request, () => undefined, new AbortController().signal);
+    if (behavior === "blank-once") await expect(run).resolves.toMatchObject({ handoff: "Corrected handoff." });
+    else if (behavior === "blank-twice") await expect(run).rejects.toMatchObject({ details: { reason: "missing-natural-language-handoff" } });
+    else {
+      const failure = await run.catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("Provider stream closed");
+      expect((failure as Error).message).not.toContain("sk-testfixture123456789");
+    }
+    const calls = (await fs.readFile(fake.capture, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(calls).toHaveLength(behavior === "native-error" ? 1 : 2);
+    if (calls.length === 2) {
+      expect(calls[1].prompt.trim()).toBe("上一轮没有交回结果说明。请根据刚才的工具结果，简短说明已完成什么、还有什么待做。");
+      const sessionPath = (call: { args: string[] }) => call.args[call.args.indexOf("--session") + 1];
+      expect(sessionPath(calls[1])).toBe(sessionPath(calls[0]));
+    }
+    expect(events.mock.calls.filter(([event]) => event.kind === "tool.completed")).toHaveLength(1);
   });
 
   it("launches Pi in official JSON print mode with durable Main and ephemeral Worker sessions", async () => {

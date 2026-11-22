@@ -8,6 +8,7 @@ import { promises as fs, openSync, closeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { vi } from "vitest";
 import { ControlActionService, startControlActionBridge } from "../../src/core/orchestration-control-bridge.js";
 import { HarnessRuntimeFacade } from "../../src/core/harness-runtime/runtime.js";
 import { CollaborationStateError } from "../../src/core/collaboration-state/errors.js";
@@ -84,6 +85,56 @@ function expectRecoverableToolError(
 }
 
 describe("orchestration control MCP", () => {
+  it.each([false, true])("grants apply_workflow to an authorized user conversation and returns its publication status (%s)", async allowed => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-conversation-proposal-")); roots.push(root);
+    const projectId = String(context(root).projectId), projectPath = path.join(root, projectId);
+    const proposal = path.join(projectPath, "agent-inputs", "main", "management", "inv_aaaaaaaa", "proposal", "workflow.json");
+    await fs.mkdir(path.dirname(proposal), { recursive: true });
+    await fs.writeFile(proposal, "{}");
+    const settings = context(root, { projectPath, agent: "main", kind: "main", mainConversation: "turn", candidates: [],
+      allowWorkflowReconfiguration: allowed, workflowAuthoringPath: proposal });
+    const receipt = { requestId: "accepted-call", status: "pending", reason: "Waiting for the active task" };
+    const revalidate = vi.fn(async () => receipt);
+    const service = new ControlActionService({ projectId, agent: "main", invocationId: String(settings.invocationId),
+      stateVersion: 4, capability: "capability-test-secret", stagingPath: String(settings.stagingPath), revalidate });
+    const bridge = await startControlActionBridge(service, root);
+    try {
+      const [list, call] = await runMcp({ ...settings, bridgePath: bridge.endpoint.path, bridgeHost: bridge.endpoint.host, bridgePort: bridge.endpoint.port },
+        [{ id: 1, method: "tools/list" }, { id: 2, method: "tools/call", params: { name: "apply_workflow",
+          arguments: { callId: "edit-next", path: "workflow.json", rationale: "Edit a future step" } } }]);
+      expect((list.result as { tools: Array<{ name: string }> }).tools.map(tool => tool.name)).toEqual(allowed ? ["reply_to_user", "apply_workflow"] : ["reply_to_user"]);
+      if (allowed) {
+        expect(call.result).toMatchObject({ structuredContent: receipt });
+        expect(JSON.stringify((call.result as { content: unknown }).content)).toContain(receipt.reason);
+      } else expectRecoverableToolError(call, "unavailable in this Main conversation turn");
+      expect(revalidate).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    } finally { await bridge.close(); }
+  });
+
+  it.each(["inbox", "turn"] as const)("binds reply_to_user to the Main bridge (%s)", async mode => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-user-reply-")); roots.push(root);
+    const settings = context(root, { agent: "main", kind: "main", mainConversation: mode, projectState: true, nativeBackgroundJobs: true });
+    const reply = vi.fn(async () => ({ messageId: "chat_1", status: "replied" }));
+    const service = new ControlActionService({ projectId: String(settings.projectId), agent: "main", invocationId: String(settings.invocationId),
+      stateVersion: Number(settings.stateVersion), capability: "capability-test-secret", stagingPath: String(settings.stagingPath),
+      revalidate: async () => undefined, mainAssistance: reply, mainAssistanceNotice: async () => "" });
+    const bridge = await startControlActionBridge(service, root);
+    try {
+      const [discovery, result, denied] = await runMcp({ ...settings, bridgePath: bridge.endpoint.path, bridgeHost: bridge.endpoint.host, bridgePort: bridge.endpoint.port }, [
+        { id: 1, method: "tools/list" }, { id: 2, method: "tools/call", params: { name: "reply_to_user", arguments: { messageId: "chat_1", text: "Current result" } } },
+        ...(mode === "turn" ? [{ id: 3, method: "tools/call", params: { name: "background_job", arguments: { operation: "status", jobId: "job" } } }] : [])]);
+      const names = (discovery.result as { tools: Array<{ name: string }> }).tools.map(tool => tool.name);
+      expect(names).toContain("reply_to_user"); expect(names).toContain("state_list");
+      if (mode === "turn") {
+        expect(names).not.toContain("route_to_agent");
+        expect(denied.result).toMatchObject({ isError: true });
+        expect(JSON.stringify(denied.result)).toContain("unavailable in this Main conversation turn");
+      }
+      expect(reply).toHaveBeenCalledWith({ operation: "reply_user", messageId: "chat_1", text: "Current result" }, "user-reply:2");
+      expect(result.result).toMatchObject({ structuredContent: { messageId: "chat_1", status: "replied" } });
+    } finally { await bridge.close(); }
+  });
+
   it.each(["request", "reply"] as const)("exposes explicit Main assistance and preserves original tool results (%s)", async mode => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-assistance-mcp-")); roots.push(root);
     const settings = context(root, { mainAssistance: mode, ...(mode === "reply" ? { agent: "main", kind: "main" } : {}) });

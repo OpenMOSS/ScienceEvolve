@@ -1,4 +1,5 @@
-import { mainAssistanceTools } from "./main-assistance-mcp.js";
+import { isManagementProposal } from "./management-input-paths.js";
+import { mainAssistanceTools, replyToUserTool } from "./main-assistance-mcp.js";
 import { workflowGateTools } from "./workflow-gate-mcp.js";
 import { searchTreeTools } from "./search-tree-mcp.js";
 import { promises as fs } from "node:fs";
@@ -14,7 +15,7 @@ import { assertWorktreeClosingControl, worktreeClosingActionAllowed } from "./in
 import type { MainCapabilitySnapshot } from "./internal/shared/contracts.js";
 import { AUTHORITATIVE_WORKFLOW_REFERENCES, CONTROL_BRIDGE_PROGRESS_PROTOCOL, type ControlActionRejection } from "./orchestration-control-bridge.js";
 import type { RuntimeMcpToolDefinition } from "./harness-runtime/contracts.js";
-import { containsCredentialMaterial, safeGitArtifactRelativePath, safeProjectRelativePath } from "./utils.js";
+import { containsCredentialMaterial, redactTrace, safeGitArtifactRelativePath, safeProjectRelativePath } from "./utils.js";
 import { controlDecisionsConflict, isControlDecision } from "./orchestration-control-decisions.js";
 import { sameControlActionRequest } from "./control-action-identity.js";
 import { controlResultDisplayText } from "./control-result-receipts.js";
@@ -27,12 +28,14 @@ import { CollaborationStateError } from "./collaboration-state/errors.js";
 type JsonRpcRequest = { id?: string | number | null; method?: string; params?: Record<string, unknown> };
 export type CapabilityContext = {
   mainAssistance?: "request" | "reply";
+  mainConversation?: "inbox" | "turn";
   workflowGate?: boolean;
   searchTree?: boolean;
   projectState?: boolean;
   nativeBackgroundJobs?: boolean;
   projectStateReconciliation?: boolean;
   workflowAuthoringPath?: string;
+  projectPath?: string;
   scopedAgentRouting?: boolean;
   secret: string;
   projectId: string;
@@ -290,6 +293,7 @@ function capabilityFromEnvironment(): CapabilityContext {
   const context = parsed as Omit<CapabilityContext, "secret">;
   if (
     typeof context.projectId !== "string" ||
+    (context.projectPath !== undefined && (typeof context.projectPath !== "string" || !path.isAbsolute(context.projectPath) || path.basename(context.projectPath) !== context.projectId)) ||
     typeof context.agent !== "string" ||
     typeof context.invocationId !== "string" ||
     typeof context.stagingPath !== "string" ||
@@ -307,6 +311,7 @@ function capabilityFromEnvironment(): CapabilityContext {
     (context.kind !== "main" && context.kind !== "worker") ||
     (context.decisionBy !== "main" && context.decisionBy !== "agent") ||
     typeof context.allowUserIntervention !== "boolean" ||
+    (context.mainConversation !== undefined && (context.agent !== "main" || !["inbox", "turn"].includes(context.mainConversation))) ||
     (context.mainAssistance !== undefined && !["request", "reply"].includes(context.mainAssistance)) ||
     (context.workflowGate !== undefined && typeof context.workflowGate !== "boolean") ||
     (context.searchTree !== undefined && typeof context.searchTree !== "boolean") ||
@@ -356,12 +361,43 @@ function capabilityFromEnvironment(): CapabilityContext {
 }
 
 export function toolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[] {
-  if (context.mainAssistance === "reply") return mainAssistanceTools();
+  const userTools = context.mainConversation ? [replyToUserTool()] : [];
+  if (context.mainConversation === "turn") return [...userTools, ...(mainCanReconfigure(context) ? [applyWorkflowTool(true)] : []), ...(context.searchTree ? searchTreeTools() : []),
+    ...(context.projectState ? projectStateTools(context.projectStateReconciliation !== false, false) : [])];
+  if (context.mainAssistance === "reply") return [...mainAssistanceTools(), ...userTools];
   const currentMain = context.terminalPushCoordination ? context.terminalPushCoordination.role === "main"
     : context.collaboration ? context.collaboration.role === "scoped-main"
       : context.kind === "main" && !context.worktreeClosing && !context.terminalPushObservation;
-  return [...(context.mainAssistance ? mainAssistanceTools() : []), ...(context.workflowGate ? workflowGateTools() : []), ...(context.searchTree ? searchTreeTools() : []), ...(context.nativeBackgroundJobs && context.projectState ? [nativeBackgroundJobTool()] : []), ...controlToolsFor(context), ...(context.projectState ? projectStateTools(currentMain && context.projectStateReconciliation !== false,
+  return [...userTools, ...(context.mainAssistance ? mainAssistanceTools() : []), ...(context.workflowGate ? workflowGateTools() : []), ...(context.searchTree ? searchTreeTools() : []), ...(context.nativeBackgroundJobs && context.projectState ? [nativeBackgroundJobTool()] : []), ...controlToolsFor(context), ...(context.projectState ? projectStateTools(currentMain && context.projectStateReconciliation !== false,
     context.collaboration?.role === "scoped-leader") : [])];
+}
+
+function mainCanReconfigure(context: CapabilityContext): boolean {
+  return context.kind === "main" && (context.mainCapabilities?.canReconfigure ??
+    (context.allowAgentOrchestrationReconfiguration === true || context.allowWorkflowReconfiguration === true));
+}
+
+function applyWorkflowTool(conversation: boolean): RuntimeMcpToolDefinition {
+  return {
+    name: "apply_workflow",
+    description: conversation
+      ? "Submit this conversation's edited workflow proposal using the logical path workflow.json. Preserve its base version. Check the returned status before telling the user whether it was applied or is waiting for an active task."
+      : "Commit the edited workflow.json snapshot as this Main invocation's sole terminal action. Preserve the original draft and its baseHash/baseVersion; read .scienceevolve/workflow-current.json and explicitly reconcile a stale or unversioned draft before resubmitting. The current reference is read-only and is not the submission path. The server validates the orchestration and explicitly editable Agent fields; locked runtime values remain server-owned. A fresh Main turn then starts under the committed configuration.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["callId", "path", "rationale"],
+      properties: {
+        callId: CALL_ID_SCHEMA,
+        path: {
+          type: "string",
+          enum: ["workflow.json"],
+          description: "The logical name of the server-provided workflow proposal."
+        },
+        rationale: { type: "string", maxLength: 20_000 }
+      }
+    }
+  };
 }
 
 function nativeBackgroundJobTool(): RuntimeMcpToolDefinition {
@@ -451,9 +487,6 @@ function controlToolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[]
   const canRequestUser = context.kind === "main"
     ? context.allowUserIntervention && (context.mainCapabilities?.canRequestUser ?? true)
     : false;
-  const canReconfigure = context.kind === "main"
-    ? context.mainCapabilities?.canReconfigure ?? (context.allowAgentOrchestrationReconfiguration === true || context.allowWorkflowReconfiguration === true)
-    : false;
   const canRoute = context.kind === "main" ? routeCandidates.length > 0 : (context.decisionBy === "agent" &&
     (context.scopedAgentRouting === true ? routeCandidates.length > 0 : routeCandidates.length >= 2 &&
       routeCandidates.every((candidate) => candidate !== "finish" && candidate !== "main")));
@@ -485,25 +518,7 @@ function controlToolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[]
     description: "Record a decision to pause orchestration for a user response.",
     inputSchema: { type: "object", additionalProperties: false, required: ["callId", "message", "rationale"], properties: { callId: CALL_ID_SCHEMA, message: { type: "string" }, rationale: { type: "string" }, context: { type: "string" } } }
   });
-  const workflowFile = "workflow.json";
-  if (context.kind === "main" && canReconfigure) tools.push({
-    name: "apply_workflow",
-    description: "Commit the edited workflow.json snapshot as this Main invocation's sole terminal action. Preserve the original draft and its baseHash/baseVersion; read .scienceevolve/workflow-current.json and explicitly reconcile a stale or unversioned draft before resubmitting. The current reference is read-only and is not the submission path. The server validates the orchestration and explicitly editable Agent fields; locked runtime values remain server-owned. A fresh Main turn then starts under the committed configuration.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["callId", "path", "rationale"],
-      properties: {
-        callId: CALL_ID_SCHEMA,
-        path: {
-          type: "string",
-          enum: [workflowFile],
-          description: "The server-generated Workflow snapshot in the common project workspace."
-        },
-        rationale: { type: "string", maxLength: 20_000 }
-      }
-    }
-  });
+  if (mainCanReconfigure(context)) tools.push(applyWorkflowTool(false));
   if (canComplete) tools.push({
     name: "complete_project",
     description: context.kind === "main"
@@ -1263,7 +1278,7 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
     return;
   }
   const reply = async (result: { content: Array<{ type: string; text: string }>; [key: string]: unknown }) => {
-    if (context.mainAssistance === "request") {
+    if (context.mainAssistance === "request" || context.mainConversation === "inbox") {
       try {
         const notice = await requestBridge(context, { mainAssistanceNotice: true }, `assistance-notice:${request.id}`);
         if (notice.ok === true && typeof notice.stateResult === "string" && notice.stateResult)
@@ -1277,11 +1292,24 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
   };
   const params = request.params ?? {};
   const name = typeof params.name === "string" ? params.name : "";
+  if (context.mainConversation === "turn" && !toolsFor(context).some(tool => tool.name === name)) {
+    rpcToolError(request.id, rejectionForError(new Error(`Tool ${name} is unavailable in this Main conversation turn`), context.stateVersion, true));
+    return;
+  }
   if (name === "background_job") {
     try {
       if (!context.nativeBackgroundJobs || !context.projectState || !(context.bridgePath || context.bridgePort !== undefined)) throw new Error("Background job tools are unavailable for this invocation");
       const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
       const response = await requestBridge(context, { backgroundJob: args }, `job:${request.id}`);
+      if (response.ok !== true || response.stateResult === undefined) throw new BridgeActionRejectedError(bridgeActionRejection(response.error, context.stateVersion, true));
+      await reply({ content: [{ type: "text", text: JSON.stringify(response.stateResult) }], structuredContent: response.stateResult });
+    } catch (error) { rpcToolError(request.id, rejectionForError(error, context.stateVersion, true)); }
+    return;
+  }
+  if (name === "reply_to_user") {
+    try {
+      if (!context.mainConversation || !params.arguments || typeof params.arguments !== "object") throw new Error("User reply is unavailable for this invocation");
+      const response = await requestBridge(context, { mainAssistanceRequest: { ...params.arguments, operation: "reply_user" } }, `user-reply:${request.id}`);
       if (response.ok !== true || response.stateResult === undefined) throw new BridgeActionRejectedError(bridgeActionRejection(response.error, context.stateVersion, true));
       await reply({ content: [{ type: "text", text: JSON.stringify(response.stateResult) }], structuredContent: response.stateResult });
     } catch (error) { rpcToolError(request.id, rejectionForError(error, context.stateVersion, true)); }
@@ -1370,9 +1398,6 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
     const canRequestUser = context.kind === "main"
       ? context.allowUserIntervention && (context.mainCapabilities?.canRequestUser ?? true)
       : false;
-    const canReconfigure = context.kind === "main"
-      ? context.mainCapabilities?.canReconfigure ?? (context.allowAgentOrchestrationReconfiguration === true || context.allowWorkflowReconfiguration === true)
-      : false;
     const id = callId(args.callId);
     let action: ControlAction;
     if (name === "finish_task") {
@@ -1393,7 +1418,10 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
       action = collaborationAction(context, name as typeof TOOL_NAMES[number], args);
     } else if (name === "route_to_agent") {
       const target = text(args.target, "target", 128);
-      if (!candidates.includes(target) || (target === "finish" && context.allowFinishRoute !== true && context.mainCapabilities === undefined)) throw new Error("target is not a current route candidate");
+      if (!candidates.includes(target) || (target === "finish" && context.allowFinishRoute !== true && context.mainCapabilities === undefined)) {
+        throw new Error("target is not a current route candidate: " + redactTrace(JSON.stringify(target)) +
+          ". Available route targets: " + candidates.join(", "));
+      }
       if (context.kind !== "main" && (context.decisionBy !== "agent" ||
         (context.scopedAgentRouting !== true && (candidates.length < 2 || target === "main" || target === "finish")))) {
         throw new Error("Worker route_to_agent is not allowed in this context");
@@ -1427,7 +1455,7 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
       if (context.kind !== "main" || !canRequestUser) throw new Error("request_user is not allowed");
       action = { tool: "request_user", message: text(args.message, "message"), rationale: text(args.rationale, "rationale"), ...(args.context === undefined ? {} : { context: text(args.context, "context") }) };
     } else if (name === "apply_workflow") {
-      if (context.kind !== "main" || !canReconfigure) {
+      if (!mainCanReconfigure(context)) {
         throw new Error("apply_workflow is not allowed");
       }
       const workflowPath = relativeWorkspacePath(args.path);
@@ -1441,10 +1469,9 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
         // Trust the server-pinned path, never an Agent-selected proposal path.
         const workspace = await fs.realpath(context.workspacePath);
         const expected = path.resolve(context.workflowAuthoringPath);
-        const relative = path.relative(workspace, expected).split(path.sep).join("/");
         const info = await fs.lstat(context.workflowAuthoringPath);
         if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 ||
-          !/^\.scienceevolve\/management\/[A-Za-z0-9][A-Za-z0-9._-]{0,159}\/proposal\/workflow\.json$/.test(relative) ||
+          !isManagementProposal(context.projectPath, workspace, context.agent, expected) ||
           await fs.realpath(context.workflowAuthoringPath) !== expected) {
           throw new Error("workflow proposal does not match its invocation authoring authority");
         }
@@ -1464,6 +1491,7 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
       type: "text",
       text: controlResultDisplayText(staged.envelope, staged.result, staged.receiptId)
     }], ...(gitResult ? { structuredContent: { actionAccepted: true, git: gitResult, result: staged.result ?? null } }
+      : action.tool === "apply_workflow" && context.mainConversation === "turn" ? { structuredContent: staged.result }
       : action.tool === "finish_task" ? { structuredContent: { actionAccepted: true, status: staged.result === undefined ? "staged" : "recorded",
           result: staged.result ?? null } }
       : ["publish_artifact", "select_display"].includes(action.tool) ? { structuredContent: { actionAccepted: true, status: "staged", committed: false } } : {}) });

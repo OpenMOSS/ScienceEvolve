@@ -677,9 +677,7 @@ export function normalizeDraftAgentOrchestrationTemplate(value: unknown): Normal
   );
 }
 
-/** Before the first native call, all new Git projects adopt Agent-stable
- * sessions/checkouts, even if Main has not created any collaboration yet.
- * Legacy flat definitions retain their published serial/root semantics. */
+/** Preserve a v3 graph or translate flat groups into their per-group member workflows. */
 export function normalizeNewGitOrchestration(value: unknown): NormalizedAgentOrchestrationTemplate {
   const template = normalizeAgentOrchestrationTemplate(value);
   if (template.schemaVersion === 3) return template;
@@ -710,11 +708,7 @@ export const createProjectSchema = z.object({
   mcpDefinitions: mcpDefinitionsSchema.optional(),
   orchestration: z.unknown().optional().transform((value) => normalizeAgentOrchestrationTemplate(value ?? cloneAgentOrchestrationTemplate())),
   git: projectGitInputSchema
-}).strict().superRefine((project, context) => {
-  if (project.orchestration.collaborations.length > 0 && !project.git.enabled) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["git", "enabled"], message: "协作组要求启用 Git 机制" });
-  }
-});
+}).strict();
 export const modelSelectionSchema = z.object({
   models: z.record(agentNameSchema, agentModelSchema).refine(
     (models) => Object.keys(models).length > 0,
@@ -733,11 +727,7 @@ export const savedResearchTaskInputSchema = z.object({
     normalizeDraftAgentOrchestrationTemplate(value ?? cloneAgentOrchestrationTemplate())
   ),
   git: projectGitInputSchema
-}).strict().superRefine((task, context) => {
-  if (task.orchestration.collaborations.length > 0 && !task.git.enabled) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["git", "enabled"], message: "协作组要求启用 Git 机制" });
-  }
-});
+}).strict();
 export const skillInputSchema = z.object({ skill: z.string().trim().min(1).max(4_096) }).strict();
 export const createUserSkillSchema = z.object({ title: z.string().trim().min(1).max(160), content: z.string().trim().min(1).max(100_000) }).strict();
 export const saveAgentConfigPresetSchema = z.object({ name: z.string().trim().min(1).max(160).optional() }).strict();
@@ -963,8 +953,8 @@ function isLegacyReasoningEffort(value: unknown): value is LegacyReasoningEffort
 export const userInterventionResponseSchema = z.object({ message: z.string().trim().min(1).max(100_000) }).strict();
 export const projectUserInputSchema = z.object({
   message: z.string().trim().min(1).max(100_000),
-  /** `wait` preserves the active invocation; `interrupt` requests a durable checkpoint. */
-  mode: z.enum(["wait", "interrupt"]).optional().default("wait"),
+  /** Chat uses the running Main inbox. Formal input waits for the current turn or explicitly interrupts it. */
+  mode: z.enum(["chat", "wait", "interrupt"]).optional().default("wait"),
   /** Idempotency key lets a retried browser request return the same input. */
   requestId: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/).optional()
 }).strict();

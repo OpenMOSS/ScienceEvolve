@@ -4,15 +4,15 @@ The research database has **one writer service per physical database on one host
 
 ## Startup, shutdown and failure
 
-- Start on the original host at the canonical database path. Schema 30 binds the database, parent directory, `<database>.writer.lock` and its UUID. Missing, hardlinked or replaced files are not silently repaired. Do not delete, replace or copy a lock to force takeover. This mechanism is not distributed fencing or protection against arbitrary code running as the service account.
+- Start on the original host at the canonical database path. Schema 31 binds the database, parent directory, `<database>.writer.lock` and its UUID. Missing, hardlinked or replaced files are not silently repaired. Do not delete, replace or copy a lock to force takeover. This mechanism is not distributed fencing or protection against arbitrary code running as the service account.
 - Each acquisition advances the durable epoch once. Additional connections require the current token **and** the local owner capability. A token copied into another process does not authorize attachment. Service ownership does not grant a replacement Agent an old execution or native session.
 - Healthy service diagnostics report ownership `lifecycle-lock` and the epoch. Normal operation does not renew a row. `WRITER_LEASE_HELD` means another owner holds the resource; it has no takeover deadline. Admission and publication must drain before release. A failed resident or dispatcher drain retains ownership. If the DB Worker dies, pending outcomes are unconfirmed; the caller retains the lock through termination and callback drain.
 - `WRITER_COMMIT_UNCONFIRMED` means a SQLite COMMIT did not return a confirmed result. Preserve the original cause and inspect the original revision, receipt and external facts. Do not replay a request because its reply was lost. A failed SQL statement before COMMIT is distinct: confirmed rollback preserves the original error and does not by itself transfer ownership.
 - After process death the next service can acquire a new epoch. It must still reconcile native processes, sessions, checkpoints, receipts and external effects before resuming the original work. A lock release proves none of these effects stopped.
 
-## Upgrade of a stopped schema 1–29 database
+## Upgrade a stopped schema 1–30 database to schema 31
 
-This is an offline format change, **not** a mixed-version rolling upgrade. Disable all scheduling and restart entrypoints; stop every old writer; verify the original host, project storage and retained sessions. Take a storage-consistent backup of the complete research root and its external worktrees/artifacts. The upgrade command also requires a **new, separate** directory for its SQLite backup. Do not point it at the AuthStore database.
+Disable scheduling and automatic restarts, stop every writer, and verify the original host, research root and retained sessions. Take a storage-consistent backup of the research root and external worktrees and artifacts. Supply a new, separate directory for the command's SQLite backup. Use the research database path.
 
 From a source checkout, the entrypoint is `server/src/collaboration-state/upgrade-writer.ts` (SDK: `sdk/src/core/collaboration-state/upgrade-writer.ts`). For example, with the repository's `tsx` installed:
 
@@ -23,11 +23,13 @@ node --import tsx server/src/collaboration-state/upgrade-writer.ts \
   --host ORIGINAL_HOST --service SERVICE_ID --confirm-stopped
 ```
 
-The command checks the legacy schema, host, journal mode and integrity, acquires the native owner, retains a SQLite backup, performs the existing research migrations, and switches authority. The SQLite connection's main database location must match the locked canonical path before acquisition or migration. The legacy schema initializer rejects modern, unrelated or missing-metadata databases before issuing DDL; it cannot recreate the obsolete authority table on a schema-30 database. The old lease table is renamed and retained as immutable historical facts. The old binary cannot acquire/renew under its former table name. Legacy research migration steps have their own transaction checkpoints; the final protocol transition is a separate transaction. A failure is **not** a guarantee that every earlier schema checkpoint rolled back. Preserve the backup, original database, journal and sidecar for diagnosis; do not guess an outcome or retry automatically.
+The command checks the schema, original host, journal mode and integrity, acquires exclusive writer ownership and retains a SQLite backup before migrating. For schemas 1–29 it runs the legacy research migrations and retains the old writer lease table as immutable history. For schema 30 it verifies the original physical database and lock identity before changing the delivery tables. Keep the original sidecar in place. Both paths advance the writer epoch and preserve existing Git branches, commits and merge receipts.
 
-Ordinary startup refuses legacy databases. A copied schema-30 database has a different physical identity and ordinary open refuses it too. Moving to another host is not an automatic failover operation.
+Schema 31 stores workspace deliveries using completion and handoff receipts. Group branches, integration targets and execution branches belong to Git-enabled projects. The final table rebuild, foreign-key check and schema revision run in one transaction. Earlier research migrations can have their own committed checkpoints. If an upgrade fails, retain the backup, database, journals and sidecar and inspect the recorded outcome before recovery.
 
-## Restore a stopped schema-30 database to a new path
+Ordinary startup requires schema 31 at its bound location. A database copy requires the explicit restore procedure.
+
+## Restore a stopped schema-31 database to a new path
 
 Disable every launcher of the old service and stop it. Keep the originals. Verify the final committed research root, files, Git worktrees, native session state and operation receipts together. Record the database snapshot's SHA-256, the `lockId` in `writer_service_owner.identity_json` and its last confirmed `epoch` **at backup time**. These values are not proof that no later commits exist: writes within an epoch do not increment it. If completeness, the original host or physical stop is uncertain, do not restore and resume.
 

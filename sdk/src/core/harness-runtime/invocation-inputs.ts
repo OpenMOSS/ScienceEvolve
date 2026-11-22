@@ -8,6 +8,11 @@ import { HarnessRuntimeError } from "./errors.js";
 import { managementInputRoot } from "../management-input-paths.js";
 import { MAIN_AGENT_ORCHESTRATION_CURRENT_FILE } from "../main-workflow-files.js";
 
+export function isMainAssistanceTurn(request: Pick<AgentRunRequest, "agent" | "kind" | "executionContext"> & { project: { id: string } }): boolean {
+  return request.agent === "main" && request.kind === "main" &&
+    request.executionContext?.role === "leader" && request.executionContext.routeScopeId === `main-assistance-${request.project.id}`;
+}
+
 const SAFE_INVOCATION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 
 /**
@@ -47,9 +52,9 @@ export async function prepareInvocationInputs(
     const selectedWorkspace = request.project.git?.enabled === true
       ? undefined : await resolveProjectWorkspace?.(request.project.id);
     const expectedWorkspace = await fs.realpath(
-      collaborationWorktree ?? selectedWorkspace ?? path.join(projectRoot, "workspaces")
+      (request.project.git?.enabled ? collaborationWorktree : selectedWorkspace) ?? path.join(projectRoot, "workspaces")
     );
-    const legacyRoleWorkspace = request.project.git?.enabled !== true
+    const legacyRoleWorkspace = request.project.git?.enabled !== true && request.project.orchestration?.schemaVersion !== 3
       ? path.join(projectRoot, "workspaces", request.agent, "shared")
       : undefined;
     if (workspaceRoot !== expectedWorkspace && workspaceRoot !== legacyRoleWorkspace) {
@@ -331,6 +336,7 @@ export async function validateStagedInvocationInputs(input: {
   memoryPath: string;
   runtimePath: string;
   fixedAgentId?: string;
+  projectWorkspace?: string;
   mainAssistance?: boolean;
   workflowAuthoringPath?: string;
   workflowCurrentPath?: string;
@@ -361,7 +367,7 @@ export async function validateStagedInvocationInputs(input: {
     }
     if (input.fixedAgentId) {
       if (path.basename(input.fixedAgentId) !== input.fixedAgentId || input.fixedAgentId.includes("\\") ||
-        workspaceRoot !== path.join(projectRoot, "git-worktrees", "agents", input.fixedAgentId) ||
+        workspaceRoot !== (input.projectWorkspace ?? path.join(projectRoot, "git-worktrees", "agents", input.fixedAgentId)) ||
         path.resolve(input.workspacePath) !== workspaceRoot || !isWithin(runtimeRoot, path.join(projectRoot, "runtime"))) {
         throw new Error("Management workspace must be the current Agent's fixed project directory");
       }
@@ -392,30 +398,31 @@ export async function validateStagedInvocationInputs(input: {
       if (![managementRoot, legacyRoot].some(root => isWithin(inboxPath, root) && isWithin(memoryPath, root))) {
         throw new Error("Fixed management inputs must remain in this invocation's private snapshot");
       }
-      if (input.workflowAuthoringPath) {
-        // Inbox/Memory belong to this physical invocation; the unfinished
-        // proposal belongs to the logical task. Its exact prior snapshot is
-        // bound by the coordinator, never selected by the Agent or searched
-        // for business edits here. Keep the fixed Agent/path checks intact.
-        const original = input.workflowAuthoringInvocationId ?? input.invocationId;
-        const expected = path.join(managementInputRoot(projectRoot, input.fixedAgentId, original), "proposal", "workflow.json");
-        const legacy = path.join(workspaceRoot, ".scienceevolve", "management", original, "proposal", "workflow.json");
-        await assertRegularNonSymlinkFile(input.workflowAuthoringPath, "Workflow proposal");
-        const proposalPath = await fs.realpath(input.workflowAuthoringPath);
-        if (![expected, legacy].includes(proposalPath) || proposalPath !== path.resolve(input.workflowAuthoringPath)) {
-          throw new Error("Workflow authoring path escaped its bound logical-task proposal directory");
-        }
-        if (input.workflowCurrentPath) {
-          await assertRegularNonSymlinkFile(input.workflowCurrentPath, "Current Workflow reference");
-          const reference = path.join(path.dirname(path.dirname(proposalPath)), MAIN_AGENT_ORCHESTRATION_CURRENT_FILE);
-          if (path.resolve(input.workflowCurrentPath) !== reference || await fs.realpath(input.workflowCurrentPath) !== reference) {
-            throw new Error("Current Workflow reference escaped its bound logical-task snapshot");
-          }
+    }
+    if (input.workflowAuthoringPath) {
+      // Inbox/Memory belong to this physical invocation; the unfinished
+      // proposal belongs to the logical task. Its exact prior snapshot is
+      // bound by the coordinator, never selected by the Agent or searched
+      // for business edits here.
+      const original = input.workflowAuthoringInvocationId ?? input.invocationId;
+      if (!input.fixedAgentId && !input.mainAssistance || input.mainAssistance && original !== input.invocationId)
+        throw new Error("Workflow proposal requires its original authorized management invocation");
+      const expected = path.join(managementInputRoot(projectRoot, input.fixedAgentId ?? "main", original), "proposal", "workflow.json");
+      const legacy = path.join(workspaceRoot, ".scienceevolve", "management", original, "proposal", "workflow.json");
+      await assertRegularNonSymlinkFile(input.workflowAuthoringPath, "Workflow proposal");
+      const proposalPath = await fs.realpath(input.workflowAuthoringPath);
+      if (!(proposalPath === expected || input.fixedAgentId && !input.mainAssistance && proposalPath === legacy) || proposalPath !== path.resolve(input.workflowAuthoringPath)) {
+        throw new Error("Workflow authoring path escaped its bound logical-task proposal directory");
+      }
+      if (input.workflowCurrentPath) {
+        await assertRegularNonSymlinkFile(input.workflowCurrentPath, "Current Workflow reference");
+        const reference = path.join(path.dirname(path.dirname(proposalPath)), MAIN_AGENT_ORCHESTRATION_CURRENT_FILE);
+        if (path.resolve(input.workflowCurrentPath) !== reference || await fs.realpath(input.workflowCurrentPath) !== reference) {
+          throw new Error("Current Workflow reference escaped its bound logical-task snapshot");
         }
       }
-    } else if (input.workflowAuthoringPath) {
-      throw new Error("Fixed proposal authoring requires a fixed Agent identity");
     }
+
     const inboxBytes = await fs.readFile(inboxPath);
     return {
       projectPath: projectRoot,

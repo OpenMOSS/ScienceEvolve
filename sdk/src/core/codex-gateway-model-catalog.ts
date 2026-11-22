@@ -43,12 +43,13 @@ export async function prepareCodexGatewayModelCatalog(
   } catch {
     throw new Error("Unable to inspect the installed Codex model catalog");
   }
+  if (!stdout.trim()) throw new Error("Installed Codex returned an empty model catalog");
   let catalog: unknown;
   try { catalog = JSON.parse(stdout); }
-  catch { throw new Error("Installed Codex returned an invalid model catalog"); }
+  catch { throw new Error("Installed Codex model catalog contains invalid JSON"); }
   const models = catalog && typeof catalog === "object" && "models" in catalog
     ? (catalog as { models: unknown }).models : undefined;
-  if (!Array.isArray(models)) throw new Error("Installed Codex returned an invalid model catalog");
+  if (!Array.isArray(models)) throw new Error("Installed Codex model catalog requires a models array");
   const template = selectCodexGatewayModelTemplate(models, model);
   const known = template.slug === model ? template : undefined;
   if (known && known.use_responses_lite !== true && known.tool_mode !== "code_mode_only") return undefined;

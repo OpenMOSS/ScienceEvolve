@@ -2,13 +2,20 @@ import type { CollaborationGitFacade, SynchronizedPullRequestFact } from "./coll
 import type { GitGroupFinalAuthority, GitHubPullRequestFact, GitHubRepositoryFact } from "./collaboration-git/contracts.js";
 import { GitInputError, OperationStoreViolationError } from "./collaboration-git/errors.js";
 import { mergedPullSynchronizationOperationId } from "./collaboration-git/operation.js";
-import type { CollaborationStateStore as CollaborationStateDatabase } from "./collaboration-state/database-worker.js";
+import type { CollaborationStateStore } from "./collaboration-state/database-worker.js";
 import type { CompletedScopedGroup, ScopedFinalIntegrationRecord } from "./collaboration-state/contracts.js";
 import { CollaborationStateError } from "./collaboration-state/errors.js";
 
 export type ScopedGroupFinalGit = Pick<CollaborationGitFacade,
   "observeRemoteRef" | "createGroupFinalPullRequest" | "mergeGroupFinalPullRequest" | "reconcileGroupFinalPullRequest"> &
   Partial<Pick<CollaborationGitFacade, "checkpointGroupCompletion">>;
+
+type ScopedGroupFinalStore = Pick<CollaborationStateStore,
+  | "projectState" | "scopedGroupRun" | "scopedArrivals" | "previewScopedArrivalRoute"
+  | "scopedGroupReadyForFinalIntegration" | "scopedGroupIntegrationRequest"
+  | "scopedFinalIntegration" | "beginScopedFinalIntegration" | "executionSupervisionResult"
+  | "scopedFinalRecoveryPull" | "scopedMergedSynchronization" | "completeScopedGroupAfterFinalMerge"
+>;
 
 export interface IntegrateScopedGroupInput {
   projectId: string;
@@ -31,7 +38,7 @@ export type ScopedGroupIntegrationResult =
 export class ScopedGroupFinalIntegrator {
   private readonly inFlight = new Map<string, Promise<ScopedGroupIntegrationResult>>();
 
-  constructor(private readonly database: CollaborationStateDatabase, private readonly git: ScopedGroupFinalGit,
+  constructor(private readonly database: ScopedGroupFinalStore, private readonly git: ScopedGroupFinalGit,
     private readonly options: { invokeAgent?: (integration: ScopedFinalIntegrationRecord, input: IntegrateScopedGroupInput) => Promise<SynchronizedPullRequestFact | undefined> } = {}) {}
 
   integrate(input: IntegrateScopedGroupInput): Promise<ScopedGroupIntegrationResult> {
@@ -49,7 +56,7 @@ export class ScopedGroupFinalIntegrator {
   private async performIntegration(input: IntegrateScopedGroupInput): Promise<ScopedGroupIntegrationResult> {
     input.signal?.throwIfAborted();
     const group = await this.database.scopedGroupRun(input.projectId, input.groupRunId);
-    if (!group) throw new CollaborationStateError("RECORD_NOT_FOUND", "Scoped GroupRun does not exist");
+    if (!group?.groupBranch) throw new CollaborationStateError("RECORD_NOT_FOUND", "Scoped GroupRun does not exist");
     const projection = await this.database.projectState(input.projectId);
     const binding = projection.git.repository;
     if (!projection.git.enabled || projection.git.status !== "ready" || !binding ||
@@ -65,7 +72,7 @@ export class ScopedGroupFinalIntegrator {
         projectId: input.projectId, groupRunId: group.id,
         executionId: owner?.id ?? `group-final-${group.id}`, ownershipEpoch: owner?.ownershipEpoch ?? 1,
         pullRequest: { ...proof.pullRequest, ownerExecutionId: owner?.id ?? `group-final-${group.id}` },
-      synchronization: proof.synchronization, selectedWeakTarget: input.selectedWeakTarget
+        synchronization: proof.synchronization, selectedWeakTarget: input.selectedWeakTarget
       }) };
     }
     if (!(await this.database.scopedGroupReadyForFinalIntegration(input.projectId, group.id))) {

@@ -1,3 +1,4 @@
+import { gitDeliveryRef } from "./collaboration-git/contracts.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { transientHarnessFailure, type HarnessRuntimeError } from "./harness-runtime/errors.js";
@@ -17,12 +18,12 @@ import { redactTrace } from "./utils.js";
 
 export type ScopedWorkflowGit = ScopedAgentDeliveryGit & ScopedGroupFinalGit & Pick<CollaborationGitFacade, "beginGroup">;
 export type ActivateRuntimeScopedGroupInput = Omit<ActivateScopedGroupInput, "baseCommit"> & {
-  repository: GitHubRepositoryFact; signal?: AbortSignal
+  repository?: GitHubRepositoryFact; signal?: AbortSignal
 };
 export interface AdvanceScopedWorkflowInput {
   projectId: string;
   rootGroupRunId: string;
-  repository: GitHubRepositoryFact;
+  repository?: GitHubRepositoryFact;
   signal?: AbortSignal;
 }
 export interface ScopedRuntimeIssue {
@@ -73,18 +74,20 @@ function stableIdentity(prefix: string, parts: string[]): string {
 export class ScopedWorkflowRuntime {
   private readonly activeProjects = new Set<string>();
   private readonly targets = new Map<string, Promise<unknown>>();
-  private readonly members: ScopedAgentDeliveryIntegrator;
-  private readonly finals: ScopedGroupFinalIntegrator;
+  private readonly members?: ScopedAgentDeliveryIntegrator;
+  private readonly finals?: ScopedGroupFinalIntegrator;
 
-  constructor(private readonly database: CollaborationStateDatabase, private readonly git: ScopedWorkflowGit,
-    private readonly agents: Pick<ScopedAgentExecutionRunner, "prepareDelivery">,
+  constructor(private readonly database: CollaborationStateDatabase, private readonly git: ScopedWorkflowGit | undefined,
+    private readonly agents: Pick<ScopedAgentExecutionRunner, "prepareDelivery"> & Partial<Pick<ScopedAgentExecutionRunner, "prepareWorkspaceDelivery">>,
     private readonly projectPath: (projectId: string) => string,
     private readonly onProgress?: (projectId: string) => Promise<void>,
     private readonly management?: ScopedWorkflowManagement,
-    private readonly options: { agentOwnsGit?: boolean; beforeAdmission?: () => Promise<void>;
+    private readonly options: { workspace?: string; agentOwnsGit?: boolean; beforeAdmission?: () => Promise<void>;
       invokeFinalAgent?: ConstructorParameters<typeof ScopedGroupFinalIntegrator>[2] } = {}) {
-    this.members = new ScopedAgentDeliveryIntegrator(database, git, { agentOwnsGit: options.agentOwnsGit });
-    this.finals = new ScopedGroupFinalIntegrator(database, git, options.invokeFinalAgent);
+    if (git) {
+      this.members = new ScopedAgentDeliveryIntegrator(database, git, { agentOwnsGit: options.agentOwnsGit });
+      this.finals = new ScopedGroupFinalIntegrator(database, git, options.invokeFinalAgent);
+    }
   }
 
   activateGroup(input: ActivateRuntimeScopedGroupInput): Promise<ActivatedScopedGroup> {
@@ -104,11 +107,12 @@ export class ScopedWorkflowRuntime {
     finally { this.activeProjects.delete(projectId); }
   }
 
-  private async assertRepository(projectId: string, repository: GitHubRepositoryFact): Promise<void> {
+  private async assertRepository(projectId: string, repository?: GitHubRepositoryFact): Promise<void> {
     await this.database.assertScopedRuntimeAuthority(projectId);
     const projection = await this.database.projectState(projectId);
     const binding = projection.git.repository;
-    if (!projection.git.enabled || projection.git.status !== "ready" || !binding ||
+    if (!projection.git.enabled && !repository && this.options.workspace) return;
+    if (!repository || !projection.git.enabled || projection.git.status !== "ready" || !binding ||
       binding.owner !== repository.owner || binding.name !== repository.name ||
       binding.private !== repository.private || binding.defaultBranch !== repository.defaultBranch) {
       throw new OperationStoreViolationError("Scoped graph runtime requires its ready, pinned repository");
@@ -130,6 +134,14 @@ export class ScopedWorkflowRuntime {
   private async performActivation(input: ActivateRuntimeScopedGroupInput): Promise<ActivatedScopedGroup> {
     input.signal?.throwIfAborted();
     await this.assertRepository(input.projectId, input.repository);
+    const repository = input.repository;
+    if (!repository) {
+      const activated = await this.database.activateScopedGroup(input);
+      await this.onProgress?.(input.projectId);
+      return activated;
+    }
+    const git = this.git;
+    if (!git) throw new OperationStoreViolationError("Scoped Git activation requires its Git service");
     const retained = await this.database.scopedGroupRun(input.projectId, input.groupRunId);
     if (retained) {
       const replay = await this.database.activateScopedGroup({ ...input, baseCommit: retained.baseCommit });
@@ -162,14 +174,14 @@ export class ScopedWorkflowRuntime {
         }
         baseCommit = operation.expectedHead!;
       } else {
-        const retainedBranch = await this.git.observeRemoteRef(input.repository, branch, input.signal);
+        const retainedBranch = await git.observeRemoteRef(repository, branch, input.signal);
         if (retainedBranch.status !== "missing" || retainedBranch.ref !== branch ||
-          retainedBranch.owner !== input.repository.owner || retainedBranch.repository !== input.repository.name) {
+          retainedBranch.owner !== repository.owner || retainedBranch.repository !== repository.name) {
           throw new OperationStoreViolationError("Scoped branch already exists without its trusted birth journal");
         }
-        const base = await this.git.observeRemoteRef(input.repository, target, input.signal);
+        const base = await git.observeRemoteRef(repository, target, input.signal);
         if (base.status !== "present" || base.ref !== target || !/^[0-9a-f]{40}$/i.test(base.sha ?? "") ||
-          base.owner !== input.repository.owner || base.repository !== input.repository.name) {
+          base.owner !== repository.owner || base.repository !== repository.name) {
           throw new OperationStoreViolationError("Scoped branch birth requires the current direct integration target head");
         }
         baseCommit = base.sha!;
@@ -180,7 +192,7 @@ export class ScopedWorkflowRuntime {
       input.signal?.throwIfAborted();
       let begun: Awaited<ReturnType<CollaborationGitFacade["beginGroup"]>>;
       try {
-        begun = await this.git.beginGroup({ repository: input.repository, groupRunId: input.groupRunId,
+        begun = await git.beginGroup({ repository: repository, groupRunId: input.groupRunId,
           baseCommit, integrationTarget: target, operationId, signal: input.signal });
       } catch (error) {
         if (!input.signal?.aborted) {
@@ -199,14 +211,13 @@ export class ScopedWorkflowRuntime {
       input.signal?.throwIfAborted();
       if (begun.group.branch !== branch || begun.group.baseCommit !== baseCommit ||
         begun.remote.status !== "present" || begun.remote.ref !== branch || begun.remote.sha !== baseCommit ||
-        begun.remote.owner !== input.repository.owner || begun.remote.repository !== input.repository.name) {
+        begun.remote.owner !== repository.owner || begun.remote.repository !== repository.name) {
         throw new OperationStoreViolationError("Scoped branch birth changed its canonical branch or exact base");
       }
       // Input is not persisted/dispatchable until canonical branch creation and
       // the provider push are confirmed. A crash reuses the birth operation.
       await revalidate();
-      const activated = await this.database.activateScopedGroup({ ...input, baseCommit,
-        expectedRevision: (await this.database.projectState(input.projectId)).stateRevision });
+      const activated = await this.database.activateScopedGroup({ ...input, baseCommit });
       if (input.parentGroupRunId && input.parentArrivalRequestId) {
         await this.database.resolveScopedGroupIssueIfPresent(input.projectId, input.parentGroupRunId, "initialization",
           "Scoped group branch initialization succeeded; the existing operation and branch were reused", input.parentArrivalRequestId);
@@ -245,7 +256,7 @@ export class ScopedWorkflowRuntime {
         arrival.targetKind !== "collaboration" || arrival.childGroupId !== input.groupId) {
         throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped child activation requires its queued direct parent arrival");
       }
-      return parent.groupBranch;
+      return gitDeliveryRef(parent.groupBranch);
     }
     if (input.parentArrivalRequestId || !input.outer || projection.activeNodeRunId ||
       projection.workflowRevision !== input.workflowRevision ||
@@ -261,6 +272,7 @@ export class ScopedWorkflowRuntime {
     await this.assertRepository(input.projectId, input.repository);
     const root = await this.database.scopedGroupRun(input.projectId, input.rootGroupRunId);
     if (!root || root.parentGroupRunId) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped pump requires a project root GroupRun");
+    const repository = input.repository;
     const attempted = new Set<string>();
     const deferred = new Map<string, number>();
     const pending = new Map<string, Promise<void>>();
@@ -370,7 +382,7 @@ export class ScopedWorkflowRuntime {
           } else {
             await this.database.claimScopedAgentArrival({ projectId: input.projectId, arrivalRequestId: arrival.requestId,
               agentId: arrival.agentId!, executionId: stableIdentity("scoped-exec", [input.projectId, arrival.requestId]),
-              worktreePath: path.join(path.resolve(this.projectPath(input.projectId)), "git-worktrees", "agents", arrival.agentId!) });
+              worktreePath: this.options.workspace ?? path.join(path.resolve(this.projectPath(input.projectId)), "git-worktrees", "agents", arrival.agentId!) });
             const waiting = await this.database.workflowAdjustmentAdmission(input.projectId, { agentId: arrival.agentId, groupRunId: group.id,
               scopedNode: { groupId: group.groupId, nodeId: arrival.targetNodeId, activeLoopIds: Object.keys(arrival.pathContext?.loops ?? {}) } });
             if (waiting && !issues.some(issue => issue.arrivalRequestId === arrival.requestId && issue.kind === "waiting_for_workflow_adjustment"))
@@ -395,11 +407,19 @@ export class ScopedWorkflowRuntime {
             if ((await this.database.scopedManagementBlocksBusiness(input.projectId, group.id))) {
               throw new ScopedManagementDeferredError();
             }
+            if (!repository) {
+              if (!this.agents.prepareWorkspaceDelivery || !this.options.workspace) throw new Error("Workspace delivery runner is unavailable");
+              const delivery = await this.agents.prepareWorkspaceDelivery({ projectId: input.projectId, executionId: execution.id,
+                ownershipEpoch: execution.ownershipEpoch, signal: input.signal }, this.options.workspace);
+              await this.database.completeScopedAgentArrival({ projectId: input.projectId, arrivalRequestId: execution.arrivalRequestId, ...delivery });
+              await this.onProgress?.(input.projectId);
+              return;
+            }
             const prepared = await this.agents.prepareDelivery({ projectId: input.projectId, executionId: execution.id,
-              ownershipEpoch: execution.ownershipEpoch, repository: input.repository, signal: input.signal,
+              ownershipEpoch: execution.ownershipEpoch, repository, signal: input.signal,
               withGroupBase: (branch, action) => this.atTarget(input.projectId, branch, action) });
-            const result = await this.atTarget(input.projectId, group.groupBranch, async () => this.members.integrate({
-              projectId: input.projectId, repository: input.repository, signal: input.signal, ...prepared }));
+            const result = await this.atTarget(input.projectId, gitDeliveryRef(group.groupBranch), async () => this.members!.integrate({
+              projectId: input.projectId, repository, signal: input.signal, ...prepared }));
             if (result.status === "waiting_for_pull") issues.push({ kind: "waiting_for_pull", groupRunId: group.id,
               executionId: execution.id, arrivalRequestId: execution.arrivalRequestId,
               message: `Member PR ${result.pullRequest.providerNumber} remains ${result.pullRequest.status}` });
@@ -438,7 +458,7 @@ export class ScopedWorkflowRuntime {
           const integrationRequest = await this.database.scopedGroupIntegrationRequest(input.projectId, group.id);
           const finalProof = await this.database.scopedGroupFinalMergeFact(input.projectId, group.id);
           const finalReturned = await this.database.scopedFinalTaskReturned(input.projectId, group.id);
-          if (this.management?.resolveRootRoute && !group.parentGroupRunId && (finalProof || finalReturned)) {
+          if (this.management?.resolveRootRoute && !group.parentGroupRunId && (!repository || finalProof || finalReturned)) {
             const snapshot = await this.database.workflowSnapshot(input.projectId, group.workflowRevision) as AgentOrchestrationTemplate;
             const definition = snapshot.scopedWorkflow?.groups.find((entry) => entry.id === group.groupId);
             const edges = snapshot.routes?.[group.groupId] ?? [];
@@ -450,6 +470,13 @@ export class ScopedWorkflowRuntime {
                 async () => this.management!.resolveRootRoute!(group, outerNode.id, weakTargets, scopedGroupOutput((await this.database.projectState(input.projectId)), group.id)));
               continue;
             }
+          }
+          if (!repository) {
+            if (!this.management?.completeGroup) throw new Error("Workspace group requires its configured Leader to confirm completion");
+            if (!(await this.database.scopedManagementSupervisionEnded(input.projectId, group.id, "complete")))
+              await schedule(`complete-workspace:${group.id}:${await this.database.scopedGroupIssueGeneration(input.projectId, group.id)}`, group.id,
+                () => this.management!.completeGroup!(group));
+            continue;
           }
           if (this.management && !integrationRequest && !finalProof && !finalReturned) {
             if ((await this.database.scopedManagementSupervisionEnded(input.projectId, group.id, "complete"))) continue;
@@ -478,8 +505,8 @@ export class ScopedWorkflowRuntime {
             if ((await this.database.scopedManagementBlocksBusiness(input.projectId, group.id))) {
               throw new ScopedManagementDeferredError();
             }
-            const result = await this.atTarget(input.projectId, group.integrationTarget, async () => this.finals.integrate({
-              projectId: input.projectId, groupRunId: group.id, repository: input.repository, signal: input.signal,
+            const result = await this.atTarget(input.projectId, gitDeliveryRef(group.integrationTarget), async () => this.finals!.integrate({
+              projectId: input.projectId, groupRunId: group.id, repository, signal: input.signal,
               deferCompletion: Boolean(this.management),
               integrationOwnerAgentId: integrationRequest?.integrationOwnerAgentId,
               selectedWeakTarget: group.parentArrivalRequestId
