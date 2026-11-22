@@ -151,6 +151,41 @@ it("rejects old schemas at ordinary startup and preserves research facts through
   try { expect(opened.writerLease().epoch).toBe(23); } finally { opened.close(); }
 });
 
+it("refuses offline migration on a foreign SQLite connection before changing schema or consuming the lock acquisition", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "writer-foreign-connection-"));
+  const first = path.join(root, "original.sqlite"), copy = path.join(root, "copy.sqlite");
+  resources.push({ root, close: () => {} });
+  const original = new DatabaseSync(first);
+  try {
+    initializeCollaborationStateSchema(original);
+    original.exec("INSERT INTO writer_service_lease VALUES(1,'original','original','host',4,1,1)");
+  } finally { original.close(); }
+  await fs.copyFile(first, copy);
+  const expected = await fs.readFile(copy), identity = { serviceId: "service", instanceId: "upgrade", hostId: "host" };
+  const owner = WriterOwner.open(first, { offlineUpgrade: true });
+  const foreign = new DatabaseSync(copy), matching = new DatabaseSync(first);
+  try {
+    foreign.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON"); matching.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+    expect(() => upgradeOwnerProtocol(foreign, owner, identity, 100)).toThrow(/SQLite connection does not match/);
+    expect(await fs.readFile(copy)).toEqual(expected);
+    expect(upgradeOwnerProtocol(matching, owner, identity, 100).epoch).toBe(5);
+  } finally { foreign.close(); matching.close(); owner.close(); }
+});
+
+it.each(["modern", "missing-meta", "unrelated"])("refuses %s research schema initialization before any DDL", async mode => {
+  const f = await fixture(); f.database.close();
+  const file = mode === "unrelated" ? path.join(f.root, "other.sqlite") : f.databasePath;
+  const sql = new DatabaseSync(file);
+  try {
+    if (mode === "unrelated") sql.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original')");
+    if (mode === "missing-meta") sql.exec("DELETE FROM collaboration_state_meta");
+    const before = await fs.readFile(file);
+    expect(() => initializeCollaborationStateSchema(sql)).toThrow(expect.objectContaining({
+      code: mode === "modern" ? "UNSAFE_CONFIGURATION" : "DATABASE_INTEGRITY_FAILED" }));
+    expect(await fs.readFile(file)).toEqual(before);
+  } finally { sql.close(); }
+});
+
 it("keeps lifecycle ownership during a business transaction crossing the old deadline and fences a real epoch replacement", async () => {
   const f = await fixture(), raw = Reflect.get(f.database, "database") as DatabaseSync;
   const immediate = Reflect.get(f.database, "immediate").bind(f.database) as (work: () => void) => void;

@@ -201,9 +201,15 @@ export class WriterOwner {
     if (Atomics.exchange(new Int32Array(attachment.connection), 0, 2) !== 2) Atomics.sub(this.#gate, 1, 1);
   }
   binding(): WriterOwnerBinding { return structuredClone(this.#binding); }
-  /** Exactly one acquisition for this descriptor lifetime, including its Workers. */
-  claimAcquisition(): void {
+  assertConnection(database: DatabaseSync): void {
     this.assertHeld();
+    const location = database.location();
+    if (!location || path.resolve(location) !== this.databasePath)
+      throw invalid("SQLite connection does not match the locked database");
+  }
+  /** Exactly one acquisition for this descriptor lifetime, including its Workers. */
+  claimAcquisition(database: DatabaseSync): void {
+    this.assertConnection(database);
     if (Atomics.compareExchange(this.#gate, 2, 0, 1) !== 0)
       throw invalid("Writer epoch acquisition was already claimed; attached connections require the current token");
   }

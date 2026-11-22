@@ -236,7 +236,7 @@ const SCOPED_FINAL_INTEGRATION_SCHEMA_SQL = `
 
 function assertMigrationLease(database: DatabaseSync, authority?: SchemaMigrationAuthority): void {
   if (!authority?.offlineOwner) throw new CollaborationStateError("WRITER_UPGRADE_REQUIRED", "Schema migration requires explicit offline writer ownership and the retained lease identity");
-  authority.offlineOwner.assertHeld();
+  authority.offlineOwner.assertConnection(database);
   const lease = database.prepare(
     "SELECT * FROM writer_service_lease WHERE singleton = 1"
   ).get() as Record<string, unknown> | undefined;
@@ -1202,14 +1202,18 @@ export function initializeCollaborationStateSchema(
   database: DatabaseSync,
   migrationAuthority?: SchemaMigrationAuthority
 ): void {
-  const metaExists = Boolean(database.prepare(`
-    SELECT 1 FROM sqlite_schema
-    WHERE type = 'table' AND name = 'collaboration_state_meta'
-  `).get());
-  if (metaExists) {
+  const tables = database.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
+  if (tables.length) {
+    if (!tables.some(row => row.name === "collaboration_state_meta"))
+      throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", "Existing database has no research schema metadata");
     const existing = database.prepare(
       "SELECT schema_version FROM collaboration_state_meta WHERE singleton = 1"
     ).get() as { schema_version: number } | undefined;
+    if (!existing || !Number.isSafeInteger(existing.schema_version) || existing.schema_version < 1)
+      throw new CollaborationStateError("DATABASE_INTEGRITY_FAILED", "Missing or invalid research schema metadata");
+    if (existing.schema_version > COLLABORATION_STATE_SCHEMA_VERSION)
+      throw new CollaborationStateError("UNSAFE_CONFIGURATION", `Unsupported research schema ${existing.schema_version}`);
+    assertMigrationLease(database, migrationAuthority);
     if (existing?.schema_version === 1 && COLLABORATION_STATE_SCHEMA_VERSION >= 2) {
       // Every v2 DDL statement belongs to the migration transaction. A failed
       // FK check must leave both schema SQL and version exactly at v1.

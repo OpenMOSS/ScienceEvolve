@@ -40,7 +40,7 @@ function token(row: Record<string, unknown>): WriterLeaseToken {
   return { serviceId: row.service_id as string, instanceId: row.instance_id as string, hostId: row.host_id as string, epoch };
 }
 export function assertOwnerProtocol(database: DatabaseSync, owner: WriterOwner, expected?: WriterLeaseToken): WriterLeaseToken {
-  owner.assertHeld();
+  owner.assertConnection(database);
   const meta = database.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton=1").get();
   if (meta?.schema_version !== COLLABORATION_STATE_SCHEMA_VERSION) invalid("Writer protocol schema does not match this runtime");
   const row = database.prepare("SELECT * FROM writer_service_owner WHERE singleton=1").get();
@@ -77,7 +77,7 @@ function transition(database: DatabaseSync, owner: WriterOwner, identity: OwnerI
   return { ...identity, epoch };
 }
 export function initializeOwnerDatabase(database: DatabaseSync, owner: WriterOwner, identity: OwnerIdentity, nowMs: number): WriterLeaseToken {
-  owner.claimAcquisition();
+  owner.claimAcquisition(database);
   return transaction(database, owner, () => {
     if (database.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().length)
       invalid("A new writer database must have no existing schema");
@@ -86,7 +86,7 @@ export function initializeOwnerDatabase(database: DatabaseSync, owner: WriterOwn
   });
 }
 export function acquireOwnerEpoch(database: DatabaseSync, owner: WriterOwner, identity: OwnerIdentity, nowMs: number): WriterLeaseToken {
-  owner.claimAcquisition();
+  owner.claimAcquisition(database);
   return transaction(database, owner, () => {
     const prior = assertOwnerProtocol(database, owner);
     assertHost(prior.hostId, identity.hostId);
@@ -99,7 +99,7 @@ export function acquireOwnerEpoch(database: DatabaseSync, owner: WriterOwner, id
 }
 /** Offline caller has separately stopped old writers and retained a backup. */
 export function upgradeOwnerProtocol(database: DatabaseSync, owner: WriterOwner, identity: OwnerIdentity, nowMs: number): WriterLeaseToken {
-  owner.claimAcquisition();
+  owner.claimAcquisition(database);
   const meta = database.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton=1").get();
   if (!meta || typeof meta.schema_version !== "number" || !Number.isSafeInteger(meta.schema_version) || meta.schema_version < 1 || meta.schema_version > 29)
     invalid("Offline writer upgrade requires a supported schema 1–29");
