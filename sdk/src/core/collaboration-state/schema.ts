@@ -49,7 +49,8 @@ const SCOPED_RUN_SCHEMA_SQL = `
     group_run_id TEXT NOT NULL,
     source_run_id TEXT NOT NULL CHECK (length(source_run_id) > 0),
     target_node_id TEXT NOT NULL CHECK (length(target_node_id) > 0),
-    target_kind TEXT NOT NULL CHECK (target_kind IN ('agent','collaboration')),
+    gate_run_id TEXT,
+    target_kind TEXT NOT NULL CHECK (target_kind IN ('agent','collaboration','gate')),
     agent_id TEXT,
     child_group_id TEXT,
     node_run_id TEXT UNIQUE,
@@ -59,7 +60,7 @@ const SCOPED_RUN_SCHEMA_SQL = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     CHECK (
-      (target_kind = 'agent' AND agent_id IS NOT NULL AND child_group_id IS NULL) OR
+      (target_kind IN ('agent','gate') AND agent_id IS NOT NULL AND child_group_id IS NULL) OR
       (target_kind = 'collaboration' AND child_group_id IS NOT NULL AND agent_id IS NULL)
     ),
     UNIQUE (group_run_id, source_run_id, target_node_id),
@@ -396,6 +397,35 @@ function migrateSchemaV26ToV27(database: DatabaseSync, authority?: SchemaMigrati
     database.exec("UPDATE collaboration_state_meta SET schema_version = 27 WHERE singleton = 1");
     database.exec("COMMIT");
   } catch (error) { database.exec("ROLLBACK"); throw error; }
+}
+
+/** Gate execution references extend the existing node/arrival journals. */
+function migrateSchemaV28ToV29(database: DatabaseSync, authority?: SchemaMigrationAuthority): void {
+  database.exec("PRAGMA foreign_keys=OFF");
+  database.exec("PRAGMA legacy_alter_table=ON");
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    assertMigrationLease(database, authority);
+    for (const [table, column] of [["node_runs", "node_kind"], ["scoped_arrivals", "target_kind"]]) {
+      const row = database.prepare("SELECT sql FROM sqlite_schema WHERE type='table' AND name=?").get(table) as { sql: string } | undefined;
+      if (!row) throw new Error(`Gate migration requires ${table}`);
+      const auxiliary = database.prepare("SELECT sql FROM sqlite_schema WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL").all(table) as { sql: string }[];
+      const sql = row.sql.replace(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?[\"\x60]?${table}[\"\x60]?`), `CREATE TABLE ${table}_v29`)
+        .replace(new RegExp(`${column} IN \\('agent', ?'collaboration'\\)`), `${column} IN ('agent','collaboration','gate')`)
+        .replace(`${column} = 'agent' AND`, `${column} IN ('agent','gate') AND`);
+      if (sql === row.sql || !sql.includes("'gate'")) throw new Error(`Gate migration cannot identify ${table} constraints`);
+      database.exec(sql);
+      database.exec(`INSERT INTO ${table}_v29 SELECT * FROM ${table}`);
+      database.exec(`DROP TABLE ${table}`);
+      database.exec(`ALTER TABLE ${table}_v29 RENAME TO ${table}`);
+      database.exec(`ALTER TABLE ${table} ADD COLUMN gate_run_id TEXT`);
+      for (const item of auxiliary) database.exec(item.sql);
+    }
+    if (database.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Gate migration left invalid foreign-key references");
+    database.exec("UPDATE collaboration_state_meta SET schema_version=29 WHERE singleton=1");
+    database.exec("COMMIT");
+  } catch (error) { if (database.isTransaction) database.exec("ROLLBACK"); throw error; }
+  finally { database.exec("PRAGMA legacy_alter_table=OFF"); database.exec("PRAGMA foreign_keys=ON"); }
 }
 
 /** Extend the existing journals without changing any historical outcome. */
@@ -1295,6 +1325,8 @@ export function initializeCollaborationStateSchema(
     if (eventTypeIndex?.schema_version === 26 && COLLABORATION_STATE_SCHEMA_VERSION >= 27) migrateSchemaV26ToV27(database, migrationAuthority);
     const metadataJournal = database.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton = 1").get() as { schema_version: number } | undefined;
     if (metadataJournal?.schema_version === 27 && COLLABORATION_STATE_SCHEMA_VERSION >= 28) migrateSchemaV27ToV28(database, migrationAuthority);
+    const gateJournal = database.prepare("SELECT schema_version FROM collaboration_state_meta WHERE singleton=1").get() as { schema_version: number } | undefined;
+    if (gateJournal?.schema_version === 28 && COLLABORATION_STATE_SCHEMA_VERSION >= 29) migrateSchemaV28ToV29(database, migrationAuthority);
   }
   database.exec(`
     CREATE TABLE IF NOT EXISTS collaboration_state_meta (
@@ -1345,7 +1377,8 @@ export function initializeCollaborationStateSchema(
     CREATE TABLE IF NOT EXISTS node_runs (
       node_run_id TEXT PRIMARY KEY CHECK (length(node_run_id) > 0),
       project_id TEXT NOT NULL,
-      node_kind TEXT NOT NULL CHECK (node_kind IN ('agent', 'collaboration')),
+      gate_run_id TEXT,
+      node_kind TEXT NOT NULL CHECK (node_kind IN ('agent','collaboration','gate')),
       node_id TEXT NOT NULL CHECK (length(node_id) > 0),
       agent_id TEXT,
       group_id TEXT,
@@ -1369,7 +1402,7 @@ export function initializeCollaborationStateSchema(
       updated_at TEXT NOT NULL,
       completed_at TEXT,
       CHECK (
-        (node_kind = 'agent' AND agent_id IS NOT NULL AND group_id IS NULL) OR
+        (node_kind IN ('agent','gate') AND agent_id IS NOT NULL AND group_id IS NULL) OR
         (node_kind = 'collaboration' AND group_id IS NOT NULL AND agent_id IS NULL)
       ),
       UNIQUE (project_id, activation_request_id),

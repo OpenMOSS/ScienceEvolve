@@ -1,3 +1,5 @@
+import { workflowGateSchema } from "./workflow-gate.js";
+import { workflowGateConfigurationErrors } from "./internal/shared/workflow-gate.js";
 import { searchTreeConfigSchema } from "./search-tree.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
@@ -355,6 +357,7 @@ const canvasLayoutSchema = z.object({
   }).strict().default({ input: true, termination: true })
 }).strict();
 export const orchestrationShapeSchema = z.object({
+  gates: z.array(workflowGateSchema).max(100).optional(),
   schemaVersion: z.union([z.literal(2), z.literal(3)]),
   agents: z.array(orchestrationAgentSchema).min(1),
   collaborations: z.array(collaborationNodeSchema).max(25),
@@ -570,6 +573,7 @@ function refineOrchestration(
     const validKnownMembers = new Set(group.memberAgentIds.filter((memberId) => agentIds.has(memberId) && memberId !== MAIN_AGENT_NAME && !groupIds.has(memberId)));
     if (validKnownMembers.size < 2) context.addIssue({ code: z.ZodIssueCode.custom, path: ["collaborations", groupIndex, "memberAgentIds"], message: "协作组必须包含至少两个不同的已配置 Agent" });
   }
+  for (const message of workflowGateConfigurationErrors(template)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["gates"], message });
   const outerIds = new Set(workflowOuterNodeIds(template));
   const validateOuterReference = (value: string, path: Array<string | number>, label: string): void => {
     if (memberIds.has(value)) context.addIssue({ code: z.ZodIssueCode.custom, path, message: `${label}不能指向协作组成员；请使用协作组外层节点` });

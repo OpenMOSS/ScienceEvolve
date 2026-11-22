@@ -1,3 +1,4 @@
+import { requireGateChoice, gateFeedback } from "./workflow-gate.js";
 import { workflowMessagesText, type WorkflowDirectMessage } from "./workflow-input.js";
 import { createHash, randomUUID } from "node:crypto";
 import { AgentContextSources } from "./agent-context-index.js";
@@ -377,7 +378,7 @@ export class ScopedProjectRuntime {
       const context: NonNullable<AgentRunRequest["executionContext"]> = { role: "delivery", nodeRunId: await this.rootNode(group),
         groupRunId: group.id, executionId: integration.id, ownershipEpoch: integration.ownershipEpoch, executionWorktree: workspace };
       const request = await this.request(agentId, invocationId, workspace, runtimePath, inbox, assignment, context);
-      request.contextSources = sources.sources;
+      request.contextSources = [...sources.sources, ...(request.contextSources ?? [])];
       request.gitDirectBase = group.integrationTarget;
       const controlAuthorityFactory: CollaborationControlAuthorityFactory = async ({ turn: nativeTurn }) => {
         const capability = randomUUID();
@@ -546,7 +547,7 @@ export class ScopedProjectRuntime {
       groupRunId: input.groupRun.id, executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch,
       executionWorktree: input.execution.worktreePath };
     const request = await this.request(input.execution.agentId, input.invocationId, input.execution.worktreePath, runtime, inbox, assignment, context);
-    request.contextSources = sources.sources;
+    request.contextSources = [...sources.sources, ...(request.contextSources ?? [])];
     const decisionBy = d.state.agents[input.execution.agentId].decisionBy === "main" ? "main" : "agent";
     const candidates = decisionBy === "agent" ? (input.workflow.routes[input.arrival.targetNodeId] ?? []).filter((edge) => edge.kind === "weak").map((edge) => edge.target) : [];
     const repairIdentity = input.reportRepair ? { projectId: d.state.id, executionId: input.execution.id,
@@ -803,13 +804,22 @@ export class ScopedProjectRuntime {
         type: "scoped.artifact.staged", payload: { executionId: input.execution.id, ownershipEpoch: input.execution.ownershipEpoch,
           groupRunId: input.groupRun.id, envelope } });
     }
-    const output = redactTrace(result.handoff ?? "");
+    let output = redactTrace(result.handoff ?? "");
+    let gateDecisionPending = false;
+    if (input.arrival.targetKind === "gate") {
+      const run = input.arrival.gateRunId && await d.database.workflowGate(d.state.id, input.arrival.gateRunId);
+      if (!run) throw new Error("Gate Agent lost its bound input and execution");
+      gateDecisionPending = run.status === "result" && run.decisionAgentId !== input.execution.agentId;
+      const chosen = gateDecisionPending ? run : requireGateChoice(run, run.origin, input.arrival.targetNodeId);
+      output = gateFeedback(chosen);
+      selectedWeakTarget = !gateDecisionPending && (input.workflow.routes[input.arrival.targetNodeId] ?? []).some(edge => edge.kind === "weak") ? chosen.selectedTarget : undefined;
+    }
     const weak = (input.workflow.routes[input.arrival.targetNodeId] ?? []).filter((edge) => edge.kind === "weak");
-    if (weak.length && !input.reportRepair && d.state.agents[input.execution.agentId].decisionBy === "main") {
+    if (input.arrival.targetKind !== "gate" && weak.length && !input.reportRepair && d.state.agents[input.execution.agentId].decisionBy === "main") {
       await this.manage(input.groupRun, "route", input.arrival.requestId, output);
       selectedWeakTarget = (await d.database.scopedArrivalRouteDecision(d.state.id, input.arrival.requestId))?.targetNodeId;
     }
-    if (weak.length && !selectedWeakTarget) throw new Error("Scoped weak route requires a formal current local decision");
+    if (weak.length && !selectedWeakTarget && !gateDecisionPending) throw new Error("Scoped weak route requires a formal current local decision");
     try { await d.storage.writeHandoff(d.state, input.execution.agentId, input.invocationId, output || "Business turn completed."); }
     catch (error) { console.warn(`Returned Agent handoff view unavailable (${input.execution.id}): ${supervisionError(error)}`); }
     const facts = this.agentGitFacts.get(input.invocationId);
@@ -1048,7 +1058,7 @@ export class ScopedProjectRuntime {
       d.assertManagementActive?.();
       const request = await this.request(agentId, invocationId, inputs.workspacePath, runtime, inputs.inboxPath, assignment,
         { role: "leader", nodeRunId: await this.rootNode(group), groupRunId: group.id, coordinatorEpoch: claim.coordinatorEpoch });
-      request.contextSources = sources.sources;
+      request.contextSources = [...sources.sources, ...(request.contextSources ?? [])];
       request.nativeInputNotices = pendingInputs.map(input => input.text);
       d.assertManagementActive?.();
       if (pendingInputs.length) {

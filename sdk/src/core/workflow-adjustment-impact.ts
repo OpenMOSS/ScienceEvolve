@@ -38,12 +38,14 @@ export function workflowAdjustmentRuntimeImpact(request: WorkflowAdjustmentSubmi
   const scopedNodeChanged = (groupId: string, nodeId: string, activeLoopIds: string[] = []) => {
     const previous = oldGroups.get(groupId)?.workflow, next = newGroups.get(groupId)?.workflow;
     if (!previous || !next || groupOwnershipChanged(groupId)) return true;
-    return !isDeepStrictEqual(previous.nodes.find(node => node.nodeId === nodeId), next.nodes.find(node => node.nodeId === nodeId)) ||
+    return !isDeepStrictEqual(oldGraph.gates?.find(gate => gate.id === nodeId), newGraph.gates?.find(gate => gate.id === nodeId)) ||
+      !isDeepStrictEqual(previous.nodes.find(node => node.nodeId === nodeId), next.nodes.find(node => node.nodeId === nodeId)) ||
       !isDeepStrictEqual(previous.routes[nodeId], next.routes[nodeId]) ||
       !isDeepStrictEqual(loopBindings(previous.routes, previous.loops, nodeId, activeLoopIds), loopBindings(next.routes, next.loops, nodeId, activeLoopIds));
   };
   const rootNodeChanged = (node: NodeRef) => {
     if (node.kind === "agent" && agentIds.has(node.agentId)) return true;
+    if (node.kind === "gate" && !isDeepStrictEqual(oldGraph.gates?.find(gate => gate.id === node.gateId), newGraph.gates?.find(gate => gate.id === node.gateId))) return true;
     if (node.kind === "collaboration" && groupOwnershipChanged(node.groupId)) return true;
     if (node.kind === "collaboration" && !isDeepStrictEqual(oldGraph.collaborations?.find(group => group.id === node.groupId),
       newGraph.collaborations?.find(group => group.id === node.groupId))) return true;

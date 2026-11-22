@@ -1,3 +1,4 @@
+import { gateFeedback } from "./workflow-gate.js";
 import type { WorkflowDirectMessage } from "./workflow-input.js";
 import type { CredentialFreeProjectStateProjection, ScopedArrivalRecord } from "./collaboration-state/contracts.js";
 
@@ -7,6 +8,11 @@ export function scopedPredecessorOutput(projection: CredentialFreeProjectStatePr
   if (!source) return undefined;
   if (source.status === "skipped") return `Explicitly skipped (not successful work): ${source.targetNodeId}/${source.requestId}`;
   if (source.status !== "completed") return undefined;
+  if (source.targetKind === "gate") {
+    const gate = projection.workflowGates?.find(item => item.id === source.gateRunId);
+    if (!gate) throw new Error("Completed Gate lost its retained feedback");
+    return gateFeedback(gate);
+  }
   if (source.targetKind === "agent") {
     const execution = projection.scopedExecutions?.find((item) => item.arrivalRequestId === source.requestId && item.groupRunId === source.groupRunId && item.status === "completed");
     if (!execution) return undefined;

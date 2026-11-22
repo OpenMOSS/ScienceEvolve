@@ -1,3 +1,4 @@
+import { workflowGateTools } from "./workflow-gate-mcp.js";
 import { searchTreeTools } from "./search-tree-mcp.js";
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
@@ -24,6 +25,7 @@ import { CollaborationStateError } from "./collaboration-state/errors.js";
 
 type JsonRpcRequest = { id?: string | number | null; method?: string; params?: Record<string, unknown> };
 export type CapabilityContext = {
+  workflowGate?: boolean;
   searchTree?: boolean;
   projectState?: boolean;
   nativeBackgroundJobs?: boolean;
@@ -303,6 +305,7 @@ function capabilityFromEnvironment(): CapabilityContext {
     (context.kind !== "main" && context.kind !== "worker") ||
     (context.decisionBy !== "main" && context.decisionBy !== "agent") ||
     typeof context.allowUserIntervention !== "boolean" ||
+    (context.workflowGate !== undefined && typeof context.workflowGate !== "boolean") ||
     (context.searchTree !== undefined && typeof context.searchTree !== "boolean") ||
     (context.projectState !== undefined && typeof context.projectState !== "boolean") ||
     (context.allowAgentOrchestrationReconfiguration !== undefined &&
@@ -353,7 +356,7 @@ export function toolsFor(context: CapabilityContext): RuntimeMcpToolDefinition[]
   const currentMain = context.terminalPushCoordination ? context.terminalPushCoordination.role === "main"
     : context.collaboration ? context.collaboration.role === "scoped-main"
       : context.kind === "main" && !context.worktreeClosing && !context.terminalPushObservation;
-  return [...(context.searchTree ? searchTreeTools() : []), ...(context.nativeBackgroundJobs && context.projectState ? [nativeBackgroundJobTool()] : []), ...controlToolsFor(context), ...(context.projectState ? projectStateTools(currentMain && context.projectStateReconciliation !== false,
+  return [...(context.workflowGate ? workflowGateTools() : []), ...(context.searchTree ? searchTreeTools() : []), ...(context.nativeBackgroundJobs && context.projectState ? [nativeBackgroundJobTool()] : []), ...controlToolsFor(context), ...(context.projectState ? projectStateTools(currentMain && context.projectStateReconciliation !== false,
     context.collaboration?.role === "scoped-leader") : [])];
 }
 
@@ -1262,6 +1265,15 @@ async function handle(request: JsonRpcRequest, context: CapabilityContext): Prom
       if (!context.nativeBackgroundJobs || !context.projectState || !(context.bridgePath || context.bridgePort !== undefined)) throw new Error("Background job tools are unavailable for this invocation");
       const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
       const response = await requestBridge(context, { backgroundJob: args }, `job:${request.id}`);
+      if (response.ok !== true || response.stateResult === undefined) throw new BridgeActionRejectedError(bridgeActionRejection(response.error, context.stateVersion, true));
+      rpcResult(request.id, { content: [{ type: "text", text: JSON.stringify(response.stateResult) }], structuredContent: response.stateResult });
+    } catch (error) { rpcToolError(request.id, rejectionForError(error, context.stateVersion, true)); }
+    return;
+  }
+  if (name === "workflow_gate") {
+    try {
+      if (!context.workflowGate || !(context.bridgePath || context.bridgePort !== undefined)) throw new Error("Workflow Gate is unavailable for this invocation");
+      const response = await requestBridge(context, { workflowGateRequest: params.arguments }, `gate:${request.id}`);
       if (response.ok !== true || response.stateResult === undefined) throw new BridgeActionRejectedError(bridgeActionRejection(response.error, context.stateVersion, true));
       rpcResult(request.id, { content: [{ type: "text", text: JSON.stringify(response.stateResult) }], structuredContent: response.stateResult });
     } catch (error) { rpcToolError(request.id, rejectionForError(error, context.stateVersion, true)); }

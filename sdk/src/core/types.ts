@@ -148,7 +148,8 @@ export interface ResultFormat {
 
 export type NodeRef =
   | { kind: "agent"; nodeId: WorkflowNodeId; agentId: AgentId }
-  | { kind: "collaboration"; nodeId: WorkflowNodeId; groupId: string };
+  | { kind: "collaboration"; nodeId: WorkflowNodeId; groupId: string }
+  | { kind: "gate"; nodeId: WorkflowNodeId; gateId: string };
 
 /** A routable outer node whose members remain in the flat Agent registry. */
 export interface CollaborationNode {
@@ -364,6 +365,7 @@ export interface WorkflowLoop {
 export interface AgentOrchestrationTemplate {
   /** Missing on a legacy v1 read; v3 adds an explicit scoped group graph. */
   schemaVersion?: 2 | 3;
+  gates?: import("./workflow-gate.js").WorkflowGate[];
   /** Every entry is exactly one Agent; names are unique. */
   agents: AgentDefinition[];
   /** Missing on a legacy v1 read; normalized writers always emit an array. */
@@ -820,6 +822,7 @@ export type NodeRunStatus =
   | "completed";
 
 export interface NodeRun {
+  gateRunId?: string;
   id: NodeRunId;
   node: NodeRef;
   workflowRevision: number;
@@ -1275,6 +1278,9 @@ export interface ProjectState {
   executionCounts?: Record<AgentName, number>;
   /** The single queued/running business execution in this serial workflow. */
   activeAgentExecution?: ActiveAgentExecution;
+  workflowGateSource?: import("./workflow-gate.js").GateOrigin;
+  activeWorkflowGate?: { runId: string; stage: "check" | "decision" };
+  pendingGateDeliveries?: string[];
   mainInvocationSeq: number;
   /** Durable Codex threads for Workers whose config enables persistence. */
   agentSessionIds?: Record<AgentName, string>;
@@ -1334,6 +1340,7 @@ export interface ProjectState {
   workflowRevision?: number;
   /** Serial outer-node ownership; member executions are scoped below it. */
   activeNodeRunId?: NodeRunId;
+  workflowGates?: import("./workflow-gate.js").GateRun[];
   nodeRuns?: NodeRun[];
   groupRuns?: GroupRun[];
   scopedGroupRuns?: import("./collaboration-state/contracts.js").ScopedGroupRunRecord[];
@@ -1711,6 +1718,7 @@ export interface ArtifactDirectoryPage {
 
 /** Canonical natural-language handoff read model; legacy result snapshots are UI compatibility only. */
 export interface HandoffRecord {
+  gate?: { runId: string; nodeId: string; target: string };
   /** Verbatim Agent communication, separate from the archived Markdown envelope. */
   body?: string;
   agent: AgentName;
@@ -1879,6 +1887,7 @@ export interface AgentRunRequest {
   onResidentNativeOpened?: (binding: { runtimePath: string; session: SessionRef }) => Promise<void> | void;
   /** Server-only result capture with the actual opened resident Session. */
   onControlResult?: (input: import("./control-result-receipts.js").ControlResultInput, session: SessionRef) => Promise<string> | string;
+  onWorkflowGateRequest?: (request: unknown, callId: string) => Promise<unknown>;
   /** Server-only state service; no caller-selected identity or project. */
   onProjectStateRequest?: (request: import("./project-state.js").ProjectStateRequest) => Promise<unknown> | unknown;
   /** Server-only supplements to the next already-authorized native input. */
@@ -1997,6 +2006,7 @@ export interface ControlActionEnvelope {
 }
 
 export interface ControlMcpRequest {
+  workflowGate?: boolean;
   searchTree?: boolean;
   /** Built-in collaboration capability, independent of business tool selection. */
   projectState?: boolean;

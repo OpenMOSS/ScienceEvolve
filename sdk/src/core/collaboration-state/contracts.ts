@@ -28,7 +28,7 @@ import type { SessionRef } from "../harness-runtime/contracts.js";
 import type { RemoteMergeSyncFact } from "../collaboration-git/contracts.js";
 import type { ScopedRoutePlan } from "../scoped-workflow-planner.js";
 
-export const COLLABORATION_STATE_SCHEMA_VERSION = 28 as const;
+export const COLLABORATION_STATE_SCHEMA_VERSION = 29 as const;
 
 /** Exact native launch fact written by the trusted launcher, independent of
  * mutable workflow roles. This is evidence, never an Agent wake authority. */
@@ -353,7 +353,8 @@ export interface ScopedArrivalRecord {
   groupRunId: GroupRunId;
   sourceRunId: string;
   targetNodeId: WorkflowNodeId;
-  targetKind: "agent" | "collaboration";
+  targetKind: "agent" | "collaboration" | "gate";
+  gateRunId?: string;
   agentId?: AgentId;
   childGroupId?: string;
   status: string;
@@ -968,7 +969,8 @@ export interface ActivateNodeInput {
   projectId: string;
   expectedRevision?: number;
   nodeRunId: NodeRunId;
-  node: Extract<NodeRef, { kind: "agent" }>;
+  node: Extract<NodeRef, { kind: "agent" }> | (Extract<NodeRef, { kind: "gate" }> & { agentId: string });
+  gateRunId?: string;
   activationRequestId: string;
   inputSnapshotRef: string;
   optionalTask?: string;
@@ -1319,6 +1321,7 @@ export interface CloseRuntimeActivityInput {
 }
 
 export interface CredentialFreeProjectStateProjection {
+  workflowGates?: import("../workflow-gate.js").GateRun[];
   agentGitDelivery?: Record<string, import("../agent-git-delivery.js").AgentGitDeliveryStatus>;
   id: string;
   stateRevision: number;

@@ -388,6 +388,7 @@ export class HarnessRuntimeResidentAdapter {
     if (!model) throw adapterError(`Agent ${request.agent} has no locked resident model`);
     const controlTemplate = deriveControlTemplate(request, input.controlScope);
     if (controlTemplate && request.onProjectStateRequest) controlTemplate.projectState = true;
+    if (controlTemplate && request.onWorkflowGateRequest) controlTemplate.workflowGate = true;
     if (controlTemplate && request.project.searchTree) controlTemplate.searchTree = true;
     if (controlTemplate && input.inputs?.workflowAuthoringPath) {
       controlTemplate.workflowAuthoringPath = input.inputs.workflowAuthoringPath;
@@ -1155,6 +1156,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       ...(template.expiresAt ? { expiresAt: template.expiresAt } : {}),
       stagingPath,
       signal,
+      ...(request.onWorkflowGateRequest ? { workflowGate: (value: unknown, callId: string) => request.onWorkflowGateRequest!(value, callId) } : {}),
       ...(request.project.searchTree ? { searchTree: input => requestInvocationSearchTree(request, input) } : {}),
       ...(request.onProjectStateRequest ? { projectState: input => request.onProjectStateRequest!(input) } : {}),
       ...(request.onControlResult ? { onResult: input => {
@@ -1188,6 +1190,7 @@ class StableTurnAuthorityBroker implements ResidentTurnAuthorityBroker {
       bridge = await this.#options.controlBridgeFactory(service, stagingDirectory);
       const control: ControlMcpRequest = {
         ...stripControlAuthority(template),
+        ...(request.onWorkflowGateRequest ? { workflowGate: true } : {}),
         ...(request.project.searchTree ? { searchTree: true } : {}),
         ...(request.onProjectStateRequest ? { projectState: true, nativeBackgroundJobs: true } : {}),
         stagingPath,
@@ -2192,7 +2195,8 @@ function discoveryCapabilityContext(
     agent: request.agent,
     invocationId: request.invocationId,
     stateVersion: control.stateVersion,
-    ...(request.project.searchTree ? { searchTree: true } : {}),
+    ...(request.onWorkflowGateRequest ? { workflowGate: true } : {}),
+        ...(request.project.searchTree ? { searchTree: true } : {}),
     ...(request.onProjectStateRequest || control.projectState ? { projectState: true } : {}),
     ...(request.onProjectStateRequest || control.nativeBackgroundJobs ? { nativeBackgroundJobs: true } : {}),
     ...(control.capabilityHash ? { capabilityHash: control.capabilityHash } : {}),

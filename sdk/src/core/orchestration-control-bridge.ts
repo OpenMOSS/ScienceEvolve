@@ -254,6 +254,7 @@ export class ControlActionRejectedError extends Error {
 }
 
 export interface ControlActionServiceOptions {
+  workflowGate?: (value: unknown, callId: string) => Promise<unknown>;
   searchTree?: (request: unknown) => Promise<unknown>;
   nativeJobScope?: NativeJobScope;
   projectId: string;
@@ -430,6 +431,17 @@ export class ControlActionService {
       () => undefined
     );
     return operation;
+  }
+
+  async requestWorkflowGate(capability: string, value: unknown, callId: string): Promise<unknown> {
+    this.assertCapability(capability, true);
+    const operation = this.writeQueue.then(async () => {
+      this.assertCapability(capability, true); this.options.signal?.throwIfAborted();
+      if (!this.options.workflowGate) throw new Error("Workflow Gate is unavailable for this invocation");
+      return this.options.workflowGate(value, callId);
+    });
+    this.writeQueue = operation.then(() => {}, () => {}); this.activeRequests.add(operation);
+    try { return await operation; } finally { this.activeRequests.delete(operation); }
   }
 
   async requestSearchTree(capability: string, value: unknown): Promise<unknown> {
@@ -632,6 +644,7 @@ export interface ControlActionBridge {
 }
 
 interface BridgeRequest {
+  workflowGateRequest?: unknown;
   searchTreeRequest?: unknown;
   capability?: unknown;
   callId?: unknown;
@@ -752,6 +765,13 @@ async function handleBridgeLine(
   socket.once("close", clearPending);
   try {
     const request = JSON.parse(line) as BridgeRequest;
+    if (request.workflowGateRequest !== undefined) {
+      if (typeof request.capability !== "string" || typeof request.callId !== "string" || request.searchTreeRequest !== undefined || request.action !== undefined || request.stateRequest !== undefined || request.backgroundJob !== undefined)
+        throw new Error("Gate requests cannot be combined with other actions");
+      const stateResult = await service.requestWorkflowGate(request.capability, request.workflowGateRequest, String(request.callId));
+      if (!socket.destroyed && !socket.writableEnded) socket.write(`${JSON.stringify({ ok: true, stateResult })}\n`);
+      return;
+    }
     if (request.searchTreeRequest !== undefined) {
       if (typeof request.capability !== "string" || request.action !== undefined || request.stateRequest !== undefined || request.backgroundJob !== undefined)
         throw new Error("Search tree requires one authenticated request");

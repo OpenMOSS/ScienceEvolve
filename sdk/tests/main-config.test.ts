@@ -18,6 +18,17 @@ function grouped() {
 }
 
 describe("main workflow config uses main's actual contracts", () => {
+  it("round-trips Gate configuration and rejects a code Gate without an actual predecessor", () => {
+    const orchestration = cloneAgentOrchestrationTemplate();
+    orchestration.gates = [{ id: "quality", name: "Quality", verifier: { kind: "agent", agentId: "review", instructions: "Inspect actual evidence" } }];
+    orchestration.input.target = "quality";
+    orchestration.routes.quality = [{ kind: "strong", target: "idea" }];
+    const config = validateMainWorkflowConfig({ orchestration });
+    expect(bindMainWorkflowConfig(config, { harness: "pi", model: "fixture" }).orchestration.gates).toEqual(orchestration.gates);
+    expect(validateMainWorkflowConfig(JSON.parse(JSON.stringify(config))).orchestration.gates).toEqual(orchestration.gates);
+    orchestration.gates[0].verifier = { kind: "code", interpreter: "node", code: "console.log(1)", output: "json" };
+    expect(() => validateMainWorkflowConfig({ orchestration })).toThrow("actual predecessor");
+  });
   it("round-trips the optional search tree through shared validation and binding", () => {
     const searchTree = { root: { name: "Root" }, directions: [{ id: "quality", kind: "direction", name: "Quality", parentId: "root" }] };
     const config = validateMainWorkflowConfig({ searchTree });

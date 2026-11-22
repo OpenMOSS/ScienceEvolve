@@ -1,3 +1,4 @@
+import { gateRunId, prepareGateRun, requireGateChoice, gateFeedback, type GateRun } from "./workflow-gate.js";
 import { SearchTreeStore, searchTreeRequestSchema } from "./search-tree.js";
 import { summarizeFailureAttempts } from "./internal/shared/failure-attempt-history.js";
 import type { ProjectAgentQueueSource } from "./agent-queue-view.js";
@@ -908,6 +909,7 @@ export class Orchestrator {
   private async projectView(state: ProjectState): Promise<ProjectView> {
     const liveState = (await this.collaborationRuntime?.projectReadModel?.(state)) ?? state;
     const project = structuredClone(liveState) as ProjectView;
+    if (liveState.orchestration.gates?.length) project.workflowGates = await this.collaborationRuntime?.workflowGateRuns?.(state.id);
     // Main is a public first-class Agent. Clone all configurations before
     // exposing the read model so callers cannot mutate runtime state.
     project.agents = publicAgentConfigs(project.agents);
@@ -1172,6 +1174,17 @@ export class Orchestrator {
     } else {
       await this.collaborationRuntime?.prepareSerialWorkflowAdjustments?.(state);
       await this.collaborationRuntime?.initializeNewProjectState?.(state);
+      const initialGate = orchestration.gates?.find(gate => gate.id === firstAgent);
+      if (initialGate) {
+        const journal = this.collaborationRuntime?.workflowGateJournal?.(state.id);
+        if (!journal || initialGate.verifier.kind !== "agent") throw new Error("Input Gate requires its configured checker and durable journal");
+        const origin = { projectId: state.id, sourceRunId: `input:${state.id}`, nodeId: "input", workflowRevision: 1,
+          input: { requirement: state.requirement, inputFiles: state.inputFiles, description: state.inputDescription } };
+        await journal.save(prepareGateRun(initialGate, (orchestration.routes[firstAgent] ?? []).map(edge => edge.target), origin), 0);
+        state.workflowGateSource = origin;
+        state.activeAgentExecution = undefined;
+        await this.queueAgent(runtime, firstAgent, { sourceAgent: "main", executionSource: "project-input", message: "Configured Input Gate checker queued" });
+      }
       await this.emit(runtime, {
         type: "agent.queued",
         agent: firstAgent,
@@ -3870,9 +3883,14 @@ export class Orchestrator {
       );
       if (formalSerialState) control.nativeBackgroundJobs = true;
       if (state.searchTree) control.searchTree = true;
+      if (state.orchestration.gates?.length) control.workflowGate = true;
       controlStateVersion = control.stateVersion;
       controlCapabilityHash = control.capabilityHash;
       const controlService = new ControlActionService({
+        ...(state.orchestration.gates?.length ? { workflowGate: async (value: unknown, callId: string) => {
+          if (!baseRunRequest.onWorkflowGateRequest) throw new Error("No Gate is available in this invocation's configured path");
+          return baseRunRequest.onWorkflowGateRequest(value, callId);
+        } } : {}),
         ...(state.searchTree ? { searchTree: async (input: unknown) => {
           if (state.activeInvocationId !== invocationId || state.currentAgent !== agent || state.status !== "running")
             throw new Error("Search tree invocation is no longer active");
@@ -5449,6 +5467,10 @@ export class Orchestrator {
       invocationId,
       controlActions
     );
+    if (state.activeWorkflowGate && !orchestrationProposal && !serialMainRecord && routingTerminal?.action.tool !== "request_user") {
+      await this.finishSerialGate(runtime, agent, invocationId, handoff ?? "");
+      return;
+    }
     const controlDecision = kind === "main" && routingTerminal && !orchestrationProposal && !serialMainRecord
       ? mainDecisionFromControl(state, routingTerminal, handoff, controlActions)
       : undefined;
@@ -5711,6 +5733,18 @@ export class Orchestrator {
         }
       });
       if (isCancelling(state)) return;
+      if (state.orchestration.gates?.some(gate => gate.id === decision.nextAgent && !gate.groupId)) {
+        if (pendingCapabilities.controlMode === "weak-branch" && pendingDecision) {
+          const bound = (await this.collaborationRuntime?.workflowGateRuns?.(state.id))?.find(run => run.gate.id === decision.nextAgent &&
+            run.origin.invocationId === pendingDecision.sourceInvocationId && run.origin.agentId === pendingDecision.sourceAgent);
+          if (!bound) throw new Error("Gate route lost its actual predecessor's check");
+          state.workflowGateSource = bound.origin;
+        }
+        await this.endActiveAgentExecution(runtime, "completed", invocationId);
+        await this.queueAgent(runtime, decision.nextAgent, { sourceAgent: agent, executionSource: "main-assignment",
+          message: `Main selected Gate ${decision.nextAgent}`, data: { sourceInvocationId: invocationId } });
+        return;
+      }
 
       if (
         decision.nextAgent === "finish" &&
@@ -6312,6 +6346,41 @@ export class Orchestrator {
     });
   }
 
+  private appendGateFeedback(state: ProjectState, run: GateRun): void {
+    if (!state.latestHandoff) throw new Error("Gate route requires its original predecessor handoff");
+    const feedback = gateFeedback(run);
+    state.latestHandoff.gate = { runId: run.id, nodeId: run.gate.id, target: run.selectedTarget! };
+    state.latestHandoff.markdown += `\n\n${feedback}`;
+    state.latestHandoff.body = `${state.latestHandoff.body ?? ""}\n\n${feedback}`;
+  }
+
+  private async finishSerialGate(runtime: RuntimeProject, agent: string, invocationId: string, handoff: string): Promise<void> {
+    const state = runtime.state;
+    if (!state.activeWorkflowGate || !this.collaborationRuntime?.workflowGateJournal) throw new Error("Gate execution binding is unavailable");
+    const journal = this.collaborationRuntime.workflowGateJournal(state.id);
+    const run = await journal.read(state.activeWorkflowGate.runId);
+    if (!run) throw new Error("Gate execution record is missing");
+    const decisionPending = run.status === "result" && run.decisionAgentId !== agent;
+    if (!decisionPending) requireGateChoice(run, run.origin, run.gate.id);
+    const text = `${handoff}\n\n${gateFeedback(run)}`;
+    state.latestHandoff = { agent, invocationId, markdown: text, body: text, excerpt: handoffExcerpt(text), updatedAt: nowIso(),
+      gate: { runId: run.id, nodeId: run.gate.id, target: decisionPending ? run.decisionAgentId : run.selectedTarget! } };
+    const saved = await this.storage.writeHandoff(state, agent, invocationId, text);
+    await this.emit(runtime, { type: "handoff.saved", agent, message: "Gate input and feedback saved", data: { invocationId, path: saved, gateRunId: run.id } });
+    await this.emit(runtime, { type: "agent.completed", agent, message: "Configured Gate Agent returned its check", data: { invocationId, gateRunId: run.id } });
+    await this.endActiveAgentExecution(runtime, "completed", invocationId);
+    if (decisionPending) {
+      state.activeWorkflowGate = { runId: run.id, stage: "decision" };
+      await this.queueAgent(runtime, run.decisionAgentId, { sourceAgent: agent, executionSource: "configured-route", message: "Gate decision Agent queued", data: { sourceInvocationId: invocationId, gateRunId: run.id } });
+      return;
+    }
+    state.activeWorkflowGate = undefined;
+    state.pendingGateDeliveries = [...(state.pendingGateDeliveries ?? []), run.id];
+    if (run.selectedTarget === "finish") {
+      await this.queueMainDecision(runtime, agent, invocationId, "termination", ["finish"], true, gateFeedback(run));
+    } else await this.queueAgentAfterWorker(runtime, agent, invocationId, run.selectedTarget!);
+  }
+
   private async queueAgentAfterWorker(
     runtime: RuntimeProject,
     sourceAgent: AgentName,
@@ -6372,6 +6441,41 @@ export class Orchestrator {
     }
   ): Promise<void> {
     const { state } = runtime;
+    const enteredLoop = orchestrationFor(state).loops?.find(loop => loop.to === nextAgent);
+    if (enteredLoop && event.sourceAgent !== enteredLoop.from) await this.beginLoopBatch(runtime, nextAgent);
+    const gate = state.orchestration.gates?.find(gate => gate.id === nextAgent && !gate.groupId);
+    if (gate) {
+      if (!state.workflowGateSource || !this.collaborationRuntime?.workflowGateJournal)
+        throw new Error(`Gate ${gate.id} has no original predecessor task binding`);
+      const journal = this.collaborationRuntime.workflowGateJournal(state.id);
+      const run = await journal.read(gateRunId(state.workflowGateSource, gate.id));
+      if (!run) throw new Error(`Gate ${gate.id} was not prepared in its predecessor's live invocation`);
+      if (run.gate.verifier.kind === "agent" && run.status === "prepared") {
+        state.activeWorkflowGate = { runId: run.id, stage: "check" };
+        nextAgent = run.executorAgentId;
+      } else if (run.status === "result" && run.decisionAgentId !== run.executorAgentId) {
+        state.activeWorkflowGate = { runId: run.id, stage: "decision" };
+        nextAgent = run.decisionAgentId;
+      } else {
+        const selected = requireGateChoice(run, state.workflowGateSource, gate.id);
+        this.appendGateFeedback(state, selected);
+        state.pendingGateDeliveries = [...(state.pendingGateDeliveries ?? []), selected.id];
+        if (selected.selectedTarget === "finish") {
+          if (!state.workflowGateSource.invocationId) throw new Error("Completed Gate has no predecessor invocation");
+          await this.queueMainDecision(runtime, event.sourceAgent, state.workflowGateSource.invocationId, "termination", ["finish"], true, gateFeedback(selected));
+          return;
+        }
+        const successor = state.orchestration.gates?.find(item => item.id === selected.selectedTarget);
+        if (successor?.verifier.kind === "agent") {
+          state.workflowGateSource = { projectId: state.id, sourceRunId: selected.id, nodeId: selected.gate.id,
+            workflowRevision: state.workflowRevision ?? 1, input: { gateRunId: selected.id, feedback: gateFeedback(selected) } };
+          const prepared = prepareGateRun(successor, (state.orchestration.routes[successor.id] ?? []).map(edge => edge.target), state.workflowGateSource);
+          if (!await journal.read(prepared.id)) await journal.save(prepared, 0);
+        }
+        await this.queueAgent(runtime, selected.selectedTarget, { ...event, sourceAgent: selected.gate.id });
+        return;
+      }
+    }
     if (!isSystemController(nextAgent) && !isConfiguredAgent(orchestrationFor(state), nextAgent)) {
       throw new Error(`Agent orchestration has no valid next route: ${nextAgent}`);
     }
@@ -6381,12 +6485,6 @@ export class Orchestrator {
       // its retry sleep and leave the new management task silently queued.
       finishWorkflowRecovery(state);
       state.status = "queued";
-    }
-    const enteredLoop = orchestrationFor(state).loops?.find(
-      (loop) => loop.to === nextAgent
-    );
-    if (enteredLoop && event.sourceAgent !== enteredLoop.from) {
-      await this.beginLoopBatch(runtime, nextAgent);
     }
     if (!isSystemController(nextAgent)) {
       const meta = state.agentSessionMeta?.[nextAgent];

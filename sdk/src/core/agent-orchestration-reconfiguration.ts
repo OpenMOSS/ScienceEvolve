@@ -1,3 +1,4 @@
+import { assertAgentGateConfigurationUnchanged } from "./workflow-gate.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { WorkflowConfigurationVersion } from "./workflow-adjustments.js";
@@ -460,6 +461,7 @@ export function parseAgentOrchestrationProposal(
   const orchestration = normalizeAgentOrchestrationTemplate(
     record(document.orchestration, "orchestration")
   );
+  assertAgentGateConfigurationUnchanged(currentOrchestration, orchestration);
   if (
     (orchestration.allowMainReconfiguration === true) !==
     (currentOrchestration.allowMainReconfiguration === true)

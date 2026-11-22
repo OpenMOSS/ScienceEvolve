@@ -137,8 +137,10 @@ export function collaborationForAgent(
 export function workflowOuterNodeRefs(
   template: AgentOrchestrationTemplate
 ): NodeRef[] {
+  const gates: NodeRef[] = (template.gates ?? []).filter(gate => !gate.groupId).map(gate => ({ kind: "gate", nodeId: gate.id, gateId: gate.id }));
   if (template.schemaVersion === 3 && template.scopedWorkflow) {
     return [
+      ...gates,
       ...template.scopedWorkflow.rootAgentIds.map((agentId) => ({
         kind: "agent" as const,
         nodeId: agentId,
@@ -178,7 +180,7 @@ export function workflowOuterNodeRefs(
     emittedGroups.add(group.id);
     result.push({ kind: "collaboration", nodeId: group.id, groupId: group.id });
   }
-  return result;
+  return [...result, ...gates];
 }
 
 export function workflowOuterNodeIds(

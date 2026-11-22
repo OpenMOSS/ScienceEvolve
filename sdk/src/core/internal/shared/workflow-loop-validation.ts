@@ -8,6 +8,7 @@ export interface WorkflowLoopShape {
 
 export interface WorkflowLoopTopology {
   agents: readonly { name: string }[];
+  gates?: readonly { id: string; groupId?: string }[];
   routes: Readonly<Record<string, readonly { target: string; kind: "strong" | "weak" }[]>>;
   loops?: readonly WorkflowLoopShape[];
   termination: { agent: string };
@@ -45,7 +46,7 @@ export function validateWorkflowLoops(
   topology: WorkflowLoopTopology
 ): WorkflowLoopValidationIssue[] {
   const issues: WorkflowLoopValidationIssue[] = [];
-  const configuredNames = new Set(topology.agents.map((entry) => entry.name));
+  const configuredNames = new Set([...topology.agents.map((entry) => entry.name), ...(topology.gates ?? []).filter(gate => !gate.groupId).map(gate => gate.id)]);
   const loopIds = new Set<string>();
   const loopSources = new Set<string>();
   const loopEntries = new Set<string>();

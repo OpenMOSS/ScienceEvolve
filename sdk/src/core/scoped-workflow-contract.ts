@@ -35,7 +35,8 @@ export interface ScopedWorkflowContract {
 const id = z.string().trim().min(1).max(64).regex(/^[\p{L}\p{N}][\p{L}\p{N}_-]*$/u);
 const node = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("agent"), nodeId: id, agentId: id }).strict(),
-  z.object({ kind: z.literal("collaboration"), nodeId: id, groupId: id }).strict()
+  z.object({ kind: z.literal("collaboration"), nodeId: id, groupId: id }).strict(),
+  z.object({ kind: z.literal("gate"), nodeId: id, gateId: id }).strict()
 ]);
 const route = z.object({ target: z.union([id, z.literal("finish")]), kind: z.enum(["strong", "weak"]) }).strict();
 const canvas = z.object({
@@ -210,8 +211,8 @@ export function validateScopedWorkflowContract(
     }
     for (const loop of entry.workflow.loops ?? []) {
       if (![loop.from, loop.to, loop.exitTo].every((nodeId) => directNodes.has(nodeId))) issues.push(`${entry.id} 的 Loop 不能跨越组范围`);
-      if (workflowLoopMembers(entry.workflow, loop).some((nodeId) => directNodes.get(nodeId)?.kind !== "agent")) {
-        issues.push(`${entry.id} 的 Loop 仅支持普通 Agent，不能把子协作组当作 Loop Worker`);
+      if (workflowLoopMembers(entry.workflow, loop).some((nodeId) => directNodes.get(nodeId)?.kind === "collaboration")) {
+        issues.push(`${entry.id} 的 Loop 支持 Agent 与 Gate，不能把子协作组当作 Loop Worker`);
       }
     }
     for (const issue of validateWorkflowLoops({

@@ -73,6 +73,7 @@ export function serializeInvocationControlContext(
     agent: identity.agent,
     invocationId: identity.invocationId,
     stateVersion: control.stateVersion,
+    ...(control.workflowGate ? { workflowGate: true } : {}),
     ...(control.searchTree ? { searchTree: true } : {}),
     ...(control.projectState ? { projectState: true } : {}),
     ...(control.projectStateReconciliation === false ? { projectStateReconciliation: false } : {}),

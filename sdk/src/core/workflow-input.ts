@@ -31,6 +31,9 @@ export function serialWorkflowMessages(state: ProjectState, agent: string,
     if (state.latestHandoff?.invocationId === pending.sourceInvocationId)
       messages.push({ sender: pending.sourceAgent, body: state.latestHandoff.body ?? state.latestHandoff.markdown });
     if (pending.diagnostic) messages.push({ sender: "OpenFARS", body: pending.diagnostic });
+  } else if (state.latestHandoff?.gate?.target === agent) {
+    messages.push({ sender: `${state.latestHandoff.agent} / Gate ${state.latestHandoff.gate.nodeId}`,
+      body: state.latestHandoff.body ?? state.latestHandoff.markdown });
   } else if (assignment) {
     messages.push({ sender: "main", body: [assignment.message,
       ...(assignment.successCriteria?.length ? ["验收要求：", ...assignment.successCriteria] : [])].join("\n\n") });

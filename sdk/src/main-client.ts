@@ -21,7 +21,7 @@ import { prepareMainProjectInputs, type MainProjectInput } from "./main-project-
 export type { MainResearchSdkOptions } from "./main-options.js";
 
 const snapshotKeys = [
-  "searchTree", "id", "title", "requirement", "status", "phase", "createdAt", "updatedAt", "completedAt", "cancelledAt",
+  "searchTree", "workflowGates", "id", "title", "requirement", "status", "phase", "createdAt", "updatedAt", "completedAt", "cancelledAt",
   "inputFiles", "inputDescription",
   "currentAgent", "queuedAgent", "eventSeq", "completionGeneration", "lastError", "userIntervention",
   "agentProgress", "overallProgress", "latestHandoff", "artifacts", "display", "tokenUsage",

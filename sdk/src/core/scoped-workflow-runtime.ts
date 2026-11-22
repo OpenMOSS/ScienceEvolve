@@ -345,6 +345,17 @@ export class ScopedWorkflowRuntime {
             }
             continue;
           }
+          if (arrival.targetKind === "gate") {
+            const gate = arrival.gateRunId && await this.database.workflowGate(input.projectId, arrival.gateRunId);
+            if (!gate) throw new Error("Gate arrival lost its original execution");
+            if (gate.gate.verifier.kind === "code" && ["selected", "delivered"].includes(gate.status)) {
+              await schedule(`gate:${arrival.requestId}`, group.id, async () => {
+                await this.database.completeScopedCodeGate(input.projectId, arrival.requestId);
+                await this.onProgress?.(input.projectId);
+              }, undefined, arrival.requestId);
+              continue;
+            }
+          }
           if (arrival.targetKind === "collaboration") {
             await schedule(`child:${arrival.requestId}`, group.id, async () => {
               if ((await this.database.scopedManagementBlocksBusiness(input.projectId, group.id))) {

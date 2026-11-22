@@ -1,3 +1,4 @@
+import { assertAgentGateConfigurationUnchanged, requireGateChoice, gateFeedback, gateRunId, prepareGateRun, type GateRun } from "../workflow-gate.js";
 import { failureAttemptHistory, failureAttemptKey, summarizeFailureAttempts } from "../internal/shared/failure-attempt-history.js";
 import { createHash, randomUUID } from "node:crypto";
 import { MAX_TASK_REPAIR_WAKEUPS } from "../task-supervision.js";
@@ -545,12 +546,13 @@ function sameOptional(left: unknown, right: unknown): boolean {
 }
 
 function rowToNodeRun(row: Row): NodeRun {
-  const node = row.node_kind === "agent"
+  const node = row.node_kind === "gate" ? { kind: "gate" as const, nodeId: String(row.node_id), gateId: String(row.node_id) } : row.node_kind === "agent"
     ? { kind: "agent" as const, nodeId: String(row.node_id), agentId: String(row.agent_id) }
     : { kind: "collaboration" as const, nodeId: String(row.node_id), groupId: String(row.group_id) };
   return {
     id: String(row.node_run_id),
     node,
+    ...(optionalString(row.gate_run_id) ? { gateRunId: String(row.gate_run_id) } : {}),
     workflowRevision: Number(row.workflow_revision),
     activationRequestId: String(row.activation_request_id),
     inputSnapshotRef: String(row.input_snapshot_ref),
@@ -626,7 +628,8 @@ function rowToScopedArrival(row: Row): ScopedArrivalRecord {
     groupRunId: String(row.group_run_id),
     sourceRunId: String(row.source_run_id),
     targetNodeId: String(row.target_node_id),
-    targetKind: row.target_kind as "agent" | "collaboration",
+    targetKind: row.target_kind as "agent" | "collaboration" | "gate",
+    ...(optionalString(row.gate_run_id) ? { gateRunId: String(row.gate_run_id) } : {}),
     ...(optionalString(row.agent_id) ? { agentId: String(row.agent_id) } : {}),
     ...(optionalString(row.child_group_id) ? { childGroupId: String(row.child_group_id) } : {}),
     status: String(row.status),
@@ -1877,7 +1880,7 @@ export class CollaborationStateDatabase {
     `).all(groupRunId) as Row[]).map(rowToScopedArrival);
   }
 
-  private scopedPathRoute(workflow: ScopedWorkflow, group: Row, arrival: Row, selectedWeakTarget?: string) {
+  private scopedPathRoute(workflow: ScopedWorkflow, group: Row, arrival: Row, selectedWeakTarget?: string): ReturnType<typeof planScopedPathSuccessor> {
     if (this.scopedFinalRepairForArrival(String(group.project_id), String(arrival.request_id))) {
       if (selectedWeakTarget !== undefined) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Final repair is an explicitly planned repair-only arrival, not an ordinary successor dispatch");
       return planScopedPathSuccessor({ ...workflow, loops: [], routes: { ...workflow.routes, [String(arrival.target_node_id)]: [{ kind: "strong", target: "finish" }] } },
@@ -1890,8 +1893,101 @@ export class CollaborationStateDatabase {
     }
     const context = retained ? parseJson(String(retained.path_context_json), { pathId: "", loops: {} })
       : { pathId: String(arrival.request_id), loops: {} };
+    if (arrival.target_kind === "gate") {
+      const run = arrival.gate_run_id && this.workflowGate(String(group.project_id), String(arrival.gate_run_id));
+      if (!run) throw new Error("Gate arrival lost its bound check");
+      if (run.status === "result" && run.decisionAgentId !== String(arrival.agent_id)) {
+        if (selectedWeakTarget !== undefined) throw new Error("Gate checker cannot select for its separate decision Agent");
+        return { route: { kind: "activate" as const, activation: { requestId: `gate-decision:${run.id}`,
+          groupRunId: String(group.group_run_id), workflowRevision: Number(group.workflow_revision),
+          sourceRunId: String(arrival.request_id), targetNodeId: String(arrival.target_node_id) } }, context };
+      }
+      const chosen = requireGateChoice(run, run.origin, String(arrival.target_node_id));
+      if (selectedWeakTarget !== undefined && selectedWeakTarget !== chosen.selectedTarget) throw new Error("Gate route differs from its confirmed selection");
+      selectedWeakTarget = (workflow.routes[String(arrival.target_node_id)] ?? []).some(edge => edge.kind === "weak") ? chosen.selectedTarget : undefined;
+    }
     return planScopedPathSuccessor(workflow, String(group.group_run_id), Number(group.workflow_revision),
       String(arrival.target_node_id), String(arrival.request_id), context, selectedWeakTarget);
+  }
+
+  private insertScopedArrival(head: HeadRow, groupRunId: string, sourceRunId: string, requestId: string,
+    target: NodeRef, timestamp: string): void {
+    const group = this.scopedGroupRun(String(head.project_id), groupRunId);
+    if (!group) throw new Error("Scoped arrival requires its persisted group");
+    let gate: GateRun | undefined;
+    if (target.kind === "gate") {
+      const id = gateRunId({ projectId: group.projectId, scopeId: groupRunId, sourceRunId }, target.gateId);
+      gate = this.workflowGate(group.projectId, id);
+      const sourceArrival = this.scopedArrivals(groupRunId).find(item => item.requestId === sourceRunId);
+      if (!gate && sourceArrival?.targetKind === "gate" && sourceArrival.gateRunId) {
+        const retained = this.workflowGate(group.projectId, sourceArrival.gateRunId);
+        if (retained?.gate.id === target.gateId && retained.status === "result" && requestId === `gate-decision:${retained.id}` &&
+          retained.decisionAgentId !== sourceArrival.agentId) gate = retained;
+      }
+      if (!gate) {
+        const graph = this.workflowSnapshot(group.projectId, group.workflowRevision) as AgentOrchestrationTemplate;
+        const definition = graph.gates?.find(entry => entry.id === target.gateId && entry.groupId === group.groupId);
+        const predecessor = this.scopedArrivals(groupRunId).find(entry => entry.requestId === sourceRunId);
+        const precedingGate = predecessor?.gateRunId ? this.workflowGate(group.projectId, predecessor.gateRunId) : undefined;
+        if (!definition || predecessor && !precedingGate || definition.verifier.kind !== "agent")
+          throw new Error(`Gate ${target.gateId} has no original checking input from ${sourceRunId}`);
+        if (precedingGate) {
+          const chosen = requireGateChoice(precedingGate, precedingGate.origin, precedingGate.gate.id);
+          if (chosen.selectedTarget !== target.gateId) throw new Error("Gate feedback targets a different successor");
+          gate = prepareGateRun(definition, (graph.scopedWorkflow!.groups.find(item => item.id === group.groupId)!.workflow.routes[target.nodeId] ?? []).map(edge => edge.target),
+            { projectId: group.projectId, sourceRunId, nodeId: precedingGate.gate.id, scopeId: groupRunId, workflowRevision: group.workflowRevision,
+              input: { gateRunId: precedingGate.id, feedback: gateFeedback(chosen) } });
+        } else {
+        let rootGroup = group;
+        while (rootGroup.parentGroupRunId) {
+          const parent = this.scopedGroupRun(group.projectId, rootGroup.parentGroupRunId);
+          if (!parent) throw new Error("Gate Input lost its parent scope");
+          rootGroup = parent;
+        }
+        const outer = this.database.prepare("SELECT * FROM node_runs WHERE project_id=? AND activation_request_id=?").get(group.projectId, rootGroup.activationRequestId) as Row | undefined;
+        if (!outer?.input_snapshot_ref) throw new Error("Gate Input lost its original project input reference");
+        gate = prepareGateRun(definition, (graph.scopedWorkflow!.groups.find(item => item.id === group.groupId)!.workflow.routes[target.nodeId] ?? []).map(edge => edge.target),
+          { projectId: group.projectId, sourceRunId, nodeId: "input", scopeId: groupRunId, workflowRevision: group.workflowRevision,
+            input: { sourceRunId, snapshotRef: String(outer.input_snapshot_ref), ...(outer.optional_task ? { assignment: String(outer.optional_task) } : {}) } });
+        }
+        this.insertGateEvent(head, gate);
+      }
+      if (gate.gate.verifier.kind === "code" && gate.status !== "result") requireGateChoice(gate, gate.origin, target.gateId);
+    }
+    this.database.prepare(`INSERT INTO scoped_arrivals(request_id,group_run_id,source_run_id,target_node_id,target_kind,
+      agent_id,child_group_id,gate_run_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'queued',?,?)`).run(
+      requestId, groupRunId, sourceRunId, target.nodeId, target.kind,
+      target.kind === "agent" ? target.agentId : gate ? (gate.status === "result" ? gate.decisionAgentId : gate.executorAgentId) : null,
+      target.kind === "collaboration" ? target.groupId : null, gate?.id ?? null, timestamp, timestamp);
+  }
+
+  completeScopedCodeGate(projectId: string, arrivalRequestId: string): void {
+    this.mutateProject(projectId, undefined, head => {
+      const row = this.database.prepare("SELECT * FROM scoped_arrivals WHERE request_id=?").get(arrivalRequestId) as Row | undefined;
+      const group = row && this.database.prepare("SELECT * FROM scoped_group_runs WHERE group_run_id=? AND project_id=?").get(row.group_run_id,projectId) as Row | undefined;
+      const run = row?.gate_run_id && this.workflowGate(projectId, String(row.gate_run_id));
+      if (!row || !group || !run || run.gate.verifier.kind !== "code") throw new Error("Code Gate arrival lost its original execution");
+      const chosen = requireGateChoice(run, run.origin, String(row.target_node_id));
+      if (row.status === "completed") return { changed: false, value: undefined };
+      this.assertNotFrozen(head);
+      if (row.status !== "queued" || !this.scopedGroupHierarchyActive(projectId, String(group.group_run_id), head)) throw new Error("Gate scope is not active");
+      const workflow = this.scopedGroupWorkflow(projectId, String(group.group_run_id));
+      const plan = this.scopedPathRoute(workflow, group, row, chosen.targets.length > 1 ? chosen.selectedTarget : undefined);
+      const route = plan.route, timestamp = this.isoNow();
+      this.database.prepare("UPDATE scoped_arrivals SET status='completed',updated_at=? WHERE request_id=?").run(timestamp,arrivalRequestId);
+      if (route.kind === "finish") this.database.prepare("INSERT INTO scoped_finish_tokens(request_id,group_run_id,source_arrival_request_id,created_at) VALUES (?,?,?,?)")
+        .run(route.requestId,group.group_run_id,arrivalRequestId,timestamp);
+      else {
+        const target = workflow.nodes.find(item => item.nodeId === route.activation.targetNodeId);
+        if (!target) throw new Error("Gate successor is outside its configured scope");
+        this.insertScopedArrival(head,String(group.group_run_id),arrivalRequestId,route.activation.requestId,target,timestamp);
+        this.persistScopedPath(route.activation.requestId, plan.context);
+      }
+      this.recordGateDelivery(head, run.id, route.kind === "finish" ? { terminal: true } : { arrivalRequestId: route.activation.requestId });
+      this.insertEvent(head, { projectId, eventId: `evt_${randomUUID()}`, requestId: `scoped-gate:${arrivalRequestId}`, type: "workflow.gate.routed",
+        ts: timestamp, agentId: run.executorAgentId, payload: { gateRunId: run.id, arrivalRequestId, route, output: gateFeedback(chosen) } });
+      return { changed: true, value: undefined };
+    });
   }
 
   private persistScopedPath(requestId: string, context: import("../scoped-workflow-planner.js").ScopedPathContext): void {
@@ -3222,7 +3318,8 @@ export class CollaborationStateDatabase {
       }
       const group = this.scopedGroupRun(input.projectId, execution.groupRunId)!;
       const arrival = this.scopedArrivals(group.id).find((item) => item.requestId === execution.arrivalRequestId)!;
-      planScopedSuccessor(this.scopedGroupWorkflow(input.projectId, group.id),
+      if (arrival.targetKind === "gate") this.previewScopedArrivalRoute(input.projectId, arrival.requestId, input.selectedWeakTarget);
+      else planScopedSuccessor(this.scopedGroupWorkflow(input.projectId, group.id),
         group.id, group.workflowRevision, arrival.targetNodeId, arrival.requestId, input.selectedWeakTarget);
       if (this.database.prepare(`SELECT 1 FROM scoped_agent_reports WHERE project_id = ? AND invocation_id = ?`)
         .get(input.projectId, input.invocationId)) {
@@ -5344,6 +5441,7 @@ export class CollaborationStateDatabase {
 
   private appendWorkflowAdjustmentSubmission(head: HeadRow, submission: WorkflowAdjustmentSubmission, proofHash: string): void {
     assertCredentialFree(submission);
+    if (submission.source.kind !== "user") assertAgentGateConfigurationUnchanged(submission.baseSnapshot.orchestration, submission.proposal.orchestration);
     this.insertEvent(head, { projectId: head.project_id, eventId: `evt_${randomUUID()}`,
       requestId: `workflow-adjustment-submission:${payloadHash(submission.requestId)}`, workflowRevision: head.workflow_revision,
       agentId: submission.source.kind === "main" ? "main" : submission.source.kind === "scoped_leader" ? submission.source.agentId : undefined,
@@ -7159,9 +7257,7 @@ export class CollaborationStateDatabase {
       if (route.kind === "finish") this.database.prepare("INSERT INTO scoped_finish_tokens(request_id, group_run_id, source_arrival_request_id, created_at) VALUES (?, ?, ?, ?)").run(route.requestId, groupRunId, arrivalRequestId, timestamp);
       else {
         const target = workflow.nodes.find((node) => node.nodeId === route.activation.targetNodeId)!;
-        this.database.prepare(`INSERT INTO scoped_arrivals(request_id, group_run_id, source_run_id, target_node_id, target_kind, agent_id, child_group_id, status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`).run(route.activation.requestId, groupRunId, arrivalRequestId, target.nodeId, target.kind,
-            target.kind === "agent" ? target.agentId : null, target.kind === "collaboration" ? target.groupId : null, timestamp, timestamp);
+        this.insertScopedArrival(head, groupRunId, arrivalRequestId, route.activation.requestId, target, timestamp);
         if (arrival.pathContext) this.persistScopedPath(route.activation.requestId, scopedPathAtEntry(workflow, target.nodeId, arrival.pathContext));
         else if (workflow.loops?.length) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Skipped legacy Loop requires counter reconciliation before continuing");
       }
@@ -7392,7 +7488,7 @@ export class CollaborationStateDatabase {
         FROM scoped_arrivals AS arrival
         JOIN scoped_group_runs AS group_run ON group_run.group_run_id = arrival.group_run_id
         WHERE group_run.project_id = ? AND arrival.request_id = ?
-          AND arrival.target_kind = 'agent' AND arrival.agent_id = ?
+          AND arrival.target_kind IN ('agent','gate') AND arrival.agent_id = ?
           AND arrival.status = 'queued' AND group_run.status = 'running'
       `).get(projectId, arrivalRequestId, agentId) as Row | undefined;
       if (!candidate) return { changed: false, value: undefined };
@@ -7744,12 +7840,11 @@ export class CollaborationStateDatabase {
           .run(route.requestId, group.id, arrival.requestId, timestamp);
       } else {
         const target = workflow.nodes.find(node => node.nodeId === route.activation.targetNodeId)!;
-        this.database.prepare(`INSERT INTO scoped_arrivals(request_id, group_run_id, source_run_id, target_node_id, target_kind,
-          agent_id, child_group_id, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'queued',?,?)`)
-          .run(route.activation.requestId, group.id, arrival.requestId, target.nodeId, target.kind,
-            target.kind === "agent" ? target.agentId : null, target.kind === "collaboration" ? target.groupId : null, timestamp, timestamp);
+        this.insertScopedArrival(head, group.id, arrival.requestId, route.activation.requestId, target, timestamp);
         this.persistScopedPath(route.activation.requestId, pathPlan.context);
       }
+      if (arrival.gateRunId && this.workflowGate(input.projectId, arrival.gateRunId)?.status === "selected")
+        this.recordGateDelivery(head, arrival.gateRunId, route.kind === "finish" ? { terminal: true } : { arrivalRequestId: route.activation.requestId });
       this.insertEvent(head, { projectId: input.projectId, eventId: `evt_${randomUUID()}`, ts: timestamp,
         agentId: execution.agentId, requestId: `scoped-return:${arrival.requestId}`, type: "scoped.agent.returned",
         payload: { executionId: execution.id, ownershipEpoch: execution.ownershipEpoch, arrivalRequestId: arrival.requestId,
@@ -7797,7 +7892,7 @@ export class CollaborationStateDatabase {
     const arrival = this.database.prepare(`
       SELECT * FROM scoped_arrivals WHERE request_id = ? AND group_run_id = ?
     `).get(arrivalRequestId, execution.group_run_id) as Row | undefined;
-    if (!group || !arrival || arrival.target_kind !== "agent" ||
+    if (!group || !arrival || !["agent", "gate"].includes(String(arrival.target_kind)) ||
       arrival.agent_id !== execution.agent_id) {
       throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped execution has no matching Agent arrival");
     }
@@ -7924,20 +8019,11 @@ export class CollaborationStateDatabase {
     } else {
       const target = workflow.nodes.find((node) => node.nodeId === route.activation.targetNodeId);
       if (!target) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Scoped route target left its group scope");
-      this.database.prepare(`
-        INSERT INTO scoped_arrivals(
-          request_id, group_run_id, source_run_id, target_node_id, target_kind,
-          agent_id, child_group_id, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-      `).run(
-        route.activation.requestId, group.group_run_id, arrivalRequestId,
-        target.nodeId, target.kind,
-        target.kind === "agent" ? target.agentId : null,
-        target.kind === "collaboration" ? target.groupId : null,
-        timestamp, timestamp
-      );
+      this.insertScopedArrival(head, String(group.group_run_id), String(arrivalRequestId), route.activation.requestId, target, timestamp);
       this.persistScopedPath(route.activation.requestId, pathPlan.context);
     }
+    if (arrival.gate_run_id && this.workflowGate(projectId, String(arrival.gate_run_id))?.status === "selected")
+      this.recordGateDelivery(head, String(arrival.gate_run_id), route.kind === "finish" ? { terminal: true } : { arrivalRequestId: route.activation.requestId });
     this.insertEvent(head, {
       projectId, eventId: `evt_${randomUUID()}`,
       requestId: `scoped-complete:${arrivalRequestId}`,
@@ -8144,18 +8230,7 @@ export class CollaborationStateDatabase {
           const workflow = parseJson<ScopedWorkflow>(parent.workflow_snapshot_json, {} as ScopedWorkflow);
           const target = workflow.nodes.find((node) => node.nodeId === parentRoute.activation.targetNodeId);
           if (!target) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Child successor left its parent scope");
-          this.database.prepare(`
-            INSERT INTO scoped_arrivals(
-              request_id, group_run_id, source_run_id, target_node_id, target_kind,
-              agent_id, child_group_id, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-          `).run(
-            parentRoute.activation.requestId, parent.group_run_id, parentArrival.request_id,
-            target.nodeId, target.kind,
-            target.kind === "agent" ? target.agentId : null,
-            target.kind === "collaboration" ? target.groupId : null,
-            timestamp, timestamp
-          );
+          this.insertScopedArrival(head, String(parent.group_run_id), String(parentArrival.request_id), parentRoute.activation.requestId, target, timestamp);
           this.persistScopedPath(parentRoute.activation.requestId, parentPathPlan!.context);
         }
       }
@@ -8261,14 +8336,7 @@ export class CollaborationStateDatabase {
           const workflow = parseJson<ScopedWorkflow>(parent.workflow_snapshot_json, {} as ScopedWorkflow);
           const target = workflow.nodes.find((node) => node.nodeId === parentRoute.activation.targetNodeId);
           if (!target) throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Child successor left its parent scope");
-          this.database.prepare(`INSERT OR IGNORE INTO scoped_arrivals(
-            request_id, group_run_id, source_run_id, target_node_id, target_kind,
-            agent_id, child_group_id, status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`).run(
-            parentRoute.activation.requestId, parent.group_run_id, parentArrival.request_id,
-            target.nodeId, target.kind, target.kind === "agent" ? target.agentId : null,
-            target.kind === "collaboration" ? target.groupId : null, timestamp, timestamp
-          );
+          this.insertScopedArrival(head, String(parent.group_run_id), String(parentArrival.request_id), parentRoute.activation.requestId, target, timestamp);
           const parentWorkflow = parseJson<ScopedWorkflow>(parent.workflow_snapshot_json, {} as ScopedWorkflow);
           const parentPlan = this.scopedPathRoute(parentWorkflow, parent, parentArrival,
             (parentWorkflow.routes[String(parentArrival.target_node_id)] ?? []).some((edge) => edge.kind === "weak")
@@ -8814,19 +8882,9 @@ export class CollaborationStateDatabase {
         definition.leaderAgentId, baseCommit, branch, integrationTarget, timestamp, timestamp
       );
       const nodes = new Map(definition.workflow.nodes.map((node) => [node.nodeId, node]));
-      const insertArrival = this.database.prepare(`
-        INSERT INTO scoped_arrivals(
-          request_id, group_run_id, source_run_id, target_node_id, target_kind,
-          agent_id, child_group_id, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-      `);
       for (const activation of planScopedInputFanOut(definition.workflow, groupRunId, workflowRevision)) {
         const target = nodes.get(activation.targetNodeId)!;
-        insertArrival.run(
-          activation.requestId, groupRunId, activation.sourceRunId, activation.targetNodeId,
-          target.kind, target.kind === "agent" ? target.agentId : null,
-          target.kind === "collaboration" ? target.groupId : null, timestamp, timestamp
-        );
+        this.insertScopedArrival(head, groupRunId, activation.sourceRunId, activation.requestId, target, timestamp);
         this.persistScopedPath(activation.requestId, scopedPathAtEntry(definition.workflow, activation.targetNodeId,
           { pathId: activation.requestId, loops: {} }));
       }
@@ -8930,6 +8988,12 @@ export class CollaborationStateDatabase {
           `Project ${projectId} already has active outer node ${head.active_node_run_id}`
         );
       }
+      if (input.node.kind === "gate") {
+        const gate = input.gateRunId && this.workflowGate(projectId, input.gateRunId);
+        if (!gate || gate.gate.id !== input.node.gateId || gate.origin.sourceRunId !== (input.sourceNodeRunId ?? input.activationRequestId) ||
+          ![gate.executorAgentId, gate.decisionAgentId].includes(input.node.agentId))
+          throw new Error("Gate activation requires its exact predecessor and configured Agent");
+      } else if (input.gateRunId) throw new Error("An ordinary Agent cannot claim a Gate execution");
       this.assertRootActivationPreparation(projectId);
       this.assertWorkflowAdjustmentAdmission(projectId, { groupId: input.groupId, originalActivationRequestId: input.activationRequestId,
         rootNode: { kind: "collaboration", nodeId: input.groupId, groupId: input.groupId } });
@@ -9051,6 +9115,7 @@ export class CollaborationStateDatabase {
     const activationHash = payloadHash({
       nodeRunId: input.nodeRunId,
       node: input.node,
+      gateRunId: input.gateRunId,
       activationRequestId: input.activationRequestId,
       inputSnapshotRef: input.inputSnapshotRef,
       optionalTask: input.optionalTask,
@@ -9064,7 +9129,7 @@ export class CollaborationStateDatabase {
         SELECT * FROM node_runs WHERE project_id = ? AND activation_request_id = ?
       `).get(projectId, input.activationRequestId) as Row | undefined;
       if (existing) {
-        if (existing.activation_payload_hash !== activationHash || existing.node_kind !== "agent") {
+        if (existing.activation_payload_hash !== activationHash || existing.node_kind !== input.node.kind) {
           throw new CollaborationStateError(
             "IDEMPOTENCY_CONFLICT",
             `Activation request ${input.activationRequestId} was reused with another payload`
@@ -9102,16 +9167,18 @@ export class CollaborationStateDatabase {
       const timestamp = this.isoNow();
       this.database.prepare(`
         INSERT INTO node_runs(
-          node_run_id, project_id, node_kind, node_id, agent_id, workflow_revision,
+          node_run_id, project_id, node_kind, node_id, agent_id, workflow_revision, gate_run_id,
           activation_request_id, activation_payload_hash, input_snapshot_ref, optional_task,
           source_node_run_id, source_agent_id, activated_by_agent_id, status, activated_at, updated_at
-        ) VALUES (?, ?, 'agent', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
       `).run(
         input.nodeRunId,
         projectId,
+        input.node.kind,
         input.node.nodeId,
         input.node.agentId,
         input.workflowRevision,
+        input.gateRunId ?? null,
         input.activationRequestId,
         activationHash,
         input.inputSnapshotRef,
@@ -9135,7 +9202,7 @@ export class CollaborationStateDatabase {
         agentId: input.node.agentId,
         ts: timestamp,
         type: "node.activated",
-        payload: { kind: "agent" }
+        payload: { kind: input.node.kind, ...(input.gateRunId ? { gateRunId: input.gateRunId } : {}) }
       });
       const row = this.database.prepare("SELECT * FROM node_runs WHERE node_run_id = ?").get(input.nodeRunId) as Row;
       return { changed: true, value: { replay: false, nodeRun: rowToNodeRun(row) } };
@@ -9212,9 +9279,11 @@ export class CollaborationStateDatabase {
         throw new CollaborationStateError("ACTIVE_NODE_CONFLICT", "Standalone delivery waits for the terminal receipt observation");
       }
       const node = this.requiredNode(input.nodeRunId, input.projectId);
+      const gate = node.gate_run_id ? this.workflowGate(input.projectId, String(node.gate_run_id)) : undefined;
+      const configuredDecision = node.node_kind === "gate" && gate?.status === "result" && gate.decisionAgentId === input.agentId;
       if (
-        node.node_kind !== "agent" ||
-        node.agent_id !== input.agentId ||
+        !["agent", "gate"].includes(String(node.node_kind)) ||
+        node.agent_id !== input.agentId && !configuredDecision ||
         node.status !== "running" ||
         head.active_node_run_id !== input.nodeRunId
       ) {
@@ -10591,6 +10660,11 @@ export class CollaborationStateDatabase {
           "The completing Main node no longer owns the outer-node slot"
         );
       }
+      if (node.node_kind === "gate") {
+        const run = node.gate_run_id && this.workflowGate(input.projectId, String(node.gate_run_id));
+        if (!run || requireGateChoice(run, run.origin, String(node.node_id)).selectedTarget !== input.route.targetNodeId)
+          throw new Error("Gate completion differs from its bound result and path");
+      }
       this.insertEvent(head, {
         projectId: input.projectId,
         eventId: `evt_${randomUUID()}`,
@@ -10620,6 +10694,46 @@ export class CollaborationStateDatabase {
       };
     });
     return { ...result.value, revision: result.revision };
+  }
+
+  /** A code check has already run under its predecessor's live Harness.
+   * Publishing its chosen edge creates no additional business execution. */
+  completeCodeGateNode(projectId: string, nodeRunId: string): { replay: boolean; outbox: RouteOutboxRecord } {
+    return this.mutateProject(projectId, undefined, head => {
+      const node = this.requiredNode(nodeRunId, projectId);
+      const run = node.gate_run_id && this.workflowGate(projectId, String(node.gate_run_id));
+      if (node.node_kind !== "gate" || !run || run.gate.verifier.kind !== "code")
+        throw new Error("Code Gate completion requires its original retained execution");
+      const chosen = requireGateChoice(run, run.origin, String(node.node_id));
+      const routeEmissionId = `route-${nodeRunId}`;
+      const prior = this.database.prepare("SELECT * FROM route_outbox WHERE route_emission_id=?").get(routeEmissionId) as Row | undefined;
+      if (prior) {
+        if (prior.source_node_run_id !== nodeRunId || prior.target_node_id !== chosen.selectedTarget)
+          throw new Error("Gate route replay differs from its confirmed choice");
+        return { changed: false, value: { replay: true, outbox: rowToOutbox(prior) } };
+      }
+      this.assertNotFrozen(head);
+      if (head.active_node_run_id !== nodeRunId || node.status !== "running") throw new Error("Gate lost its active node");
+      const timestamp = this.isoNow(), decisionId = `route-decision:${nodeRunId}`;
+      const decisionKind = chosen.targets.length === 1 && !chosen.gate.rules ? "fixed" : "weak";
+      this.database.prepare(`INSERT INTO route_decisions(decision_id,project_id,source_node_run_id,decision_kind,target_node_id,
+        selected_by_agent_id,decision_request_id,created_at) VALUES (?,?,?,?,?,?,?,?)`).run(decisionId,projectId,nodeRunId,
+        decisionKind,chosen.selectedTarget, decisionKind === "weak" ? chosen.decisionAgentId : null,
+        decisionKind === "weak" ? chosen.id : null,timestamp);
+      const payload = { routeEmissionId, sourceNodeRunId: nodeRunId, gateRunId: run.id, targetNodeId: chosen.selectedTarget,
+        decisionKind, output: gateFeedback(chosen) };
+      assertCredentialFree(payload);
+      this.database.prepare(`INSERT INTO route_outbox(route_emission_id,project_id,source_node_run_id,target_node_id,
+        decision_kind,decision_id,payload_json,status,created_at) VALUES (?,?,?,?,?,?,?,'pending',?)`).run(
+        routeEmissionId,projectId,nodeRunId,chosen.selectedTarget,decisionKind,decisionId,stableJson(payload),timestamp);
+      this.database.prepare("UPDATE node_runs SET status='completed',route_emission_id=?,output=?,completed_at=?,updated_at=? WHERE node_run_id=?")
+        .run(routeEmissionId,payload.output,timestamp,timestamp,nodeRunId);
+      this.database.prepare("UPDATE project_heads SET active_node_run_id=NULL WHERE project_id=? AND active_node_run_id=?").run(projectId,nodeRunId);
+      this.insertEvent(head, { projectId, eventId: `evt_${randomUUID()}`, requestId: `gate-completed:${nodeRunId}`,
+        ts: timestamp, type: "node.completed", nodeRunId, agentId: run.executorAgentId,
+        payload: { gateRunId: run.id, routeEmissionId, targetNodeId: chosen.selectedTarget } });
+      return { changed: true, value: { replay: false, outbox: rowToOutbox(this.database.prepare("SELECT * FROM route_outbox WHERE route_emission_id=?").get(routeEmissionId) as Row) } };
+    }).value;
   }
 
   completeStandaloneNode(input: CompleteStandaloneNodeInput): {
@@ -10674,7 +10788,7 @@ export class CollaborationStateDatabase {
       const execution = this.requiredExecution(input.executionId, input.projectId);
       const task = this.requiredTask(String(execution.task_id));
       if (
-        node.node_kind !== "agent" ||
+        !["agent", "gate"].includes(String(node.node_kind)) ||
         node.status !== "running" ||
         head.active_node_run_id !== input.nodeRunId ||
         execution.node_run_id !== input.nodeRunId ||
@@ -10795,8 +10909,8 @@ export class CollaborationStateDatabase {
   }): { revision: number; nodeRun: NodeRun; replay: boolean } {
     const result = this.mutateProject(input.projectId, input.expectedRevision, (head) => {
       const node = this.requiredNode(input.nodeRunId, input.projectId);
-      if (node.node_kind !== "agent") {
-        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Standalone cancellation requires an Agent node");
+      if (!["agent", "gate"].includes(String(node.node_kind))) {
+        throw new CollaborationStateError("INVALID_STATE_TRANSITION", "Standalone cancellation requires an Agent or Gate node");
       }
       if (node.status === "cancelled") {
         return { changed: false, value: { nodeRun: rowToNodeRun(node), replay: true } };
@@ -11756,6 +11870,14 @@ export class CollaborationStateDatabase {
           "INVALID_STATE_TRANSITION",
           "Only apply_workflow may persist a workflow proposal"
         );
+      }
+      const source = this.requiredNode(String(outbox.source_node_run_id), input.projectId);
+      if (source.node_kind === "gate") {
+        const downstream = outbox.target_node_id === "finish" ? undefined : this.database.prepare(
+          "SELECT * FROM node_runs WHERE project_id=? AND activation_request_id=?").get(input.projectId,input.activationRequestId) as Row | undefined;
+        if (outbox.target_node_id !== "finish" && (!downstream || downstream.node_id !== outbox.target_node_id))
+          throw new Error("Gate delivery requires the actual selected downstream activation");
+        this.recordGateDelivery(head, String(source.gate_run_id), downstream ? { nodeRunId: String(downstream.node_run_id) } : { terminal: true });
       }
       const timestamp = this.isoNow();
       const inserted = this.insertEvent(head, {
@@ -16375,6 +16497,55 @@ export class CollaborationStateDatabase {
     return row ? parseJson<{ facts: import("../agent-git-tools.js").AgentGitFacts }>(row.payload_json, { facts: {} }).facts : undefined;
   }
 
+  workflowGate(projectId: string, id: string): GateRun | undefined {
+    this.assertOpen();
+    const row = this.database.prepare(`SELECT payload_json FROM project_events WHERE project_id=?
+      AND event_type='workflow.gate.updated' AND json_extract(payload_json, '$.id')=? ORDER BY seq DESC LIMIT 1`)
+      .get(projectId, id) as Row | undefined;
+    return row ? JSON.parse(String(row.payload_json)) as GateRun : undefined;
+  }
+
+  workflowGates(projectId: string): GateRun[] {
+    this.assertOpen();
+    return (this.database.prepare(`SELECT payload_json FROM project_events WHERE project_id=? AND event_type='workflow.gate.updated'
+      AND seq IN (SELECT MAX(seq) FROM project_events WHERE project_id=? AND event_type='workflow.gate.updated'
+        GROUP BY json_extract(payload_json, '$.id')) ORDER BY seq`).all(projectId, projectId) as Row[])
+      .map(row => JSON.parse(String(row.payload_json)) as GateRun);
+  }
+
+  private recordGateDelivery(head: HeadRow, id: string, deliveredTo: NonNullable<GateRun["deliveredTo"]>): void {
+    const run = this.workflowGate(String(head.project_id), id);
+    if (!run) throw new Error("Gate delivery lost its original check");
+    if (run.status === "delivered") {
+      if (!isDeepStrictEqual(run.deliveredTo, deliveredTo)) throw new Error("Gate result already belongs to another downstream activation");
+      return;
+    }
+    requireGateChoice(run, run.origin, run.gate.id);
+    this.insertGateEvent(head, { ...run, version: run.version + 1, status: "delivered", deliveredTo, updatedAt: this.isoNow() });
+  }
+
+  private insertGateEvent(head: HeadRow, run: GateRun): void {
+    this.insertEvent(head, { projectId: run.origin.projectId, eventId: `evt_${randomUUID()}`,
+      requestId: `gate:${run.id}:${run.version}`, type: "workflow.gate.updated", ts: this.isoNow(),
+      agentId: run.executorAgentId, ...(run.evidence?.invocationId ?? run.origin.invocationId
+        ? { invocationId: run.evidence?.invocationId ?? run.origin.invocationId } : {}), payload: run as unknown as Record<string, unknown> });
+  }
+
+  saveWorkflowGate(run: GateRun, expectedVersion: number): GateRun {
+    return this.mutateProject(run.origin.projectId, undefined, head => {
+      const prior = this.workflowGate(run.origin.projectId, run.id);
+      if (prior?.version === run.version && isDeepStrictEqual(prior, run)) return { changed: false, value: prior };
+      if ((prior?.version ?? 0) !== expectedVersion || run.version !== expectedVersion + 1)
+        throw new Error(`Gate ${run.id} version conflict`);
+      if (prior && (!isDeepStrictEqual(prior.origin, run.origin) || prior.configurationHash !== run.configurationHash ||
+        prior.inputHash !== run.inputHash || !isDeepStrictEqual(prior.gate, run.gate) || !isDeepStrictEqual(prior.targets, run.targets)))
+        throw new Error("An active Gate's input and checking configuration are immutable");
+      if (prior?.status === "delivered") throw new Error("A delivered Gate result cannot be rewritten");
+      this.insertGateEvent(head, run);
+      return { changed: true, value: run };
+    }).value;
+  }
+
   eventById(projectId: string, eventId: string): CollaborationEvent | undefined {
     this.assertOpen();
     const row = this.database.prepare(`SELECT * FROM project_events WHERE project_id = ? AND event_id = ? LIMIT 1`)
@@ -18071,6 +18242,8 @@ export class CollaborationStateDatabase {
       ...(head.freeze_reason ? { freezeReason: String(head.freeze_reason) } : {}),
       git: parseJson<ProjectGitState>(head.git_state_json, { enabled: false, status: "disabled" }),
       nodeRuns: nodeRows.map(rowToNodeRun),
+      ...(Array.isArray((workflowSnapshot as AgentOrchestrationTemplate).gates) && (workflowSnapshot as AgentOrchestrationTemplate).gates!.length
+        ? { workflowGates: this.workflowGates(projectId) } : {}),
       groupRuns: groupRows.map(row => rowToGroupRun(row, tasks.filter(task => task.groupRunId === row.group_run_id).map(task => task.id))),
       ...(isScoped ? {
         scopedGroupRuns: scopedGroupRows.map(rowToScopedGroupRun),
@@ -18266,6 +18439,8 @@ export class CollaborationStateDatabase {
       recoveryLimit: Number(head.recovery_limit),
       git,
       nodeRuns: nodeRows.map(rowToNodeRun),
+      ...(Array.isArray((workflowSnapshot as AgentOrchestrationTemplate).gates) && (workflowSnapshot as AgentOrchestrationTemplate).gates!.length
+        ? { workflowGates: this.workflowGates(projectId) } : {}),
       groupRuns: groupRows.map((row) => rowToGroupRun(row, this.taskIds(String(row.group_run_id)))),
       ...(this.scopedConfiguration(projectId) ? { scopedConfiguration: this.scopedConfiguration(projectId) } : {}),
       ...(isScoped ? {
@@ -18474,7 +18649,7 @@ export class CollaborationStateDatabase {
                 kind: currentNode.node.kind,
                 ...(currentNode.node.kind === "agent"
                   ? { agentId: currentNode.node.agentId }
-                  : { groupId: currentNode.node.groupId }),
+                  : currentNode.node.kind === "collaboration" ? { groupId: currentNode.node.groupId } : { gateId: currentNode.node.gateId }),
                 workflowRevision: currentNode.workflowRevision,
                 runState: normalizeAuthoritativeRunState(currentNode.status),
                 rawStatus: currentNode.status,

@@ -1,3 +1,5 @@
+import { promisify } from "node:util";
+import type { GateRun } from "../../src/core/workflow-gate.js";
 import type { AsyncCollaborationStateStore } from "../../src/core/collaboration-state/database-worker.js";
 import { checkpointWorkflowRecovery } from "../../src/core/workflow-recovery.js";
 import { hasUserWorkflowPause } from "../../src/core/workflow-recovery.js";
@@ -79,6 +81,50 @@ afterEach(async () => {
 });
 
 describe("CollaborationRuntimeCoordinator", () => {
+  it.each(["code", "agent"] as const)("executes a root %s Gate using its real bound invocation and one downstream activation", async kind => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-root-gate-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();
+    const state = projectState("prj_abababababababababababababababab");
+    state.orchestration.input.target = kind === "code" ? "idea" : "quality";
+    state.orchestration.gates = [{ id: "quality", name: "Quality", verifier: kind === "code"
+      ? { kind, interpreter: "node", output: "json", code: 'console.log(JSON.stringify({score:76}))' }
+      : { kind, agentId: "review", instructions: "Review original input and actual evidence" },
+      ...(kind === "agent" ? { decisionAgentId: "writing" } : {}) }];
+    state.orchestration.routes = { ...state.orchestration.routes, idea: [{ kind: "strong", target: "quality" }],
+      quality: [{ kind: "weak", target: "execution" }, { kind: "weak", target: "writing" }],
+      execution: [{ kind: "strong", target: "finish" }] };
+    state.orchestration.termination.agent = "execution";
+    await storage.createProject(state);
+    const starts: string[] = [];
+    const coordinator = new CollaborationRuntimeCoordinator({ storage, gitFactory: options => happyGitFake(options, []),
+      residentLauncher: { open: async input => ({ pause: async () => {}, resume: async () => {}, close: async () => {},
+        submit: async turn => {
+          const request = input.request; starts.push(request.agent);
+          if (request.onWorkflowGateRequest) {
+            const record = await request.onWorkflowGateRequest({ operation: "read", gateId: "quality" }, "read") as GateRun;
+            if (kind === "code") {
+              const base = { schemaVersion: 1 as const, seq: 1, timestamp: new Date().toISOString(), invocationId: request.invocationId, harnessId: "fixture" };
+              await request.onLiveHarnessEvent!({ ...base, eventId: "started", kind: "tool.started", phase: "started",
+                tool: { name: "bash", toolType: "shell", status: "started", callId: "check", input: { command: record.command } } });
+              const actual = await promisify(execFile)("bash", ["-c", record.command!]);
+              await request.onLiveHarnessEvent!({ ...base, eventId: "completed", kind: "tool.completed", phase: "completed",
+                tool: { name: "bash", toolType: "shell", status: "completed", callId: "check", outputPreview: actual.stdout } });
+            } else if (request.agent === "review") {
+              await request.onWorkflowGateRequest({ operation: "report", gateId: "quality", result: { score: 76 } }, "actual-report");
+            }
+            if (kind === "code" || request.agent === "writing") await request.onWorkflowGateRequest({ operation: "choose", gateId: "quality", target: "execution" }, "choose");
+          }
+          return agentFixtureDelivery(input, turn, { handoff: "Bound Gate task returned" }, coordinator);
+        } }) } });
+    liveCoordinators.push(coordinator); await coordinator.initialize(); await coordinator.createProject(state, { enabled: true, provider: "github" });
+    await waitFor(() => state.status === "completed" || Boolean(state.lastError));
+    expect(state.lastError).toBeUndefined(); expect(state.status).toBe("completed");
+    expect(starts).toEqual(kind === "code" ? ["idea", "execution"] : ["review", "writing", "execution"]);
+    const projection = await coordinator.database().projectState(state.id);
+    expect(projection.nodeRuns.filter(node => node.node.kind === "gate")).toHaveLength(1);
+    expect(projection.nodeRuns.find(node => node.node.nodeId === "execution")?.optionalTask).toContain("Verifier result");
+  });
+
   it.each([false, true])("preserves Git tool error retryability in the durable journal (%s)", async retryable => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "git-tool-retryability-")); temporaryRoots.push(root);
     const storage = new ProjectStorage(root, new EventHub()); await storage.initialize();

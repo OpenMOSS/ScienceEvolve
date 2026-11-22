@@ -320,6 +320,7 @@ function adapterVisibleRequest(
   delete adapterSafeRequest.onThreadStarted;
   delete adapterSafeRequest.onOfficialHarnessEvent;
   delete adapterSafeRequest.onNativeUserInput;
+  delete adapterSafeRequest.onWorkflowGateRequest;
   delete adapterSafeRequest.onTokenUsage;
   delete adapterSafeRequest.onTokenUsagePersistenceFailure;
   delete adapterSafeRequest.onModelStreamEvent;

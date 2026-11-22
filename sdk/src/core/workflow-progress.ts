@@ -64,10 +64,11 @@ function outerNodeForAgent(template: AgentOrchestrationTemplate, agentId: string
     const group = scopedGroups.get(groupId);
     if (!group) return false;
     return group.workflow.nodes.some((node) => node.kind === "agent"
-      ? node.agentId === agentId : containsAgent(node.groupId));
+      ? node.agentId === agentId : node.kind === "collaboration" && containsAgent(node.groupId));
   };
   return workflowOuterNodeRefs(template).find((node) => {
     if (node.kind === "agent") return node.agentId === agentId;
+    if (node.kind === "gate") return false;
     return template.schemaVersion === 3 && template.scopedWorkflow
       ? containsAgent(node.groupId)
       : template.collaborations?.some((group) =>

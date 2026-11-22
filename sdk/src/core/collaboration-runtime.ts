@@ -1,3 +1,5 @@
+import { bindWorkflowGates, workflowGateInput } from "./workflow-gate-binding.js";
+import { gateRunId, requireGateChoice, gateFeedback, prepareGateRun, type GateJournal, type GateRun, type GateOrigin } from "./workflow-gate.js";
 import { failureAttemptHistory } from "./internal/shared/failure-attempt-history.js";
 import { MAX_TASK_REPAIR_WAKEUPS, nextTaskRepair, superviseTask, supervisionError, supervisionHandoff } from "./task-supervision.js";
 import { nativeBackgroundJobLifecycle } from "./harness-runtime/background-jobs.js";
@@ -328,6 +330,8 @@ export interface CollaborationProjectResumeOptions {
 }
 
 export interface CollaborationRuntimeLifecycle {
+  workflowGateJournal?(projectId: string): GateJournal;
+  workflowGateRuns?(projectId: string): Promise<GateRun[]>;
   initialize(): Promise<void>;
   initializeNewProjectState?(state: ProjectState): void | Promise<void>;
   serialProjectStateEnabled?(state: ProjectState): boolean | Promise<boolean>;
@@ -1450,6 +1454,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     return record;
   }
 
+  workflowGateJournal(projectId: string): GateJournal {
+    return { read: async id => this.database().workflowGate(projectId, id),
+      save: async (run, expected) => {
+        if (run.origin.projectId !== projectId) throw new Error("Gate belongs to another project");
+        return this.database().saveWorkflowGate(run, expected);
+      } };
+  }
+  async workflowGateRuns(projectId: string): Promise<GateRun[]> { return this.database().workflowGates(projectId); }
+
   async decorateSerialWorkflowNotifications(state: ProjectState, request: AgentRunRequest): Promise<void> {
     if (state.git?.enabled) return;
     this.assertWritable();
@@ -1464,6 +1477,24 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         invocationId: request.invocationId, executionId: task.id, kind: request.kind === "main" ? "main" : "worker" };
       await this.database().bindSerialProjectStateInvocation(identity);
       request.onProjectStateRequest = async input => this.requestSerialProjectState(state, identity, input);
+    }
+    if (state.orchestration.gates?.length) {
+      const journal = this.workflowGateJournal(state.id);
+      for (const id of state.pendingGateDeliveries ?? []) {
+        const run = await journal.read(id);
+        if (!run) throw new Error("Gate delivery lost its selected execution");
+        if (run.status !== "delivered") await journal.save({ ...run, version: run.version + 1, status: "delivered",
+          deliveredTo: { executionId: task.id, invocationId: request.invocationId, agentId: request.agent }, updatedAt: nowIso() }, run.version);
+      }
+      state.pendingGateDeliveries = undefined;
+      const active = state.activeWorkflowGate ? await journal.read(state.activeWorkflowGate.runId) : undefined;
+      if (state.activeWorkflowGate && !active) throw new Error("Active Gate execution is missing its retained original input");
+      const origin: GateOrigin = { projectId: state.id, executionId: task.id, sourceRunId: task.id,
+        nodeId: active?.gate.id ?? request.agent, agentId: request.agent, invocationId: request.invocationId,
+        workspacePath: request.workspacePath, workflowRevision: state.workflowRevision ?? 1, input: await workflowGateInput(request) };
+      state.workflowGateSource = origin;
+      await bindWorkflowGates(request, journal, origin, state.orchestration.routes,
+        active && state.activeWorkflowGate ? { run: active, stage: state.activeWorkflowGate.stage } : undefined);
     }
     request.onPrepareWorkflowAdjustmentInput = async input => {
       this.assertWritable();
@@ -4247,7 +4278,8 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       const sourceGroup = outbox.sourceGroupRunId
         ? projection.groupRuns.find((group) => group.id === outbox.sourceGroupRunId)
         : undefined;
-      const sourceAgentId = sourceGroup?.leaderAgentId ??
+      const sourceGate = sourceNode?.gateRunId ? await this.database().workflowGate(state.id, sourceNode.gateRunId) : undefined;
+      const sourceAgentId = sourceGroup?.leaderAgentId ?? sourceGate?.decisionAgentId ??
         (sourceNode?.node.kind === "agent" ? sourceNode.node.agentId : "main");
       const activatedByAgentId = routeActivationActor({
         ...(outbox.sourceGroupRunId ? { sourceGroupRunId: outbox.sourceGroupRunId } : {}),
@@ -4294,6 +4326,15 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       if (root) { await this.advanceScopedGroup(state, root, signal); return; }
       throw new CollaborationStateError("INVALID_STATE_TRANSITION",
         "Scoped active collaboration node has no persisted root group");
+    }
+    if (activeNode?.node.kind === "gate" && activeNode.gateRunId) {
+      const run = await this.database().workflowGate(state.id, activeNode.gateRunId);
+      if (run?.gate.verifier.kind === "code" && ["selected", "delivered"].includes(run.status) &&
+        !projection.executions.some(item => item.nodeRunId === activeNode.id)) {
+        await this.database().completeCodeGateNode(state.id, activeNode.id);
+        await this.drainPendingRoutes(state, signal);
+        return;
+      }
     }
     const activeGroup = projection.groupRuns.find((item) =>
       item.nodeRunId === projection.activeNodeRunId &&
@@ -4350,7 +4391,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         await this.saveState(state);
         return;
       }
-      const succeeded = projection.executions.find((item) =>
+      const succeeded = [...projection.executions].reverse().find((item) =>
         item.nodeRunId === projection.activeNodeRunId && !item.groupRunId && item.status === "succeeded"
       );
       if (succeeded) {
@@ -4364,11 +4405,11 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         return;
       }
       const activated = projection.nodeRuns.find((item) =>
-        item.id === projection.activeNodeRunId && item.node.kind === "agent" &&
+        item.id === projection.activeNodeRunId && item.node.kind !== "collaboration" &&
         !["completed", "failed", "cancelled"].includes(item.status)
       );
-      if (activated?.node.kind === "agent") {
-        if (activated.node.agentId === "main") {
+      if (activated && activated.node.kind !== "collaboration") {
+        if (activated.node.kind === "agent" && activated.node.agentId === "main") {
           // A transactionally accepted apply_workflow may advance S to the
           // next workflow revision before this already-active Main node is
           // completed. Re-running activateNode with the new revision would
@@ -4668,7 +4709,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const projection = await database.projectState(state.id);
     const node = projection.nodeRuns.find((item) => item.id === recovered.nodeRunId);
     const task = projection.tasks.find((item) => item.id === recovered.taskId);
-    if (!node || node.node.kind !== "agent" || !task) {
+    if (!node || node.node.kind === "collaboration" || !task) {
       throw new Error("Recovered standalone execution lost its node/task authority");
     }
     const assignment = task.assignment;
@@ -5835,7 +5876,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         !projection.scopedGroupActivationPreparations?.some(record => record.input.activationRequestId === input.activationRequestId))
         nodeId = reopened ? "main" : state.orchestration.input.target;
     }
-    const node = workflowNodeRefFor(state.orchestration, nodeId);
+    let node = workflowNodeRefFor(state.orchestration, nodeId);
     if (!node) throw new Error(`Unknown workflow node ${nodeId}`);
     const database = this.database();
     const enteredLoop = state.orchestration.loops?.find((loop) => loop.to === nodeId);
@@ -5861,11 +5902,40 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       } else await this.runGroupNode(state, node, input, signal, afterActivation);
       return;
     }
+    let activeGate: GateRun | undefined;
+    if (node.kind === "gate") {
+      const sourceRunId = input.sourceNodeRunId ?? input.activationRequestId;
+      activeGate = await database.workflowGate(state.id, gateRunId({ projectId: state.id, sourceRunId }, node.gateId));
+      if (!activeGate && initialProjectInput) {
+        const definition = state.orchestration.gates?.find(item => item.id === nodeId);
+        if (!definition || definition.verifier.kind !== "agent") throw new Error("Input requires a configured Agent Gate");
+        activeGate = await database.saveWorkflowGate(prepareGateRun(definition, (state.orchestration.routes[nodeId] ?? []).map(edge => edge.target),
+          { projectId: state.id, sourceRunId, nodeId: "input", workflowRevision: state.workflowRevision ?? 1,
+            input: { requirement: state.requirement, task: input.assignment, snapshotRef: input.inputSnapshotRef } }), 0);
+      }
+      if (!activeGate && input.sourceNodeRunId) {
+        const source = (await database.projectState(state.id)).nodeRuns.find(item => item.id === input.sourceNodeRunId);
+        const retained = source?.gateRunId ? await database.workflowGate(state.id, source.gateRunId) : undefined;
+        const definition = state.orchestration.gates?.find(item => item.id === nodeId);
+        if (retained && definition?.verifier.kind === "agent") {
+          const selected = requireGateChoice(retained, retained.origin, retained.gate.id);
+          if (selected.selectedTarget !== nodeId) throw new Error("Gate feedback targets a different successor");
+          activeGate = await database.saveWorkflowGate(prepareGateRun(definition, (state.orchestration.routes[nodeId] ?? []).map(edge => edge.target),
+            { projectId: state.id, sourceRunId, nodeId: retained.gate.id, workflowRevision: state.workflowRevision ?? 1,
+              input: { gateRunId: retained.id, feedback: gateFeedback(selected) } }), 0);
+        }
+      }
+      if (!activeGate) throw new Error(`Gate ${node.gateId} has no frozen input from this predecessor`);
+      if (activeGate.gate.verifier.kind === "code" && activeGate.status !== "result") requireGateChoice(activeGate, activeGate.origin, node.gateId);
+    }
+    const agentId = node.kind === "gate" ? (activeGate!.status === "result" ? activeGate!.decisionAgentId : activeGate!.executorAgentId) : node.agentId;
+    const executionNode = node.kind === "gate" ? { ...node, agentId } : node;
     const nodeRunId = stableRuntimeId("node", input.activationRequestId);
     const activated = await database.activateNode({
       projectId: state.id,
       nodeRunId,
-      node,
+      node: executionNode,
+      ...(activeGate ? { gateRunId: activeGate.id } : {}),
       activationRequestId: input.activationRequestId,
       inputSnapshotRef: input.inputSnapshotRef,
       optionalTask: input.assignment,
@@ -5876,7 +5946,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       requestId: input.activationRequestId
     });
     await afterActivation?.();
-    if (node.agentId === "main") {
+    if (activeGate?.gate.verifier.kind === "code" && ["selected", "delivered"].includes(activeGate.status)) {
+      await database.completeCodeGateNode(state.id, activated.nodeRun.id);
+      await this.publishProjection(state, await database.projectState(state.id));
+      await this.drainPendingRoutes(state, signal);
+      return;
+    }
+    if (node.kind === "agent" && agentId === "main") {
       await this.runManagementNode(
         state,
         activated.nodeRun,
@@ -5886,19 +5962,25 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       );
       return;
     }
+    await this.runStandaloneNode(state, activated.nodeRun, agentId, input, signal, initialProjectInput);
+  }
+
+  private async runStandaloneNode(state: ProjectState, nodeRun: NodeRun, agentId: string,
+    input: NodeActivationInput, signal: AbortSignal, initialProjectInput = false): Promise<void> {
+    const database = this.database();
     const executionId = stableRuntimeId("execution", input.activationRequestId);
     const taskId = stableRuntimeId("task", input.activationRequestId);
     const invocationId = stableRuntimeId("inv", input.activationRequestId);
     const executionBranch = `executions/${executionId}`;
     const worktreePath = executionWorktreePath(
-      this.#storage.projectDir(state.id), state.orchestration, node.agentId, executionId
+      this.#storage.projectDir(state.id), state.orchestration, agentId, executionId
     );
     const started = await database.startStandaloneExecution({
       projectId: state.id,
-      nodeRunId: activated.nodeRun.id,
+      nodeRunId: nodeRun.id,
       taskId,
       executionId,
-      agentId: node.agentId,
+      agentId: agentId,
       assignment: input.assignment,
       executionBranch,
       worktreePath,
@@ -5933,13 +6015,13 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
 
     const businessAssignment = await this.businessAssignmentWithOwnManagement(
       state,
-      node.agentId,
+      agentId,
       workflowMessagesText([{ sender: input.sourceAgentId ?? (initialProjectInput ? "user" : input.activatedByAgentId), body: input.assignment }]),
       signal
     );
     const inboxPath = await this.#storage.writeInbox(
       state,
-      node.agentId,
+      agentId,
       invocationId,
       businessAssignment
     );
@@ -5947,9 +6029,9 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const fallbackRequest: AgentRunRequest = {
       project: structuredClone(state),
       purpose: "workflow",
-      agent: node.agentId,
-      kind: node.agentId === "main" ? "main" : "worker",
-      permission: state.agents[node.agentId].permission,
+      agent: agentId,
+      kind: agentId === "main" ? "main" : "worker",
+      permission: state.agents[agentId].permission,
       invocationId,
       inboxPath,
       projectPath: this.#storage.projectDir(state.id),
@@ -5960,7 +6042,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
       availableSkillPaths: [],
       runtimePath: executionRuntimePath,
       executionContext: {
-        nodeRunId: activated.nodeRun.id,
+        nodeRunId: nodeRun.id,
         taskId,
         executionId,
         role: "delivery",
@@ -5971,7 +6053,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
     const request = this.#executionInputBuilder
       ? await this.#executionInputBuilder.build({
           state,
-          agentId: node.agentId,
+          agentId: agentId,
           execution,
           executionContext: fallbackRequest.executionContext!,
           assignment: businessAssignment,
@@ -6002,18 +6084,18 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         residentLaunchProtocol: "trusted-supervisor-v1"
       }
     });
-    const workerRouteCandidates = this.workerRouteCandidates(state, node.agentId);
+    const workerRouteCandidates = nodeRun.node.kind === "gate" ? [] : this.workerRouteCandidates(state, agentId);
     const resident = await launcher.open({
       request,
       executionRuntimePath,
       filesystemAuthorityInput: await this.filesystemAuthorityInput(state),
       signal,
-      onTrace: this.traceSink(state, node.agentId, invocationId),
+      onTrace: this.traceSink(state, agentId, invocationId),
       turnRequestFactory: this.turnRequestFactory(state, request, execution),
       controlScope: workerRouteCandidates.length > 0
         ? {
           projectId: state.id,
-          nodeRunId: activated.nodeRun.id,
+          nodeRunId: nodeRun.id,
           executionId: execution.id,
           agentId: execution.agentId,
           ownershipEpoch: execution.ownershipEpoch,
@@ -6023,7 +6105,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         }
         : {
             projectId: state.id,
-            nodeRunId: activated.nodeRun.id,
+            nodeRunId: nodeRun.id,
             executionId: execution.id,
             agentId: execution.agentId,
             ownershipEpoch: execution.ownershipEpoch,
@@ -6031,7 +6113,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           },
       controlAuthorityFactory: this.standaloneControlAuthorityFactory(
         state,
-        activated.nodeRun.id,
+        nodeRun.id,
         execution,
         workerRouteCandidates
       )
@@ -6050,7 +6132,7 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
         prompt: businessAssignment
       }, (await this.executionActivityAuthority(state.id, execution)));
       await this.persistArtifactPublicationIntents(state, execution, result);
-      const routeDecision = await this.persistStandaloneRouteDecision(state, execution, result);
+      const routeDecision = nodeRun.node.kind === "gate" ? undefined : await this.persistStandaloneRouteDecision(state, execution, result);
       // A completed turn only advances to the Git gate. S remains the sole
       // authority that can mark the execution/node successful.
       const outcome = await this.integrateStandalone(
@@ -10246,6 +10328,33 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           ownerExecutionId: preparation.executionId });
       } });
     };
+    if (state.orchestration.gates?.length && request.executionContext) {
+      const database = this.database(), ctx = request.executionContext;
+      if (!ctx) throw new Error("Gate invocation requires its actual execution context");
+      const projection = await database.projectState(state.id);
+      const scoped = ctx.role !== "leader" && ctx.groupRunId ? await database.scopedExecution(state.id, ctx.executionId) : undefined;
+      const finalGroup = !scoped && ctx.groupRunId ? await database.scopedGroupRun(state.id, ctx.groupRunId) : undefined;
+      const arrival = scoped ? projection.scopedArrivals?.find(item => item.requestId === scoped.arrivalRequestId)
+        : finalGroup?.parentArrivalRequestId ? projection.scopedArrivals?.find(item => item.requestId === finalGroup.parentArrivalRequestId) : undefined;
+      const nodeRun = projection.nodeRuns.find(item => item.id === ctx.nodeRunId);
+      // A group hands off through its final integrator. Management decisions
+      // on behalf of a Worker retain that Worker's already-bound Gate input.
+      const businessSource = ctx.role === "leader"
+        ? "routeScopeId" in ctx && nodeRun?.node.kind === "agent" && nodeRun.node.agentId === "main"
+        : Boolean(scoped || ctx.role === "final-integration" || !ctx.groupRunId);
+      if (businessSource) {
+      const gateId = arrival?.gateRunId ?? nodeRun?.gateRunId;
+      const active = gateId ? await database.workflowGate(state.id, gateId) : undefined;
+      if (gateId && !active) throw new Error("Gate invocation lost its frozen checking configuration");
+      const origin: GateOrigin = { projectId: state.id, executionId: ctx.role === "leader" ? ctx.routeScopeId : ctx.executionId,
+        sourceRunId: arrival?.requestId ?? ctx.nodeRunId, nodeId: arrival?.targetNodeId ?? nodeRun!.node.nodeId,
+        agentId: request.agent, invocationId: request.invocationId, workspacePath: request.workspacePath,
+        workflowRevision: state.workflowRevision ?? 1, ...(arrival ? { scopeId: arrival.groupRunId } : {}), input: await workflowGateInput(request) };
+      const routes = arrival ? (await database.scopedGroupWorkflow(state.id, arrival.groupRunId)).routes : state.orchestration.routes;
+      await bindWorkflowGates(request, this.workflowGateJournal(state.id), origin, routes,
+        active ? { run: active, stage: active.gate.verifier.kind === "code" || active.decisionAgentId !== active.executorAgentId && request.agent === active.decisionAgentId ? "decision" : "check" } : undefined);
+      }
+    }
     request.onPendingControlResults = async (inputId, session) => {
       this.assertWritable();
       await captureKnownAgentGitResults(this.database(), state.id);
@@ -10888,6 +10997,22 @@ export class CollaborationRuntimeCoordinator implements CollaborationRuntimeLife
           loopTransition = { id: candidate.id, iterations, batch, totalIterations, exhausted: candidate.exhausted };
         }
       }
+    } else if (node.node.kind === "gate") {
+      const record = node.gateRunId && await database.workflowGate(state.id, node.gateRunId);
+      if (!record) throw new Error("Gate node lost its original result journal");
+      if (record.status === "result" && record.decisionAgentId !== execution.agentId) {
+        await this.runStandaloneNode(state, node, record.decisionAgentId, {
+          activationRequestId: `gate-decision:${record.id}`, inputSnapshotRef: `gate:${record.id}`,
+          assignment: gateFeedback(record), activatedByAgentId: record.executorAgentId,
+          sourceNodeRunId: node.id, sourceAgentId: record.executorAgentId
+        }, signal);
+        return { terminal: true };
+      }
+      const chosen = requireGateChoice(record, record.origin, node.node.gateId);
+      target = chosen.selectedTarget;
+      completionOutput = gateFeedback(chosen);
+      route = chosen.targets.length === 1 && !chosen.gate.rules ? { kind: "fixed", targetNodeId: target }
+        : { kind: "weak", targetNodeId: target, selectedByAgentId: chosen.decisionAgentId, decisionRequestId: chosen.id };
     } else if (state.orchestration.loops?.some((loop) => loop.from === node.node.nodeId)) {
       // A finite root Loop is a graph-level transition. It takes precedence
       // over the source node's configured edge and is recorded with the route

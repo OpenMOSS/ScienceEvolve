@@ -330,7 +330,7 @@ function preview(request: ContextInput, identity: WorkflowContextRequest, nodes:
     `Current Agent: ${request.agent}; role: ${identity.scope === "global" ? "global Main" : "group Leader"}; scope: ${identity.scope === "global" ? "project" : identity.groupId ?? identity.groupRunId}; group run: ${identity.groupRunId ?? request.executionContext?.groupRunId ?? "none"}.`,
     `Decision source node: ${sourceNodeId}; purpose/wake reason: ${identity.purpose ?? (identity.scope === "global" ? state.pendingMainDecision?.reason : undefined) ?? "workflow management"}.`,
     `Legal route candidates for this turn (exact node IDs): ${JSON.stringify(candidates)}. An empty list grants no routing target; planning/control tools have their own scope.`,
-    `Nodes (${nodes.length} total):\n${nodes.map(node => node.kind === "agent" ? `- ${node.nodeId} => Agent ${node.agentId}` : `- ${node.nodeId} => Group ${node.groupId}`).join("\n")}`,
+    `Nodes (${nodes.length} total):\n${nodes.map(node => node.kind === "agent" ? `- ${node.nodeId} => Agent ${node.agentId}` : node.kind === "collaboration" ? `- ${node.nodeId} => Group ${node.groupId}` : `- ${node.nodeId} => Gate ${node.gateId}`).join("\n")}`,
     `Connections (${connections.length} total):\n${connections.join("\n") || "No fixed internal routes; use the current group planning contract."}`,
     groups?.length ? `Group interfaces and hierarchy:\n${groups.join("\n")}` : undefined,
     loops?.length ? `Loops:\n${loops.map(loop => `- ${loop.id}: ${loop.from} -> ${loop.to}; batch=${loop.maxIterations}; exit=${loop.exitTo}`).join("\n")}` : undefined,

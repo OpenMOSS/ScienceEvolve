@@ -1,3 +1,7 @@
+import { CollaborationRuntimeCoordinator } from "../../src/core/collaboration-runtime.js";
+import { promisify } from "node:util";
+import { execFile } from "node:child_process";
+import type { GateRun } from "../../src/core/workflow-gate.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ZodError } from "zod";
 import { promises as fs } from "node:fs";
@@ -162,6 +166,44 @@ function purposeOnlyHarness(
 }
 
 describe("public Main orchestration state machine", () => {
+  it.each(["code", "agent"] as const)("runs a serial %s Gate with the original input and no implicit Main handoff", async kind => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "scienceevolve-serial-gate-")); temporaryRoots.push(root);
+    const storage = new ProjectStorage(root, new EventHub());
+    const coordinator = new CollaborationRuntimeCoordinator({ storage });
+    const runner = new ScriptedRunner(async request => {
+      if (request.agent !== "main" && request.onWorkflowGateRequest) {
+        const record = await request.onWorkflowGateRequest({ operation: "read", gateId: "quality" }, "read") as GateRun;
+        if (kind === "code") {
+          const base = { schemaVersion: 1 as const, seq: 1, timestamp: new Date().toISOString(), invocationId: request.invocationId, harnessId: "fixture" };
+          await request.onLiveHarnessEvent!({ ...base, eventId: "started", kind: "tool.started", phase: "started",
+            tool: { name: "bash", toolType: "shell", status: "started", callId: "actual-check", input: { command: record.command } } });
+          const actual = await promisify(execFile)("bash", ["-c", record.command!]);
+          await request.onLiveHarnessEvent!({ ...base, eventId: "completed", kind: "tool.completed", phase: "completed",
+            tool: { name: "bash", toolType: "shell", status: "completed", callId: "actual-check", outputPreview: actual.stdout } });
+        } else await request.onWorkflowGateRequest({ operation: "report", gateId: "quality", result: "Negative feedback remains useful" }, "actual-report");
+      }
+      if (request.agent === "main") return mainResult(request, decision("finish", "Completed the actual configured path"));
+      return { handoff: workerResult(request.agent).markdown };
+    });
+    const orchestrator = new Orchestrator(storage, new SkillCatalog([builtinSkillRoot]), runner,
+      { retryBaseMs: 1, retryMaxMs: 1, agentConcurrency: 2 }, undefined, coordinator);
+    liveOrchestrators.push(orchestrator); await orchestrator.initialize();
+    const workflow = twoAgentOrchestration({ input: kind === "code" ? "worker" : "quality", termination: kind === "code" ? "review" : "worker", workerRoutes: [{ kind: "strong", target: kind === "code" ? "quality" : "finish" }] });
+    workflow.agents.push({ name: "review", template: "review" });
+    workflow.routes.review = [{ kind: "strong", target: kind === "code" ? "finish" : "worker" }];
+    workflow.gates = [{ id: "quality", name: "Quality", verifier: kind === "code" ? { kind, interpreter: "node", output: "text", code: 'console.log("Negative feedback remains useful")' }
+      : { kind, agentId: "review", instructions: "Assess the original user input" } }];
+    workflow.routes.quality = [{ kind: "strong", target: kind === "code" ? "review" : "worker" }];
+    const project = await orchestrator.createProject(projectInput(workflow));
+    await orchestrator.waitForIdle(project.id);
+    const result = await orchestrator.getProject(project.id);
+    expect(result?.status).toBe("completed");
+    expect(result?.workflowGates?.filter(run => run.status === "delivered")).toHaveLength(1);
+    expect(result?.workflowGates?.filter(run => run.evidence)).toHaveLength(1);
+    expect(runner.calls.map(call => call.agent)).toEqual(kind === "code" ? ["worker", "review", "main"] : ["review", "worker", "main"]);
+    expect(await fs.readFile(runner.calls[1].inboxPath, "utf8")).toContain("Negative feedback remains useful");
+  });
+
   it.each([false, true])("workflow continuity: restores the exact later Worker after failed commit rollback and retains a concurrent user Pause (%s)", async userPause => {
     let workerInvocation = "", commitFailed = false, rollbackFailed = false;
     const { orchestrator, runner } = await harness(async request => {
