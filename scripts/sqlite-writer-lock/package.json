@@ -1,0 +1,15 @@
+{
+  "name": "scienceevolve-sqlite-writer-lock-validation",
+  "private": true,
+  "type": "module",
+  "description": "Isolated S0 native lock validation; not the collaboration runtime.",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 lock.test.mjs"
+  },
+  "dependencies": {
+    "fs-native-extensions": "1.5.3"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
