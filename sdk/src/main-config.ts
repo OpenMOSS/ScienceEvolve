@@ -15,6 +15,7 @@ export type MainWorkflowAgentConfig = Omit<AgentConfig,
 export type MainProjectGitInput = Omit<ProjectGitInput, "accountId">;
 /** Credential-free definition validated by the pinned main kernel, not the legacy SDK schema. */
 export interface MainWorkflowConfig {
+  searchTree?: import("./core/search-tree.js").SearchTreeConfig;
   agents: Record<string, MainWorkflowAgentConfig>;
   orchestration: NormalizedAgentOrchestrationTemplate;
   git: MainProjectGitInput;
@@ -30,6 +31,7 @@ export function defaultMainWorkflowConfig(): MainWorkflowConfig {
 }
 
 const envelope = z.object({
+  searchTree: z.unknown().optional(),
   agents: z.unknown().optional(), orchestration: z.unknown().optional(), git: z.unknown().optional(),
   skillDefinitions: z.unknown().optional(), mcpDefinitions: z.unknown().optional(),
   inputs: z.array(z.union([
@@ -63,6 +65,7 @@ export function validateMainWorkflowConfig(input: unknown, options: MainWorkflow
     }
   }
   const parsed = createProjectSchema.parse({ title: "SDK validation", requirement: "SDK validation", ...{
+    searchTree: source.searchTree,
     agents: source.agents && typeof source.agents === "object" && !Array.isArray(source.agents)
       ? Object.fromEntries(Object.entries(source.agents).map(([name, agent]) => [name,
         agent && typeof agent === "object" && !Array.isArray(agent) ? withoutLegacyAgentProxy(agent) : agent]))
@@ -95,6 +98,7 @@ export function validateMainWorkflowConfig(input: unknown, options: MainWorkflow
     }
   }
   return { agents, orchestration, git: parsed.git,
+    ...(parsed.searchTree ? { searchTree: parsed.searchTree } : {}),
     ...(inputs === undefined ? {} : { inputs }),
     ...(source.inputDescription === undefined ? {} : { inputDescription: source.inputDescription }),
     ...(parsed.skillDefinitions === undefined ? {} : { skillDefinitions: parsed.skillDefinitions }),

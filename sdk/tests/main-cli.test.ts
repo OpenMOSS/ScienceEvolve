@@ -45,6 +45,19 @@ function actualKernelApi(onRun?: (request: Parameters<AgentRunner["run"]>[0]) =>
 }
 
 describe("main CLI transport with actual main Git-off kernel/SQLite, simulated Agent (no network)", () => {
+  it("passes search-tree requests to the local run API and reports its result", async () => {
+    const root = await directory(), requestFile = path.join(root, "tree-request.json");
+    await fs.writeFile(requestFile, JSON.stringify({ operation: "overview" }));
+    const searchTree = vi.fn(async () => ({ revision: "a".repeat(40), nodes: [] }));
+    const close = vi.fn(async () => {}), getRun = vi.fn(async () => ({ searchTree }));
+    const api = { ...mainApi, createMainResearchSdk: async () => ({ getRun, close }) };
+    const io = output();
+    expect(await runMainCli(["run", "search-tree", "prj_fixture", requestFile], options(root), { api, ...io })).toBe(0);
+    expect(getRun).toHaveBeenCalledWith("prj_fixture");
+    expect(searchTree).toHaveBeenCalledWith({ operation: "overview" });
+    expect(io.entries()[0]).toMatchObject({ type: "run.search-tree", runId: "prj_fixture", result: { nodes: [] } });
+    expect(close).toHaveBeenCalled();
+  });
   it("rejects removed Hermes inputs before opening a runtime or importing a gateway", async () => {
     const root = await directory(), create = vi.fn();
     const services = { api: { ...mainApi, createMainResearchSdk: create }, ...output() };

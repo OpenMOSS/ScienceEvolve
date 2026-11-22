@@ -15,3 +15,5 @@ export type { MainWorkspaceDelivery } from "./main-git-workspace.js";
 export type { MainSourceWorkspaceOptions } from "./main-source-workspace.js";
 export type { MainProjectInput } from "./main-project-inputs.js";
 export type { MainHarnessGatewayImportOptions } from "./main-harness-gateway.js";
+
+export type { SearchTreeConfig, SearchTreeNode, SearchTreeRequest, SearchTreeSnapshot } from "./core/search-tree.js";

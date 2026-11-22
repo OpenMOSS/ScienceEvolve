@@ -21,6 +21,7 @@ Usage: scievolve <command> [--engine main] --data-dir <absolute-dedicated-direct
             [--inputs FILE_OR_DIRECTORY | --inputs-file JSON_ARRAY_FILE] [--input-description TEXT]
             [--source-workspace <absolute-source-directory> [--source-files <json-array-file>]]
   run list | show ID | events ID [--after-seq N]
+  run search-tree ID REQUEST_JSON
   run resume ID | retry-git ID
   run pause ID | cancel ID
   run export ID --output <absolute-new-directory>
@@ -316,6 +317,10 @@ export async function runMainCli(positionals, options, services = {}) {
         line({ type: "run.started", engine: "main", sourceCommit: sdk.sourceCommit, runtimeRevision: sdk.runtimeRevision, runId: run.id });
         return foreground(run, 0, lifecycle);
       });
+    } else if (action === "search-tree") {
+      only([], 2, args);
+      const request = JSON.parse(await readFile(path.resolve(args[1]), "utf8"));
+      await withSdk(async sdk => line({ type: "run.search-tree", runId: args[0], result: await (await sdk.getRun(args[0])).searchTree(request) }));
     } else if (action === "list") {
       only([], 0, args);
       await withSdk(async (sdk) => line({ type: "run.list", engine: "main", runs: await sdk.listRuns() }));

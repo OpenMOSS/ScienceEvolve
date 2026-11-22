@@ -18,6 +18,14 @@ function grouped() {
 }
 
 describe("main workflow config uses main's actual contracts", () => {
+  it("round-trips the optional search tree through shared validation and binding", () => {
+    const searchTree = { root: { name: "Root" }, directions: [{ id: "quality", kind: "direction", name: "Quality", parentId: "root" }] };
+    const config = validateMainWorkflowConfig({ searchTree });
+    expect(bindMainWorkflowConfig(config, { harness: "pi", model: "fixture" }).searchTree).toEqual(searchTree);
+    expect(validateMainWorkflowConfig(JSON.parse(JSON.stringify(config))).searchTree).toEqual(searchTree);
+    expect(() => validateMainWorkflowConfig({ searchTree: { ...searchTree, directions: [{ ...searchTree.directions[0], parentId: "quality" }] } })).toThrow("cycle");
+    expect(validateMainWorkflowConfig({})).not.toHaveProperty("searchTree");
+  });
   it("preserves explicit SII selection without inferring tools from Skills or compute permission", () => {
     const config = validateMainWorkflowConfig({ agents: {
       main: { experimentMcp: true },

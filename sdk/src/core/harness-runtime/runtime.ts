@@ -1434,7 +1434,14 @@ export class HarnessRuntimeFacade implements AgentRunner, AdapterSmokeProbeRunne
   }
 
   prepareAgentContext(request: AgentRunRequest, inputs: InvocationInputs): Promise<InvocationInputs> {
-    return prepareWorkflowContext(request, { ...inputs, ...(request.contextBackgrounds ? { contextBackgrounds: request.contextBackgrounds } : {}),
+    const contextRequest = request.project.searchTree ? { ...request, contextSources: [...(request.contextSources ?? []), {
+      key: "search-tree", label: "Project search tree", records: [{
+        kind: "search-tree", name: request.project.searchTree.root.name,
+        tool: "search_tree", query: { operation: "overview" },
+        instructions: "Read the current direction index, then only relevant nodes/subtrees/history. Candidate records are attributed claims; registration does not affect Workflow routing or completion."
+      }]
+    }] } : request;
+    return prepareWorkflowContext(contextRequest, { ...inputs, ...(request.contextBackgrounds ? { contextBackgrounds: request.contextBackgrounds } : {}),
       ...(request.additionalContextIndexes ? { additionalContextIndexes: request.additionalContextIndexes } : {}) },
       undefined, { lookup: this.contextIndexes.lookup(request.project.id, inputs.projectPath) });
   }

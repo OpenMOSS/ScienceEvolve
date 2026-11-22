@@ -254,6 +254,7 @@ export class ControlActionRejectedError extends Error {
 }
 
 export interface ControlActionServiceOptions {
+  searchTree?: (request: unknown) => Promise<unknown>;
   nativeJobScope?: NativeJobScope;
   projectId: string;
   agent: AgentName;
@@ -429,6 +430,19 @@ export class ControlActionService {
       () => undefined
     );
     return operation;
+  }
+
+  async requestSearchTree(capability: string, value: unknown): Promise<unknown> {
+    this.assertCapability(capability, true);
+    const operation = this.writeQueue.then(async () => {
+      this.assertCapability(capability, true);
+      this.options.signal?.throwIfAborted();
+      if (!this.options.searchTree) throw new Error("Search tree is unavailable for this invocation");
+      return this.options.searchTree(value);
+    });
+    this.writeQueue = operation.then(() => {}, () => {});
+    this.activeRequests.add(operation);
+    try { return await operation; } finally { this.activeRequests.delete(operation); }
   }
 
   async requestProjectState(capability: string, value: unknown): Promise<unknown> {
@@ -618,6 +632,7 @@ export interface ControlActionBridge {
 }
 
 interface BridgeRequest {
+  searchTreeRequest?: unknown;
   capability?: unknown;
   callId?: unknown;
   action?: unknown;
@@ -737,6 +752,13 @@ async function handleBridgeLine(
   socket.once("close", clearPending);
   try {
     const request = JSON.parse(line) as BridgeRequest;
+    if (request.searchTreeRequest !== undefined) {
+      if (typeof request.capability !== "string" || request.action !== undefined || request.stateRequest !== undefined || request.backgroundJob !== undefined)
+        throw new Error("Search tree requires one authenticated request");
+      const stateResult = await service.requestSearchTree(request.capability, request.searchTreeRequest);
+      if (!socket.destroyed && !socket.writableEnded) socket.write(`${JSON.stringify({ ok: true, stateResult })}\n`);
+      return;
+    }
     if (request.backgroundJob !== undefined) {
       if (typeof request.capability !== "string" || request.action !== undefined || request.stateRequest !== undefined) throw new Error("Background job request requires its sole live capability");
       const stateResult = await service.requestBackgroundJob(request.capability, request.backgroundJob);

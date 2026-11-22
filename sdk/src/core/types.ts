@@ -549,6 +549,7 @@ export interface AgentConfigPreset {
 }
 
 export interface SavedResearchTask {
+  searchTree?: import("./search-tree.js").SearchTreeConfig;
   schemaVersion: 2;
   kind: "scienceevolve-saved-research-task";
   id: string;
@@ -1210,6 +1211,8 @@ export interface GitRetrySchedulingTimeline {
 }
 
 export interface ProjectState {
+  /** Absence disables search-tree storage, tools and context. Fixed at creation. */
+  searchTree?: import("./search-tree.js").SearchTreeConfig;
   /** Set by new-project creation only; opening old projects never opts them in. */
   formalStateProtocol?: "project-state-v1";
   /** Task-owned, immutable versioned Skill and stdio MCP source bundles. */
@@ -1564,6 +1567,7 @@ export interface TimelineEvent {
   coordinatorEpoch?: number;
   ts: string;
   type:
+    | "search_tree.updated"
     | "project.created"
     | "configuration.locked"
     | "project.completed"
@@ -1993,6 +1997,7 @@ export interface ControlActionEnvelope {
 }
 
 export interface ControlMcpRequest {
+  searchTree?: boolean;
   /** Built-in collaboration capability, independent of business tool selection. */
   projectState?: boolean;
   nativeBackgroundJobs?: boolean;

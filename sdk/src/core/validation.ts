@@ -1,3 +1,4 @@
+import { searchTreeConfigSchema } from "./search-tree.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import {
@@ -693,6 +694,7 @@ export function normalizeNewGitOrchestration(value: unknown): NormalizedAgentOrc
 }
 
 export const createProjectSchema = z.object({
+  searchTree: searchTreeConfigSchema.optional(),
   title: z.string().trim().min(1).max(160),
   requirement: z.string().trim().min(1).max(100_000),
   sourceSavedTaskId: z.string().regex(/^task_[a-f0-9]{32}$/).optional(),
@@ -717,6 +719,7 @@ export const modelSelectionSchema = z.object({
 }).strict();
 export const updateAgentModelsSchema = modelSelectionSchema;
 export const savedResearchTaskInputSchema = z.object({
+  searchTree: searchTreeConfigSchema.optional(),
   title: z.string().trim().min(1).max(160),
   requirement: z.string().trim().min(1).max(100_000),
   agents: partialAgentMap.optional(),

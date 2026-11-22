@@ -50,6 +50,18 @@ async function fixture(run?: AgentRunner["run"], gatewayOptions: GatewayStoreOpt
   return { sdk, runtime, root, gateway };
 }
 describe("explicit main SDK facade (no real model/GitHub)", () => {
+  it("creates and queries the optional Git-backed search tree without a Web server", async () => {
+    const { sdk, gateway } = await fixture();
+    const workflow = { ...mainOnly(), searchTree: { root: { name: "Root" }, directions: [] } };
+    const run = await sdk.start({ title: "Search tree", requirement: "Keep exploration records separate from task delivery.", workflow,
+      gatewayBindings: { defaultGatewayId: gateway.id } });
+    await run.wait();
+    expect((await run.snapshot()).searchTree).toEqual(workflow.searchTree);
+    const initial = await run.searchTree({ operation: "overview" }) as { revision: string };
+    await run.searchTree({ operation: "put", requestId: "direction", expectedRevision: initial.revision,
+      node: { id: "speed", kind: "direction", name: "Speed", parentId: "root" } });
+    expect(await (await sdk.getRun(run.id)).searchTree({ operation: "overview" })).toMatchObject({ nodes: [{ id: "speed" }] });
+  });
   it("automatically detects model reasoning after saving a gateway through the SDK facade", async () => {
     const modelFetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));

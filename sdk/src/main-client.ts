@@ -21,7 +21,7 @@ import { prepareMainProjectInputs, type MainProjectInput } from "./main-project-
 export type { MainResearchSdkOptions } from "./main-options.js";
 
 const snapshotKeys = [
-  "id", "title", "requirement", "status", "phase", "createdAt", "updatedAt", "completedAt", "cancelledAt",
+  "searchTree", "id", "title", "requirement", "status", "phase", "createdAt", "updatedAt", "completedAt", "cancelledAt",
   "inputFiles", "inputDescription",
   "currentAgent", "queuedAgent", "eventSeq", "completionGeneration", "lastError", "userIntervention",
   "agentProgress", "overallProgress", "latestHandoff", "artifacts", "display", "tokenUsage",
@@ -39,6 +39,7 @@ export type MainRunSnapshot = Pick<ProjectView, typeof snapshotKeys[number]> & {
 export interface MainEventOptions { afterSeq?: number; signal?: AbortSignal; follow?: boolean }
 export interface MainResearchRun {
   readonly id: string;
+  searchTree(request: import("./core/search-tree.js").SearchTreeRequest): Promise<unknown>;
   snapshot(): Promise<MainRunSnapshot>;
   wait(options?: { signal?: AbortSignal }): Promise<MainRunSnapshot>;
   events(options?: MainEventOptions): AsyncIterable<TimelineEvent>;
@@ -163,7 +164,7 @@ export async function createMainSdkClient(runtime: MainApplicationRuntime, redac
   }
   function handle(id: string): MainResearchRun {
     return {
-      id, snapshot: () => operation(() => read(id)),
+      id, searchTree: request => operation(() => runtime.orchestrator.searchTree(id, request)), snapshot: () => operation(() => read(id)),
       async wait(options = {}) {
         assertOpen();
         const signal = AbortSignal.any([stopped.signal, ...(options.signal ? [options.signal] : [])]);

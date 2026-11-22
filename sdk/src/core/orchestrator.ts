@@ -1,3 +1,4 @@
+import { SearchTreeStore, searchTreeRequestSchema } from "./search-tree.js";
 import { summarizeFailureAttempts } from "./internal/shared/failure-attempt-history.js";
 import type { ProjectAgentQueueSource } from "./agent-queue-view.js";
 import { beginWorkflowRecovery, checkpointWorkflowRecovery, finishWorkflowRecovery, hasUserWorkflowPause } from "./workflow-recovery.js";
@@ -1045,6 +1046,7 @@ export class Orchestrator {
     const state: ProjectState = {
       id: projectId,
       formalStateProtocol: "project-state-v1",
+      ...(parsed.searchTree ? { searchTree: parsed.searchTree } : {}),
       skillDefinitions,
       mcpDefinitions,
       title: parsed.title,
@@ -1130,6 +1132,14 @@ export class Orchestrator {
     // Bind the selected workspace first, then install original inputs before
     // persistence/queueing so neither ordinary nor Git Agents race the copy.
     await host?.initialInputs?.install(projectId);
+    if (state.searchTree) {
+      for (const file of state.searchTree.root.inputFiles ?? []) {
+        if (!state.inputFiles?.includes(file)) throw new Error(`Search tree initial input is not an uploaded file: ${file}`);
+      }
+      const workspace = await this.storage.roleWorkspace(state.id, "main", "inv_search_tree_initial");
+      await new SearchTreeStore(state.id, this.storage.projectDir(state.id), state.git?.enabled === true)
+        .initialize(state.searchTree, path.join(workspace, "user_inputs"));
+    }
     await this.storage.createProject(state);
     const runtime: RuntimeProject = {
       state,
@@ -1170,6 +1180,18 @@ export class Orchestrator {
       this.startLoop(runtime);
     }
     return await this.projectView(state);
+  }
+
+  async searchTree(projectId: string, value: unknown): Promise<unknown> {
+    const runtime = await this.requireRuntime(projectId);
+    if (!runtime.state.searchTree) throw new Error("Search tree is not enabled for this project");
+    const request = searchTreeRequestSchema.parse(value);
+    const result = await new SearchTreeStore(projectId, this.storage.projectDir(projectId), runtime.state.git?.enabled === true)
+      .request({ kind: "user" }, request);
+    if (request.operation === "put" || request.operation === "delete") await this.emit(runtime, {
+      type: "search_tree.updated", message: "User explicitly updated search tree metadata", data: { requestId: request.requestId }
+    });
+    return result;
   }
 
   async retryGitInitialization(projectId: string): Promise<ProjectView> {
@@ -3847,9 +3869,16 @@ export class Orchestrator {
         { encoding: "utf8", mode: 0o600, flag: "wx" }
       );
       if (formalSerialState) control.nativeBackgroundJobs = true;
+      if (state.searchTree) control.searchTree = true;
       controlStateVersion = control.stateVersion;
       controlCapabilityHash = control.capabilityHash;
       const controlService = new ControlActionService({
+        ...(state.searchTree ? { searchTree: async (input: unknown) => {
+          if (state.activeInvocationId !== invocationId || state.currentAgent !== agent || state.status !== "running")
+            throw new Error("Search tree invocation is no longer active");
+          return new SearchTreeStore(state.id, projectPath, state.git?.enabled === true).request({ kind: "agent",
+            agentId: agent, invocationId, executionId: agentExecution.executionId }, input);
+        } } : {}),
         nativeJobScope: { projectId: state.id, projectPath, workspacePath, agentId: agent, invocationId },
         projectId: state.id,
         agent,
