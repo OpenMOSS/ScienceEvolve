@@ -11,6 +11,7 @@ import { credentialFreeAgentConfiguration } from "./scoped-agent-configuration.j
 import { workflowAdjustmentRuntimeImpact } from "./workflow-adjustment-impact.js";
 import { InvocationPerformanceTracker, recordTerminalPerformance } from "./invocation-performance.js";
 import { promises as fs } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { CollaborationStateError } from "./collaboration-state/errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -1207,6 +1208,7 @@ export class Orchestrator {
     orchestration: AgentOrchestrationTemplate,
     options: {
       preserveGatewaySnapshots?: boolean;
+      currentAgents?: AgentConfigMap;
     } = {}
   ): Promise<void> {
     const gatewayStore = this.gatewayStore;
@@ -1315,7 +1317,12 @@ export class Orchestrator {
           continue;
         }
         let lockedReasoning: ReturnType<typeof resolveGatewayReasoning>;
-        let currentReasoning: ReturnType<typeof resolveGatewayReasoning>;
+        const before = options.currentAgents?.[definition.name];
+        const unchangedRoute = before && before.model === config.model &&
+          before.gatewayId === config.gatewayId &&
+          (before.harness ?? DEFAULT_HARNESS_ID) === harness &&
+          before.gatewayReasoningOption === config.gatewayReasoningOption &&
+          isDeepStrictEqual(before.gatewaySnapshot, config.gatewaySnapshot);
         try {
           lockedReasoning = resolveGatewayReasoning(
             lockedSnapshot.modelReasoning,
@@ -1329,12 +1336,9 @@ export class Orchestrator {
             );
             continue;
           }
-          currentReasoning = resolveGatewayReasoning(
-            gateway.modelReasoning,
-            config.model,
-            config.gatewayReasoningOption
-          );
-          if (currentReasoning?.fingerprint !== lockedReasoning?.fingerprint) {
+          if (!unchangedRoute && resolveGatewayReasoning(
+            gateway.modelReasoning, config.model, config.gatewayReasoningOption
+          )?.fingerprint !== lockedReasoning?.fingerprint) {
             reject(
               definition.name,
               `${definition.name} Agent 的锁定 Gateway 思考强度配置已发生变化，请重新创建项目`
@@ -1542,7 +1546,7 @@ export class Orchestrator {
     await this.validateAndSnapshotGatewayConfigs(
       proposal.agents,
       proposal.orchestration,
-      { preserveGatewaySnapshots: true }
+      { preserveGatewaySnapshots: true, currentAgents: state.agents }
     );
     const availableSkills = await this.skills.forSelections(Object.values(proposal.agents).flatMap(config => [...config.skills, ...config.autoSkills]));
     const projectSkills = await materializeProjectSkills(

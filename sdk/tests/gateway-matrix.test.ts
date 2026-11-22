@@ -20,7 +20,8 @@ const gatewayInput: GatewayInput = {
   apiKey: "matrix-secret-one",
   models: ["model-a", "model-b"],
   defaultModel: "model-a",
-  protocol: "responses"
+  protocol: "responses",
+  autoReasoning: false
 };
 const stageIds = ["text_ordinary", "text_stream", "tool_ordinary", "tool_stream", "adapter_smoke"];
 
